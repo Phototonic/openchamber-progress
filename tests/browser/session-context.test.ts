@@ -25,6 +25,25 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
 
+test('optional device hints repaint through the existing owner without identity, visibility or read changes', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    assert.equal(c.vc.device, undefined); assert.equal(c.vc.env.device, undefined);
+    const requests = c.requests.length, identity = c.vc.identity, paints = c.paints.length;
+    const device: NonNullable<HostReadyContext['device']> = { formFactor: 'phone', pointer: 'coarse', insets: { top: 20, right: 0, bottom: 12, left: 0 }, keyboard: 280 };
+    c.listeners.ready({ ...c.vc.ctx, device }); await settle();
+    assert.deepEqual(c.vc.device, device); assert.deepEqual(c.vc.env.device, device);
+    assert.ok(c.paints.length > paints);
+    assert.equal(c.vc.identity, identity); assert.equal(c.requests.length, requests);
+    const current = c.paints.length;
+    c.listeners.ready({ ...c.vc.ctx, device: structuredClone(device) }); await settle();
+    assert.equal(c.paints.length, current, 'unchanged ready device hints do not repaint');
+    c.listeners.ready({ ...c.vc.ctx, device: undefined }); await settle();
+    assert.equal(c.vc.env.device, undefined); assert.equal(c.requests.length, requests);
+  } finally { c.stop(); }
+});
+
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
@@ -75,6 +94,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   let snapshot = EMPTY_LIVE;
   let liveChanged = () => {};
   const exports: any = {};
+  let setupRetirements = 0;
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
@@ -84,7 +104,9 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return source;
+      if (name === './setup.ts') return { retireSetupSteps() { setupRetirements++; } };
       // A confirmed delete retires review markers; without the advertised device feature it does nothing.
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './cleanup.ts') return cleanup;
@@ -125,6 +147,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   };
   exports.startView(spec);
   return { requests, paints, contexts, listeners, infoPaints, languageStorage, storageCalls,
+    get setupRetirements() { return setupRetirements; },
     live: (next: LiveSnapshot) => { snapshot = next; liveChanged(); },
     tick: (ms: number) => { const entry = [...timers].find(([, timer]) => timer.ms === ms); assert.ok(entry, `expected scheduled ${ms} ms refresh`); timers.delete(entry[0]); entry[1].fn(); },
     visibility: (state: string) => { document.visibilityState = state; listeners['document:visibilitychange'](); },
@@ -140,6 +163,17 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
 }
 
 const progressAction = (id = 'A', directory = '/fixture/Alpha') => ({ kind: 'session', action: 'open-progress', sessionId: id, directory, sessionTitle: 'Not an identity' });
+
+test('visibility loss retires Setup synchronously and reopening reads status; disposal retires too', async () => {
+  const c = controller();
+  c.ready('A'); await settle();
+  const before = c.requests.filter(q => q.path === '/v1/setup').length;
+  c.visibility('hidden');
+  assert.equal(c.setupRetirements, 1, 'retirement cannot wait for a hidden-frame paint');
+  c.visibility('visible'); await settle();
+  assert.ok(c.requests.filter(q => q.path === '/v1/setup').length > before);
+  c.stop(); assert.equal(c.setupRetirements, 2);
+});
 function actionLive(ids = ['A', 'B']): LiveSnapshot {
   return { projectsState: 'ready', projects: [{ id: 'project', name: 'Synthetic project', directory: '/fixture/Alpha' }], worktrees: new Map(), capped: [],
     sessions: new Map([['project', { state: 'ready', coverage: [{ directory: '/fixture/Alpha', state: 'ready' }], records: ids.map(id => ({ id, title: `Host ${id}`, projectId: 'project', directory: '/fixture/Alpha', parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null })) }]]) };

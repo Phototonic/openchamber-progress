@@ -95,6 +95,21 @@ test('both actions use the clicked session, append once to the active draft, awa
   }
 });
 
+test('starting and refused services admit once before checking composer capability', async () => {
+  for (const state of ['starting', 'refused']) {
+    const f = fixture(); let admitted = false;
+    f.intercept(async (q, next) => {
+      if (q.path === '/v1/setup') { admitted = true; return response({}); }
+      if (q.path === '/health' && !admitted) return response({ ...HEALTH, state, ready: false });
+      return next();
+    });
+    await f.run();
+    assert.equal(f.composed.length, 1);
+    assert.deepEqual(f.requests.map(q => q.path), ['/health', '/v1/setup', '/health', '/v1/plans', '/v1/plan']);
+    f.retire();
+  }
+});
+
 test('a valid saved finished choice wins; stale and missing choices use the automatic featured rule', async () => {
   for (const saved of [`${SRC}/finished`, `${SRC}/removed`, undefined]) {
     const f = fixture(); f.setRows([finished, active]); f.setSaved(saved);

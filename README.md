@@ -63,11 +63,17 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
+**Verifying a download (Linux):** Download both ZIPs, `entries-<version>.sha256` and `sha256.txt` into an empty folder. In that folder, run `sha256sum -c --ignore-missing sha256.txt`. The inventory also lists files inside the ZIPs; `--ignore-missing` skips those before extraction. To check extracted files, unpack each ZIP into its matching `agent-progress-extension-<version>` or `agent-progress-companion-<version>` folder, then run `sha256sum -c entries-<version>.sha256` from the download folder, replacing `<version>` with the release number.
+
 **Updating:** Git installs use **Settings → Extensions → Check for updates → Update**. The URL above follows the remote default branch (`main` here); append `#main` to select it explicitly, `#dev` for development builds, or a published tag such as `#v1.1.1` to stay on that tag. A fixed tag does not follow later releases. Offers depend on a higher package version, not just a new commit: same-version development changes produce no offer. Folder and ZIP installs need manual replacement, not Git update checks. See [update and approval details](docs/setup.md#updates-observations-and-integrity).
 
 **Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
+
+- **Three interface languages.** Follow OpenChamber or choose English, Russian or Simplified Chinese. Progress summaries follow the choice; saved plan and task text is never translated.
+- **Phone views.** Open the rail or fullscreen board on a phone, with larger touch controls and a tap/pan/pinch dependency map. Physical-phone acceptance is deferred to the live release; current checks use browser emulation.
+- **Windows upgrades.** The service starts quickly and Setup migrates old installations in short, resumable steps. Fresh configuration still uses the older flow and can time out with very slow PowerShell; see the [known limit](docs/setup.md#install-review-confirm).
 
 - **Child reports are deliberate.** Assigned children with reporting permission receive their task brief only after verified binding, on a naturally occurring context. A first-turn-only child may finish without reporting. A bare final handoff records a claim only; an explicit combined handoff can atomically report assigned task changes too. Neither means the coordinator accepted the work. Optional host agent/resource labels are context, not task authority; Workflows navigation is not offered on the current SDK.
 

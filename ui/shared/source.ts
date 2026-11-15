@@ -8,10 +8,13 @@ import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shar
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
+  NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
+import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
+import type { InboxWindowView } from './model.ts';
 import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
@@ -21,7 +24,7 @@ export interface ServiceHost {
 export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost';
 export interface ReadFailure { kind: FailureKind; code: string; message: string }
 /** A retired search read supplies neither freshness authority nor capture metadata. */
-export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
+export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean; inbox?: InboxFirst } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
 
 /** Bounds per refresh; beyond them the read says it is partial instead of guessing. */
 export const MAX_LIST_PAGES = 10;
@@ -33,9 +36,10 @@ export const LIST_LIMIT = 50;
 const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 
 class HttpError extends Error {
+  readonly lastAction?: SetupView['lastAction'];
   readonly code: string;
   readonly status: number;
-  constructor(status: number, code: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; }
+  constructor(status: number, code: string, body?: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.lastAction = body ? parseLastAction(body) : undefined; }
 }
 
 export function classify(error: unknown): ReadFailure {
@@ -62,14 +66,25 @@ export function classify(error: unknown): ReadFailure {
 
 async function call(host: ServiceHost, path: string, q?: Record<string, string>, method: 'GET' | 'POST' = 'GET', body?: string) {
   const result = await host.serviceRequest({ method, path, ...(q ? { query: q } : {}), ...(body !== undefined ? { body } : {}) });
-  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`);
+  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body);
   return result.body;
 }
 
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
+/**
+ * The optional first Needs you window of a list read. `unsupported`: the service does not advertise
+ * the capability (never an empty inbox); `unverified`: no verified binding to pin it to; `missing`:
+ * asked but not supplied; `invalid`: supplied but refused. Only `ready` carries rows or counts.
+ */
+export type InboxFirst =
+  | { state: 'unsupported' | 'unverified' | 'missing' | 'invalid' }
+  | { state: 'ready'; window: InboxWindowView };
+/** `count`: the compact count only (no history timing); `rows`: displayed rows with timing. */
+export type InboxDemand = 'count' | 'rows';
+
 export type ListResult =
-  | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead }
+  | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead; inbox?: InboxFirst }
   | { ok: true; health: ReturnType<typeof parseHealth>; read: null } // service up, not configured: a setup state, not an empty success
   | { ok: false; failure: ReadFailure };
 
@@ -77,16 +92,35 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
 });
 
-/** Null checks health only; {} deliberately reads the unfiltered history board. */
-export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
+/** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
+/** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
+export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
   try {
-    const health = parseHealth(await call(host, ROUTES.health));
+    let health = parseHealth(await call(host, ROUTES.health));
+    if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
+      let startingUnsettled = false;
+      // New services separate host liveness from data admission. One explicit
+      // Setup read validates/retries; polling health alone cannot do that work.
+      // Old services omit state and retain their existing request sequence.
+      try { await call(host, ROUTES.setup); }
+      catch (error) {
+        // Another surface or setup action can own startup admission. Observe
+        // health once, without hiding real refusals or retrying Setup here.
+        if (!(health.state === 'starting' && error instanceof HttpError && error.status === 503 && error.code === 'managed-step-unsettled')) throw error;
+        startingUnsettled = true;
+      }
+      health = parseHealth(await call(host, ROUTES.health));
+      // Older services can echo that same transient refusal into their health
+      // snapshot. It still grants no data access; preserve any other diagnostic.
+      if (startingUnsettled && !health.ready && health.state === 'refused' && health.diagnostics.length === 1 && health.diagnostics[0] === 'managed-step-unsettled') return { ok: true, health, read: null };
+    }
     if (!health.ready) {
       // A configured store that cannot open — or fails binding verification — reports its
       // fixed failure code in health diagnostics. That is a classified failure on every
       // surface, never a setup or empty success; genuinely unconfigured services report
       // setup-flow codes ('targets-unverified' and friends) and keep the null-read path.
-      const failed = health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
+      const failed = health.state === 'refused' ? health.diagnostics[0] ?? 'storage'
+        : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
         const failure = classify(new HttpError(503, failed));
         return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
@@ -96,11 +130,16 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
     // An older service cannot establish an empty archive; never send it the new query.
     if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };
     const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null, archived: health.planCleanup ? scope.archived ?? 'exclude' : null };
-    const first = parsePlansPage(await call(host, ROUTES.plans, query(base)));
+    // Older services ignore nothing silently: the extension is requested only when advertised.
+    const askInbox = !!inbox && health.needsYouInbox === 1;
+    const intentQuery = delegationQuery(intent && health.delegationIntent === 1);
+    const firstBody = await call(host, ROUTES.plans, { ...query(base), ...intentQuery, ...(askInbox ? needsYouListQuery(inbox!.demand === 'rows') : {}) });
+    const receivedAt = inbox?.mono() ?? 0;
+    const first = parsePlansPage(firstBody);
     const plans = [...first.data];
     let cursor = first.nextCursor;
     for (let pages = 1; cursor && pages < maxPages; pages++) {
-      const next = parsePlansPage(await call(host, ROUTES.plans, query({ ...base, cursor })));
+      const next = parsePlansPage(await call(host, ROUTES.plans, { ...query({ ...base, cursor }), ...intentQuery }));
       if (next.envelope.storeId !== first.envelope.storeId) throw new ContractError('The progress store changed while reading pages.');
       if (next.envelope.binding.sourceId !== first.envelope.binding.sourceId || next.envelope.binding.verified !== first.envelope.binding.verified) throw new ContractError('The progress binding changed while reading pages.');
       const verification = (e: EnvelopeView) => JSON.stringify(e.sources.map(s => [s.id, s.verified]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
@@ -112,9 +151,39 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       }
       cursor = next.nextCursor;
     }
-    return { ok: true, health, read: toRead(first.envelope, plans, Boolean(cursor)) };
+    const read = toRead(first.envelope, plans, Boolean(cursor));
+    return { ok: true, health, read, ...(inbox ? { inbox: firstInbox(askInbox, firstBody, read, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error) };
+  }
+}
+
+/** The optional summary never fails the ordinary list read it rides on. */
+function firstInbox(asked: boolean, body: string, read: Pick<StoreRead, 'storeId' | 'binding'>, timing: boolean, receivedAt: number): InboxFirst {
+  if (!asked) return { state: 'unsupported' };
+  if (!read.binding.verified || !read.binding.sourceId) return { state: 'unverified' };
+  let value: unknown;
+  try { value = (JSON.parse(body) as Record<string, unknown>).needsYou; } catch { return { state: 'invalid' }; }
+  if (value === undefined || value === null) return { state: 'missing' };
+  try { return { state: 'ready', window: parseNeedsYouWindow(value, read, null, timing, receivedAt) }; } catch { return { state: 'invalid' }; }
+}
+
+export type InboxWindowResult = { ok: true; window: InboxWindowView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/**
+ * One explicit continuation window (GET /v1/needs-you), pinned to the observed store and verified
+ * binding and to the counts already shown. 409 means the pinned traversal moved: restart, never
+ * retry the cursor. No retry, fallback or follow-up page here.
+ */
+export async function readNeedsYou(host: ServiceHost, request: NeedsYouRequest, previous: InboxWindowView['counts'] | null, mono: () => number = () => performance.now()): Promise<InboxWindowResult> {
+  try {
+    const r = { ...request, binding: { ...request.binding } };
+    const body = await call(host, NEEDS_YOU_ROUTE, needsYouQuery(r));
+    const receivedAt = mono();
+    if (body.length > NEEDS_YOU_LIMITS.responseBytes || new TextEncoder().encode(body).length > NEEDS_YOU_LIMITS.responseBytes) throw new ContractError('The inbox reply exceeds its limit.');
+    return { ok: true, window: parseNeedsYouWindow(JSON.parse(body), { storeId: r.storeId, binding: r.binding }, previous, r.timing === true, receivedAt) };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
 }
 
@@ -170,11 +239,12 @@ const cleanupOf = (plan: PlanView) => `${plan.cleanup?.state ?? 'visible'}:${pla
  * changes between pages, the read restarts rather than mixing revisions. A page from another
  * store, source binding or plan is refused, even at the same revision: never a joined detail.
  */
-export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now(), expected?: Pick<StoreRead, 'storeId' | 'binding'>): Promise<DetailResult> {
+export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now(), expected?: Pick<StoreRead, 'storeId' | 'binding'>, intent = false): Promise<DetailResult> {
   let snapshot: DetailSnapshot | null = null;
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
-      const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+      // The delegation overlay rides on the first page only (asked only when advertised).
+      const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
       if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
       if (expected && (first.envelope.storeId !== expected.storeId || first.envelope.binding.sourceId !== expected.binding.sourceId || first.envelope.binding.verified !== expected.binding.verified
         || !first.envelope.sources.some(s => s.id === plan.sourceId && s.verified))) throw new ContractError('The selected store, binding or recorded source verification changed.');
@@ -204,7 +274,7 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
       const timing = first.timing && Object.fromEntries(Object.entries(first.timing.items).map(([id, t]) => [id, { ...t, receivedAt }]));
       // Same receipt anchor; a cached revisit keeps it, only a new reply supplies a new one.
       const blockedTiming = first.blockedTiming && Object.fromEntries([...first.blockedTiming].map(([id, t]) => [id, { ...t, receivedAt }]));
-      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}), ...(blockedTiming ? { blockedTiming } : {}) } };
+      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}), ...(blockedTiming ? { blockedTiming } : {}), ...(first.intent ? { intent: first.intent } : {}) } };
     }
     throw new DetailReadError('revision-restarts', 'The plan kept changing while it was read.');
   } catch (error) {
@@ -283,43 +353,56 @@ export async function readSearchWindow(host: ServiceHost, request: SearchRequest
   }
 }
 
-export type SearchStateResult = { ok: true; state: SearchStateView } | { ok: false; failure: ReadFailure; status: number | null };
+export type SearchStateResult = { ok: true; state: SearchStateView; inbox?: InboxFirst } | { ok: false; failure: ReadFailure; status: number | null };
 
 /** Point-lookup freshness of at most 50 displayed keys (GET /v1/search-state). Failure is never "missing". */
-export async function readSearchState(host: ServiceHost, storeId: string, keys: SearchKeyView[]): Promise<SearchStateResult> {
+export async function readSearchState(host: ServiceHost, storeId: string, keys: SearchKeyView[], inbox?: { demand: InboxDemand; mono: () => number }): Promise<SearchStateResult> {
   try {
-    return { ok: true, state: parseSearchState(await call(host, ROUTES.searchState, searchStateQuery(storeId, keys)), storeId, keys) };
+    const body = await call(host, ROUTES.searchState, { ...searchStateQuery(storeId, keys), ...(inbox ? needsYouListQuery(inbox.demand === 'rows') : {}) });
+    const receivedAt = inbox?.mono() ?? 0;
+    const state = parseSearchState(body, storeId, keys);
+    return { ok: true, state, ...(inbox ? { inbox: firstInbox(true, body, state, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
 }
 
-export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView } | { ok: false; failure: ReadFailure; status: number | null };
+export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView; intent?: PlanDetail['intent'] } | { ok: false; failure: ReadFailure; status: number | null };
 
 /**
  * Review preflight: the FIRST page of /v1/plan only, validated envelope and plan metadata. Item and
  * contribution cursors are never followed: one bounded live read, not a detail or history download.
+ * Task-row readers may opt into the validated intent overlay and its token on this same head.
  */
-export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>): Promise<PlanHeadResult> {
+export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, intent = false): Promise<PlanHeadResult> {
   try {
-    const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+    const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
     if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
-    return { ok: true, envelope: first.envelope, plan: first.plan };
+    return { ok: true, envelope: first.envelope, plan: intent ? { ...first.plan, delegationToken: first.intent?.token } : first.plan, ...(intent ? { intent: first.intent } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
 }
 
-export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure };
+export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure; lastAction?: SetupView['lastAction'] };
 
-/** Managed requests send only storeRoot and reviewed consent; legacy roots remain compatibility-only. */
-export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string): Promise<SetupResult> {
+/** Negotiated capture is bodyless; other managed actions send only storeRoot and reviewed consent. */
+export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string, managedMigrationSteps?: 1): Promise<SetupResult> {
   try {
+    if (managedMigrationSteps === 1 && (action === 'managed-disable' || action === 'managed-enable')) {
+      // These authenticated routes select/revalidate the current binding under
+      // the writer fence. Consent is the UI confirmation, not an inspect nonce.
+      if (!confirmed) return { ok: false, code: 'confirmation-required' };
+      const enabled = action === 'managed-enable';
+      const reply = JSON.parse(await call(host, `/v1/capture/${enabled ? 'enable' : 'disable'}`, undefined, 'POST'));
+      if (!isRec(reply) || reply.ok !== true || reply.captureEnabled !== enabled) throw new ContractError('Invalid capture control reply.');
+      return { ok: true, setup: parseSetup(await call(host, ROUTES.setup)) };
+    }
     const request = action?.startsWith('managed-') ? JSON.stringify({ ...(targets?.storeRoot ? {storeRoot:targets.storeRoot} : {}), ...(action !== 'managed-inspect' ? {confirmed,expected} : {}) }) : setupBody(targets, confirmed);
     const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', request) : await call(host, ROUTES.setup);
     return { ok: true, setup: parseSetup(body) };
   } catch (error) {
-    if (error instanceof HttpError) return { ok: false, code: error.code };
+    if (error instanceof HttpError) return { ok: false, code: error.code, ...(error.lastAction ? {lastAction:error.lastAction} : {}) };
     const failure = classify(error);
     return { ok: false, code: failure.code, failure };
   }

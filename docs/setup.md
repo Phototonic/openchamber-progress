@@ -44,6 +44,34 @@ on supported Windows). Mutable state never lives in the extension code folder.
 After configuration, the next eligible native context/report boundary can activate
 a previously dormant companion; no global install or automatic restart is needed.
 
+Fresh setup (no legacy installation or migration journal) retains the existing
+`managed-inspect` → explicit confirmation → `managed-configure` HTTP flow and its
+nonce-bound review. The service holds the same scope and Store writer slots as
+migration/capture workers throughout configuration, including failure cleanup;
+busy setup activity refuses rather than racing another writer. Inspection writes
+no product state. A journal or legacy installation instead requires the migration
+step flow; configuring ambiguous legacy discovery alongside a managed selection
+refuses with `managed-migration-conflict`, never implicit fresh configuration.
+
+**Known Windows limit:** fresh configuration still uses the synchronous 1.3.0
+controller and its existing security-helper timeouts, not the six-launch step
+budget. Portable accounting measures 3 PowerShell launches for fresh inspection
+and 24 for configuration. Roughly 0.3 seconds per launch can fit the host's
+20-second request limit; very slow PowerShell can exceed it and delay health
+responses. This is not native latency certification. A failed/timed-out reply is
+not rollback: inspect current state before an explicit retry, without deleting
+metadata or relaxing permissions. Linux/macOS do not launch PowerShell. Moving
+fresh configuration to a separate fresh plan on the step engine remains follow-up
+work; the current UI intentionally keeps the existing fresh review/confirm flow.
+
+The service's five-second HTTP `requestTimeout`/`headersTimeout` bounds receiving
+request bytes, not executing a fully received Setup request. It produces HTTP 408,
+not a JSON `storage` failure. Portable regressions exercise fresh inspection and
+configuration beyond five seconds with a 4.5-second first security launch and
+350 ms later launches, still below the host budget. Actual helper timeouts retain
+`windows-security-unavailable` (or `managed-step-deadline` in step mode), never
+become evidence of absent state or permission to write.
+
 ## Reach and disable/removal
 
 | Delivery | Effect and limits |
@@ -64,8 +92,73 @@ completion is not guaranteed.** Never automatically restart a real instance.
 
 ## Legacy migration and recovery
 
-For at least one release, Setup supports a single confirmed **Switch to
-extension-managed capture** for a fully validated canonical legacy installation.
+### Setup coordination port
+
+The bounded setup worker derives loopback TCP coordination ports from the
+canonical discovery data root and Store root, rather than reserving one port for
+all profiles/users. Each key hashes to a port in **25000–28999**, below the default
+Linux, macOS and Windows ephemeral client-port ranges. The stable derivation is
+25000 plus the first four SHA-256 digest bytes as unsigned big-endian modulo 4000.
+Skip forward (wrapping within the range) over 25565, 26000, 27015–27030 (including
+27017–27019), 27036–27037, 28015–28017 and 28960 to avoid common service/game ports.
+Writers to the same discovery target or shared
+Store serialize; unrelated targets can proceed independently. No progress data is
+exposed on these ports. Hash collisions or an unrelated listener fail closed as
+`managed-step-port-busy`: **The coordination port for this setup target is busy.
+Let other setup activity finish, then retry. If it stays busy, check whether
+another program or a custom client-port range uses the coordination port.**
+The service never identifies/stops another listener,
+switches ports to evade contention, or removes a lock to force progress.
+The managed step HTTP route uses this worker boundary. Read-only inspection
+continues discovery across separate worker
+requests without creating product files or changing capture. An unfinished review
+expires on service restart or package/environment change and requires fresh
+inspection. Its confirmed prepare path retains a durable operation receipt for
+an exact retry after restart; bounded status reports unknown capture rather than
+replaying an old capture observation. The private worker also implements separate
+effect requests and durable pause, abandon and resume. These controls retain
+unfinished work; they do not undo removal or change capture. An interrupted capture
+decision that cannot be proven requires a fresh review, and that review authorizes
+only one new capture intent. Retrying a settled enable never overrides a later
+manual disable. No worker continues automatically after restart.
+
+Authenticated health and Setup delivery advertise `managedMigrationSteps: 1`.
+Clients must negotiate it before using `/v1/setup/managed-step`. The old migrate
+URL always returns 409 `managed-action-required` with no security launches or
+migration work. The old inspect/configure URLs do the same no-write refusal when
+legacy discovery or any migration journal applies (configuration of ambiguous
+legacy plus managed selection without a journal returns `managed-migration-conflict`,
+while inspection still returns `managed-action-required`). Legacy/journal inspect
+refusal uses local presence hints before security queries, with no writes; its acceptance budget
+is at most six security launches and eight seconds on the undelayed runner. The
+old inspect/configure routes remain supported for fresh setup as described above;
+migration must never fall back to them. A presence hint authorizes only refusal:
+it neither validates nor reads the journal/legacy contents. An absent or unreadable
+hint still runs the full fresh path, ACL and ownership checks, including canonical
+presence checks, before offering a review or writing. Invalid metadata without a
+migration hint retains its precise ownership/path refusal; step inspection
+diagnoses metadata behind a migration hint.
+Ordinary Setup reads are bounded and read-only; absent operation progress is
+omitted, not null. Concurrent identical Setup reads share one in-flight status run
+and its budget, never a completed result; a read during a mutation still refuses.
+Ordinary capture enable/disable shares the writer fence.
+When `managedMigrationSteps: 1` is advertised, Setup uses authenticated, bodyless
+POST `/v1/capture/disable` and `/v1/capture/enable` for both fresh and migrated
+managed installations. The existing target/consequence review, acknowledgement
+and explicit confirmation gate the UI request; these routes do **not** accept or
+validate a nonce-bound review token. They freshly validate the currently selected
+binding, Store/source, schema and permissions under the writer fence. Enable
+refuses unfinished or conflicting migration; disable does not require legacy
+ownership. No legacy files or migration receipts are changed. Setup rereads the
+actual capture bit afterwards; a failed reply is not rollback or automatic retry.
+Precise refusals, including `managed-step-port-busy`, remain visible. Older
+services without the capability retain their nonce-bound inspect/control flow.
+Portable HTTP tests and launch counts are not native Windows latency certification.
+
+### Confirmed step migration
+
+Setup supports one confirmed **Switch to extension-managed capture** journey,
+executed as separate bounded requests for a fully validated canonical legacy installation.
 A folder name alone is not ownership. Inspection validates its complete ownership
 manifest, releases, descriptor and actual Store/source identity. Modified or
 foreign files are a conflict, not permission to delete them. A different selected
@@ -82,8 +175,9 @@ unselected legacy Store is not controlled. Enable and migration stay fail-closed
 
 The reviewed confirmation explains the narrower managed reach, retained history,
 global discovery removal and possible reload. Immediately before mutation,
-ownership and identity are checked again. Migration disables capture, uses the
-existing verified `remove-capture` operation, durably writes the same-target
+ownership and identity are checked again. Migration records its pending target,
+disables capture, uses the existing verified `remove-capture` operation,
+durably writes the same-target
 managed selection and expected metadata, then enables only after those steps
 succeed. Store/source IDs, reports, receipts, captures, cleanup fences, run
 records, installation history and retained legacy payloads survive. Successful
@@ -91,20 +185,77 @@ filesystem removal is not proof of managed activation.
 
 An uncertain/failed reply must be inspected before retry. Setup can show a pending,
 capture-off state and offer a fresh explicit same-target review/confirmation.
-Failures before removal or after recorded complete removal can be recovered by
-that bounded retry. **An interruption midway through sequential discovery-file
-removal can leave an incomplete package that fails full ownership validation.**
-That is a conflict: do not automatically repair/delete remaining files, restore a
-global loader or enable capture. Preserve the pending selection and retained
-files. Manual cleanup requires a separately authorized review of the retained
-ownership/removal receipt and the exact remaining product files; never recursively
-delete a config/store directory or remove unrelated files to clear the conflict.
+The private format-2 journal retains intent before each effect and a receipt after
+completion. Explicit same-target resume can reconcile interrupted discovery-file
+removal from that evidence; absence alone is not permission to delete or skip a
+file. Changed ownership/bytes, unsupported journals and ambiguous staging refuse.
+An accepted resume can remain pending with an unsettled worker observation: Setup
+offers Continue and submits the next advance to reconcile the retained intent.
+It does not claim that the earlier effect completed; the engine can still refuse
+if fresh evidence cannot establish safe continuation.
+Do not repair/delete remaining files, restore a global loader or enable capture
+to force progress. Pause/abandon stops following requests; it is not rollback.
+Closing, hiding or restarting never continues the migration automatically. A
+hide/show round trip permanently retires that local attempt, including any held
+reply; reopening reads status and requires an explicit Continue or Resume.
+At an unchanged journal sequence, a refreshed status observation can replace
+unknown capture and Resume with the actual capture bit and a required review.
+
+Step errors retain fixed platform codes such as `windows-security-unavailable`
+and `private-permissions`, alongside the actual requested step or journal/lock
+stage. No raw exception, path, account identity, token, command or database content
+is included. A non-null error means failure even if the disposition says
+`replayed`: that is a failed receipt, not a successful retry. Budget/deadline/busy
+refusals use 503, stale/unsupported/ownership conflicts 409. A worker crash or
+timeout is treated as effect uncertainty, never rollback; the writer slot stays
+held until the worker exits. A pending migration record is published before capture is disabled:
+failure to publish that first record leaves legacy capture unchanged. A crash after
+publication but before disable can therefore show pending with legacy capture still
+on; pending alone is not proof of capture-off. A fresh explicit retry revalidates.
+For a fully validated pending target, Setup reads the actual capture bit even
+before a managed selector exists. This read-only observation does not configure
+the service, admit progress reads or grant recovery authority. If validation or
+the read fails, capture remains unknown rather than being inferred from the phase.
 
 A crash while holding the private configuration lock leaves **busy** state. There
 is no time-based stale-lock takeover or automatic lock deletion. Stop only the
 known configuration operation, establish that no owner is active, and arrange
 separately authorized manual recovery of the exact lock after verifying the
 private selection. Do not treat busy as absent configuration or select a new store.
+
+Managed-directory bootstrap also retains narrow **manual-recovery crash windows**
+from versions 1.2.0 and 1.3.0. A crash after directory creation but before the
+ownership marker, or between linking a published file and removing its staging
+link, can leave invalid private metadata. Such an unmarked directory, hard-link
+anomaly, permissive ACL or foreign content is refused, never adopted, repaired or
+deleted automatically. A valid marked same-target directory with no migration
+journal can be reused after fresh validation and confirmation; it is not the same
+as an unmarked directory. The step protocol's `prepare` stage uses this
+existing bootstrap, not a new claim file or crash-proof directory publication.
+
+The step engine's lifecycle helper can reconcile an interrupted
+`record-removal`: it removes only the verified empty discovery directory and then
+records one operation-specific history event. It revalidates between those two
+effects. An exact retained event permits a read-only retry; a missing directory
+alone does not prove completion. Replaced history, duplicate events or partial
+history lines refuse without repair. After resume, evaluating the retained intent
+as running is read-only evidence checking; executing an effect still requires a
+freshly validated, durably published running intent.
+
+The format-1 upgrade helper likewise requires explicit same-target consent from
+the step driver. It preserves the original binding and legacy identity.
+Only a freshly verified removal receipt plus absent discovery allows the shorter
+plan; the old phase alone does not. Upgrade itself changes only the private
+journal, not capture, selectors or history. Once upgraded, retain format 2 on
+rollback: an older service must refuse it rather than discard or down-convert it.
+
+If bootstrap is refused, stop submitting migration actions, retain the files and
+record only the fixed diagnostic stage/code for support. Establish that no
+configuration or migration worker is active, then arrange separately authorized
+manual inspection and recovery of the specific partial metadata. Do not clear the
+managed directory, staging files or locks, loosen permissions, reset the Store,
+or restore a global loader to force progress. Preserve Store data, payloads and
+history; do not post local paths or metadata contents in a public report.
 
 Already-running legacy processes may retain code after discovery removal. Stop or
 reload those processes explicitly if global execution must end before capture
@@ -210,6 +361,21 @@ with fixed diagnostics. Restore valid ownership/access or use a compatible build
 restarting cannot make a future format compatible. Reads revalidate and can recover
 when access is restored, without automatic reset or permission repair.
 
+Authenticated `/health` is a cheap liveness snapshot, not a new storage or legacy
+inspection. A newly started managed service reports `starting`, `ready:false` and
+`sqlite:false` until a real Setup/data operation validates it. Later snapshots are
+`unconfigured`, `ready` or `refused`, reflecting the last admission only. A ready
+snapshot never authorizes a data access: each such operation still revalidates.
+The views explicitly read Setup then health once on `starting`/`refused`, so a
+restored store can recover without a restart. Health alone does not retry checks.
+Only a starting-phase Setup 503 `managed-step-unsettled` falls through to that
+single health reread (including an echo of the same transient code); other errors
+and refused health diagnostics remain failures, and unavailable data stays unread.
+Background composer actions use that same admission path and check capabilities
+on the ready reply. Refused security/binding states are failures, not “setup needed”.
+There is no timer, worker or background admission; synchronous Setup/data checks
+can still delay other requests while that explicit operation runs.
+
 Code rollback retains private selection/history but older services may not discover
 the new descriptor. Migration does not reinstall global capture on rollback.
 Prefer forward recovery with a compatible managed build. Deliberate legacy recovery
@@ -278,11 +444,46 @@ PowerShell 5.1/.NET, not a new executable/compiler/module. Fixed profile-free,
 noninteractive scripts receive UTF-8 JSON through stdin; paths are not executable
 command text. Missing/blocked PowerShell is a fixed privacy/setup failure.
 
-The first security query per loaded service/companion has a 30-second attempt and
+Outside the migration step engine, the first security query per loaded
+service/companion has a 30-second attempt and
 one identical retry only on timeout (up to 60 seconds configured wait). Later
 queries have one 10-second attempt. Termination/OS overhead is additional; these
 are not setup-operation deadlines. Non-zero exits, spawn errors and malformed
 results are not retried. No path is admitted without parsed security evidence.
+
+Managed service construction and health perform **zero security queries** and no
+legacy payload/Store preflight. Read-only validation scopes coalesce their known
+paths; security results do not survive the synchronous operation, and mutation
+boundaries retain fresh validation. There is no process-lifetime or TTL ACL cache.
+The host's liveness deadline is separate from these security-helper budgets.
+OpenChamber 2.7.1 also limits both the guest bridge and service proxy to **20 seconds**
+per request (`packages/sdk/src/contract.ts:499`, `host.ts:607-618`, and
+`packages/web/server/lib/guests/service.js:725,832,855-856` at tag `v2.7.1`).
+Migration now runs as separate inspection pages and confirmed steps, with at most
+**six actual PowerShell starts per request**, including failures, replay, checks,
+publication and cleanup. The 17-second work and 18-second response deadlines sit
+below the host limit; the undelayed runner gates each request at eight seconds.
+The native suite also exercises helpers delayed by 2.5 seconds, concurrent health,
+pause/reopen/resume and failed workers. Native results remain pending CI; these
+are acceptance budgets, not a latency guarantee for every machine.
+
+Every request uses fresh ownership checks; no ACL result survives a mutation or
+request boundary. A blocked helper fails closed, never skips a check to meet the
+deadline, and step mode does not inherit the cold-query retry. Workers retain
+their fence until exit; timeout is not rollback. The portable HTTP fixture counts
+real helper-launch calls at a substituted OS boundary, not legacy file reads or
+native NTFS security. Fresh inspect/configure is the documented exception above:
+3 and 24 launches respectively, with its synchronous slow-PowerShell limit.
+Measured portable manifest/selector journeys use 1, 1, 4, 1, 1, 1 launches for
+the six inspection pages, 6 for prepare, 5 per ordinary advance/removal batch,
+6 for recording removal, 1 for a successful replay, 3 per pause/stop/resume,
+and 4 for an active-operation status read. Receipt recovery uses 2, 3, 2, 2,
+1, 1 for inspection and 3 for prepare, then skips already completed removal.
+Old-route refusals measure 0 for legacy/journal inspect/configure and for migrate.
+These are fixture measurements, not a promise that every refusal has the same
+cost; the six-launch ceiling includes failure and settlement work.
+See [the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)
+for accounting and settlement rules.
 
 Use one account and local NTFS storage. Config/data roots require current-account
 ownership; dedicated store and managed state require private ACLs permitting only

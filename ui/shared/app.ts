@@ -30,12 +30,17 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { InboxController, type InboxPanel } from './inbox.ts';
+import { INBOX_CSS } from './inbox-style.ts';
+import { INTENT_CSS } from './intent.ts';
+import { applyDeviceHooks } from './phone-layout.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
 import { LanguageController, type LanguageSnapshot } from './language.ts';
 import type { InterfaceLanguage, LanguagePreference } from './i18n.ts';
+import { retireSetupSteps } from './setup.ts';
 
 const APP_EN = {
   loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
@@ -53,7 +58,15 @@ const APP_RU: typeof APP_EN = {
   removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
   focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
 };
-const APP_COPY = { en: APP_EN, ru: APP_RU };
+const APP_ZH: typeof APP_EN = {
+  loading: '正在加载完整计划…', copying: '正在复制…', copied: '已复制 Markdown。',
+  copyFailed: '剪贴板不可用，请选择并复制下方预览文本。',
+  sessionFailed: '无法在此处打开该会话。',
+  nearbyFocus: '原先所在行已不再显示，焦点已移到附近的行。',
+  removedFocus: (tasks) => `原来所在的任务已移除，焦点已移至${tasks ? '任务' : '其分组'}。`,
+  focusSuffix: (notice, name) => `${notice}，因此焦点已移至${name}。`,
+};
+const APP_COPY: Record<InterfaceLanguage, typeof APP_EN> = { en: APP_EN, ru: APP_RU, 'zh-CN': APP_ZH };
 
 export const REFRESH_MS = 3000;
 export const RETRY_MS = 8000;
@@ -80,6 +93,8 @@ export type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | 
 export interface ViewContext<U> {
   host: HostClient;
   ctx: HostReadyContext;
+  /** Re-delivered ready hints; presentation only. Device changes repaint, never trigger reads. */
+  device?: HostReadyContext['device'];
   session: SessionSnapshot | null;
   directory: string | null;
   /** Native session action validation; null for ordinary opening or a verified target. */
@@ -146,6 +161,11 @@ export interface ViewContext<U> {
    * section; a paint without a call retires the visit and any held reply. Null without a store read.
    */
   runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
+  /**
+   * Source-wide Needs you inbox of the current read (inbox.ts), for surfaces that ask for it
+   * (spec.needsYou). Null without a current read; its controls are bound to that store/binding.
+   */
+  inbox: InboxPanel | null;
 }
 
 /** See ViewContext.handoff. `notice` is the outcome; ", so focus moved to <heading>." is appended. */
@@ -184,6 +204,8 @@ export interface ViewSpec<U> {
   wantProjects: (vc: ViewContext<U>) => string[];
   /** Plans whose full detail this view shows right now. */
   wantDetails: (vc: ViewContext<U>) => PlanView[];
+  /** Open readings whose head must be checked even without a fresh list row (inbox/search). */
+  refreshDetails?: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Synchronous presentation decision before paint; must not start reads or change list scope. */
   prepareUi?: (vc: ViewContext<U>) => Partial<U> | null;
@@ -223,6 +245,12 @@ export interface ViewSpec<U> {
   partsKey?: (vc: ViewContext<U>) => string | null;
   /** Board search only: plan keys whose detail/document/history caches are kept; others are evicted. Null: no bound. */
   retainParts?: (vc: ViewContext<U>) => ReadonlySet<string> | null;
+  /**
+   * Needs you inbox demand: `count` (Work Status: the compact count, no waiting times) or `rows`
+   * (rail/board: displayed rows with waiting times). Its first window rides on the first list page
+   * of each ordinary list read; absent asks for nothing.
+   */
+  needsYou?: InboxDemand;
 }
 
 const FOCUSABLE = 'button,summary,[tabindex],a,input,select,textarea';
@@ -495,8 +523,15 @@ export function startView<U>(spec: ViewSpec<U>) {
    * paint until the list catches up. `listRead`: for a failed read, the list read it failed under;
    * it is retried after a newer one. `captureEnabled`: list envelope state at read start;
    * capture toggles change this metadata without advancing either plan revision.
+   * `requestedToken`: the list's waiting-delegation token when the read started. A changed token
+   * alone re-reads in the background (`refreshing`) while the ready detail stays painted; its
+   * overlay is gated on token equality, so a stale note is never shown. `tokenRead`: the list read
+   * a failed token refresh ran under; it is retried after a newer one.
    */
-  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number }>();
+  type DelegationToken = PlanView['delegationToken'];
+  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number; requestedToken?: DelegationToken; refreshing?: { token: DelegationToken }; tokenRead?: number }>();
+  /** Waiting-delegation notes are painted on task rows; Work Status has none, so it never asks. */
+  const asksIntent = spec.surface !== 'status';
   let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
@@ -511,6 +546,12 @@ export function startView<U>(spec: ViewSpec<U>) {
   let handoffNote: { hook: string; notice: NonNullable<Handoff['notice']> } | null = null;
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
+  // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
+  const inbox = spec.needsYou ? new InboxController({
+    service: (current) => guardedHost(current),
+    visible: () => document.visibilityState !== 'hidden',
+    changed: () => { versions.ui++; schedule(); },
+  }) : null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
@@ -675,10 +716,10 @@ export function startView<U>(spec: ViewSpec<U>) {
   const retireParts = () => {
     cacheGeneration++; detailQueue = Promise.resolve();
     if (preview) preview = freshPreview(preview.binding, preview.mode);
-    for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
+    for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key); else if (value.refreshing) details.set(key, { ...value, refreshing: undefined });
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
-  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); spec.retire?.('reset'); };
+  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); inbox?.retire('reset'); spec.retire?.('reset'); };
   /**
    * Hide boundary: in-flight detail reads are retired, so a held reply released while hidden
    * issues no continuation page and paints nothing; becoming visible reads them again. Completed
@@ -686,7 +727,10 @@ export function startView<U>(spec: ViewSpec<U>) {
    */
   let detailsDeferred = false;
   const retireHiddenDetails = () => {
-    for (const [key, value] of details) if (value.value.state === 'loading') { details.delete(key); detailsDeferred = true; }
+    for (const [key, value] of details) {
+      if (value.value.state === 'loading') { details.delete(key); detailsDeferred = true; }
+      else if (value.refreshing) { details.set(key, { ...value, refreshing: undefined }); detailsDeferred = true; }
+    }
     if (detailsDeferred) detailQueue = Promise.resolve();
   };
   const forgetPlans = (keys: Set<string>) => {
@@ -774,6 +818,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         return;
       }
       if (result.state === 'fresh') {
+        if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), result.inbox)) versions.data++;
         if (read && read.captureEnabled !== result.captureEnabled) {
           const withCapture = (value: StoreRead): StoreRead => ({ ...value, captureEnabled: result.captureEnabled,
             diagnostics: [...value.diagnostics.filter((d) => d !== 'capture-disabled'), ...(!result.captureEnabled ? ['capture-disabled'] : [])] });
@@ -791,6 +836,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         }
         // Counts as a successful refresh: a failed detail is retried once, as after a list read.
         listReads++;
+        refreshDetails(generation);
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (setupRefreshDue()) loadSetup();
@@ -808,7 +854,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    let result = await readList(guardedHost(() => generation === gate.current), scope);
+    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (item.kind === 'target' && scope && result.ok) {
       const validated = result.read && progressTargetRead(result.read);
@@ -853,12 +899,16 @@ export function startView<U>(spec: ViewSpec<U>) {
           if (changed.size) { resetCaches(); forgetPlans(changed); }
         }
         identity = nextIdentity;
+        // The source-wide inbox window of this same read; an unchanged one repaints nothing.
+        if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), 'inbox' in result ? result.inbox : undefined)) versions.data++;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
       if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
-      if ([...details.values()].some((d) => d.value.state === 'error')) versions.data++;
+      refreshDetails(generation);
+      // A failed waiting-delegation refresh is retried on the same terms.
+      if ([...details.values()].some((d) => d.value.state === 'error' || d.tokenRead !== undefined)) versions.data++;
       // Only a complete, current-generation list read for a real scope is remembered.
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
       // Setup status (reload-required, capture off) is shown on every surface. A pending reload is
@@ -925,6 +975,67 @@ export function startView<U>(spec: ViewSpec<U>) {
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
   }
 
+  const headReads = new Map<string, { reading: string; queued: boolean; current: () => boolean }>();
+  function refreshDetails(refresh: number) {
+    if (!read || !spec.refreshDetails || document.visibilityState === 'hidden') return;
+    const generation = cacheGeneration, id = identity;
+    for (const p of spec.refreshDetails(context())) {
+      // A plan key alone cannot distinguish leaving and reopening the same inbox task.
+      const readingKey = () => JSON.stringify(spec.reading?.(context()) ?? null);
+      const key = readingKey(), bound = reading;
+      const current = () => !disposed && refresh === gate.current && generation === cacheGeneration && id === identity && readingKey() === key && (!bound || reading === bound) && document.visibilityState !== 'hidden' && !!spec.refreshDetails?.(context()).some(n => n.key === p.key);
+      const previous = headReads.get(p.key);
+      if (previous?.reading === key && previous.current()) { previous.queued = true; continue; }
+      const pending = { reading: key, queued: false, current };
+      const before = details.get(p.key);
+      headReads.set(p.key, pending);
+      const intent = asksIntent && health?.delegationIntent === 1;
+      void readPlanHead(guardedHost(current), p, intent).then(result => {
+        if (!current() || headReads.get(p.key) !== pending) return;
+        const cached = details.get(p.key);
+        const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
+        if (result.ok && sameIdentity) {
+          // A queued poll is demand for another read, not evidence this success is stale.
+          // Never roll back newer detail (or revive a failure that overtook this head).
+          if (cached && (result.plan.revision < Math.max(cached.revision, cached.requested) ||
+            (cached !== before && cached.value.state === 'error') ||
+            (result.plan.cleanup?.revision ?? 0) < Math.max(cached.cleanup, cached.requestedCleanup))) return;
+          // At the same revision, a head can still retire a declaration. Search polls do not
+          // refresh the list token. Adopt only the overlay, never the head's partial task page;
+          // keep complete detail/timing, and never overwrite a detail read that overtook us.
+          if (intent && cached?.value.state === 'ready' && cached.result?.ok &&
+            result.plan.revision === cached.revision && (result.plan.cleanup?.revision ?? 0) === cached.cleanup) {
+            if (cached !== before || cached.refreshing) return;
+            const token = result.plan.delegationToken;
+            const listed = read?.plans.find(n => n.key === p.key);
+            if (read && listed && listed.revision === result.plan.revision && (listed.cleanup?.revision ?? 0) === cached.cleanup && listed.delegationToken !== token) {
+              read = { ...read, plans: read.plans.map(n => n === listed ? { ...n, delegationToken: token } : n) };
+            }
+            if (cached.result.plan.delegationToken === token && JSON.stringify(cached.value.value.intent) === JSON.stringify(result.intent)) return;
+            const detail = { ...cached.value.value, intent: result.intent };
+            details.set(p.key, { ...cached, requestedToken: cached.requestedToken === undefined ? undefined : token,
+              value: { state: 'ready', value: detail }, result: { ...cached.result, plan: { ...cached.result.plan, delegationToken: token }, detail } });
+            bump();
+            return;
+          }
+          // Unchanged heads leave the detail, its timing anchors and DOM untouched.
+          loadDetails([result.plan]);
+        } else {
+          if (pending.queued || cached !== before) return;
+          const failure: ReadFailure = result.ok ? { kind: 'invalid', code: 'CONTRACT', message: 'The reading identity changed.' } : result.failure;
+          details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: p.cleanup?.revision ?? 0, requestedCleanup: p.cleanup?.revision ?? 0, captureEnabled: read?.captureEnabled, generation, listRead: listReads, value: { state: 'error', failure } });
+          bump();
+        }
+      }).finally(() => {
+        if (headReads.get(p.key) !== pending) return;
+        headReads.delete(p.key);
+        // One follow-up for any number of refreshes that overtook this reply.
+        // Current successes can advance detail first; queued failures never paint.
+        if (pending.queued && current()) refreshDetails(refresh);
+      });
+    }
+  }
+
   function loadDetails(plans: PlanView[], force = false) {
     // A hidden frame starts no detail read; becoming visible repaints and reads (visibilitychange).
     if (document.visibilityState === 'hidden') { if (plans.length) detailsDeferred = true; return; }
@@ -932,11 +1043,17 @@ export function startView<U>(spec: ViewSpec<U>) {
       const cached = details.get(p.key);
       const cleanupRev = p.cleanup?.revision ?? 0;
       const captureEnabled = read?.captureEnabled;
-      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') continue;
+      const token = p.delegationToken;
+      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') {
+        const shown = cached.value.state === 'ready' ? cached.value.value.intent?.token : undefined;
+        if (cached.requestedToken === token || (token != null && shown === token) || cached.refreshing || cached.tokenRead === listReads) continue;
+        refreshIntent(p, cached, token);
+        continue;
+      }
       if (cached && cached.value.state === 'loading') continue;
       if (!force && cached && cached.value.state === 'error' && cached.revision === p.revision && cached.requestedCleanup === cleanupRev && cached.listRead === listReads) continue;
       const historical = cached?.generation === cacheGeneration ? cached.result?.snapshot ?? cached.historical : undefined;
-      const pending: NonNullable<ReturnType<typeof details.get>> = { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } };
+      const pending: NonNullable<ReturnType<typeof details.get>> = { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' }, requestedToken: token };
       details.set(p.key, pending);
       const id = identity;
       const generation = cacheGeneration;
@@ -944,16 +1061,38 @@ export function startView<U>(spec: ViewSpec<U>) {
       const own = () => !disposed && id === identity && generation === cacheGeneration && details.get(p.key) === pending;
       detailQueue = detailQueue.then(async () => {
         if (!own()) return;
-        let result = await readDetail(guardedHost(own), p);
+        let result = await readDetail(guardedHost(own), p, undefined, undefined, asksIntent && health?.delegationIntent === 1);
         if (!own()) return;
         // A capture toggle can overtake a queued/held detail read at the same plan revision.
         if (captureEnabled !== read?.captureEnabled) { details.delete(p.key); bump(); return; }
         if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
-        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
+        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical, requestedToken: token };
         details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
     }
+  }
+
+  /**
+   * Only the list's waiting-delegation token changed (declaration, reservation, cancel or
+   * invalidation never advance the progress revision): re-read the detail on the same queue,
+   * keeping the ready detail painted. A failure keeps it too, without a note (token mismatch).
+   */
+  function refreshIntent(p: PlanView, cached: NonNullable<ReturnType<typeof details.get>>, token: DelegationToken) {
+    const pending = { ...cached, refreshing: { token }, tokenRead: undefined };
+    details.set(p.key, pending);
+    const id = identity, generation = cacheGeneration, captureEnabled = cached.captureEnabled;
+    const own = () => !disposed && id === identity && generation === cacheGeneration && details.get(p.key) === pending;
+    detailQueue = detailQueue.then(async () => {
+      if (!own()) return;
+      let result = await readDetail(guardedHost(own), p, undefined, undefined, asksIntent && health?.delegationIntent === 1);
+      if (!own()) return;
+      if (captureEnabled !== read?.captureEnabled) { details.delete(p.key); bump(); return; }
+      if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
+      if (result.ok) details.set(p.key, { requested: p.revision, requestedCleanup: pending.requestedCleanup, captureEnabled, generation, result, historical: pending.historical, requestedToken: token, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } });
+      else details.set(p.key, { ...pending, refreshing: undefined, tokenRead: listReads });
+      bump();
+    });
   }
 
   const docKey = (p: PlanView) => `${p.key}@${p.document.captureId ?? 'none'}:${p.document.state}:${p.revision}`;
@@ -1014,6 +1153,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
     const env: Env = {
+      device: ctx?.device,
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
       unverifiedSources: new Set(read ? read.sources.filter((s) => !s.verified).map((s) => s.id) : []),
@@ -1022,7 +1162,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1076,7 +1216,8 @@ export function startView<U>(spec: ViewSpec<U>) {
         ++setupSerial;
         const current = cleanupContext();
         const generation = contextGeneration;
-        const r = await setupCall(host, action, targets, confirmed, expected);
+        const capability = setup?.state === 'ready' ? setup.value.delivery?.managedMigrationSteps : undefined;
+        const r = await setupCall(host, action, targets, confirmed, expected, capability);
         if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
           if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
           return {ok:false,code:'context-changed'};
@@ -1125,6 +1266,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         return runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
       },
+      inbox: inbox && read && identity && readScope === scopeKey(currentScope()) ? inbox.panel() : null,
     };
   }
 
@@ -1468,15 +1610,16 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   host.onReady((next) => {
     applyHostReady(next, document.documentElement);
+    applyDeviceHooks(document.documentElement, next.device);
     if (!document.getElementById('ap-style')) {
-      const style = el('style', '', CSS);
+      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS);
       style.id = 'ap-style';
       document.head.append(style);
     }
     const first = !ctx;
     const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     const hostContextChanged = !first && (hostDirectory !== (next.directory ?? null) || hostSession?.id !== next.session?.id);
-    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
+    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface || JSON.stringify(ctx.device) !== JSON.stringify(next.device)) versions.ctx++;
     // Ready's explicit item (including null for ordinary opening) is authoritative.
     // A pre-ready replay is retained only if an older snapshot omits the field.
     hostSession = next.session ?? null;
@@ -1541,10 +1684,13 @@ export function startView<U>(spec: ViewSpec<U>) {
       retry();
       if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {
+      retireSetupSteps();
+      setupNeedsRefresh = true;
       language.hidden();
       html.dataset.apHidden = '';
       digests?.hidden();
       runs?.hidden();
+      inbox?.retire('hidden');
       spec.retire?.('hidden');
       retireHiddenDetails();
       if (timer) { clearTimeout(timer); timer = null; }
@@ -1556,9 +1702,11 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;
+    retireSetupSteps();
     language.dispose();
     digests?.dispose();
     runs?.retire();
+    inbox?.retire('dispose');
     spec.retire?.('dispose');
     html.dataset.apHidden = '';
     gate.stop();

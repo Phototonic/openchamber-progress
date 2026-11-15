@@ -4,7 +4,8 @@ import { resolveLanguage } from './i18n.ts';
 
 const en = { idle: '', copying: 'Copying…', copied: 'Copied.', failed: 'Copy unavailable. Select the preview text and copy it manually.' };
 const ru: typeof en = { idle: '', copying: 'Копирование…', copied: 'Скопировано.', failed: 'Копирование недоступно. Выделите текст предпросмотра и скопируйте его вручную.' };
-export const reportingCopyText = (state:keyof typeof en,locale='en') => (resolveLanguage('auto',locale)==='ru'?ru:en)[state];
+const zh: typeof en = { idle: '', copying: '正在复制…', copied: '已复制。', failed: '无法复制。请选择预览文本并手动复制。' };
+export const reportingCopyText = (state:keyof typeof en,locale='en') => { const language=resolveLanguage('auto',locale); return (language==='ru'?ru:language==='zh-CN'?zh:en)[state]; };
 
 export interface HealthClaim { key: string; read: StoreRead | null; plan: PlanView | null; stale: boolean }
 export interface HealthFacts { service: string; scope: string; installation: string; loaded: string; capture: string; report: string; viewer: string; version: string; platform: string; tools: string }

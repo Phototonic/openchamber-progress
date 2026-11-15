@@ -1,21 +1,37 @@
 import { existsSync, readFileSync, realpathSync, lstatSync, writeFileSync, renameSync, unlinkSync, closeSync, openSync } from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
 import { Store, storageError, digest, canonical } from '../shared/store.ts';
-import { ProgressError, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState } from '../shared/progress.ts';
+import { ProgressError, MANAGED_ACTION_CODES, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState, type ManagedActionStage } from '../shared/progress.ts';
 import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation } from '../shared/managed-binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
 import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
-import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
+import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject,writerTarget,requirePlatformStoreFence } from '../shared/platform.ts';
+import {SetupRequestWorker,withSetupWriter,type SetupWorkerRequest,type SetupWorkerHealth} from './request-worker.ts';
+import {setupWriterTargets} from './writer-fence.ts';
+
+type ManagedCandidate={review:ManagedReview;binding?:Binding;targets:Targets;record?:MigrationRecord;legacy?:ReturnType<typeof legacyMigration>};
+
+/** Presence can only refuse the old route, never authorize fresh setup. */
+function refuseMigrationPresence(configRoot:string,file:string,action:'inspect'|'configure'):void {
+  if(lstatSync(path.join(path.dirname(file),'migration.json'),{throwIfNoEntry:false}))throw new SetupError('managed-action-required');
+  const legacy=lstatSync(path.join(configRoot,'plugins','agent-progress'),{throwIfNoEntry:false});
+  if(legacy&&action==='inspect')throw new SetupError('managed-action-required');
+  if(legacy&&(!legacy.isDirectory()||legacy.isSymbolicLink()||lstatSync(file,{throwIfNoEntry:false})))
+    throw new SetupError('managed-migration-conflict');
+  if(legacy)throw new SetupError('managed-action-required');
+}
 
 /** Only the trusted service entry chooses bindingFile/payload; HTTP cannot. */
 export class SetupController {
   private store?: Store; private binding?: Binding; private error: Code = 'binding';
   private expectedDescriptor: string | null = null; private canPersist = true;
   private securityUnavailable = false;
+  private fixedError?: PlatformError | ManagedBindingError;
   private activation = 'unknown';
   private readonly readonlyPayload: () => Payload;
   private readonly suggestionContext?:HostPathContext;
@@ -23,12 +39,44 @@ export class SetupController {
   private readonly reviewNonce = randomUUID();
   private managedDiagnostic: string | undefined;
   private migrationDiagnostic: string | undefined;
-  constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext) {
+  private checked = false;
+  private runsAvailable = false;
+  private expectationPending = true;
+  private lastAction?: SetupRead['lastAction'];
+  private migrationStage: ManagedActionStage = 'managed-state-create';
+  private worker?:SetupRequestWorker;
+  private readonly workerEntry:URL;
+  private workerHealth?:SetupWorkerHealth;
+  get managed(){return !!this.managedEnv;}
+  writerTargets(body?:unknown):string[] {
+    const root=(body as {storeRoot?:unknown}|undefined)?.storeRoot;
+    const database=typeof root==='string'&&path.isAbsolute(root)?path.join(root,'progress.sqlite'):this.binding?.database;
+    return this.managedEnv?setupWriterTargets(this.managedEnv,database):[writerTarget('scope',path.dirname(this.bindingFile)),
+      ...(database?[writerTarget('store',path.dirname(database))]:[])];
+  }
+  /** HTTP uses this boundary, never a synchronous managed status/migration. */
+  async request(request:SetupWorkerRequest,startedAt=process.hrtime.bigint()) {
+    if(!this.managedEnv)throw new SetupError('managed-service-required');
+    this.worker??=new SetupRequestWorker(this.workerEntry);
+    const payload=request.action==='status'||request.action==='capture'||request.action==='health'?undefined:this.readonlyPayload();
+    const reply=await this.worker.run(this.managedEnv,payload,
+      request.action==='status'||request.action==='capture'?{...request,descriptor:this.expectedDescriptor}:request,startedAt);
+    if(reply.ok&&reply.descriptor)this.expectedDescriptor=reply.descriptor;
+    if(request.action==='status'){
+      if(reply.ok&&reply.health)this.workerHealth=reply.health;
+      else if(!reply.ok)this.workerHealth={state:'refused',ready:false,sqlite:false,diagnostics:[reply.code],subagentRuns:false};
+    }
+    return reply;
+  }
+  lastMigrationFailure() { return this.lastAction?{...this.lastAction}:undefined; }
+  constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext,
+    workerEntry:URL=new URL('./main.ts',import.meta.url)) {
+    this.workerEntry=workerEntry;
     this.readonlyPayload=readonlyPayload;this.suggestionContext=suggestionContext;
     if(typeof privateFile !== 'string') {
-      this.managedEnv={...privateFile.env};this.bindingFile='';this.refresh();
-      // One admitted package generation may establish its baseline; GET/status never rewrites it.
-      if(this.store&&this.binding)try{this.establishExpectation(this.binding);}catch{/* Unknown expectation is not authorization. */}
+      // Listening and host liveness must not wait on cold security helpers. No
+      // background admission: real setup/data operations validate synchronously.
+      this.managedEnv={...privateFile.env};this.bindingFile='';
       return;
     }
     this.bindingFile=privateFile;
@@ -39,30 +87,55 @@ export class SetupController {
     this.refresh();
   }
   private readonly bindingFile: string;
-  current() { this.refresh();return {store:this.store,error:this.error,configured:!!this.binding}; }
+  current() { this.refresh();return {store:this.store,error:this.fixedError?.code??this.error,configured:!!this.binding}; }
+  /** The first managed data admission may publish the package expectation.
+   * Coordinate that existing write with migration/capture; subsequent reads
+   * cannot publish it and retain their ordinary synchronous admission path. */
+  async currentForRequest() {
+    return this.managedEnv&&this.expectationPending?withSetupWriter(()=>this.current(),this.writerTargets()):this.current();
+  }
+  /** Last admission observation only. This snapshot grants no filesystem authority. */
+  health() {
+    if(this.workerHealth)return {...this.workerHealth,diagnostics:[...this.workerHealth.diagnostics]};
+    const diagnostics=this.managedDiagnostic?[this.managedDiagnostic]:this.store?[]:
+      this.securityUnavailable?['windows-security-unavailable']:this.binding||!this.canPersist?[this.fixedError?.code??this.error]:[];
+    return {state:!this.checked?'starting':this.store?'ready':diagnostics.length?'refused':'unconfigured',
+      ready:!!this.store,sqlite:!!this.store,diagnostics,subagentRuns:!!this.store&&this.runsAvailable};
+  }
   close() {this.store?.close();this.store=undefined;}
   private load(b:Binding) {
     let next:Store;
     try{next=new Store(b.database);}catch(e){if(e instanceof PlatformError)throw e;const error=storageError(e);throw error.code==='binding'||error.code==='not-found'?new ProgressError('storage'):error;}
     // Validate optional run storage before admitting the store, not later in
     // /health capability discovery where a schema refusal fails host readiness.
-    try{verifyStore(next,b);next.subagentRunStorage();next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
-    this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;
+    try{verifyStore(next,b);const runs=next.subagentRunStorage();this.runsAvailable=runs==='current'||runs==='previous';next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
+    this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;this.fixedError=undefined;
   }
-  private recordError(e:unknown) {this.error=storageError(e).code;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
+  private recordError(e:unknown) {this.error=storageError(e).code;this.fixedError=e instanceof ManagedBindingError||platformErrorCode(e)?e as ManagedBindingError|PlatformError:undefined;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
   private refresh() {
+    this.workerHealth=undefined;
+    platformSecurityScope(()=>this.refreshInner());
+    // Once per admitted package generation, outside read-only security scopes.
+    // Failure remains an unknown expectation, not an authorization or a retry loop.
+    if(this.managedEnv&&this.store&&this.binding&&this.expectationPending){
+      this.expectationPending=false;
+      try{this.establishExpectation(this.binding);}catch{/* Unknown expectation is not authorization. */}
+    }
+  }
+  private refreshInner() {
+    this.checked=true;
     if(this.managedEnv) {
       try {
         const b=readManagedBinding(this.managedEnv);
         if(!b){
           if(this.expectedDescriptor!==null)throw new ManagedBindingError('managed-binding-modified');
-          this.close();this.binding=undefined;this.managedDiagnostic=undefined;this.error='binding';return;
+          this.close();this.binding=undefined;this.managedDiagnostic=undefined;this.fixedError=undefined;this.error='binding';return;
         }
         const descriptor=digest(readFileSync(managedBindingFile(this.managedEnv)));
         if(this.expectedDescriptor!==null&&descriptor!==this.expectedDescriptor)throw new ManagedBindingError('managed-binding-modified');
         this.binding=b;this.expectedDescriptor=descriptor;
         this.load(b);this.managedDiagnostic=undefined;
-      }catch(e){this.close();this.recordError(e);this.managedDiagnostic=e instanceof ManagedBindingError||e instanceof PlatformError?e.code:storageError(e).code;}
+      }catch(e){this.close();this.recordError(e);this.managedDiagnostic=e instanceof ManagedBindingError?e.code:platformErrorCode(e)??storageError(e).code;}
       return;
     }
     if(!this.binding)return;
@@ -92,7 +165,11 @@ export class SetupController {
   run(action:Action|ManagedSetupAction,body:unknown):SetupRead {
     if(this.managedEnv) {
       if(!action.startsWith('managed-'))throw new SetupError('managed-action-required');
-      return this.runManaged(action as ManagedSetupAction,body);
+      if(action==='managed-migrate')this.migrationStage='managed-state-create';
+      try{
+        const result=this.runManaged(action as ManagedSetupAction,body);
+        this.lastAction=undefined;delete result.lastAction;return result;
+      }catch(e){if(action==='managed-migrate')this.lastAction={stage:this.migrationStage,code:migrationActionCode(e)};throw e;}
     }
     if(action.startsWith('managed-'))throw new SetupError('managed-service-required');
     if(!body||typeof body!=='object'||Array.isArray(body))throw new ProgressError('invalid');
@@ -108,6 +185,7 @@ export class SetupController {
       return {configured:!!this.binding,verified:targets.confirmed,installed:info.installed,captureEnabled:null,targets:{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot},version:info.version,activation:'unknown',separateLifecycle:true,historyRetained:true,diagnostics:info.diagnostics,recovery:info.recovery,action};
     }
     if(!targets.confirmed)throw new SetupError('confirmation-required');
+    requirePlatformStoreFence(path.join(targets.storeRoot,'progress.sqlite'));
     if(['disable','enable','remove-capture'].includes(action)) {
       const current=this.targets();if(!current||!(windows?platformSecurityScope(()=>sameWindowsDirectory(current.configRoot,targets.configRoot)&&sameWindowsDirectory(current.dataRoot,targets.dataRoot)&&sameWindowsDirectory(current.storeRoot,targets.storeRoot)):current.configRoot===targets.configRoot&&current.dataRoot===targets.dataRoot&&current.storeRoot===targets.storeRoot))throw new SetupError('ownership-invalid');
     }
@@ -142,17 +220,26 @@ export class SetupController {
     if(!['disable','enable'].includes(action)||this.activation!=='reload-required')this.activation=result.activation;
     return {...this.status(),action};
   }
+  /** Compatibility HTTP path for fresh configuration only. The caller holds the
+   * same scope/Store writer slots as step workers for the entire synchronous
+   * operation. Keep the existing review nonce and legacy security timeouts. */
+  runFreshManaged(action:'managed-inspect'|'managed-configure',body:unknown):SetupRead {
+    if(!this.managedEnv)throw new SetupError('managed-service-required');
+    const result=this.runManaged(action,body,true);
+    this.lastAction=undefined;delete result.lastAction;return result;
+  }
   /** Existing no-body capture control route: valid binding required; never global executable ownership. */
   enableCapture() {
     if(!this.managedEnv){this.run('enable',{confirmed:true});return;}
     this.refresh();
-    if(!this.store||!this.binding)throw new ProgressError(this.error);
+    if(!this.store||!this.binding)throw this.fixedError??new ProgressError(this.error);
     if(!this.binding.source.verified)throw new ProgressError('source-unverified');
     const migration=this.managedMigration(this.targets()!);
     if(migration!=='none'&&migration!=='complete')throw new SetupError('managed-migration-required');
     this.store.setEnabled(true);
   }
   private establishExpectation(b:Binding) {
+    requirePlatformStoreFence(b.database);
     const payload=this.readonlyPayload();
     const fingerprint=activationFingerprint({...b,version:payload.version},Buffer.from(payload.plugin),Buffer.from(payload.guidance));
     const prior=readManagedExpectation(b);
@@ -160,27 +247,44 @@ export class SetupController {
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
   private managedMigration(_targets?:Targets):ManagedMigrationState {
+    return platformSecurityScope(()=>this.managedMigrationInner().state);
+  }
+  private managedMigrationInner():{state:ManagedMigrationState;captureEnabled:boolean|null} {
     this.migrationDiagnostic=undefined;
+    const observed=(state:ManagedMigrationState,captureEnabled:boolean|null=null)=>({state,captureEnabled});
     try{
       const record=readMigration(this.managedEnv!),legacy=legacyMigration(this.managedEnv!);
       if(record){
-        if(record.phase==='complete'&&(!this.binding||legacy))return 'conflict';
-        if(this.binding&&canonical(this.binding)!==canonical(record.binding))return 'conflict';
-        if(legacy&&!sameMigrationTarget(legacy.binding,record.binding))return 'conflict';
-        return record.phase==='complete'&&!legacy?'complete':'pending';
+        if(record.phase==='complete'&&(!this.binding||legacy))return observed('conflict');
+        if(this.binding&&canonical(this.binding)!==canonical(record.binding))return observed('conflict');
+        if(legacy&&!sameMigrationTarget(legacy.binding,record.binding))return observed('conflict');
+        if(record.phase==='complete'&&!legacy)return observed('complete');
+        // A pending record is not proof of capture-off: publication precedes
+        // disable. Observe the validated target read-only, without selecting it
+        // or granting the controller authority to serve its progress data.
+        if(!this.store){
+          const probe=new Store(record.binding.database,{readOnly:true});let enabled:boolean;
+          try{verifyStore(probe,record.binding);probe.subagentRunStorage();enabled=probe.list({limit:1}).captureEnabled;}finally{probe.close();}
+          return observed('pending',enabled);
+        }
+        return observed('pending');
       }
-      if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return 'conflict';
-      return legacy?'available':'none';
+      if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return observed('conflict');
+      return observed(legacy?'available':'none');
     }
-    catch(e){const error=migrationError(e);if(error instanceof SetupError)return 'conflict';this.migrationDiagnostic=error.code;return 'unavailable';}
+    catch(e){const error=migrationError(e);if(error instanceof SetupError)return observed('conflict');this.migrationDiagnostic=error.code;return observed('unavailable');}
   }
   private managedStatus():SetupRead {
     this.refresh();
-    const b=this.binding,targets=this.targets();
-    const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,
+    return platformSecurityScope(()=>this.managedStatusInner());
+  }
+  private managedStatusInner():SetupRead {
+    const b=this.binding,targets=this.targets(),migration=this.managedMigrationInner();
+    const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:migration.captureEnabled,
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
-      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:this.managedMigration(targets),mode:'unknown',observation:'unknown',expectedVersion:null}};
+      ...(this.lastAction?{lastAction:{...this.lastAction}}:{}),
+      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:migration.state,mode:'unknown',observation:'unknown',expectedVersion:null}};
     if(this.migrationDiagnostic&&!base.diagnostics.includes(this.migrationDiagnostic))base.diagnostics.push(this.migrationDiagnostic);
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
@@ -194,7 +298,7 @@ export class SetupController {
     return base;
   }
   /** Read-only candidate validation. The token binds consent to current selection, source and store identity. */
-  private managedCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
+  private managedCandidate(storeRoot?:string): ManagedCandidate {
     try{return this.managedFullCandidate(storeRoot);}
     catch(e){
       // A failed legacy preflight cannot revoke the user's capture-off control.
@@ -205,7 +309,8 @@ export class SetupController {
   }
   private managedControlCandidate(storeRoot?:string): {review:ManagedReview;binding:Binding;targets:Targets} {
     this.refresh();
-    if(!this.store||!this.binding)throw new ProgressError(this.error);
+    if(this.securityUnavailable)throw new PlatformError('windows-security-unavailable');
+    if(!this.store||!this.binding)throw this.fixedError??new ProgressError(this.error);
     const b=this.binding,targets=this.targets()!;
     if(!b.source.verified)throw new ProgressError('source-unverified');
     if(storeRoot!==undefined&&managedPath(storeRoot)!==targets.storeRoot)throw new SetupError('managed-selection-conflict');
@@ -214,8 +319,26 @@ export class SetupController {
       descriptorObject:[descriptor.dev,descriptor.ino,descriptor.mode,descriptor.uid],storeObject:[stat.dev,stat.ino,stat.mode,stat.uid],enabled:this.store.list({limit:1}).captureEnabled}));
     return {review:{expected,targets,storeId:b.storeId,sourceId:b.source.id},binding:b,targets};
   }
-  private managedFullCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
-    const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env),b=readManagedBinding(env);
+  private managedFullCandidate(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
+    this.checked=true;
+    if(freshOnly){
+      // A non-authoritative local presence hint avoids cold PowerShell just to
+      // refuse. Absence/read failure grants nothing: the full fresh validation
+      // and canonical presence check below still run before review or effects.
+      const env=this.managedEnv!,home=env.HOME??homedir();
+      const config=env.XDG_CONFIG_HOME??path.join(home,'.config'),data=env.XDG_DATA_HOME??path.join(home,'.local/share');
+      const inputs=[config,data,...(env.XDG_CONFIG_HOME===undefined||env.XDG_DATA_HOME===undefined?[home]:[])];
+      if(!env.OPENCODE_DB&&!env.OPENCODE_CONFIG_DIR&&inputs.every(p=>path.isAbsolute(p)&&p.length<=4096&&!p.includes('\0')&&!/^[\\/]{2}/.test(p))){
+        try{refuseMigrationPresence(path.join(config,'opencode'),path.join(data,'opencode','agent-progress-managed','progress-binding.json'),freshOnly);}
+        catch(e){if(e instanceof SetupError)throw e; /* The validated owner diagnoses unreadable/invalid paths. */}
+      }
+    }
+    return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot,freshOnly));
+  }
+  private managedFullCandidateInner(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
+    const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env);
+    if(freshOnly)refuseMigrationPresence(roots.configRoot,file,freshOnly);
+    const b=readManagedBinding(env);
     const record=readMigration(env),legacy=legacyMigration(env);
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
     if(this.expectedDescriptor!==null&&(!b||digest(readFileSync(file))!==this.expectedDescriptor))throw new ManagedBindingError('managed-binding-modified');
@@ -223,9 +346,12 @@ export class SetupController {
     const selected=managedPath(storeRoot??(retained?path.dirname(retained.database):path.join(roots.dataRoot,'openchamber-progress')),true);
     if([roots.configRoot,roots.dataRoot,path.dirname(file)].includes(selected))throw new SetupError('managed-selection-conflict');
     const targets={...roots,storeRoot:selected,confirmed:true};
-    lifecycle('inspect',targets); // canonical owned roots, private store, complete legacy ownership if present
-    if(lstatSync(selected,{throwIfNoEntry:false})&&!isOwned(selected))throw new SetupError('store-permissions');
     if(retained&&path.dirname(retained.database)!==selected)throw new SetupError(legacy||record?'managed-migration-conflict':'managed-selection-conflict');
+    // legacyMigration already performed complete ownership/removal preflight on
+    // these exact roots. Reuse only this operation's evidence, never consent-time
+    // evidence from an earlier request. Non-legacy targets still need inspection.
+    if(!legacy)lifecycle('inspect',targets);
+    if(lstatSync(selected,{throwIfNoEntry:false})&&!isOwned(selected))throw new SetupError('store-permissions');
     let storeId:string|null=null,sourceId:string|null=null,sources:unknown=[],enabled:unknown=null;
     const database=path.join(selected,'progress.sqlite');
     if(lstatSync(database,{throwIfNoEntry:false})) {
@@ -241,47 +367,48 @@ export class SetupController {
     const identity=(p:string)=>{const s=lstatSync(p,{throwIfNoEntry:false});return s?[s.dev,s.ino,s.mode,s.uid]:null;};
     const expected=digest(JSON.stringify({nonce:this.reviewNonce,targets,descriptor:b?digest(readFileSync(file)):null,
       descriptorObject:identity(file),storeObject:identity(database),rootObject:identity(selected),storeId,sourceId,sources,enabled,
-      migration:record??null,legacy:legacy?{fingerprint:lifecycle('inspect',targets).fingerprint,ownership:digest(readFileSync(path.join(roots.configRoot,'plugins/agent-progress/.ownership.json')))}:null}));
-    return {review:{expected,targets:{...roots,storeRoot:selected},storeId,sourceId},binding:b,targets};
+      migration:record??null,legacy:legacy?{fingerprint:legacy.fingerprint,ownership:legacy.ownership}:null}));
+    return {review:{expected,targets:{...roots,storeRoot:selected},storeId,sourceId},binding:b,targets,record,legacy};
   }
-  private runManaged(action:ManagedSetupAction,body:unknown):SetupRead {
+  private runManaged(action:ManagedSetupAction,body:unknown,freshOnly=false):SetupRead {
     if(!body||typeof body!=='object'||Array.isArray(body))throw new ProgressError('invalid');
     const r=body as Record<string,unknown>;
     if(!Object.keys(r).every(k=>['storeRoot','confirmed','expected'].includes(k))||
       r.storeRoot!==undefined&&(typeof r.storeRoot!=='string'||!r.storeRoot.length||r.storeRoot.length>4096)||
       r.confirmed!==undefined&&typeof r.confirmed!=='boolean'||r.expected!==undefined&&(typeof r.expected!=='string'||!/^[a-f0-9]{64}$/.test(r.expected)))throw new ProgressError('invalid');
     // Only inspection and capture-off admit the narrower verified-Store review.
-    const candidate=action==='managed-inspect'||action==='managed-disable'
+    const candidate=freshOnly?this.managedFullCandidate(r.storeRoot as string|undefined,action==='managed-inspect'?'inspect':'configure'):action==='managed-inspect'||action==='managed-disable'
       ?this.managedCandidate(r.storeRoot as string|undefined):this.managedFullCandidate(r.storeRoot as string|undefined);
     if(action==='managed-inspect') {
       if(r.confirmed!==undefined||r.expected!==undefined)throw new ProgressError('invalid');
       const status=this.managedStatus();status.delivery!.review=candidate.review;
-      status.delivery!.migration=this.managedMigration(candidate.targets);return {...status,action};
+      return {...status,action};
     }
     if(r.confirmed!==true)throw new SetupError('confirmation-required');
     if(r.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
+    requirePlatformStoreFence(path.join(candidate.targets.storeRoot,'progress.sqlite'));
     if(action==='managed-migrate')return this.migrate(candidate);
     if(!['managed-configure','managed-enable','managed-disable'].includes(action))throw new ProgressError('invalid');
     if(action!=='managed-disable'&&!['none','complete'].includes(this.managedMigration(candidate.targets)))throw new SetupError('managed-migration-required');
     if(action==='managed-enable'||action==='managed-disable') {
-      this.refresh();if(!this.store||!this.binding)throw new ProgressError(this.error);
+      this.refresh();if(!this.store||!this.binding)throw this.fixedError??new ProgressError(this.error);
       this.store.setEnabled(action==='managed-enable');return {...this.managedStatus(),action};
     }
     if(candidate.binding)return {...this.managedStatus(),action}; // same-target confirmation is harmless
     const file=createManagedBindingDirectory(this.managedEnv!);
     const lock=path.join(path.dirname(file),'.configuration-lock');
-    let locked=false;
+    let locked=false,failed=false;
     try {
       try{closeSync(openSync(lock,'wx',0o600));locked=true;}catch(e){if((e as NodeJS.ErrnoException).code==='EEXIST')throw new SetupError('managed-configuration-busy');throw e;}
       // Directory creation legitimately changes the review's missing-root facts, not the selected store.
       if(readManagedBinding(this.managedEnv!))throw new SetupError('managed-review-stale');
-      const latest=this.managedCandidate(r.storeRoot as string|undefined);
+      const latest=freshOnly?this.managedFullCandidate(r.storeRoot as string|undefined,'configure'):this.managedCandidate(r.storeRoot as string|undefined);
       if(latest.review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
       const {targets}=candidate;
       if(!lstatSync(targets.storeRoot,{throwIfNoEntry:false}))privateDirectory(targets.storeRoot,true);
       if(!isOwned(targets.storeRoot)||!privatePaths([targets.storeRoot]))throw new SetupError('store-permissions');
       const store=new Store(path.join(targets.storeRoot,'progress.sqlite'),{create:true});
-      let b:Binding;
+      let b:Binding,storeFailed=false;
       try {
         store.subagentRunStorage();const e=store.list({limit:1});
         const source=e.sources.find(s=>s.id===candidate.review.sourceId)??{id:randomUUID(),...managedSourceRoots(this.managedEnv!),verified:true};
@@ -292,12 +419,15 @@ export class SetupController {
         // metadata or a publication failure must not strand a newly admitted source.
         this.establishExpectation(b);store.registerSource(source);verifyStore(store,b);
         publishPrivateJson(file,b);
-      }finally{store.close();}
-      this.refresh();return {...this.managedStatus(),action};
-    }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
+      }catch(e){storeFailed=true;throw e;}finally{try{store.close();}catch(e){if(!storeFailed)throw e;}}
+      return {...this.managedStatus(),action};
+    }catch(e){failed=true;throw e;}finally{if(locked)try{unlinkSync(lock);syncDirectory(path.dirname(file));}catch(e){if(!failed)throw e;}}
   }
   private migrate(candidate:ReturnType<SetupController['managedCandidate']>):SetupRead {
-    const env=this.managedEnv!,prior=readMigration(env),legacy=legacyMigration(env);
+    const env=this.managedEnv!;
+    // The candidate was fully inspected in this synchronous request. The lock
+    // boundary below obtains a new candidate, with a fresh security scope.
+    const {record:prior,legacy}=candidate;
     if(prior?.phase==='complete'&&legacy)throw new SetupError('managed-migration-conflict');
     if(prior?.phase==='complete'&&!legacy)return {...this.managedStatus(),action:'managed-migrate'};
     if(!prior&&!legacy)throw new SetupError('managed-migration-required');
@@ -306,11 +436,14 @@ export class SetupController {
     if(candidate.binding&&!sameMigrationTarget(candidate.binding,retained)||path.dirname(retained.database)!==candidate.targets.storeRoot)throw new SetupError('managed-migration-conflict');
     if(legacy&&(!sameMigrationTarget(legacy.binding,retained)||prior&&legacy.binding.installId!==prior.legacyInstallId))throw new SetupError('managed-migration-conflict');
     if(!legacy&&(!prior||prior.phase==='pending'&&!removalRecorded(prior)))throw new SetupError('managed-migration-pending');
-    const file=createManagedBindingDirectory(env),lock=path.join(path.dirname(file),'.configuration-lock');let locked=false;
+    this.migrationStage='managed-state-create';
+    const file=createManagedBindingDirectory(env),lock=path.join(path.dirname(file),'.configuration-lock');let locked=false,failed=false;
     try{
+      this.migrationStage='lock';
       try{closeSync(openSync(lock,'wx',0o600));locked=true;}catch(e){if((e as NodeJS.ErrnoException).code==='EEXIST')throw new SetupError('managed-configuration-busy');throw e;}
-      if(this.managedCandidate(candidate.targets.storeRoot).review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
-      const store=new Store(retained.database);
+      if(this.managedFullCandidate(candidate.targets.storeRoot).review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
+      this.migrationStage='expectation-publication';
+      const store=new Store(retained.database);let storeFailed=false;
       try{
         verifyStore(store,retained);store.subagentRunStorage();
         const binding=prior?.binding??candidate.binding??{...retained,installId:`managed-${digest(JSON.stringify([retained.storeId,retained.source]))}`,version:this.readonlyPayload().version};
@@ -319,15 +452,17 @@ export class SetupController {
         // irreversible legacy removal, not after removing discovery.
         this.establishExpectation(binding);
         // Full owned()+selector+actual Store/source validation above precedes even disable.
-        store.setEnabled(false);writeMigration(env,record);
-        if(legacy)lifecycle('remove-capture',candidate.targets);
-        record.phase='removed';writeMigration(env,record);
-        if(!candidate.binding)publishPrivateJson(file,binding);
-        record.phase='complete';writeMigration(env,record);
-        store.setEnabled(true);
-      }finally{store.close();}
-      this.refresh();return {...this.managedStatus(),action:'managed-migrate'};
-    }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
+        this.migrationStage='migration-record';writeMigration(env,record);store.setEnabled(false);
+        this.migrationStage='legacy-removal';if(legacy)lifecycle('remove-capture',candidate.targets);
+        this.migrationStage='migration-record';record.phase='removed';writeMigration(env,record);
+        this.migrationStage='binding-publication';if(!candidate.binding)publishPrivateJson(file,binding);
+        this.migrationStage='migration-record';record.phase='complete';writeMigration(env,record);
+        this.migrationStage='capture-enable';store.setEnabled(true);
+      }catch(e){storeFailed=true;throw e;}finally{try{store.close();}catch(e){if(!storeFailed)throw e;}}
+      return {...this.managedStatus(),action:'managed-migrate'};
+    }catch(e){failed=true;throw e;}finally{
+      if(locked)try{unlinkSync(lock);syncDirectory(path.dirname(file));}catch(e){if(!failed){this.migrationStage='lock';throw e;}}
+    }
   }
   private validateDescriptor() {
     try{return platformSecurityScope(()=>this.validateDescriptorInner());}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
@@ -350,4 +485,12 @@ export class SetupController {
     renameSync(file,this.bindingFile);syncDirectory(path.dirname(file));
     this.expectedDescriptor=digest(text);
   }
+}
+
+/** Bounded last-action diagnostics; raw OS text and unknown codes never leave here. */
+function migrationActionCode(e:unknown):string {
+  const platform=platformErrorCode(e);if(platform)return platform;
+  if(e instanceof ProgressError||e instanceof ManagedBindingError)return e.code;
+  const code=(e as NodeJS.ErrnoException)?.code;
+  return typeof code==='string'&&MANAGED_ACTION_CODES.includes(code)?code:storageError(e).code;
 }

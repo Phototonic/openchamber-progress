@@ -10,7 +10,7 @@ const timeout = (): SpawnSyncReturns<string> => ({ ...success(), status:null, er
 let moduleId = 0;
 async function run(t: TestContext, attempts: SpawnSyncReturns<string>[]) {
   // Isolate process-lifetime state without exposing a product reset hook.
-  const { windowsSecurityQuery, PlatformError } = await import(`../../shared/platform.ts?query-test=${moduleId++}`) as typeof import('../../shared/platform.ts');
+  const { windowsSecurityQuery, PlatformError, PlatformRequestBudget, withPlatformRequestBudget, platformSecurityScope } = await import(`../../shared/platform.ts?query-test=${moduleId++}`) as typeof import('../../shared/platform.ts');
   const previous = process.env.SystemRoot;
   process.env.SystemRoot = 'C:\\Windows';
   t.after(() => { if (previous === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = previous; });
@@ -20,8 +20,85 @@ async function run(t: TestContext, attempts: SpawnSyncReturns<string>[]) {
     assert.ok(calls.length <= attempts.length, 'unexpected retry');
     return attempts[calls.length - 1]!;
   });
-  return { query, calls, PlatformError };
+  return { query, calls, PlatformError, PlatformRequestBudget, withPlatformRequestBudget, platformSecurityScope };
 }
+
+test('step requests charge every actual attempt and refuse the seventh before spawning',async t=>{
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,Array.from({length:6},success));
+  const budget=new PlatformRequestBudget();
+  withPlatformRequestBudget(budget,()=>{
+    for(let i=0;i<6;i++)assert.deepEqual(query(),result);
+    assert.throws(query,/managed-step-budget/);
+  });
+  assert.equal(calls.length,6);assert.equal(budget.securitySpawns,6);
+  assert.ok(calls.every(c=>Number(c[2].timeout)>0&&Number(c[2].timeout)<=16000));
+});
+
+test('step cold timeout consumes one attempt and has no automatic retry',async t=>{
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[timeout()]);
+  const budget=new PlatformRequestBudget();
+  assert.throws(()=>withPlatformRequestBudget(budget,query),/managed-step-deadline/);
+  assert.equal(calls.length,1);assert.equal(budget.securitySpawns,1);
+});
+
+test('budget reservation and settlement headroom refuse before a helper starts',async t=>{
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[]);
+  const exhausted=new PlatformRequestBudget(process.hrtime.bigint()-17_000_000_000n);
+  assert.throws(()=>withPlatformRequestBudget(exhausted,query),/managed-step-deadline/);
+  const settling=new PlatformRequestBudget(process.hrtime.bigint()-16_500_000_000n);
+  assert.throws(()=>withPlatformRequestBudget(settling,query),/managed-step-deadline/);
+  const budget=new PlatformRequestBudget();
+  assert.throws(()=>budget.require(7),/managed-step-budget/);
+  assert.throws(()=>budget.require(0,18000),/managed-step-deadline/);
+  assert.equal(calls.length,0);assert.equal(settling.securitySpawns,0);
+});
+
+test('a shared attempt counter cannot be reset by a new budget or nested scope',async t=>{
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget,platformSecurityScope}=await run(t,[success()]);
+  const first=new PlatformRequestBudget(),second=new PlatformRequestBudget(first.startedAt,first.counter.buffer as SharedArrayBuffer);
+  withPlatformRequestBudget(first,()=>{
+    query();
+    assert.throws(()=>withPlatformRequestBudget(second,query),/managed-step-conflict/);
+  });
+  assert.equal(second.securitySpawns,1);
+  assert.throws(()=>platformSecurityScope(()=>withPlatformRequestBudget(second,query)),/managed-step-conflict/);
+  assert.equal(calls.length,1);
+});
+
+test('failed process starts consume the request allowance without enabling retries',async t=>{
+  const failure={...success(),error:Object.assign(new Error('synthetic'),{code:'ENOENT'})};
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[failure]);
+  const budget=new PlatformRequestBudget();
+  assert.throws(()=>withPlatformRequestBudget(budget,query),/windows-security-unavailable/);
+  assert.equal(budget.securitySpawns,1);assert.equal(calls.length,1);
+});
+
+test('synchronous budget refuses promises and custom thenables instead of silently ending early',async t=>{
+  const {PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[]);
+  for(const value of [Promise.resolve(null),{then(){throw new Error('must not assimilate');}}]){
+    assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(),()=>value),{code:'managed-step-conflict'});
+  }
+  assert.equal(withPlatformRequestBudget(new PlatformRequestBudget(),()=>42),42,'failure releases the local budget');
+});
+
+test('fenced mutex timeout retains its precise unsettled diagnostic without retry',async t=>{
+  const failure={...success(),status:1,stdout:'{"error":"managed-step-unsettled"}'};
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[failure]);
+  const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:47329,nonce:'a'.repeat(64)});
+  assert.throws(()=>withPlatformRequestBudget(budget,query),{code:'managed-step-unsettled',reason:'exit'});
+  assert.equal(calls.length,1);assert.equal(budget.securitySpawns,1);
+  assert.match(calls[0]![1][4]!,/\$failureCode = 'managed-step-unsettled'; throw 'writer-unsettled'/);
+});
+
+test('mutex diagnostic accepts only the exact allowlisted fenced-child failure',async t=>{
+  const attempts=['{"error":"private raw text"}','{"error":"managed-step-unsettled","details":"private"}'].map(stdout=>({...success(),status:1,stdout}));
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,attempts);
+  for(const _ of attempts){
+    const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:47329,nonce:'a'.repeat(64)});
+    assert.throws(()=>withPlatformRequestBudget(budget,query),{code:'windows-security-unavailable'});
+  }
+  assert.equal(calls.length,2);
+});
 
 test('first security query retries a timeout once with identical inputs and a 30-second bound', async t => {
   const { query, calls, PlatformError } = await run(t, [timeout(), success(), timeout()]);

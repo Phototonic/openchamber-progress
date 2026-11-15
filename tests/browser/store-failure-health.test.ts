@@ -22,6 +22,8 @@ import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
 import type { ReadFailure } from '../../ui/shared/source.ts';
 import { HEALTH, HEALTH_UNCONFIGURED, plansPage, planPage, setupRead, envelope, docRef, summary } from './fixtures.ts';
+import {parseSetup,parseLastAction} from '../../ui/shared/adapter.ts';
+import {lastMigrationText} from '../../ui/shared/setup.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'working' as const }];
 const row = summary('P-A', items, { sessionId: 'A', document: docRef() });
@@ -29,6 +31,103 @@ const response = (value: unknown, status = 200): GuestRequestResult => ({ status
 const failedHealth = (code: string) => ({ ...HEALTH, ready: false, sqlite: false, diagnostics: [code] });
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
+
+test('concurrent starting readList calls tolerate only Setup worker contention and reread health',async()=>{
+  let setupCalls=0,healthCalls=0;
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  const host={serviceRequest:async(q:GuestRequest)=>{
+    if(q.path==='/health'){healthCalls++;return response({...HEALTH_UNCONFIGURED,state:'starting'});}
+    assert.equal(q.path,'/v1/setup');
+    if(++setupCalls===1){await held;return response(setupRead());}
+    if(setupCalls===3)release();
+    return response({error:'managed-step-unsettled'},503);
+  }};
+  const results=await Promise.all(Array.from({length:3},()=>source.readList(host,{})));
+  assert.ok(results.every(r=>r.ok&&r.read===null),JSON.stringify(results));
+  assert.equal(setupCalls,3);assert.equal(healthCalls,6,'one follow-up health read per surface, no retry loop');
+});
+
+test('startup contention fallback preserves every other error and the follow-up health verdict',async()=>{
+  for(const initial of ['starting','refused'])for(const [status,code] of [[503,'managed-step-unsettled'],[409,'managed-step-unsettled'],[503,'private-permissions']] as const){
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      return q.path==='/health'?response({...HEALTH_UNCONFIGURED,state:initial}):response({error:code},status);
+    }},{});
+    const tolerated=initial==='starting'&&status===503&&code==='managed-step-unsettled';
+    assert.equal(result.ok,tolerated);
+    assert.deepEqual(calls,tolerated?['/health','/v1/setup','/health']:['/health','/v1/setup']);
+    if(!result.ok)assert.equal(result.failure.code,code);
+  }
+  for(const next of ['starting','unconfigured','ready','refused','unsettled','mixed']){
+    let healthCalls=0;
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      if(q.path==='/v1/setup')return response({error:'managed-step-unsettled'},503);
+      if(q.path==='/v1/plans')return response(plansPage([row]));
+      return response(++healthCalls===1?{...HEALTH_UNCONFIGURED,state:'starting'}:
+        next==='ready'?{...HEALTH,state:next}:next==='refused'?{...failedHealth('private-permissions'),state:next}:
+          next==='unsettled'||next==='mixed'?{...failedHealth('managed-step-unsettled'),state:'refused',...(next==='mixed'?{diagnostics:['managed-step-unsettled','private-permissions']}:{})}:{...HEALTH_UNCONFIGURED,state:next});
+    }},{});
+    assert.equal(result.ok,next!=='refused'&&next!=='mixed');
+    if(result.ok)assert.equal(result.read!==null,next==='ready');
+    else assert.equal(result.failure.code,next==='mixed'?'managed-step-unsettled':'private-permissions');
+    assert.deepEqual(calls,next==='ready'?['/health','/v1/setup','/health','/v1/plans']:['/health','/v1/setup','/health']);
+  }
+});
+
+test('snapshot starting/refused explicitly admits once before reading data, with fresh capabilities',async()=>{
+  for(const state of ['starting','refused'])for(const intent of [false,true]){
+    const calls:GuestRequest[]=[];let admitted=false;
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q);
+      if(q.path==='/v1/setup'){admitted=true;return response(setupRead());}
+      if(q.path==='/health')return response(admitted?{...HEALTH,state:'ready',needsYouInbox:1,delegationIntent:1}:{...failedHealth('storage'),state});
+      return response(plansPage([row]));
+    }},{session:'A'},10,{demand:'rows',mono:()=>123},intent);
+    assert.ok(result.ok&&result.read);assert.deepEqual(calls.map(q=>q.path),['/health','/v1/setup','/health','/v1/plans']);
+    assert.equal(result.health.needsYouInbox,1);assert.equal(result.health.delegationIntent,1);assert.equal(result.inbox?.state,'missing');
+    assert.equal(calls[3].query?.needsYou,'1');assert.equal(calls[3].query?.needsYouTiming,'1');
+    assert.equal(calls[3].query?.delegationIntent,intent?'1':undefined);
+  }
+});
+
+test('every refused security/binding state is a failure, never a setup-needed success',async()=>{
+  for(const code of ['managed-binding-modified','managed-binding-invalid','windows-security-unavailable','private-permissions','path-unverified','unsafe-parent','symlink-escape','managed-scope-unsupported']){
+    const calls:string[]=[];
+    const r=await source.readList({serviceRequest:async q=>{calls.push(q.path);return response(q.path==='/health'?{...failedHealth(code),state:'refused'}:setupRead());}},null);
+    assert.equal(r.ok,false,code);assert.equal(!r.ok&&r.failure.code,code);
+    assert.deepEqual(calls,['/health','/v1/setup','/health']);
+  }
+});
+
+test('Setup retains fixed stage/code on status and failed HTTP actions, with actionable localized copy',async()=>{
+  for(const code of ['private-permissions','unsafe-parent','symlink-escape','windows-security-unavailable','path-unverified','EACCES','EPERM','EBUSY','EIO','ENOSPC']){
+    const lastAction={stage:'migration-record' as const,code};
+    assert.deepEqual(parseSetup(JSON.stringify({...setupRead(),lastAction})).lastAction,lastAction);
+    const r=await source.setupCall({serviceRequest:async()=>response({error:code,lastAction},503)},'managed-migrate',null,true,'a'.repeat(64));
+    assert.ok(!r.ok);assert.deepEqual(r.lastAction,lastAction);
+    assert.match(lastMigrationText(lastAction),/Last migration attempt failed: migration-record/);
+    assert.match(lastMigrationText(lastAction,'ru'),/Последняя попытка переноса не удалась/);
+    assert.notEqual(lastMigrationText(lastAction),lastMigrationText(lastAction,'ru'));
+  }
+  for(const lastAction of [{stage:'raw /private/path',code:'EACCES'},{stage:'lock',code:'private-secret'},{stage:'lock',code:42}])assert.equal(parseLastAction(JSON.stringify({lastAction})),undefined);
+});
+
+test('snapshot admission refusal and proxy errors never authorize plans or create a retry loop',async()=>{
+  for(const failure of ['refused','proxy','unconfigured']){
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      if(q.path==='/v1/setup')return failure==='proxy'?response({error:'storage'},503):response(setupRead());
+      return response(calls.length===1?{...HEALTH_UNCONFIGURED,state:'starting'}:failure==='unconfigured'?{...HEALTH_UNCONFIGURED,state:'unconfigured'}:{...failedHealth('corrupt'),state:'refused'});
+    }},{session:'A'});
+    assert.deepEqual(calls,failure==='proxy'?['/health','/v1/setup']:['/health','/v1/setup','/health']);
+    if(failure==='unconfigured')assert.ok(result.ok&&result.read===null);else assert.equal(result.ok,false);
+  }
+});
 
 test('readList classifies health-reported store failures; only /health is called', async () => {
   for (const [code, kind] of [['corrupt', 'damaged'], ['schema', 'incompatible'], ['busy', 'busy'], ['storage', 'unavailable']] as const) {
@@ -123,7 +222,9 @@ function controller() {
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return source;
+      if (name === './setup.ts') return { retireSetupSteps() {} };
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;

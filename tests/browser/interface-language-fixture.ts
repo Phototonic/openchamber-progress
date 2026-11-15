@@ -105,7 +105,11 @@ export async function startLanguageFixture(options: { service?: (request: { meth
         else if (q.path === '/v1/plan') body = planPage(P1, languageItems, []);
         else if (q.path === '/v1/document') body = envelope({ document: P1.document, text: DOCUMENT_TEXT, nextCursor: null });
         else if (q.path === '/v1/history') body = envelope({ data: [], nextCursor: null });
-        else if (q.path === '/v1/setup') body = setupRead(q.mode === 'setup' ? { configured: false, verified: false, installed: false } : {});
+        else if (q.path === '/v1/setup') body = setupRead({
+          separateLifecycle: false,
+          ...(q.mode === 'setup' ? { configured: false, verified: false, installed: false } : {}),
+          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1 },
+        });
         else { status = 404; body = { error: 'not-found' }; }
         res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(body) }));
       } else { res.statusCode = path === '/favicon.ico' ? 204 : 404; res.end(); }

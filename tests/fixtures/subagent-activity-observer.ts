@@ -118,14 +118,25 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
       if (!identity) throw new Error('Missing test-owned identity marker');
       const session = await ctx.session.get({ sessionID: identity });
       const jobs = JSON.parse(fs.readFileSync(`${root}/jobs.json`, 'utf8'));
-      const job = jobs[identity];
+      const job = jobs[identity] ?? (session.agent==='reporting-worker'?jobs.firstReportingJob:undefined);
       const key = `${identity}:${job?.generation ?? 'initial'}`;
       let calls = !seen.has(key) ? job?.calls : undefined;
       if (!seen.has(key) && session.agent === 'nested-worker') calls = [{ id: 'nested', input: { agent: 'restricted-worker', description: 'Synthetic nested child', prompt: 'Synthetic fixed probe.' } }];
       if(!seen.has(key)&&!job&&session.agent==='reporting-worker')calls=jobs.firstReportingCall?[jobs.firstReportingCall]:[{id:'child-handoff',tool:'agent_progress_report',input:{op:'handoff',oid:'native-claim',summary:'Synthetic child reports its bounded work complete.',outcome:'done'}}];
       seen.add(key);
       const assignedBrief=options.prompt.some((m:any)=>m.role==='system'&&typeof m.content==='string'&&m.content.includes('Assigned-only scope:'));
-      record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], assignedBrief, hold: job?.hold === true, fault: job?.fault === true });
+      const system=options.prompt.filter((m:any)=>m.role==='system'&&typeof m.content==='string').map((m:any)=>m.content).join('\n');
+      record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], assignedBrief, waitingForReport:job?.waitForReport, refusalHint:system.includes('## Delegation not applied'), refusalIdentity:system.includes('Plan "parallel-reporting", declaration "native-conflict"')&&system.includes('tasks ["task-c"]: not applied because'), refusalRecovery:system.includes('re-declare at the current revision')&&system.includes('explicitly link'), hold: job?.hold === true, fault: job?.fault === true });
+      if(job?.waitForReport){
+        const deadline=Date.now()+15000;let reported=false;
+        while(!options.abortSignal?.aborted&&Date.now()<deadline){
+          const rows=fs.readFileSync(`${root}/events.jsonl`,'utf8').trim().split('\n').filter(Boolean).map(s=>JSON.parse(s));
+          if(rows.some(r=>r.type==='report-reply'&&r.callID===job.waitForReport&&r.parsed&&!r.error)){reported=true;break;}
+          await new Promise(resolve=>setTimeout(resolve,20));
+        }
+        if(!reported)throw new Error('Synthetic report barrier deadline');
+        record({type:'report-barrier-released',sessionID:identity,callID:job.waitForReport});
+      }
       if (job?.fault) throw new Error('Synthetic provider failure');
       if(session.agent==='failing-worker'){
         const deadline=Date.now()+15000;

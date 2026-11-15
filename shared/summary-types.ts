@@ -1,6 +1,6 @@
 // Pure summary input contract. Callers own complete, identity-checked page assembly; no
 // document body, timing, paths, blocker details or live session state is consumed here.
-export type SummaryLanguage = 'en' | 'ru';
+export type SummaryLanguage = 'en' | 'ru' | 'zh-CN';
 export type SummaryStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type SummaryLifecycle = 'active' | 'completed' | 'cancelled' | 'failed';
 export type SummaryDocumentState = 'unbound' | 'captured' | 'denied' | 'missing' | 'moved' | 'oversized' | 'non-text' | 'unavailable' | 'changed-during-read';

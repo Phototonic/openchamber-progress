@@ -16,7 +16,7 @@ import { directoryKey } from './path.ts';
 import { directoryWithin } from './model.ts';
 import { ALL, placeOf, trustedPlan } from './scope.ts';
 import { RefreshGate } from './refresh.ts';
-import { readSearchState, readSearchWindow, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
+import { readSearchState, readSearchWindow, type InboxDemand, type InboxFirst, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { formatCount } from './format.ts';
 
@@ -24,11 +24,12 @@ export type SearchStatus = { kind: 'identity' | 'retired' | 'membership' | 'chan
   | { kind: 'blocked'; reason: Exclude<ScopeState, 'ok'> }
   | { kind: 'removed'; count: number }
   | { kind: 'outcome'; matchedPlans: number; matchingTasks: number; exhausted: boolean; shown: number }
-  | { kind: 'message'; en: string; ru: string };
+  | { kind: 'message'; en: string; ru: string; 'zh-CN'?: string };
 const STATUS_EN = { identity: 'The progress store changed, so these results were retired. Search again.', retired: 'Plans changed here, so these results were retired. Refresh search to search again.', membership: 'Project or worktree locations changed in this window. Refresh search to use them.', changed: 'Some results changed since they were found. Refresh search for current results.', conflict: 'Reports changed while searching, so this search can’t continue. Refresh search to start again.', failed: 'Searching stopped because the progress service didn’t answer. Results found so far are shown; Retry continues.' };
 const STATUS_COPY = {
   en: STATUS_EN,
   ru: { identity: 'Хранилище прогресса изменилось, поэтому результаты устарели. Выполните поиск заново.', retired: 'Планы изменились, поэтому результаты устарели. Обновите поиск.', membership: 'Расположения проектов или рабочих деревьев в этом окне изменились. Обновите поиск.', changed: 'Некоторые результаты изменились после поиска. Обновите поиск для актуальных результатов.', conflict: 'Отчёты изменились во время поиска, поэтому продолжить его нельзя. Обновите поиск.', failed: 'Поиск остановлен: сервис прогресса не ответил. Найденные результаты показаны; повторная попытка продолжит поиск.' },
+  'zh-CN': { identity: '进度存储已更改，这些结果已失效。请重新搜索。', retired: '此处的计划已更改，这些结果已失效。请刷新搜索。', membership: '此窗口中的项目或工作树位置已更改。请刷新搜索以使用新位置。', changed: '部分结果在找到后发生了变化。请刷新搜索以获取当前结果。', conflict: '搜索期间报告已更改，因此无法继续。请刷新搜索以重新开始。', failed: '进度服务未响应，搜索已停止。已显示目前找到的结果；重试可继续。' },
 } satisfies Record<InterfaceLanguage, typeof STATUS_EN>;
 const MESSAGES_EN = {
   removed: (count: number) => `${count === 1 ? 'A result was' : `${count} results were`} archived, restored or deleted, so ${count === 1 ? 'it was' : 'they were'} removed. Refresh search for current results.`,
@@ -51,11 +52,21 @@ const MESSAGES = { en: MESSAGES_EN, ru: {
   character: 'Удалите неподдерживаемый символ из поискового текста.',
   characters: (limit: number) => `Используйте не более ${limit} символов.`,
   words: (limit: number) => `Используйте не более ${limit} слов.`,
+}, 'zh-CN': {
+  removed: (count: number) => `${formatCount(count, 'zh-CN')} 条结果所属的计划已归档、恢复或删除，因此结果已移除。请刷新搜索以获取当前结果。`,
+  found: (plans: number, tasks: number) => `${formatCount(plans, 'zh-CN')} 个计划和 ${formatCount(tasks, 'zh-CN')} 个匹配任务`,
+  finished: (found: string) => `搜索完成：按搜索条件找到 ${found}。`,
+  empty: '搜索完成：按搜索条件没有匹配结果。',
+  noneYet: '尚未找到匹配项；仍有记录的计划尚未检查。',
+  partial: (found: string) => `目前找到 ${found}；更多记录的计划可能匹配。`,
+  character: '请从搜索文本中移除不支持的字符。',
+  characters: (limit: number) => `最多输入 ${limit} 个字符。`,
+  words: (limit: number) => `最多输入 ${limit} 个词。`,
 } } satisfies Record<InterfaceLanguage, typeof MESSAGES_EN>;
 export function searchStatusText(message: SearchStatus, language: InterfaceLanguage = 'en'): string {
   const copy = MESSAGES[language];
   switch (message.kind) {
-    case 'message': return message[language];
+    case 'message': return message[language] ?? message.en;
     case 'blocked': return blockedText(message.reason, language);
     case 'removed': return copy.removed(message.count);
     case 'outcome': {
@@ -279,7 +290,12 @@ const RU_BLOCKED_TEXT: typeof BLOCKED_TEXT = {
   unknown: 'Это окно не смогло найти расположения выбранного проекта или рабочего дерева, поэтому суженный поиск невозможен. Область поиска не расширена.',
   missing: 'Выбранный проект или рабочее дерево недоступны в этом окне, поэтому суженный поиск невозможен. Область поиска не расширена.',
 };
-export const blockedText = (reason: Exclude<ScopeState, 'ok'>, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_BLOCKED_TEXT : BLOCKED_TEXT)[reason];
+const ZH_BLOCKED_TEXT: typeof BLOCKED_TEXT = {
+  loading: '此窗口仍在加载项目或工作树位置，因此尚未执行此受限搜索。',
+  unknown: '此窗口无法发现所选项目或工作树的位置，因此无法执行此受限搜索。搜索范围未被扩大。',
+  missing: '所选项目或工作树在此窗口中不可用，因此无法执行此受限搜索。搜索范围未被扩大。',
+};
+export const blockedText = (reason: Exclude<ScopeState, 'ok'>, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_BLOCKED_TEXT : language === 'zh-CN' ? ZH_BLOCKED_TEXT : BLOCKED_TEXT)[reason];
 
 const placeholderDocument: PlanView['document'] = { state: 'unavailable', checklistSynchronized: false, currentFile: 'not-rechecked' };
 
@@ -397,7 +413,7 @@ export class SearchController {
   note(run: number, text: string | SearchStatus) {
     const r = this.run;
     if (!r || r.id !== run) return;
-    this.say(r, typeof text === 'string' ? { kind: 'message', en: text, ru: text } : text);
+    this.say(r, typeof text === 'string' ? { kind: 'message', en: text, ru: text, 'zh-CN': text } : text);
     this.host.changed();
   }
 
@@ -430,7 +446,7 @@ export class SearchController {
    * every retained page; changed revisions/cleanup generations stay visibly qualified. Either retires
    * continuation and count authority. A failure is stale, never "missing".
    */
-  async revalidate(service: ServiceHost): Promise<FreshnessResult> {
+  async revalidate(service: ServiceHost, inbox?: { demand: InboxDemand; mono: () => number }): Promise<FreshnessResult> {
     const r = this.run;
     const keys = this.freshKeys();
     const generation = this.freshness;
@@ -439,15 +455,17 @@ export class SearchController {
     if (!r || !keys.length || !current()) return { state: 'retired' };
     const rows = [];
     let captureEnabled = true;
+    let firstInbox: InboxFirst | undefined;
     for (let i = 0; i < keys.length; i += STATE_KEYS) {
       if (!current()) return { state: 'retired' };
-      const result = await readSearchState(service, r.identity.storeId, keys.slice(i, i + STATE_KEYS));
+      const result = await readSearchState(service, r.identity.storeId, keys.slice(i, i + STATE_KEYS), i === 0 ? inbox : undefined);
       if (!current()) return { state: 'retired' }; // retired meanwhile: its answer owns nothing
       if (!result.ok) return { state: 'failed', failure: result.failure, identity: result.status === 409 };
       const b = result.state.binding;
       if (b.sourceId !== r.identity.binding.sourceId || b.verified !== r.identity.binding.verified) return { state: 'failed', failure: { kind: 'invalid', code: 'CONTRACT', message: 'The source binding changed.' }, identity: true };
       if (i > 0 && captureEnabled !== result.state.captureEnabled) return { state: 'failed', failure: { kind: 'busy', code: 'CAPTURE_CHANGED', message: 'Capture state changed during the freshness read. Try again.' }, identity: false };
       captureEnabled = result.state.captureEnabled;
+      if (i === 0) firstInbox = result.inbox;
       rows.push(...result.state.data);
     }
     let gone = 0, moved = 0, reselect = false;
@@ -467,13 +485,13 @@ export class SearchController {
     // Repaint only on a change: an unchanged poll leaves the DOM (focus, scroll, selection) alone.
     const checked = !r.checked && rows.length > 0;
     if (rows.length) r.checked = true;
-    if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled }; }
+    if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) }; }
     this.gate.retire();
     r.busy = false; r.pending = false; r.countsCurrent = false;
     if (r.stop !== 'retired' && r.stop !== 'identity' && r.stop !== 'membership') r.stop = 'changed';
     this.say(r, gone ? { kind: 'removed', count: gone } : { kind: 'changed' });
     this.host.changed();
-    return { state: 'fresh', captureEnabled };
+    return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) };
   }
 
   /** The current state for painting, or null when not searching. */

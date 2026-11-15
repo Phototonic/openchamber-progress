@@ -11,6 +11,7 @@ import type { InterfaceLanguage } from './i18n.ts';
 const SCOPE_TEXT = {
   en: { unknown: 'Unknown location', mainCheckout: 'Main checkout', child: 'child', main: 'main', projects: 'All projects', worktrees: 'All worktrees', sessions: 'All sessions', unavailable: (label: string) => `${label} (not available here)` },
   ru: { unknown: 'Неизвестное расположение', mainCheckout: 'Основная рабочая копия', child: 'дочерняя', main: 'основная', projects: 'Все проекты', worktrees: 'Все рабочие копии', sessions: 'Все сессии', unavailable: (label: string) => `${label} (недоступно здесь)` },
+  'zh-CN': { unknown: '位置未知', mainCheckout: '主检出目录', child: '子会话', main: '主会话', projects: '所有项目', worktrees: '所有工作树', sessions: '所有会话', unavailable: (label: string) => `${label}（此处不可用）` },
 } satisfies Record<InterfaceLanguage, { unknown: string; mainCheckout: string; child: string; main: string; projects: string; worktrees: string; sessions: string; unavailable: (label: string) => string }>;
 
 export type Scope =

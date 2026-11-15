@@ -21,8 +21,8 @@ export async function runNativeRegression() {
   const previous = fs.existsSync(evidenceFile) ? JSON.parse(fs.readFileSync(evidenceFile, 'utf8')) : undefined;
   const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   assert.equal(JSON.parse(fs.readFileSync('node_modules/@opencode/plugin/package.json', 'utf8')).version, '2.1.4');
-  assert.equal(JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version, '2.7.0');
-  const result: any = { phase: 'regression', runtime: null, node: process.version, sdk: '2.7.0', hashes: Object.fromEntries([binary, 'bun.lock', 'tests/fixtures/subagent-activity-regression.ts', 'tests/fixtures/subagent-activity-integration-driver.ts', 'tests/fixtures/subagent-activity-observer.ts', 'tests/browser/subagent-activity-native.ts', 'tests/browser/subagent-activity-host.ts', 'ui/shared/app.ts', 'ui/shared/live.ts', 'ui/shared/census.ts', 'ui/shared/census-view.ts'].map(file => [file === binary ? 'nativeRuntime' : file, hash(file)])), modes: [], pass: false };
+  assert.equal(JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version, '2.7.1');
+  const result: any = { phase: 'regression', runtime: null, node: process.version, sdk: '2.7.1', hashes: Object.fromEntries([binary, 'bun.lock', 'tests/fixtures/subagent-activity-regression.ts', 'tests/fixtures/subagent-activity-integration-driver.ts', 'tests/fixtures/subagent-activity-observer.ts', 'tests/browser/subagent-activity-native.ts', 'tests/browser/subagent-activity-host.ts', 'ui/shared/app.ts', 'ui/shared/live.ts', 'ui/shared/census.ts', 'ui/shared/census-view.ts'].map(file => [file === binary ? 'nativeRuntime' : file, hash(file)])), modes: [], pass: false };
   const profiles = process.env.SUBAGENT_ACTIVITY_PROFILES?.split(',') ?? ['builtin', 'slim'];
   result.backendOnly=backendOnly;
   assert.ok(profiles.length && profiles.every(p => ['builtin', 'slim'].includes(p)) && new Set(profiles).size === profiles.length);
@@ -41,6 +41,11 @@ export async function runNativeRegression() {
         const socket = display && (path.isAbsolute(display) ? display : process.env.XDG_RUNTIME_DIR && path.join(process.env.XDG_RUNTIME_DIR, display));
         if(!backendOnly)assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
         const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ...(!backendOnly&&socket?{ACTIVITY_WAYLAND_SOCKET:socket}:{}) };
+        // Actual disposable Git worktree, not a forged Actor.directory.
+        const git=(args:string[])=>{const r=spawnSync('git',args,{cwd:`${root}/Alpha`,env:{...env,GIT_CONFIG_NOSYSTEM:'1'},encoding:'utf8'});assert.equal(r.status,0,'synthetic worktree preparation');};
+        git(['init','-b','synthetic']);
+        git(['-c','user.name=Synthetic Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Synthetic fixture root']);
+        git(['worktree','add','--detach',`${root}/Alpha-worktree`]);
         const version: ReturnType<typeof spawnSync> = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
         assert.equal(version.status, 0); result.runtime = requireRuntimeVersion('opencode', version.stdout.toString());
         if(backendOnly)env.SUBAGENT_ACTIVITY_BACKEND_ONLY='1';

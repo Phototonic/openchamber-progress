@@ -7,7 +7,7 @@ distributions. It inventories code actually bundled, not every development depen
 
 | Bundled package | Version | Where its code is included |
 | --- | --- | --- |
-| @openchamber/sdk | 2.7.0 | Three guest views and host service |
+| @openchamber/sdk | 2.7.1 | Three guest views and host service |
 | zod | 4.6.7 | Host service |
 | @opencode/plugin | 2.1.4 | Companion |
 | @opencode/schema | 2.1.4 | Companion |
@@ -17,10 +17,10 @@ The extension includes the service, guests, companion and setup. The companion
 installer includes the companion and setup; setup itself has no bundled vendor code.
 Both distributions carry this complete notice file so that credits are not lost.
 
-## @openchamber/sdk 2.7.0 — MIT
+## @openchamber/sdk 2.7.1 — MIT
 
 Source: https://github.com/openchamber/openchamber/tree/main/packages/sdk
-Notice: the installed 2.7.0 package's `LICENSE`.
+Notice: the installed 2.7.1 package's `LICENSE`.
 
 ```text
 MIT License

@@ -22,10 +22,20 @@ const ru: typeof en = {
   archived: 'В архиве · восстановление сохраняет завершённое состояние плана и его историю.',
   help: 'Архивирование скрывает завершённый план. Найти и восстановить его можно в архиве планов на полной странице.',
 };
+const zh: typeof en = {
+  heading: '永久删除此计划？',
+  effect: '将移除存储中的任务、历史和文档副本。原始文件保持不变，此操作无法撤销。',
+  privacy: '仍会保留最小的重放防护记录。这不是安全擦除：首次使用的恢复备份、SQLite 文件及其他备份可能仍保留内容。',
+  cancel: '取消', deleting: '正在删除…', delete: '永久删除', deleteMenu: '永久删除…',
+  restorePlan: '恢复计划', archivePlan: '归档计划', restore: '恢复', archive: '归档',
+  archived: '已归档 · 恢复后计划仍保持已结束状态，历史记录不变。',
+  help: '归档会隐藏此已结束的计划，可在全屏页面的“已归档计划”中查找并恢复。',
+};
 
 /** An inline confirmation, not a modal. Cancel gets focus; Enter never defaults to delete. */
 export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
-  const text = resolveLanguage('auto', vc.env.locale) === 'ru' ? ru : en;
+  const language = resolveLanguage('auto', vc.env.locale);
+  const text = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
   const box = testid(el('section', 'ap-cleanup'), 'cleanup-actions');
   if (!vc.health?.planCleanup || plan.lifecycle !== 'completed') return box;
   const state = vc.cleanup;

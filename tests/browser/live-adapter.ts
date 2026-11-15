@@ -51,7 +51,7 @@ const check = (name: string, ok: boolean, detail?: unknown) => { results[name] =
 
 try {
   for (let i = 0; ; i++) {
-    try { const r = await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${token}` } }); if (r.ok && (await r.json() as { ready?: boolean }).ready) break; } catch {}
+    try { const r = await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${token}` } }); if (r.ok) {const health=await r.json() as {ready?:boolean;state?:string};if(health.ready)break;if(health.state==='starting')await host.serviceRequest({method:'GET',path:'/v1/plans'});} } catch {}
     if (i > 50) throw new Error('service did not become ready');
     await new Promise((r) => setTimeout(r, 100));
   }

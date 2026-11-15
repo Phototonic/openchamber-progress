@@ -28,6 +28,8 @@ import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
 import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '../shared/primitives.ts';
+import { checkReading, inboxSection, openReading, readingHeader, ReadingFocus, readingRequest, type InboxReading, type ReadingCheck } from '../shared/inbox-view.ts';
+import type { InboxRowView } from '../shared/model.ts';
 
 type Tab = 'progress' | 'document' | 'history' | 'map';
 const messages = {
@@ -47,8 +49,21 @@ const messages = {
     plansIn: (name: string) => `Планы проекта ${name}`, finishedIn: (name: string) => `Завершённые и отменённые планы проекта ${name}`, finished: (n: number) => `Завершённые · ${n}`, finishedHelp: (n: number) => `Загружено завершённых или отменённых планов: ${n}. Поиск также находит их.`,
     searchTask: (title: string) => `Результат поиска: ${title}`, historyTask: (title: string) => `Текущая задача из истории: ${title}`, opening: (title: string) => `Открываем текущую задачу «${title}»…`, taskFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Ничего не изменено.', taskHistoryFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Её записанные изменения остаются здесь.', taskMoved: (title: string, archived: boolean) => `Нельзя показать «${title}»: её план ${archived ? 'восстановлен из архива' : 'перемещён в архив'}.`, taskGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её нельзя. План остаётся открытым для чтения.`, historyGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её там нельзя. Её записанные изменения остаются здесь.`,
   },
+  'zh-CN': {
+    heading: '智能体进度', current: '当前计划', archived: '已归档计划', cleanupOff: '此服务版本不支持计划清理。', noArchived: '没有已归档计划', noPlans: '此处尚未记录计划', archivedHelp: '已结束并归档的计划会显示在这里，历史记录仍可查看。', plansHelp: '新的报告会显示在这里，已结束的工作可能位于已归档计划中。', clear: '清除搜索和筛选', detail: '计划详情', noMatch: '没有符合筛选条件的计划', chooseLocation: '请选择其他项目、工作树或会话。', truncated: '部分较早的计划尚未加载。', truncatedSearch: '此处尚未加载部分较早的计划，搜索会检查所有已记录的计划。',
+    missing: (n: number) => n === 1 ? '有 1 个计划的实时状态不可用：其会话不在当前工作区覆盖范围内，因此无法从此处打开。' : `有 ${n} 个计划的实时状态不可用：其会话不在当前工作区覆盖范围内，因此无法从此处打开。`,
+    otherSource: (n: number) => `${n} 个计划来自其他 OpenCode 配置，可以阅读，但无法从此处打开。`,
+    capped: (n: number) => `实时状态仅覆盖最前面的部分项目；有 ${n} 个项目未被观察。`,
+    regrouped: '计划已移到已结束分组，焦点已移到该项目的已结束折叠按钮。', emptyQuery: '请输入搜索词，或选择计划状态、任务状态。', removed: '已移除筛选条件', ended: '搜索已结束，看板显示符合剩余筛选条件的计划。', cleared: '已清除搜索', clearedAll: (archived: boolean) => `已清除搜索和筛选，正在显示所有${archived ? '已归档' : '当前'}计划。`, search: '搜索', filter: '筛选计划', updated: '已更新结果', resumed: '已恢复搜索', pick: '打开一条结果，在此查看', pickHelp: '打开计划或任务只会显示其当前计划，不会启动、分配或完成工作。', progress: '进度', document: '文档', history: '历史', map: '依赖图', project: '项目', worktree: '工作树', session: '会话', setup: '设置', loaded: '已加载计划', watched: '正在观察的实时会话', inProgress: '进行中', active: '活跃', unverified: '配置未经验证', other: '其他配置', fromOther: '来自其他 OpenCode 配置', plans: '计划', listEmpty: '没有匹配的计划。',
+    plansIn: (name: string) => `${name} 中的计划`, finishedIn: (name: string) => `${name} 中已结束和已取消的计划`, finished: (n: number) => `已结束 · ${n}`, finishedHelp: (n: number) => `此处已加载 ${n} 个已结束或已取消的计划，也可通过搜索找到。`,
+    searchTask: (title: string) => `搜索结果：${title}`, historyTask: (title: string) => `来自历史记录的当前任务：${title}`, opening: (title: string) => `正在打开当前任务“${title}”…`, taskFailed: '无法加载当前任务列表，因此无法显示任务，未进行任何更改。', taskHistoryFailed: '无法加载当前任务列表，因此无法显示任务；已记录的变更仍保留在此处。', taskMoved: (title: string, archived: boolean) => `无法在此显示“${title}”：其计划已${archived ? '移出已归档计划' : '移入已归档计划'}。`, taskGone: (title: string) => `“${title}”已不在当前计划中，无法显示；计划保持打开，仍可阅读。`, historyGone: (title: string) => `“${title}”已不在当前计划中，无法在那里显示；已记录的变更仍保留在此处。`,
+  },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 const copy = (locale: string) => messages[resolveLanguage('auto', locale)];
+/** A spoken one-off message in every interface language. */
+const said = (en: string, ru: string, zh: string) => ({ kind: 'message' as const, en, ru, 'zh-CN': zh });
+/** Noun a part's loading line is built from. */
+const PLAN_NOUN = { en: 'plan', ru: 'план', 'zh-CN': '计划' } as const;
 type Problem = { kind: 'query'; q: string } | { kind: 'empty' };
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
 type Submitted = { key: string; owner: string; criteria: SearchCriteria };
@@ -56,7 +71,18 @@ type Submitted = { key: string; owner: string; criteria: SearchCriteria };
  * `reveal`: token of an explicit list selection whose detail is scrolled into view once (narrow layout).
  * `search`: the submitted board search (null: ordinary browsing); `draft`: its unsubmitted selects.
  */
-type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean; search: Submitted | null; draft: SearchDraft; problem: Problem | null };
+type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean; search: Submitted | null; draft: SearchDraft; problem: Problem | null; inbox: InboxReading | null };
+/** Reveal-once and focus follow-ups of an open Needs you reading; the last paint's revalidation. */
+// Created on first use: frames that never open an inbox reading construct nothing.
+let inboxFocus: ReadingFocus | null = null;
+const readingFocus = () => (inboxFocus ??= new ReadingFocus());
+let inboxCheck: ReadingCheck | null = null;
+const inboxRequestOf = (vc: ViewContext<Ui>) => {
+  if (!vc.ui.inbox) return null;
+  const request = readingRequest(vc.ui.inbox, vc.inbox?.model);
+  return readingRequest(vc.ui.inbox, vc.inbox?.model, vc.detailPlan(request));
+};
+const inboxKey = (ui: Ui) => (ui.inbox ? ui.inbox.target.source + '/' + ui.inbox.target.plan : null);
 
 const visiblePlans = (vc: ViewContext<Ui>) => {
   if (!vc.read) return [];
@@ -210,7 +236,9 @@ window.addEventListener('blur', endFiltersPress);
 startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
-  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
+  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null, inbox: null }),
+  // Source-wide Needs you rows with waiting times, on the ordinary list read.
+  needsYou: 'rows',
   prepareUi: (vc) => {
     const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
     const decision = resolveDefaultView(viewChoice, vc, readingScope(vc), plan);
@@ -218,9 +246,15 @@ startView<Ui>({
     return vc.ui.tab === tab ? null : { tab };
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
-  actionPlan: selectedPlan,
-  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
+  // No plan cleanup from a source-wide inbox reading.
+  actionPlan: (vc) => (vc.ui.inbox ? null : selectedPlan(vc)),
+  forgetPlans: (keys, ui) => {
+    if (!keys.has(ui.selected ?? '')) return {};
+    captures.retire(); reporting.retire(); search.select(null); return { selected: null };
+  },
   beforeUiChange: (previous, next) => {
+    // Explicit board navigation (mode, filters, search, selection) leaves an open inbox reading.
+    if (next.inbox && next.inbox === previous.inbox && JSON.stringify([previous.archived, previous.filters, previous.search?.key, previous.selected]) !== JSON.stringify([next.archived, next.filters, next.search?.key, next.selected])) next.inbox = null;
     if (JSON.stringify([previous.filters, previous.search?.key]) !== JSON.stringify([next.filters, next.search?.key])) boardEpoch++;
     if (previous.archived !== next.archived) resetBoard();
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
@@ -234,24 +268,33 @@ startView<Ui>({
     return [...new Set([...(own ? [own.id] : []), ...projectsFor(vc.read.plans, vc.live, vc.directory, vc.env.boundSource)])];
   },
   wantDetails: (vc) => {
+    const inbox = inboxRequestOf(vc); if (inbox) return [inbox];
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
     const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
+  },
+  refreshDetails: (vc) => {
+    const request = inboxRequestOf(vc); if (request) return [request];
+    // Search-state has no delegation token: revalidate the open plan on this same cadence.
+    const selected = isSearching(vc) && vc.health?.delegationIntent === 1 ? search.selectedPlan() : null;
+    return selected && selected.key === vc.ui.selected ? [selected] : [];
   },
   // Task reading follows the board's own scope and selection (never the host session); the
   // Progress/Document/History/Map tabs of one selection share it. A search run is its own scope.
   reading: (vc) => {
+    // An inbox reading is its own identity, apart from the board's selection and search run.
+    const inbox = inboxRequestOf(vc); if (inbox) return { plan: inbox.key, scope: `inbox:${vc.ui.inbox!.token}` };
     const p = selectedPlan(vc); if (!p) return null;
     return { plan: p.key, scope: readingScope(vc) };
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
-  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
+  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service, vc.health?.needsYouInbox === 1 ? { demand: 'rows', mono: () => performance.now() } : undefined) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); inboxFocus?.reset(reason); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
-  retainParts: (vc) => (isSearching(vc) ? new Set([...opened, ...(vc.ui.selected ? [vc.ui.selected] : [])]) : null),
+  retainParts: (vc) => (isSearching(vc) ? new Set([...opened, ...(vc.ui.selected ? [vc.ui.selected] : []), ...(inboxKey(vc.ui) ? [inboxKey(vc.ui)!] : [])]) : null),
   paint(root, vc) {
     frame = vc;
     captures.beginPaint();
@@ -261,7 +304,7 @@ startView<Ui>({
     caret = old && document.activeElement === old ? [old.selectionStart, old.selectionEnd] : null;
     if (!ui.search && search.active) search.clear();
     // The map belongs to the selected plan's reading; graph work runs only while Map is the shown tab.
-    const mapPlan = read ? selectedPlan(vc) : null;
+    const mapPlan = read && !ui.inbox ? selectedPlan(vc) : null;
     boardMap.sync(vc, mapPlan, readingScope(vc), ui.tab === 'map' && !!mapPlan);
     root.append(el('h1', 'ap-sr', t.heading));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
@@ -311,6 +354,21 @@ startView<Ui>({
       p.dataset.reason = note.reason;
       root.append(p);
     }
+    inboxCheck = null;
+    if (ui.inbox) {
+      // A labelled, read-only reading of the current plan, revalidated before its task is revealed.
+      const r = ui.inbox, request = inboxRequestOf(vc)!, detail = vc.detail(request);
+      const check = inboxCheck = checkReading(r, detail, vc.detailPlan(request), { storeId: read.storeId, boundSource: env.boundSource }, env.locale);
+      const pane = testid(el('section', 'ap-detail'), 'plan-detail');
+      pane.setAttribute('aria-label', t.detail);
+      pane.append(readingHeader(r, check, 'page', env.locale, () => { readingFocus().leaving(r); vc.setUi({ inbox: null }); }, vc.retry));
+      if (check.kind === 'ready') pane.append(planDetail(check.plan, env, { detail, retryDetail: vc.retry, document: { get: () => vc.document(check.plan), request: () => vc.requestDocument(check.plan) } }, { document: 'omit', compareSession: null, reading: vc.reading }));
+      root.append(pane);
+      footer(root, vc, null);
+      return;
+    }
+    // Source-wide and independent of filters, search and selection: at the start of the board.
+    if (vc.inbox) root.append(inboxSection(vc.inbox, env, { open: (row) => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
     if (v) { root.append(searchStrip(v)); searchBoard(root, vc, v); footer(root, vc, selectedPlan(vc)); return; }
     if (empty) {
       root.append(emptyBlock('empty-state', ui.archived ? t.noArchived : t.noPlans, ui.archived ? t.archivedHelp : t.plansHelp));
@@ -359,7 +417,8 @@ startView<Ui>({
     const input = root.querySelector<HTMLInputElement>('#ap-search-q');
     if (caret && input && document.activeElement === input) input.setSelectionRange(caret[0], caret[1]);
     currentTask(root, vc);
-    boardMap.afterPaint(root, vc, vc.read ? selectedPlan(vc) : null, progressTab);
+    boardMap.afterPaint(root, vc, vc.read && !vc.ui.inbox ? selectedPlan(vc) : null, progressTab);
+    inboxFocus?.afterPaint(root, vc.ui.inbox, inboxCheck, revealCurrentTask);
     // Once: the Filters trigger or heading after it closed or opened, or a fold's own toggle (its
     // shared hook would otherwise restore to the first project's).
     const f = boardFocus;
@@ -396,6 +455,15 @@ function focusRegroupedPlan(previous: HTMLElement, next: HTMLElement) {
 }
 
 const trusted = (p: PlanView, env: Env) => env.boundSource !== null && p.sourceId === env.boundSource;
+
+/** Opening an inbox row is read-only: it leaves board selection, filters and search as they are. */
+function openInbox(vc: ViewContext<Ui>, row: InboxRowView) {
+  if (!vc.read) return;
+  const reading = openReading(row, vc.read.storeId);
+  pendingTask = null;
+  readingFocus().opening(reading);
+  vc.setUi({ inbox: reading });
+}
 
 /** Leaves search for ordinary browsing: no run, no reveal, no typed text. */
 function endSearch() {
@@ -561,7 +629,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
   if (plan) detailPane(detail, vc, plan, c.session !== ALL ? c.session : null);
   else if (request && request.key === ui.selected) {
     const d = vc.detail(request);
-    detail.append(partState('detail-loading', env.locale === 'ru' ? 'план' : 'plan', d?.state === 'error' ? d : null, vc.retry, env.locale));
+    detail.append(partState('detail-loading', PLAN_NOUN[resolveLanguage('auto', env.locale)], d?.state === 'error' ? d : null, vc.retry, env.locale));
   } else detail.append(emptyBlock('search-pick', copy(env.locale).pick, copy(env.locale).pickHelp));
   board.append(detail);
   root.append(board);
@@ -641,7 +709,7 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     article.append(planHeader(plan, env));
     // Full-page History only: the digest sits above the existing metadata Revisions.
     const panel = shownDigest = vc.digest(plan);
-    if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce({ kind: 'message', en: messages.en.opening(title), ru: messages.ru.opening(title) }); }));
+    if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title))); }));
     article.append(historyBlock(plan, vc.history(plan), env));
     detail.append(article);
   } else {
@@ -678,14 +746,14 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
     if (!v || v.run !== intent.run || vc.ui.selected !== intent.key || vc.ui.tab !== 'progress' || request?.key !== intent.key) { pendingTask = null; return; }
     const d = vc.detail(request);
     if (!d || d.state === 'loading') return;
-    if (d.state === 'error') { pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskFailed, ru: messages.ru.taskFailed }); return; }
+    if (d.state === 'error') { pendingTask = null; search.note(v.run, said(messages.en.taskFailed, messages.ru.taskFailed, messages['zh-CN'].taskFailed)); return; }
     const p = selectedPlan(vc);
     if (!p || d.value.revision !== p.revision) return; // wait for this revision's metadata
     if (p.sourceId !== request.sourceId || p.id !== request.id || (p.cleanup?.state === 'archived') !== vc.ui.archived) {
-      pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskMoved(intent.title, vc.ui.archived), ru: messages.ru.taskMoved(intent.title, vc.ui.archived) }); return;
+      pendingTask = null; search.note(v.run, said(messages.en.taskMoved(intent.title, vc.ui.archived), messages.ru.taskMoved(intent.title, vc.ui.archived), messages['zh-CN'].taskMoved(intent.title, vc.ui.archived))); return;
     }
     if (!d.value.items.some((i) => i.kind === 'task' && i.id === intent!.item)) {
-      pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskGone(intent.title), ru: messages.ru.taskGone(intent.title) }); return;
+      pendingTask = null; search.note(v.run, said(messages.en.taskGone(intent.title), messages.ru.taskGone(intent.title), messages['zh-CN'].taskGone(intent.title))); return;
     }
     intent = pendingTask = { ...intent, stage: 'reveal' };
   }
@@ -695,11 +763,11 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
     if (vc.ui.tab !== 'history') { pendingTask = null; return; }
     const d = vc.detail(plan);
     if (!d || d.state === 'loading') return;
-    if (d.state === 'error') { pendingTask = null; shownDigest?.announce({ kind: 'message', en: messages.en.taskHistoryFailed, ru: messages.ru.taskHistoryFailed }); return; }
+    if (d.state === 'error') { pendingTask = null; shownDigest?.announce(said(messages.en.taskHistoryFailed, messages.ru.taskHistoryFailed, messages['zh-CN'].taskHistoryFailed)); return; }
     if (d.value.revision !== plan.revision) return; // wait for the list to announce this revision
     if (!d.value.items.some((i) => i.kind === 'task' && i.id === intent.item)) {
       pendingTask = null;
-      shownDigest?.announce({ kind: 'message', en: messages.en.historyGone(intent.title), ru: messages.ru.historyGone(intent.title) });
+      shownDigest?.announce(said(messages.en.historyGone(intent.title), messages.ru.historyGone(intent.title), messages['zh-CN'].historyGone(intent.title)));
       return;
     }
     pendingTask = { ...intent, stage: 'reveal' };

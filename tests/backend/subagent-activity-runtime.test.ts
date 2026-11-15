@@ -28,7 +28,7 @@ test('subagent activity isolated native feasibility', { timeout: 660000 }, async
   const result: any = { phase, node: process.version, runtime: null, plugin: JSON.parse(fs.readFileSync('node_modules/@opencode/plugin/package.json', 'utf8')).version,
     sdk: JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version,
     hashes: { runtime: hash(binary), observerSource: hash('tests/fixtures/subagent-activity-observer.ts'), workspaceDriver: hash('tests/fixtures/subagent-activity-workspace-driver.ts'), slimDriver: hash('tests/fixtures/subagent-activity-slim-driver.ts'), slimWrapper: hash('tests/fixtures/subagent-activity-slim.ts'), hostObserver: hash('tests/browser/subagent-activity-host.ts'), guest: hash('tests/browser/subagent-activity-guest.ts'), lockfile: hash('bun.lock') }, modes: [] };
-  assert.equal(result.plugin, '2.1.4'); assert.equal(result.sdk, '2.7.0');
+  assert.equal(result.plugin, '2.1.4'); assert.equal(result.sdk, '2.7.1');
   let failures = 0;
   const profiles = process.env.SUBAGENT_ACTIVITY_PROFILES?.split(',') ?? ['workspace'];
   assert.ok(profiles.length && profiles.every(p => ['workspace', 'slim'].includes(p)) && new Set(profiles).size === profiles.length, 'bounded continuation profiles only');

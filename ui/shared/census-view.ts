@@ -88,7 +88,39 @@ const RU: typeof EN = {
     'Хост наблюдает выполнение только сессий и субагентов; для задач статус «в работе» сообщается в отчёте, а не наблюдается хостом.',
   ],
 };
-const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU };
+const ZH: typeof EN = {
+  source: { event: '来自主机的运行事件。', dispatch: '来自派发记录；主机尚未报告此次运行的结果。', history: '来自主机的会话历史：该会话最后一次完成的运行，而非某次具体派发。', host: 'OpenChamber 当前为此会话列出的状态。' },
+  claim: { done: '已完成', partial: '部分完成', blocked: '受阻' },
+  status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
+  waiting: '等待你处理', after: d => ` · 派发后 ${d}`, took: d => ` · 耗时 ${d}`,
+  nowTip: 'OpenChamber 当前为此会话列出的状态。上方的运行记录不变。',
+  again: (label, compact) => `${label}（再次${compact ? '' : '，当前'}）`,
+  accepted: (word, title, compact) => compact ? `任务${word}` : `任务已报告为${word}${title ? `：${title}` : ''}`,
+  acceptedMany: (n, parts, omitted, compact) => compact ? `${n} 个任务：${parts}` : `${n} 个任务已报告：${parts}${omitted ? `，另有 ${omitted} 个` : ''}`,
+  claimed: (word, compact) => compact ? `自报：${word}` : `自报${word}`,
+  unmatched: ' · 未匹配到单次运行', open: '打开', openSession: title => `打开会话 ${title}`, startedBy: title => `由 ${title} 启动`,
+  history: '来自会话历史', during: '在此计划期间派发', ran: '运行', claimedLabel: '自报', acceptedLabel: '已接收',
+  recordedTip: '此会话及其子智能体的运行记录。运行结束不等于任务完成。',
+  hostTip: 'OpenChamber 当前列出的子智能体；没有可用的运行记录。', soFar: '截至目前', unchecked: '更多未检查',
+  loss: '部分运行未被记录。', activityUnavailable: '当前活动不可用。', notEvery: '并非所有子智能体都已检查。', unavailable: '运行记录不可用。',
+  loadingHistory: '正在加载更早的历史…', about: '关于这些记录', loadMore: '加载更多历史', retry: '重试加载历史',
+  loading: '加载中…', showMore: n => n === null ? '显示更多' : `再显示 ${n} 条`,
+  other: '其他记录', records: '子智能体记录', otherLabel: '其他子智能体记录', pageError: '无法读取更多记录，请稍后重试。',
+  subagents: '子智能体', aboutLabel: '关于子智能体记录', running: '运行中的子智能体',
+  partial: '覆盖不完整', coverage: '：子智能体覆盖',
+  lossText: {
+    migrated: '这发生在更新之前；日期未知。', legacy: '日期未知。',
+    dismiss: '忽略警告', explain: '对此进度存储不再显示此警告。新的记录缺口会再次警告。',
+    success: '警告已忽略。', error: '无法忽略警告，请重试。',
+    conflict: '检测到更新的记录缺口，请先查看再忽略。', recent: '最近的记录缺口。', detected: ' 最后检测于：',
+  },
+  aboutLines: [
+    '“运行”是 OpenChamber 对每次运行的记录：来自主机的运行事件、派发记录或会话历史。运行结束不等于任务完成。',
+    '“自报”是子智能体可选的自身报告，按其所报告的内容显示。“已接收”是此计划记录的任务状态。',
+    '主机仅观察会话和子智能体的运行；任务的“进行中”来自报告，而非主机观察。',
+  ],
+};
+const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU, 'zh-CN': ZH };
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /** The Ran line: a mark, the state words, its real host time and a justified duration. */
@@ -234,6 +266,21 @@ const NOTE: Record<InterfaceLanguage, Record<RosterNote['kind'], string>> = { en
   'host-gaps': 'Родство некоторых сессий с этой сессией не удалось проверить, поэтому они исключены.',
   'host-truncated': 'OpenChamber показывает больше субагентов, чем проверяет это представление (128 строк, 2 000 сессий, 32 уровня). Часть текущей активности — включая ожидание вашего ответа — может быть не показана и не учтена. Записи запусков не изменены.',
   'host-activity-unavailable': 'Список сессий OpenChamber перезагружается или неполон, поэтому текущая активность (ожидание, повторное выполнение, бездействие) не показана; записи запусков не изменены.',
+}, 'zh-CN': {
+  'runs-unavailable': '此进度服务不提供运行记录，因此只显示 OpenChamber 当前列出的子智能体。',
+  'runs-error': '暂时无法读取运行记录；下次刷新时会再次读取。',
+  'capture-off': '采集已关闭：不会记录新的运行。先前的记录仍可查看。',
+  'capture-loss': '部分运行信息未被记录。',
+  'history-loading': '正在加载更早的子智能体历史…',
+  'history-partial': '较早的历史仅部分加载；计数可能偏低。',
+  'history-failed': '无法加载较早的历史。',
+  'history-request-failed': '无法请求较早的历史。',
+  'history-off': '采集关闭时不会加载较早的历史。',
+  'history-unavailable': 'companion 运行前无法加载较早的历史。',
+  'traversal-limit': '此处的嵌套子智能体数量多于已统计的数量。',
+  'host-gaps': '部分会话无法验证为此会话的子智能体，因此未包含在内。',
+  'host-truncated': 'OpenChamber 列出的子智能体多于此视图检查的范围（128 行、2,000 个会话、32 层），因此部分当前活动——包括等待你处理的子会话——可能未显示或未计入。运行记录不受影响。',
+  'host-activity-unavailable': 'OpenChamber 的会话列表正在重新加载或不完整，因此未显示当前活动（等待、再次运行、当前空闲）；运行记录不变。',
 } };
 
 /**

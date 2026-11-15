@@ -45,10 +45,11 @@ const record = (preference: LanguagePreference): LanguageStorageValue => ({ v: 1
 
 test('auto validates host tags; explicit languages override even malformed locales', () => {
   for (const locale of ['ru', 'ru-RU', 'RU-cyrl-RU', 'ru-UA', 'ru-u-nu-latn']) assert.equal(resolveLanguage('auto', locale), 'ru');
-  for (const locale of ['', 'en', 'en-US', 'de-DE', 'ru_RU', 'ru-', 'not a tag', 'russian']) assert.equal(resolveLanguage('auto', locale), 'en');
-  for (const preference of ['en', 'ru'] as const) for (const locale of ['ru-RU', 'en', 'invalid_locale']) assert.equal(resolveLanguage(preference, locale), preference);
+  for (const locale of ['zh', 'zh-CN', 'zh-Hans', 'zh-SG', 'zh-u-nu-hanidec']) assert.equal(resolveLanguage('auto', locale), 'zh-CN');
+  for (const locale of ['', 'en', 'en-US', 'de-DE', 'ru_RU', 'ru-', 'zh_CN', 'not a tag', 'russian']) assert.equal(resolveLanguage('auto', locale), 'en');
+  for (const preference of ['en', 'ru', 'zh-CN'] as const) for (const locale of ['ru-RU', 'en', 'zh-CN', 'invalid_locale']) assert.equal(resolveLanguage(preference, locale), preference);
   const keys = ['label', 'automatic', 'unsupported', 'readFailed', 'saveFailed', 'saving', 'saved'];
-  for (const language of ['en', 'ru'] as const) {
+  for (const language of ['en', 'ru', 'zh-CN'] as const) {
     const messages = languageMessages(language);
     assert.deepEqual(Object.keys(messages).sort(), [...keys].sort());
     for (const text of Object.values(messages)) assert.equal(typeof text, 'string');
@@ -56,6 +57,7 @@ test('auto validates host tags; explicit languages override even malformed local
   }
   assert.equal(languageMessages('en').label, 'Language');
   assert.equal(languageMessages('ru').label, 'Язык');
+  assert.equal(languageMessages('zh-CN').label, '语言');
 });
 
 test('absent means auto without writes; only the strict immutable v1 shape is accepted', async () => {

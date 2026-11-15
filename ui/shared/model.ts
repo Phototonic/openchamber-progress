@@ -3,6 +3,34 @@ import { countItems } from '../../shared/progress.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
 import type { InterfaceLanguage } from './i18n.ts';
+import type { HostReadyContext } from '@openchamber/sdk';
+
+/** Optional presentation hints only; never source, visibility or permission evidence. */
+export type DeviceView = NonNullable<HostReadyContext['device']>;
+/** Ephemeral source-wide reveal target. Revalidate current plan/task before existing reading.reveal;
+ * it must not change the host session or the separate native session-action pin.
+ */
+export interface InboxTaskTarget { storeId: string; source: string; plan: string; task: string; revision: number; cleanupRev: number }
+
+/**
+ * One validated Needs you inbox row (shared/needs-you.ts, read revision 1), mapped for the view.
+ * `rowKey` is the (source, plan, task) identity; a row occurs once across continuation windows.
+ * `blocker`: only validated current details; `absent`/`invalid` never carry text.
+ * `wait`: reported-blocked interval anchored like ElapsedAnchor; null when the window carried none.
+ */
+export interface InboxRowView {
+  rowKey: string; planKey: string; source: string; plan: string; planTitle: string; revision: number; structuralRevision: number; cleanupRev: number;
+  coordinatorSessionId: string; task: { id: string; title: string }; ancestors: { id: string; title: string }[]; omittedAncestors: number;
+  group: 'needs-you' | 'also-blocked';
+  blocker: { state: 'reported'; category: BlockerCategory | 'unclassified' | null; reason: string | null; nextAction: string | null } | { state: 'absent' | 'invalid' };
+  wait: ElapsedAnchor | null;
+}
+/** One validated inbox window. Counts are cumulative through this window; exact only when complete. */
+export interface InboxWindowView {
+  storeId: string; sourceId: string; captureEnabled: boolean; readAt: string; timing: boolean;
+  rows: InboxRowView[]; counts: { needsYou: number; alsoBlocked: number }; nextCursor: string | null;
+  coverage: { complete: boolean; exhausted: boolean; gapped: boolean; skippedRecords: number };
+}
 
 export type ItemStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'completed' | 'cancelled' | 'failed';
@@ -92,7 +120,27 @@ export interface PlanView {
   document: DocumentRefView;
   /** Independent of agent progress revisions; absent on older services. */
   cleanup?: { state: 'visible' | 'archived'; revision: number };
+  /**
+   * Waiting-delegation token of this list row (shared/delegation-view.ts), independent of the
+   * progress revision. Absent: not requested or not supplied; null: supplied but unreadable.
+   * A detail overlay is painted only while its own token equals this one.
+   */
+  delegationToken?: string | null;
 }
+
+/** Display reason of a refused delegation; anything this version does not know is `other`. */
+export type IntentRefusal = 'changed' | 'structure' | 'closed' | 'assignment' | 'unverified' | 'other';
+/**
+ * Validated delegation overlay of one detail read (display only, never authority or activity).
+ * `waiting`: a current eligible pending/reserved declaration for `taskIds`; `refused`: its binding
+ * was refused; `clear`: none, bound, cancelled or invalidated; `unknown`: unavailable, legacy,
+ * unverifiable or unreadable evidence, which shows nothing rather than a guess.
+ */
+export type IntentView =
+  | { token: string; state: 'waiting'; taskIds: string[] }
+  | { token: string; state: 'refused'; taskIds: string[]; reason: IntentRefusal }
+  | { token: string; state: 'clear' }
+  | { token: string | null; state: 'unknown' };
 
 export interface PlanDetail {
   key: string;
@@ -112,6 +160,8 @@ export interface PlanDetail {
    * own entry has an unknown start, never zero.
    */
   blockedTiming?: Record<string, ElapsedAnchor>;
+  /** Delegation overlay of the first page, when requested and supplied (see IntentView). */
+  intent?: IntentView;
 }
 
 /**
@@ -139,7 +189,7 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
 /** Canonical revision-1 graph DTO, with no presentation or detail semantics. */
 export type { PlanGraphRead, PlanGraphRequest, PlanGraphItem } from '../../shared/progress.ts';
 
@@ -204,8 +254,11 @@ export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null
  */
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
+  lastAction?: import('../../shared/progress.ts').SetupRead['lastAction'];
   delivery?: {
     kind: 'managed'; revision: 1;
+    managedMigrationSteps?: 1;
+    migrationProgress?: import('../../shared/managed-steps.ts').ManagedStepProgress;
     configuration: 'unconfigured' | 'configured' | 'invalid';
     migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
     observation: 'unknown' | 'not-observed' | 'matching' | 'different';
@@ -261,6 +314,7 @@ export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'workin
 const SUMMARY_TEXT = {
   en: { empty: 'No tasks reported', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
   ru: { empty: 'Нет зарегистрированных задач', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
+  'zh-CN': { empty: '尚未报告任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
 } satisfies Record<InterfaceLanguage, { empty: string; uncounted: string; done: (done: string, total: string) => string; remaining: (n: string) => string; skipped: (n: string) => string }>;
 
 export function summaryText(s: Counts, locale: InterfaceLanguage = 'en') {
@@ -537,6 +591,20 @@ const MODEL_LABELS = {
       'non-text': 'Документ плана не является обычным текстом и не был сохранён.',
       unavailable: 'Не удалось прочитать документ плана в этой системе.',
       'changed-during-read': 'Документ плана изменился во время чтения; он будет сохранён при одном из следующих отчётов.',
+    },
+  },
+  'zh-CN': {
+    status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
+    lifecycle: { active: '进行中', completed: '已结束', cancelled: '已取消', failed: '失败' },
+    document: {
+      unbound: '此计划尚未关联计划文档。', captured: '',
+      denied: '上次报告时，智能体未获准读取计划文档。',
+      missing: '上次报告时，计划文档不存在。',
+      moved: '计划文档自关联后已移动，需要智能体重新关联。',
+      oversized: '计划文档超过采集大小限制，因此未采集。',
+      'non-text': '计划文档不是纯文本，因此未采集。',
+      unavailable: '无法在此系统上读取计划文档。',
+      'changed-during-read': '计划文档在读取期间发生变化，将在后续报告时采集。',
     },
   },
 } satisfies Record<InterfaceLanguage, { status: Record<ItemStatus, string>; lifecycle: Record<Lifecycle, string>; document: Record<DocumentState, string> }>;

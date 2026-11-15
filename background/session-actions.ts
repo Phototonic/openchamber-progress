@@ -38,6 +38,20 @@ const TEXT = {
     uncertain: 'Хост не подтвердил вставку. Проверьте текущий чат перед повторной попыткой.',
     added: 'Добавлено в текущий чат. Проверьте текст перед отправкой.',
   },
+  'zh-CN': {
+    noPlan: '此会话尚未报告计划',
+    unavailable: '进度不可用。请检查智能体进度的设置和服务。',
+    unsupported: '此进度服务不支持向输入框插入摘要。请先更新它，然后重试。',
+    source: '无法验证此会话的 OpenCode 配置，未添加任何文本。',
+    incomplete: '无法读取完整进度，未添加任何文本。',
+    preference: '无法读取已保存的计划选择，未添加任何文本。',
+    permission: '智能体进度的访问权限被拒绝。请检查扩展权限。',
+    paused: '智能体进度已停用或未连接，未添加任何文本。',
+    invalid: '此操作需要一个会话，未添加任何文本。',
+    timeout: '准备摘要耗时过长，未添加任何文本。',
+    uncertain: '主机未确认插入结果。请在重试前检查当前聊天。',
+    added: '已添加到当前聊天。发送前请先审阅。',
+  },
 } satisfies Record<InterfaceLanguage, Record<string, string>>;
 type Notice = keyof typeof TEXT.en;
 class Refusal extends Error {
@@ -87,8 +101,8 @@ export function registerSessionActions(host: ActionHost, mono: () => number = ()
           checkpoint();
           if (request.path === '/health' && reply.status === 200) {
             const health = parseHealth(reply.body);
-            if (!health.ready) throw new Refusal('unavailable');
-            if (health.planComposerHandoff !== 1) throw new Refusal('unsupported');
+            if (!health.ready && health.state !== 'starting' && health.state !== 'refused') throw new Refusal('unavailable');
+            if (health.ready && health.planComposerHandoff !== 1) throw new Refusal('unsupported');
           }
           return reply;
         }

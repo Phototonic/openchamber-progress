@@ -7,7 +7,10 @@ import type { ViewContext } from './app.ts';
 import { button, el, partState, testid } from './components.ts';
 import type { CompanionUpdateView, SetupSuggestions, SetupTargets, SetupView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
-import { managedCopy, managedErrorText } from './managed-copy.ts';
+import { managedCopy, managedErrorText, managedStepCopy } from './managed-copy.ts';
+import { MANAGED_MIGRATION_STEPS, type ManagedStepProgress } from '../../shared/managed-steps.ts';
+import { StepDriver, canAbandon, currentProgress, managedStepCall, nextAction, type StepAction, type StepStop } from './setup-steps.ts';
+import { ensureSetupStyle } from './setup-style.ts';
 
 export type SetupPhase = 'unconfigured' | 'recovery' | 'reload-required' | 'removed' | 'disabled' | 'installed';
 
@@ -24,13 +27,25 @@ const ERROR_TEXT = {
   'missing-folders': 'Fill in all three folders as absolute paths.',
   'confirmation-required': 'Review the folders and confirm before anything changes.',
   'targets-unverified': 'These folders could not be verified. Use absolute paths to existing folders you own, without symbolic links.',
-  'path-unverified': 'A folder path is not absolute, does not exist, or is not owned by you.',
-  'symlink-escape': 'A folder path goes through a symbolic link, which setup refuses for safety.',
+  'path-unverified': 'Use an existing absolute folder path owned by your account, then review again.',
+  'symlink-escape': 'Use a folder without symbolic links or junctions, then review again.',
+  'unsafe-parent': 'A parent folder can be changed by another account. Use a protected location or ask your administrator to check its permissions.',
+  EACCES: 'Access was denied. Check your account’s folder permissions, then review again.',
+  EPERM: 'The system refused the file operation. Check folder permissions and security software, then review again.',
+  EBUSY: 'A file is in use. Close programs using it, then review again.',
+  EIO: 'The system could not read or write a file. Check the disk before retrying.',
+  ENOSPC: 'The disk is full. Free space, then review again.',
+  EEXIST: 'A setup file already exists. Check Setup status before retrying; do not delete recovery files blindly.',
+  ENOENT: 'A required file disappeared. Check the installation, then review again.',
+  ENOTDIR: 'A required folder is now a file. Check the installation before retrying.',
+  EROFS: 'The disk is read-only. Restore write access, then review again.',
+  EMFILE: 'Too many files are open. Close unused programs, then review again.',
+  ENFILE: 'The system cannot open more files. Close unused programs, then review again.',
   collision: 'Something else already exists where the companion would be installed. Setup will not overwrite it.',
   'foreign-files': 'The install folder contains files setup did not create. Nothing was changed.',
   'modified-owned-files': 'Installed companion files were changed outside setup. They were left untouched.',
   'store-permissions': 'The progress store folder must be owned by you and private to your account.',
-  'private-permissions': 'A folder used for progress must be owned by you and private to your account.',
+  'private-permissions': 'Check that the progress folder belongs to your account and is private, then review again. Setup will not change existing permissions.',
   'windows-security-unavailable': 'Windows could not check folder ownership and privacy using its built-in PowerShell. Check that Windows PowerShell is available, then try again.',
   'not-installed': 'The companion is not installed in these folders.',
   'ownership-invalid': 'The installation does not match the folders this extension is set up for. Nothing was changed.',
@@ -50,18 +65,40 @@ const ERROR_TEXT = {
   corrupt: 'The progress store is damaged. It was left untouched.',
   schema: 'The progress store uses a newer format than this extension.',
   binding: 'This extension is not connected to a progress store yet.',
+  'not-found': 'The requested setup record was not found. Check Setup status again.',
+  conflict: 'The stored state changed. Check Setup status before retrying.',
+  'operation-reused': 'This request belongs to an earlier action. Check Setup status before retrying.',
+  assignment: 'This action is not allowed for the selected progress data.',
+  'source-unverified': 'The OpenCode source could not be verified. Check the folders again.',
+  closed: 'The selected progress record is closed. Check Setup status before retrying.',
+  unfinished: 'An earlier action is unfinished. Check Setup status before continuing.',
+  disabled: 'Capture is off. Review its current state before turning it on.',
+  'stage-incomplete': 'The current step is incomplete. Check Setup status before continuing.',
+  'staged-activation-retained': 'Recovery files remain from an earlier action. Review the installation before retrying; do not delete them blindly.',
 };
 const ERROR_RU: typeof ERROR_TEXT = {
   'missing-folders': 'Укажите все три папки абсолютными путями.',
   'confirmation-required': 'Проверьте папки и подтвердите действие до внесения изменений.',
   'targets-unverified': 'Не удалось проверить эти папки. Укажите абсолютные пути к существующим папкам, которыми вы владеете, без символических ссылок.',
-  'path-unverified': 'Путь папки не абсолютный, папка не существует или принадлежит другому пользователю.',
-  'symlink-escape': 'Путь папки проходит через символическую ссылку. Настройка запрещает это для безопасности.',
+  'path-unverified': 'Укажите абсолютный путь к существующей папке вашей учётной записи и проверьте снова.',
+  'symlink-escape': 'Выберите папку без символических ссылок и точек соединения и проверьте снова.',
+  'unsafe-parent': 'Родительскую папку может изменить другая учётная запись. Выберите защищённое место или попросите администратора проверить права.',
+  EACCES: 'Доступ запрещён. Проверьте права своей учётной записи на папки и повторите проверку.',
+  EPERM: 'Система запретила операцию с файлом. Проверьте права на папки и защитное ПО, затем повторите проверку.',
+  EBUSY: 'Файл занят. Закройте использующие его программы и повторите проверку.',
+  EIO: 'Не удалось прочитать или записать файл. Проверьте диск перед повторной попыткой.',
+  ENOSPC: 'Диск заполнен. Освободите место и повторите проверку.',
+  EEXIST: 'Файл настройки уже существует. Проверьте состояние настройки; не удаляйте файлы восстановления вслепую.',
+  ENOENT: 'Нужный файл исчез. Проверьте установку и повторите проверку.',
+  ENOTDIR: 'Вместо нужной папки обнаружен файл. Проверьте установку перед повторной попыткой.',
+  EROFS: 'Диск доступен только для чтения. Восстановите доступ для записи и повторите проверку.',
+  EMFILE: 'Открыто слишком много файлов. Закройте ненужные программы и повторите проверку.',
+  ENFILE: 'Система не может открыть больше файлов. Закройте ненужные программы и повторите проверку.',
   collision: 'В месте установки компаньона уже есть другие данные. Настройка не будет их перезаписывать.',
   'foreign-files': 'Папка установки содержит файлы, созданные не настройкой. Ничего не изменено.',
   'modified-owned-files': 'Установленные файлы компаньона изменены вне настройки. Они оставлены нетронутыми.',
   'store-permissions': 'Папка хранилища прогресса должна принадлежать вам и быть доступна только вашей учётной записи.',
-  'private-permissions': 'Папка прогресса должна принадлежать вам и быть доступна только вашей учётной записи.',
+  'private-permissions': 'Проверьте, что папка прогресса принадлежит вашей учётной записи и приватна, затем повторите проверку. Настройка не меняет существующие права.',
   'windows-security-unavailable': 'Windows не удалось проверить владельца и приватность папки встроенным PowerShell. Проверьте доступность Windows PowerShell и повторите попытку.',
   'not-installed': 'Компаньон не установлен в этих папках.',
   'ownership-invalid': 'Установка не соответствует папкам, для которых настроено расширение. Ничего не изменено.',
@@ -81,6 +118,69 @@ const ERROR_RU: typeof ERROR_TEXT = {
   corrupt: 'Хранилище прогресса повреждено. Оно оставлено нетронутым.',
   schema: 'Хранилище прогресса использует более новый формат, чем это расширение.',
   binding: 'Расширение ещё не подключено к хранилищу прогресса.',
+  'not-found': 'Запись настройки не найдена. Проверьте состояние настройки снова.',
+  conflict: 'Сохранённое состояние изменилось. Проверьте состояние настройки перед повтором.',
+  'operation-reused': 'Этот запрос относится к предыдущему действию. Проверьте состояние настройки перед повтором.',
+  assignment: 'Это действие недоступно для выбранных данных прогресса.',
+  'source-unverified': 'Не удалось проверить источник OpenCode. Проверьте папки снова.',
+  closed: 'Выбранная запись прогресса закрыта. Проверьте состояние настройки перед повтором.',
+  unfinished: 'Предыдущее действие не завершено. Проверьте состояние настройки перед продолжением.',
+  disabled: 'Запись выключена. Проверьте её состояние перед включением.',
+  'stage-incomplete': 'Текущий шаг не завершён. Проверьте состояние настройки перед продолжением.',
+  'staged-activation-retained': 'Остались файлы восстановления от предыдущего действия. Проверьте установку перед повтором; не удаляйте их вслепую.',
+};
+const ERROR_ZH: typeof ERROR_TEXT = {
+  'unsafe-parent': '其他账户可以更改上级文件夹。请使用受保护的位置，或请管理员检查其权限。',
+  EACCES: '访问被拒绝。请检查你的账户对文件夹的权限后重新审阅。',
+  EPERM: '系统拒绝了文件操作。请检查文件夹权限和安全软件后重新审阅。',
+  EBUSY: '文件正被占用。请关闭使用它的程序后重新审阅。',
+  EIO: '系统无法读写文件。请先检查磁盘再重试。',
+  ENOSPC: '磁盘已满。请释放空间后重新审阅。',
+  EEXIST: '设置文件已存在。请先检查设置状态再重试，不要盲目删除恢复文件。',
+  ENOENT: '所需文件已消失。请检查安装后重新审阅。',
+  ENOTDIR: '所需文件夹已变为文件。请检查安装后再重试。',
+  EROFS: '磁盘为只读。请恢复写入权限后重新审阅。',
+  EMFILE: '打开的文件过多。请关闭不使用的程序后重新审阅。',
+  ENFILE: '系统无法打开更多文件。请关闭不使用的程序后重新审阅。',
+  'not-found': '未找到请求的设置记录。请重新检查设置状态。',
+  conflict: '存储的状态已更改。请先检查设置状态再重试。',
+  'operation-reused': '此请求属于先前的操作。请先检查设置状态再重试。',
+  assignment: '所选进度数据不允许此操作。',
+  'source-unverified': '无法验证 OpenCode 来源。请重新检查文件夹。',
+  closed: '所选进度记录已关闭。请先检查设置状态再重试。',
+  unfinished: '先前的操作尚未完成。请先检查设置状态再继续。',
+  disabled: '采集已关闭。请先审阅当前状态再开启采集。',
+  'stage-incomplete': '当前步骤尚未完成。请先检查设置状态再继续。',
+  'staged-activation-retained': '先前操作的恢复文件仍保留。请先审阅安装再重试，不要盲目删除这些文件。',
+  'missing-folders': '请将三个文件夹都填写为绝对路径。',
+  'confirmation-required': '请先审阅这些文件夹并确认，之后才会进行更改。',
+  'targets-unverified': '无法验证这些文件夹。请使用你拥有的现有文件夹的绝对路径，且不要包含符号链接。',
+  'path-unverified': '文件夹路径不是绝对路径、不存在，或不属于你。',
+  'symlink-escape': '文件夹路径经过符号链接，出于安全考虑，设置拒绝此路径。',
+  collision: 'companion 的安装位置已存在其他内容，设置不会覆盖它。',
+  'foreign-files': '安装文件夹中包含并非由设置创建的文件，未做任何更改。',
+  'modified-owned-files': '已安装的 companion 文件在设置之外被修改，这些文件保持原样。',
+  'store-permissions': '进度存储文件夹必须归你所有，且仅你的账户可访问。',
+  'private-permissions': '用于进度的文件夹必须归你所有，且仅你的账户可访问。',
+  'windows-security-unavailable': 'Windows 无法使用内置 PowerShell 检查文件夹的所有权和私有性。请确认 Windows PowerShell 可用后重试。',
+  'not-installed': '这些文件夹中未安装 companion。',
+  'ownership-invalid': '安装内容与此扩展所设置的文件夹不匹配，未做任何更改。',
+  'payload-invalid': '此扩展附带的 companion 不完整，请重新安装扩展。',
+  'installation-changed': '更新期间安装内容发生了变化，请在重试前重新检查文件夹。',
+  'service-binding-collision': '此扩展自身的设置记录在设置之外被修改，该记录保持原样。',
+  'service-binding-modified': '此扩展自身的设置记录在设置之外被修改，该记录保持原样。',
+  'service-binding-unavailable': 'companion 文件已安装，但此扩展无法记录设置。',
+  'service-binding-unavailable-capture-disabled': 'companion 文件已安装，但此扩展无法记录设置，因此已关闭采集以确保安全。',
+  'action-invalid': '该设置操作不可用。',
+  'arguments-invalid': '设置请求未被接受。',
+  invalid: '设置请求未被接受。请检查三个文件夹是否都已填写。',
+  'request-too-large': '设置请求过大。',
+  'setup-unavailable': '此服务无法提供设置。',
+  storage: '无法打开进度存储。',
+  busy: '进度存储正忙，请稍后重试。',
+  corrupt: '进度存储已损坏，已保持原样。',
+  schema: '进度存储使用的格式比此扩展更新。',
+  binding: '此扩展尚未连接到进度存储。',
 };
 
 /** Plain-language text for a fixed SetupError code; unknown codes stay honest. */
@@ -88,7 +188,8 @@ const diagnosticCode = (code:string) => /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(code
 export const setupErrorText = (code: string, locale = 'en') => {
   const managed = managedErrorText(code,locale);
   if (managed) return managed;
-  const errors: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?ERROR_RU:ERROR_TEXT;
+  const l = resolveLanguage('auto',locale);
+  const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
   return Object.hasOwn(errors,code) ? errors[code] : textFor(locale).unknownError(diagnosticCode(code));
 };
 
@@ -106,9 +207,17 @@ const DIAGNOSTIC_RU: typeof DIAGNOSTIC_TEXT = {
   'staged-payloads-present': 'После прерванной настройки остались подготовленные файлы.',
   'service-binding-collision': 'Не удалось использовать запись настройки расширения.',
 };
+const DIAGNOSTIC_ZH: typeof DIAGNOSTIC_TEXT = {
+  'targets-unverified': '这些文件夹尚未确认。',
+  'rollback-payloads-retained': '较早版本的 companion 已保留以便恢复。',
+  'unreferenced-payloads-retained': '部分未使用的 companion 版本被保留，不会自动删除任何内容。',
+  'staged-payloads-present': '中断的设置留下了暂存文件。',
+  'service-binding-collision': '无法使用此扩展的设置记录。',
+};
 export const setupDiagnosticText = (code: string, locale = 'en') => {
-  const diagnostics: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?DIAGNOSTIC_RU:DIAGNOSTIC_TEXT;
-  const errors: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?ERROR_RU:ERROR_TEXT;
+  const l = resolveLanguage('auto',locale);
+  const diagnostics: Readonly<Record<string,string>> = l==='ru'?DIAGNOSTIC_RU:l==='zh-CN'?DIAGNOSTIC_ZH:DIAGNOSTIC_TEXT;
+  const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
   return Object.hasOwn(diagnostics,code) ? diagnostics[code] : Object.hasOwn(errors,code) ? errors[code] : diagnosticCode(code);
 };
 
@@ -202,7 +311,54 @@ const ru: typeof en = {
   sameFiles: (version) => `${version} · файлы совпадают с установленными`, utility: 'Утилита папки',
   utilityVersion: (version) => `${version} · загрузчик и скрипт удаления со времени установки компаньона; обновления сохраняют их`,
 };
-const textFor = (locale:string) => resolveLanguage('auto',locale)==='ru'?ru:en;
+const zh: typeof en = {
+  privilege: '进度服务在此计算机上运行，拥有你的完整用户权限。companion 仅在智能体报告时记录进度；它不会读取对话。',
+  lifecycle: '采集独立于此扩展：关闭、暂停或卸载扩展后仍会运行。卸载扩展前请在此移除采集；仅卸载扩展会保留采集功能（之后也可使用 companion 的移除工具）。已记录的历史始终保留。',
+  unknownError: (code) => `设置无法完成（${code}）。`,
+  configHelp: 'OpenCode 全局配置文件夹的绝对路径', dataHelp: 'OpenCode 数据文件夹的绝对路径', storeHelp: '项目之外的私有文件夹；不存在时创建',
+  storeHint: '建议放在 OpenCode 数据文件夹内；不存在时创建为私有文件夹', resolvedHint: '已在此计算机上找到；尚未确认是你的 OpenCode 文件夹', usualHint: '此计算机上的常见位置；未找到或尚未确认',
+  newerTitle: '已安装的 companion 比此扩展附带的版本较新',
+  newerBody: (installed,bundled) => `已安装 ${installed} · 附带 ${bundled}。不会自行更改。选择附带版本会退回较旧的 companion；通常更好的做法是更新此扩展。`,
+  rebuildTitle: '有不同构建的 companion 可用', rebuildBody: (version) => `此扩展附带的是版本 ${version} 的另一种构建。在你审阅并确认之前不会更改。`,
+  upgradeTitle: '有 companion 更新可用', upgradeBody: (installed,bundled) => `已安装 ${installed} → 附带 ${bundled}。在你审阅并确认之前不会更改。`,
+  review: '审阅', reviewUpdate: '审阅更新', installedVersion: '已安装版本', bundledVersion: '附带版本',
+  noComparison: '服务尚未比较附带和已安装的 companion，因此此次审阅无法确定更新会选择哪个版本。',
+  same: '附带的 companion 与已安装文件相同，更新不会更改任何内容。',
+  rebuild: '版本号相同，但文件不同：更新会选择附带的文件。',
+  downgrade: '附带的 companion 比已安装版本旧。选择它会退回该版本。',
+  updateEffect: '更新会保留这些文件夹、计划和历史，只切换 companion 文件。OpenCode 再次加载 companion 后智能体才会使用新文件。',
+  switchEffect: '切换会保留这些文件夹、计划和历史，只更改 companion 文件。OpenCode 再次加载 companion 后智能体才会使用这些文件。',
+  reload: 'OpenCode 尚未加载当前 companion 文件。方便时请重启 OpenCode，使智能体使用这些文件；已运行的会话在此之前可能继续使用旧文件。此视图不会重启任何内容。',
+  foldersNeeded: '需要填写文件夹', unchanged: '设置未更改任何内容', partial: '设置仅部分完成', dismiss: '关闭',
+  done: '已完成。', disabled: '采集已关闭。', enabled: '采集已开启。', removedNotice: '已移除采集，历史记录保留。',
+  reviewInstall: '安装前审阅', reviewOlder: '切换到较旧 companion 前审阅', reviewUpdating: '更新前审阅',
+  alreadyInstalled: '这些文件夹中已安装 companion，请改用更新。',
+  ackInstall: '我已审阅这些文件夹，并希望安装 companion', ackOlder: '我已审阅这些文件夹，并希望切换到附带的较旧 companion', ackUpdate: '我已审阅这些文件夹，并希望更新 companion',
+  install: '安装', useBundled: '使用附带版本', update: '更新', cancel: '取消', companion: 'Companion', data: 'OpenCode 数据', store: '进度存储',
+  setupStatus: '设置状态', folderSuggestions: '文件夹建议',
+  disableQuestion: '关闭采集？', enableQuestion: '重新开启采集？', removeQuestion: '移除采集？',
+  disableEffect: '使用此设置的所有已打开 OpenCode 会话中的智能体将停止记录进度。现有计划和历史会保留。',
+  enableEffect: '智能体可以再次记录进度。其他内容不变。',
+  removeEffect: '先关闭采集，再移除 companion 文件。卸载此扩展前请执行此操作；仅卸载扩展会保留采集功能。计划、修订和已采集文档会保留在进度存储中。已修改的文件保持原样。',
+  disable: '关闭采集', enable: '开启采集', remove: '移除采集',
+  setupTitle: '设置智能体进度', chooseFolders: '请选择 OpenCode 全局配置及数据文件夹，以及用于进度存储的私有文件夹。审阅并确认前不会写入任何内容。',
+  looking: '正在此计算机上查找 OpenCode 文件夹…', notDetected: '无法在此计算机上检测到 OpenCode 文件夹，请在下方输入。',
+  configFolder: 'OpenCode 配置文件夹', dataFolder: 'OpenCode 数据文件夹', storeFolder: '进度存储文件夹', check: '检查这些文件夹',
+  on: '采集已开启', off: '采集已关闭', installed: 'companion 已安装', removed: '采集已移除', interrupted: '设置已中断',
+  removedEffect: 'companion 文件已移除，采集已关闭。已记录的计划和历史保留在进度存储中。',
+  recovery: (count) => `中断的设置留下了 ${count} 个暂存项。未自动清理任何内容，请再次运行相同的更新以完成，或检查这些文件夹。`,
+  unverified: '这些文件夹尚未验证为 OpenCode 配置，因此无法跨智能体关联会话。',
+  enableBack: '重新开启采集', updateCompanion: '更新 companion', reinstall: '重新安装',
+  removedNote: '采集已移除，因此不会记录新进度。请在设置中选择“重新安装”以再次记录。',
+  disabledNote: '采集已关闭，因此不会记录新进度。请在设置中重新开启。',
+  unknownNote: '采集已关闭，因此不会记录新进度。',
+  sameFiles: (version) => `${version} · 文件与已安装版本相同`, utility: '文件夹工具',
+  utilityVersion: (version) => `${version} · 安装 companion 时的加载器和移除脚本；更新会保留它们`,
+};
+const textFor = (locale:string) => {
+  const l = resolveLanguage('auto',locale);
+  return l==='ru'?ru:l==='zh-CN'?zh:en;
+};
 
 const STORE_SUFFIX = 'openchamber-progress';
 /** A form-level absolute-path check; the service owns canonicalization and safety checks. */
@@ -254,6 +410,7 @@ export interface BundledComparison { update: CompanionUpdateView; version: strin
 export const bundledComparison = (s: SetupView | null | undefined): BundledComparison | null => (s?.update && s.version ? { update: s.update, version: s.version } : null);
 
 export interface SetupUi {
+  actionFailure?: SetupView['lastAction'] | null;
   managedReview?: { action: Extract<SetupAction, `managed-${string}`>; result: SetupView; opener: string } | null;
   managedRequest?: number;
   form: SetupTargets;
@@ -616,7 +773,8 @@ export function reloadNote<U>(vc: Host<U>) {
   const locale = vc.env.locale;
   const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
   if (!info?.delivery) return null;
-  if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
+  const stepped = info.delivery.managedMigrationSteps === 1 ? currentProgress(stepDriver?.state.progress ?? null, info.delivery.migrationProgress) : null;
+  if ((stepped && stepped.state !== 'complete') || info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
   if (info.delivery.observation === 'different') {
     const warning = testid(el('div'), 'managed-integrity-warning');
     mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning+' '+managedCopy(locale).observation});
@@ -646,6 +804,12 @@ function legacyReloadNote<U>(vc: Host<U>) {
 }
 
 let managedRequestSerial = 0;
+/** A past attempt is separate from current admission and migration diagnostics. */
+export function lastMigrationText(action: NonNullable<SetupView['lastAction']>, locale='en') {
+  const language = resolveLanguage('auto', locale);
+  const label = { en: 'Last migration attempt failed', ru: 'Последняя попытка переноса не удалась', 'zh-CN': '上次切换尝试失败' }[language];
+  return `${label}: ${action.stage} · ${action.code}. ${setupErrorText(action.code,locale)}`;
+}
 /** One inspect, then one explicit consent. No managed action is inferred from legacy booleans. */
 function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const text = managedCopy(vc.env.locale);
@@ -656,8 +820,16 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   heading.tabIndex = -1;
   wrap.append(heading);
   const state = vc.setup;
+  const lastAction=s.actionFailure===undefined?(state?.state==='ready'?state.value.lastAction:undefined):s.actionFailure;
+  if(lastAction){
+    const failure=testid(el('p','ap-doc-warn',lastMigrationText(lastAction,vc.env.locale)),'setup-last-action');
+    failure.setAttribute('role','alert');wrap.append(failure);
+  }
   if (!state) vc.requestSetup();
   if (!state || state.state !== 'ready') {
+    // An unreadable status must not hide an unfinished switch or its capture warning.
+    const known = stepDriver?.state.progress;
+    if (known && known.state !== 'complete') wrap.append(migrationCard(vc, stepsFor(vc), known));
     wrap.append(partState('setup-loading',text.title,state,vc.requestSetup,vc.env.locale));
     return wrap;
   }
@@ -666,10 +838,23 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (!d) { wrap.dataset.phase='unsupported'; wrap.append(el('p','ap-note',text.unsupported)); return wrap; }
   wrap.dataset.phase = d.configuration;
   wrap.dataset.migration = d.migration;
+  // Step protocol only when the service advertises it; older services keep the single-request flow.
+  const driver = d.managedMigrationSteps === 1 ? stepsFor(vc) : null;
+  const progress = driver ? currentProgress(driver.state.progress, d.migrationProgress) : null;
+  const unfinished = !!progress && progress.state !== 'complete';
+  if (driver) { wrap.dataset.steps = '1'; if (driver.state.busy) wrap.setAttribute('aria-busy','true'); }
   const set = (patch: Partial<SetupUi>) => vc.updateUi(u => ({setup:{...u.setup,...patch}}) as Partial<U & {setup:SetupUi}>);
   const back = (opener:string) => vc.handoff({to:opener,heading:root=>root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]')});
   const ownsFocus = (id:string) => document.hasFocus() && !!document.activeElement?.closest(`[data-testid="${id}"]`);
   const run = async (action: Extract<SetupAction, `managed-${string}`>, opener:string, review?: SetupView) => {
+    if (driver && action === 'managed-migrate') return; // negotiated step flow: no old-route fallback
+    const captureControl = !!driver && (action === 'managed-enable' || action === 'managed-disable');
+    if (captureControl && !review) {
+      // Keep the existing acknowledgement/copy, but no legacy inspect nonce:
+      // the fenced bodyless route freshly validates the selected binding.
+      if (!s.busy && info.targets) { set({managedReview:{action,result:info,opener},ack:false,error:null,notice:null}); if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'}); }
+      return;
+    }
     const request = ++managedRequestSerial;
     const reviewed = review?.delivery?.review;
     // Inspection follows the user's current input; mutations use only the inspected canonical store.
@@ -678,7 +863,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     const targets = store ? {configRoot:'',dataRoot:'',storeRoot:store} : null;
     let admitted=false;
     vc.updateUi(u=>{
-      if (u.setup.busy || (review && (!u.setup.ack || !reviewed || u.setup.managedReview?.result.delivery?.review?.expected !== reviewed.expected))) return {};
+      if (u.setup.busy || (review && (!u.setup.ack || (captureControl ? u.setup.managedReview?.result !== review : !reviewed || u.setup.managedReview?.result.delivery?.review?.expected !== reviewed.expected)))) return {};
       admitted=true;
       return {setup:{...u.setup,busy:true,error:null,notice:null,managedRequest:request}} as Partial<U & {setup:SetupUi}>;
     });
@@ -690,13 +875,19 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     }
     vc.updateUi(u => {
       if (u.setup.managedRequest !== request) return {};
-      const patch: Partial<SetupUi> = {busy:false};
+      const patch: Partial<SetupUi> = {busy:false,...(result.ok?{actionFailure:null}:result.lastAction?{actionFailure:result.lastAction}:{})};
       if (result.ok && !review) {
         const inspected = result.setup.delivery;
         if (inspected?.review && inspected.configuration !== 'invalid' && (action === 'managed-disable' || inspected.migration !== 'conflict' && inspected.migration !== 'unavailable')) {
           const next = action !== 'managed-disable' && (inspected.migration === 'available' || inspected.migration === 'pending') ? 'managed-migrate' : action;
-          patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
-          if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+          if (next === 'managed-migrate' && (driver || inspected.managedMigrationSteps === 1)) {
+            // A step-capable service never receives the single-request switch: review it step by step.
+            if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+            queueMicrotask(() => { if (stepDriver && !stepDriver.state.busy) void stepDriver.inspect('begin', store ? {storeRoot:store} : {}); });
+          } else {
+            patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
+            if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+          }
         } else patch.error=inspected?.migration === 'conflict' ? 'managed-migration-conflict' : inspected?.migration === 'unavailable' ? 'managed-migration-unavailable' : 'managed-review-stale';
       } else {
         patch.managedReview=null; patch.ack=false;
@@ -713,15 +904,24 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     const alert = testid(el('p','ap-doc-warn',message),'setup-error'); alert.setAttribute('role','alert'); alert.dataset.code=diagnosticCode(s.error); wrap.append(alert);
   }
   if (s.notice) { const notice=testid(el('p','ap-note',text.done),'setup-notice'); notice.setAttribute('role','status'); wrap.append(notice); }
+  if (driver) {
+    const review = stepReviewCard(vc, driver);
+    if (review) { wrap.append(review); return wrap; }
+    if (progress && (unfinished || driver.state.progress?.state === 'complete')) wrap.append(migrationCard(vc, driver, progress));
+    else if (driver.state.busy === 'run' || driver.state.busy === 'control') wrap.append(startingCard(vc, driver));
+    else stepOutcome(wrap, driver, null, vc.env.locale);
+    if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
+  }
   const r = s.managedReview;
-  if (r?.result.delivery?.review) {
-    const reviewed = r.result.delivery.review;
+  const captureReview = !!driver && (r?.action === 'managed-enable' || r?.action === 'managed-disable');
+  const reviewed = r?.result.delivery?.review ?? (captureReview && r?.result.targets ? {targets:r.result.targets} : null);
+  if (r && reviewed) {
     const card = testid(el('div','ap-setup-card'),'setup-review'); card.dataset.action=r.action;
     const migration = r.action === 'managed-migrate';
     card.append(el('h3','ap-setup-title', migration ? text.migrate : r.action === 'managed-enable' ? text.enable : r.action === 'managed-disable' ? text.disable : text.configure));
     card.append(facts([[text.configRoot,reviewed.targets.configRoot],[text.dataRoot,reviewed.targets.dataRoot],[text.store,reviewed.targets.storeRoot]]));
     for (const body of [text.privilege,text.lifecycle,text.reach,migration ? text.switchEffect : r.action === 'managed-configure' ? text.choose : text.controlEffect]) card.append(el('p','ap-note',body));
-    if (r.result.delivery.migration === 'pending') card.append(el('p','ap-doc-warn',text.pending));
+    if (r.result.delivery?.migration === 'pending') card.append(el('p','ap-doc-warn',text.pending));
     const ack=testid(el('div'),'setup-ack');
     mountCheckbox(ack,{label:text.ack,checked:s.ack,onChange:checked=>{if(!s.busy)set({ack:checked});}}); card.append(ack);
     const row=el('div','ap-row');
@@ -734,7 +934,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   }
   wrap.append(el('p','ap-note',d.configuration === 'invalid' ? text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
   if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
-  if (d.migration === 'pending') wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
+  if (d.migration === 'pending' && !unfinished) wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
   if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',text.conflict));
   if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',text.unavailable),'setup-migration-unavailable'));
   if (d.migration === 'complete') wrap.append(el('p','ap-note',text.complete));
@@ -744,7 +944,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (!unresolved && d.observation === 'different') {
     const warning=testid(el('div'),'managed-integrity-warning'); mountBanner(warning,{tone:'warning',title:text.different,body:text.warning});wrap.append(warning);
   }
-  wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
+  // While a switch is unfinished its card carries the actual capture observation; an older stored
+  // reading here could contradict it mid-run.
+  if (!unfinished) wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
   for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale)));
   if (d.configuration === 'unconfigured') {
     wrap.append(el('p','ap-note',text.choose));
@@ -757,7 +959,19 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const action=(id:string,label:string,kind:Extract<SetupAction, `managed-${string}`>)=>{button(row,id,label,()=>{if(!vc.ui.setup.busy)void run(kind,id);},'outline');row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy));};
   if (d.configuration === 'configured' && info.verified && info.captureEnabled === true) action('setup-disable',text.disable,'managed-disable');
   if (d.configuration !== 'invalid' && d.migration !== 'conflict' && d.migration !== 'unavailable') {
-    if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
+    if (driver && (d.migration === 'available' || d.migration === 'pending')) {
+      if (!unfinished) {
+        button(row,'setup-migrate',d.migration==='pending'?text.resume:text.migrate,()=>{
+          const st = vc.ui.setup;
+          if (driver.state.busy || st.busy) return;
+          const store = d.configuration === 'configured' ? info.targets?.storeRoot : st.form.storeRoot.trim();
+          if (store && !absoluteSetupPath(store)) { set({error:'managed-path-input'}); return; }
+          if (st.error) set({error:null});
+          void driver.inspect('begin', store ? {storeRoot:store} : {});
+        },'outline');
+        row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy || !!driver.state.busy));
+      }
+    } else if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
     else if (d.configuration === 'unconfigured') action('setup-inspect',text.review,'managed-configure');
     else if (info.captureEnabled === false) action('setup-enable',text.enable,'managed-enable');
   }
@@ -766,4 +980,258 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const disclosure=testid(el('div','ap-setup-disclose'),'setup-disclosure');
   for (const body of [text.privilege,text.lifecycle,text.reach]) disclosure.append(el('p','ap-note',body));
   wrap.append(disclosure);return wrap;
+}
+
+// ---- Step-by-step switch (shared/managed-steps.ts, setup/managed-steps.md) ----
+
+let stepView: Host<unknown> | null = null;
+let stepDriver: StepDriver | null = null;
+/** Called on visibility loss/disposal even when no hidden-frame paint occurs. */
+export function retireSetupSteps() { stepDriver?.retire(); }
+/** Alert keys already announced in this frame, so a full repaint does not repeat them. */
+const announced = new Set<string>();
+/** Host account, surface, session and directory; null while hidden. A change retires the driver. */
+const stepContext = (vc: Host<unknown>) => document.visibilityState === 'hidden' ? null
+  : JSON.stringify([vc.ctx?.connection?.account ?? '', vc.ctx?.surface ?? '', vc.session?.id ?? null, vc.directory ?? null]);
+const ACTION_HOOK: Record<NonNullable<StepAction>, string> = { continue: 'setup-migration-continue', resume: 'setup-migration-resume', review: 'setup-migration-review-capture', status: 'setup-migration-status' };
+const migrationHeading = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="setup-migration-heading"]') ?? root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]');
+
+function readProgress(vc: Host<unknown>) {
+  const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
+  return currentProgress(stepDriver?.state.progress ?? null, info?.delivery?.migrationProgress);
+}
+/** Where focus goes when a settled run removes the control it was on (docs/ui.md Restoration). */
+function stepHandoff(vc: Host<unknown>, stop: StepStop) {
+  const st = stepDriver!.state;
+  if (stop.reason === 'held') return;
+  if (stop.reason === 'review') { vc.handoff({ to: st.review ? 'setup-cancel' : 'setup-migrate', heading: migrationHeading }); return; }
+  const next = nextAction(readProgress(vc));
+  vc.handoff({ to: st.outcome?.uncertain ? ACTION_HOOK.status : next ? ACTION_HOOK[next] : 'setup-migrate', heading: migrationHeading });
+}
+function stepsFor<U>(vc: Host<U>): StepDriver {
+  ensureSetupStyle();
+  stepView = vc as unknown as Host<unknown>;
+  stepDriver ??= new StepDriver({
+    send: (request, current) => managedStepCall(stepView!.service(current), request),
+    context: () => (stepView ? stepContext(stepView) : null),
+    changed: (stop) => {
+      const v = stepView;
+      if (!v) return;
+      if (stop) stepHandoff(v, stop);
+      v.updateUi((u) => ({ setup: { ...u.setup } }));
+    },
+    refresh: (complete) => { stepView?.requestSetup(); if (complete) stepView?.retry(); },
+  });
+  stepDriver.observe(stepContext(stepView), vc.ctx?.connection?.account ?? '');
+  return stepDriver;
+}
+
+const stageLabel = (stage: string, locale: string) => managedStepCopy(locale).stages[stage] ?? stage;
+const partOf = (ref: { name: string; batch: number }) => (ref.name === 'remove-selector' || ref.name === 'remove-discovery') ? ref.batch + 1 : null;
+/** "Step 3 of 9: …" over the fixed stage list; removal batches add a part number, never a guessed total. */
+export function migrationStepText(p: ManagedStepProgress, locale = 'en') {
+  const t = managedStepCopy(locale);
+  if (!p.step) return t.status.complete;
+  return t.step(MANAGED_MIGRATION_STEPS.indexOf(p.step.name) + 1, MANAGED_MIGRATION_STEPS.length, stageLabel(p.step.name, locale), partOf(p.step));
+}
+export type MigrationTitle = keyof ReturnType<typeof managedStepCopy>['titles'];
+/** Distinct running, pending, paused, stopped, failed, interrupted and review presentations. */
+export function migrationTitle(p: ManagedStepProgress, driving: boolean): MigrationTitle {
+  if (driving) return 'running';
+  if (p.state === 'complete') return 'complete';
+  if (p.recovery === 'review') return 'review';
+  if (p.state === 'running') return p.worker === 'active' ? 'active' : 'interrupted';
+  return p.state;
+}
+
+/** Fixed stage/code plus actionable text for the last stop that still describes this progress. */
+function stepOutcome(parent: Element, driver: StepDriver, p: ManagedStepProgress | null, locale: string) {
+  const t = managedStepCopy(locale);
+  const o = driver.state.outcome;
+  const local = driver.state.progress;
+  // A newer durable status read (higher sequence) supersedes this frame's last outcome.
+  const fresh = o && (!p || !local || p.operationId !== local.operationId || p.sequence <= local.sequence);
+  const diagnostic = fresh ? o : p?.diagnostic ? { ...p.diagnostic, uncertain: false } : null;
+  if (!diagnostic) return null;
+  const box = testid(el('div', 'ap-doc-warn ap-migration-failure'), 'setup-migration-failure');
+  box.dataset.code = diagnosticCode(diagnostic.code);
+  if (diagnostic.stage) box.dataset.stage = diagnostic.stage;
+  const key = `failure:${p?.operationId ?? ''}:${p?.sequence ?? ''}:${diagnostic.stage ?? ''}:${diagnostic.code}`;
+  if (!announced.has(key)) { box.setAttribute('role', 'alert'); announced.add(key); }
+  const where = el('p', 'ap-migration-where', `${diagnostic.stage ? t.stoppedAt(stageLabel(diagnostic.stage, locale)) : t.stopped} · `);
+  where.append(el('code', 'ap-migration-code', diagnostic.code));
+  box.append(where);
+  // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
+  box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale)));
+  parent.append(box);
+  return diagnostic;
+}
+
+function inspectingLine<U>(vc: Host<U>, driver: StepDriver) {
+  const t = managedStepCopy(vc.env.locale);
+  const row = testid(el('div', 'ap-row'), 'setup-migration-inspecting');
+  const line = el('p', 'ap-note', t.checking(driver.state.inspecting ? stageLabel(driver.state.inspecting, vc.env.locale) : null));
+  line.setAttribute('role', 'status');
+  row.append(line);
+  button(row, 'setup-migration-cancel-inspect', t.cancel, () => { vc.handoff({ to: 'setup-migrate' }); driver.cancelReview(); }, 'ghost');
+  return row;
+}
+
+/** Guarded button: stays focusable while unavailable (aria-disabled) and never submits twice. */
+function stepButton(row: Element, id: string, label: string, run: () => void, variant: Parameters<typeof button>[4], disabled: boolean) {
+  button(row, id, label, () => { if (!disabled) run(); }, variant);
+  row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled', String(disabled));
+}
+
+function migrationCard<U>(vc: Host<U>, driver: StepDriver, p: ManagedStepProgress) {
+  const locale = vc.env.locale;
+  const t = managedStepCopy(locale);
+  const st = driver.state;
+  const driving = st.busy === 'run' || st.busy === 'control';
+  const pausing = driving && (st.pauseAfter || st.busy === 'control');
+  const card = testid(el('section', 'ap-setup-card ap-migration'), 'setup-migration-progress');
+  Object.assign(card.dataset, { state: p.state, worker: p.worker, effect: p.effect, capture: p.capture.state, recovery: p.recovery, sequence: String(p.sequence), driving: String(driving), step: p.step?.name ?? '', batch: p.step ? String(p.step.batch) : '' });
+  const title = migrationTitle(p, driving);
+  const heading = testid(el('h4', 'ap-setup-title', t.titles[title]), 'setup-migration-heading');
+  heading.tabIndex = -1; heading.id = 'ap-migration-heading';
+  card.setAttribute('aria-labelledby', heading.id);
+  card.append(heading);
+  if (p.state !== 'complete' && p.capture.state !== 'on') {
+    // Conspicuous and never dropped: present at every step, failure, pause and reopen while unfinished.
+    const warning = testid(el('div'), 'setup-migration-capture-warning');
+    warning.dataset.capture = p.capture.state;
+    mountBanner(warning, { tone: 'warning', title: p.capture.state === 'off' ? t.warnOff : t.warnUnknown, body: p.capture.state === 'off' ? t.warnOffBody : t.warnUnknownBody });
+    const key = `capture:${p.operationId}:${p.capture.state}`;
+    if (announced.has(key)) warning.querySelector('[role]')?.removeAttribute('role'); else announced.add(key);
+    card.append(warning);
+  }
+  if (p.state !== 'complete') {
+    const step = testid(el('p', 'ap-migration-step', migrationStepText(p, locale)), 'setup-migration-step');
+    step.setAttribute('role', 'status');
+    card.append(step);
+  }
+  const dl = el('dl', 'ap-facts ap-setup-facts');
+  dl.append(el('dt', '', t.last), el('dd', '', p.lastCompleted ? t.part(stageLabel(p.lastCompleted.name, locale), partOf(p.lastCompleted)) : t.none));
+  dl.append(el('dt', '', t.capture), testid(el('dd', '', { on: t.on, off: t.off, unknown: t.unknown }[p.capture.state]), 'setup-migration-capture'));
+  card.append(dl);
+  const stateLine = testid(el('p', 'ap-note', pausing ? t.status.pausing : driving ? t.status.running : t.status[title]), 'setup-migration-state');
+  card.append(stateLine);
+  // Failed and interrupted sentences already say the result is unknown.
+  if (!driving && p.effect === 'uncertain' && title !== 'failed' && title !== 'interrupted' && title !== 'complete') card.append(el('p', 'ap-note', t.status.uncertain));
+  const outcome = driving ? null : stepOutcome(card, driver, p, locale);
+  // After an unknown reply only a status check is offered; drop the state's own next-step advice.
+  if (outcome?.uncertain) stateLine.remove();
+  if (st.confirm) { card.append(stepConfirm(vc, driver, p)); return card; }
+  const row = el('div', 'ap-row');
+  if (driving) {
+    stepButton(row, 'setup-migration-pause', pausing ? t.pausing : t.pause, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestPause(); }, 'outline', pausing);
+  } else if (p.state !== 'complete') {
+    const busy = !!st.busy;
+    const action = outcome?.uncertain ? 'status' : nextAction(p);
+    const go = (fn: () => Promise<void>) => () => { vc.handoff({ to: 'setup-migration-pause' }); void fn(); };
+    if (action === 'continue') stepButton(row, ACTION_HOOK.continue, t.continue, go(() => driver.continueRun(p)), 'default', busy);
+    if (action === 'resume') stepButton(row, ACTION_HOOK.resume, t.resume, go(() => driver.resume(p)), 'default', busy);
+    if (action === 'review') stepButton(row, ACTION_HOOK.review, t.reviewCapture, () => { void driver.inspect('capture', { progress: p }); }, 'default', busy);
+    if (action === 'status') stepButton(row, ACTION_HOOK.status, t.check, () => { void driver.status(p); }, outcome?.uncertain ? 'default' : 'outline', busy);
+    if (action !== 'status' && canAbandon(p)) stepButton(row, 'setup-migration-abandon', t.abandon, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestAbandon(p); }, 'ghost', busy);
+  }
+  if (row.childElementCount) card.append(row);
+  return card;
+}
+
+/** Confirmed begin still in flight: no progress exists yet, so nothing beyond step 1 is claimed. */
+function startingCard<U>(vc: Host<U>, driver: StepDriver) {
+  const locale = vc.env.locale;
+  const t = managedStepCopy(locale);
+  const st = driver.state;
+  const pausing = st.pauseAfter;
+  const card = testid(el('section', 'ap-setup-card ap-migration'), 'setup-migration-progress');
+  Object.assign(card.dataset, { state: 'starting', driving: 'true', step: 'prepare', batch: '0' });
+  const heading = testid(el('h4', 'ap-setup-title', t.titles.running), 'setup-migration-heading');
+  heading.tabIndex = -1; heading.id = 'ap-migration-heading';
+  card.setAttribute('aria-labelledby', heading.id);
+  const step = testid(el('p', 'ap-migration-step', t.step(1, MANAGED_MIGRATION_STEPS.length, stageLabel('prepare', locale), null)), 'setup-migration-step');
+  step.setAttribute('role', 'status');
+  card.append(heading, step, testid(el('p', 'ap-note', pausing ? t.status.pausing : t.status.running), 'setup-migration-state'));
+  if (st.confirm) {
+    // No progress yet: the confirmation can only hold or record the pause once begin settles.
+    const box = testid(el('div', 'ap-migration-confirm'), 'setup-migration-confirm-pause');
+    box.setAttribute('role', 'group');
+    const title = el('h5', 'ap-setup-title', t.pauseTitle); title.id = 'ap-migration-confirm-title'; box.setAttribute('aria-labelledby', title.id);
+    box.append(title, el('p', 'ap-note', t.pauseBody), el('p', 'ap-note', t.stays.on));
+    const row = el('div', 'ap-row');
+    const cancel = () => { vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading }); void driver.cancelConfirm(null); };
+    stepButton(row, 'setup-migration-confirm', t.pause, () => { vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading }); void driver.confirmStop(null); }, 'default', false);
+    stepButton(row, 'setup-migration-cancel', t.keepGoing, cancel, 'ghost', false);
+    box.append(row);
+    box.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+    card.append(box);
+    return card;
+  }
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-migration-pause', pausing ? t.pausing : t.pause, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestPause(); }, 'outline', pausing);
+  card.append(row);
+  return card;
+}
+
+/** Pause/stop confirmation. Cancel owns focus; Escape cancels; nothing is undone either way. */
+function stepConfirm<U>(vc: Host<U>, driver: StepDriver, p: ManagedStepProgress) {
+  const t = managedStepCopy(vc.env.locale);
+  const kind = driver.state.confirm!;
+  const box = testid(el('div', 'ap-migration-confirm'), `setup-migration-confirm-${kind}`);
+  box.setAttribute('role', 'group');
+  const title = el('h5', 'ap-setup-title', kind === 'pause' ? t.pauseTitle : t.abandonTitle);
+  title.id = 'ap-migration-confirm-title'; box.setAttribute('aria-labelledby', title.id);
+  box.append(title, el('p', 'ap-note', kind === 'pause' ? t.pauseBody : t.abandonBody), el('p', p.capture.state === 'on' ? 'ap-note' : 'ap-doc-warn', t.stays[p.capture.state]));
+  const back = kind === 'pause' ? 'setup-migration-pause' : 'setup-migration-abandon';
+  const cancel = () => {
+    const next = nextAction(p);
+    vc.handoff({ to: driver.state.busy ? 'setup-migration-pause' : next ? ACTION_HOOK[next] : back, heading: migrationHeading });
+    void driver.cancelConfirm(p);
+  };
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-migration-confirm', kind === 'pause' ? t.pause : t.abandon, () => {
+    vc.handoff({ to: driver.state.busy ? 'setup-migration-pause' : undefined, heading: migrationHeading });
+    void driver.confirmStop(p);
+  }, kind === 'pause' ? 'default' : 'destructive', false);
+  stepButton(row, 'setup-migration-cancel', kind === 'pause' ? t.keepGoing : t.cancel, cancel, 'ghost', false);
+  box.append(row);
+  box.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+  return box;
+}
+
+/** Consent before begin, or fresh consent for exactly one uncertain capture decision. */
+function stepReviewCard<U>(vc: Host<U>, driver: StepDriver) {
+  const r = driver.state.review;
+  if (!r) return null;
+  const locale = vc.env.locale;
+  const text = managedCopy(locale), t = managedStepCopy(locale);
+  const busy = !!driver.state.busy;
+  const capture = r.kind === 'capture';
+  const card = testid(el('div', 'ap-setup-card'), capture ? 'setup-migration-capture-review' : 'setup-review');
+  card.dataset.action = r.kind === 'capture' ? `capture-${r.progress.step!.name}` : 'managed-migrate';
+  card.append(el('h3', 'ap-setup-title', capture ? t.captureTitle : text.migrate));
+  const reviewed = r.review.targets;
+  card.append(facts([[text.configRoot, reviewed.configRoot], [text.dataRoot, reviewed.dataRoot], [text.store, reviewed.storeRoot]]));
+  const enable = r.kind === 'capture' && r.progress.step!.name === 'enable';
+  if (r.kind === 'capture') {
+    const word = t.stateWord[r.progress.capture.state];
+    card.append(el('p', 'ap-doc-warn', enable ? t.captureEnable(word) : t.captureDisable(word)));
+  } else {
+    for (const body of [text.privilege, text.lifecycle, text.reach, text.switchEffect, t.stepwise]) card.append(el('p', 'ap-note', body));
+  }
+  const ack = testid(el('div'), 'setup-ack');
+  mountCheckbox(ack, { label: capture ? (enable ? t.ackEnable : t.ackDisable) : text.ack, checked: driver.state.ack, onChange: (checked) => driver.setAck(checked) });
+  card.append(ack);
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-confirm', capture ? t.confirmCapture : text.confirm, () => {
+    if (!driver.state.ack) return;
+    vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading });
+    void (capture ? driver.confirmCapture() : driver.confirmBegin());
+  }, 'default', busy || !driver.state.ack);
+  const cancel = () => { if (busy) return; vc.handoff({ to: capture ? ACTION_HOOK.review : 'setup-migrate', heading: migrationHeading }); driver.cancelReview(); };
+  stepButton(row, 'setup-cancel', text.cancel, cancel, 'ghost', busy);
+  card.append(row);
+  card.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !busy) { event.preventDefault(); cancel(); } });
+  return card;
 }

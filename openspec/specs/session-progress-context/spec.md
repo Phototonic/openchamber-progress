@@ -97,7 +97,7 @@ The existing live-session adapter MAY expose validated optional host agent and l
 
 ### Requirement: Supported affordances and compatible interaction
 
-The host floor and permissions SHALL remain unchanged. Workflows navigation/control SHALL be omitted while the pinned public API lacks a verified destination/availability contract; guessed surfaces MUST NOT be used. New extension-owned context/error text SHALL follow existing English/Russian localization, keyboard, focus and theme behavior. Expanded Sessions SHALL have one section heading, without a duplicate inside the participant list.
+The host floor and permissions SHALL remain unchanged. Workflows navigation/control SHALL be omitted while the pinned public API lacks a verified destination/availability contract; guessed surfaces MUST NOT be used. New extension-owned context/error text SHALL follow the existing localization, keyboard, focus and theme behavior. Expanded Sessions SHALL have one section heading, without a duplicate inside the participant list.
 
 #### Scenario: Workflows is disabled or unsupported
 - **WHEN** the host has no verified public Workflows navigation/availability contract, including the pinned SDK

@@ -85,7 +85,7 @@ README and Setup SHALL describe only behavior supported by measured installer/up
 
 ### Requirement: Observation-based managed reload wording
 
-Managed update wording SHALL use existing Setup/Reporting health observations and retain English/Russian support. It SHALL distinguish unknown/not observed, matching and differing loaded bytes, keep mismatch warning-only, and condition reload/restart advice on known mode or observed limitations. It MUST NOT infer activity, universal activation or a separate companion update from an extension update.
+Managed update wording SHALL use existing Setup/Reporting health observations and retain the existing multilingual support. It SHALL distinguish unknown/not observed, matching and differing loaded bytes, keep mismatch warning-only, and condition reload/restart advice on known mode or observed limitations. It MUST NOT infer activity, universal activation or a separate companion update from an extension update.
 
 #### Scenario: Update has no matching load observation
 - **WHEN** new extension bytes are installed but a matching managed load is absent or differs

@@ -139,7 +139,7 @@ The guides SHALL state that host-managed executable folders are not the former p
 
 ### Requirement: Distribution and behavioral evidence
 
-Folder, ZIP and Git distributions SHALL include the declared resolvable plugin directory and matching regenerated entries in package/parity checks. Updated README and setup/contracts/backend/UI/compatibility guides SHALL ship with implementation. Managed configuration/migration and reporting-health controls SHALL retain English/Russian accessibility behavior. Acceptance SHALL include real disposable-host/browser journeys and a resolved independent trust-boundary review.
+Folder, ZIP and Git distributions SHALL include the declared resolvable plugin directory and matching regenerated entries in package/parity checks. Updated README and setup/contracts/backend/UI/compatibility guides SHALL ship with implementation. Managed configuration/migration and reporting-health controls SHALL retain the existing localized accessibility behavior. Acceptance SHALL include real disposable-host/browser journeys and a resolved independent trust-boundary review.
 
 #### Scenario: Built distribution acceptance
 - **WHEN** the accepted built candidate is installed on an isolated 2.7.1 host with credential-free local scripted reporting

@@ -34,6 +34,11 @@ bun run typecheck
 bun run tsc --noEmit -p ui/tsconfig.json
 ```
 
+Released-writer delegation fixtures require the local `v1.3.0` tag. Run
+`git fetch origin tag v1.3.0` if it is missing; only those compatibility cases
+skip with a prerequisite diagnostic when the tag is unavailable. Full portable
+CI requires full history and tags, so these cases run there.
+
 Run the checks relevant to your change:
 
 ```sh
@@ -74,9 +79,18 @@ It runs root/UI typechecks (including background actions), portable backend test
 - `subagent-activity-runtime.test.ts`
 - `subagent-upgrade-runtime.test.ts` — isolated built-release upgrade/reload/rollback rehearsal; independent OpenCode binary required, no model or GUI
 
+Backend fixtures that acquire target-derived Setup coordination ports run in a
+separate `--test-concurrency=1` invocation; the rest remain parallel. Distinct
+synthetic directories can hash to the same port, which correctly refuses a
+concurrent writer. Keep new fenced HTTP/worker test files in the list in
+`scripts/ci-backend.ts`. For standalone mixed setup/managed suite runs use
+`--test-concurrency=1`, and do not overlap portable CI runs on the same machine.
+This isolates tests, not product requests; no port override or relaxed refusal
+is used.
+
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
-The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
+The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on every pull request whatever branch it targets, so a PR stacked on another feature branch gets the same checks as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
 To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's literal `main` or `dev`: the push checks already validate that head commit. A lightweight Bash gate compares branch names case-sensitively, receiving event values through environment variables rather than script interpolation. Feature branches (including `Dev` and `MAIN`) and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. For same-repository `main`/`dev` PRs this deliberately checks the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow still runs its gate, but its check jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Existing job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed.
 

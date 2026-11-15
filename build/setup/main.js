@@ -23,9 +23,11 @@ class PlatformError extends Error {
     this.reason = reason;
   }
 }
+var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
 var cache = new Map;
 var reparseCache = new Map;
 var scope = 0;
+var requestBudget;
 function platformSecurityScope(run) {
   const finish = beginPlatformSecurityScope();
   try {
@@ -73,9 +75,39 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
+$writerMutex = $null
+$writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
+    # The main service holds the TCP writer slot until its Node worker exits.
+    # This account-scoped mutex additionally fences a security child that might
+    # outlive that service. Obtain it BEFORE checking the current slot nonce.
+    # Every new writer's first fresh query crosses this barrier before effects.
+    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
+    try { $writerOwned = $writerMutex.WaitOne(15000) }
+    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
+      $client.Connect('127.0.0.1', [int]$request.fence.port)
+      $stream = $client.GetStream()
+      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
+      $stream.Write($bytes, 0, $bytes.Length)
+      $reply = [byte[]]::new(3); $offset = 0
+      while ($offset -lt 3) {
+        $count = $stream.Read($reply, $offset, 3 - $offset)
+        if ($count -le 0) { throw 'writer-unsettled' }
+        $offset += $count
+      }
+      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
+    } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
+  }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
@@ -118,7 +150,11 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
+finally {
+  if ($writerOwned) { $writerMutex.ReleaseMutex() }
+  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
+}
 `;
 function snapshot(file) {
   const s = lstatSync(file, { bigint: true });
@@ -158,17 +194,31 @@ function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create });
+  const input = JSON.stringify({ paths, create, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
   const firstQuery = !securityQueryAttempted;
-  const run = () => spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: firstQuery ? 30000 : 1e4, maxBuffer: 1024 * 1024 });
+  const run = () => {
+    const timeout = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
+    try {
+      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout, maxBuffer: 1024 * 1024 });
+    } finally {
+      securityQueryAttempted = true;
+    }
+  };
   let child;
-  try {
+  child = run();
+  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
     child = run();
-  } finally {
-    securityQueryAttempted = true;
+  requestBudget?.require();
+  if (requestBudget && child.error?.code === "ETIMEDOUT")
+    throw new PlatformError("managed-step-deadline", "timeout");
+  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
+    let failure;
+    try {
+      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+    } catch {}
+    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
+      throw new PlatformError("managed-step-unsettled", "exit");
   }
-  if (firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run();
   if (child.error || child.status !== 0)
     throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results;
@@ -397,7 +447,7 @@ function parseReportRequest(value) {
     link: ["child", "assign"],
     delegate: ["assign"],
     bind: ["source", "confirm"],
-    finish: ["outcome"]
+    finish: ["outcome", "changes"]
   };
   validRequest(Object.hasOwn(fields, r.op), "op");
   validRequest(identifier(r.plan), "plan");
@@ -512,7 +562,7 @@ function javascriptLiteral(value) {
 
 // setup/lifecycle.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync } from "node:fs";
+import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync, unlinkSync as unlinkSync2 } from "node:fs";
 import path5 from "node:path";
 
 // shared/store.ts
@@ -572,6 +622,17 @@ function graphItems(value, wire = false) {
 
 // shared/subagent-runs.ts
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+
+// shared/delegation-view.ts
+var DELEGATION_VIEW_LIMITS = Object.freeze({
+  receipts: 128,
+  tasks: 50,
+  identifierCodeUnits: 200,
+  reasonCodeUnits: BLOCKER_LIMITS.textCodeUnits,
+  inputBytes: SEARCH_LIMITS.inputBytes,
+  responseBytes: SEARCH_LIMITS.responseBytes,
+  tokenBytes: SEARCH_LIMITS.cursorBytes
+});
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -1054,9 +1115,17 @@ function activeIntent(db, source, parent) {
   return { ...JSON.parse(r.payload), dispatch: r.dispatch };
 }
 function intentDisposition(db, i, state, reason, dispatch, receipt) {
-  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...receipt ? { receipt } : {} } };
+  const run = dispatch ? db.prepare("SELECT message,call,child FROM runs_rows WHERE id=? AND source=? AND parent=?").get(dispatch, i.caller.sourceId, i.caller.sessionId) : undefined;
+  const declaration = { oid: i.request.oid, coordinatorSessionId: i.caller.sessionId, declaredRevision: i.request.rev, taskIds: [...i.request.assign], dispatch: run ? { tool: "subagent", messageId: String(run.message), callId: String(run.call) } : null };
+  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", sourceId: i.caller.sourceId, declaration, ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...state === "retired" && reason !== "cancelled" ? { recovery: "redeclare-or-link" } : {}, ...receipt ? { receipt, childSessionId: run?.child } : {} } };
   db.prepare("UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?").run(JSON.stringify(reply), i.caller.sourceId, i.request.plan, i.request.oid);
   return reply;
+}
+
+class PendingDelegationError extends ProgressError {
+  constructor() {
+    super("conflict");
+  }
 }
 function declareIntent(db, r, actor, validate) {
   const c = runControl(db);
@@ -1069,8 +1138,8 @@ function declareIntent(db, r, actor, validate) {
   }
   validate();
   const current = activeIntent(db, actor.sourceId, actor.sessionId);
-  if (r.assign.length)
-    requireProgress(!current, "conflict");
+  if (r.assign.length && current)
+    throw new PendingDelegationError;
   else if (current) {
     intentDisposition(db, current, "retired", "cancelled", current.dispatch ?? undefined);
     db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=?").run(actor.sourceId, actor.sessionId);
@@ -1089,6 +1158,95 @@ function reservedIntent(db, k) {
 function settleIntent(db, i, receipt, reason) {
   intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
   db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
+}
+function delegationAssignmentRecovery(db, sourceId, plan, sessionId, a, budget) {
+  const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, budget), sourceId, plan);
+  const result = { bytes: Number(current?.bytes ?? 0), complete: true, recovered: false };
+  if (!current)
+    return result;
+  if (typeof current.snapshot !== "string") {
+    result.complete = false;
+    return result;
+  }
+  try {
+    const p = JSON.parse(current.snapshot);
+    if (p.sourceId !== sourceId || p.id !== plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+      result.complete = false;
+    else
+      result.recovered = p.revision > a.declaredRevision && a.taskIds.length > 0 && a.taskIds.every((id) => {
+        const item = p.items.find((i) => i?.id === id);
+        return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
+      });
+  } catch {
+    result.complete = false;
+  }
+  return result;
+}
+function delegationRefusals(db, binding, sourceId, sessionId) {
+  requireProgress(identifier(sourceId) && identifier(sessionId));
+  const result = { sourceId, sessionId, complete: true, refusals: [] };
+  if (!binding.verified || binding.sourceId !== sourceId || db.prepare("SELECT verified FROM sources WHERE id=?").get(sourceId)?.verified !== 1 || !runControl(db).enabled) {
+    result.complete = false;
+    return result;
+  }
+  const rows = db.prepare("SELECT plan,oid,length(CAST(receipt AS BLOB)) AS bytes,CASE WHEN length(CAST(receipt AS BLOB))<=16384 THEN receipt END AS receipt FROM receipts WHERE source=? ORDER BY rowid DESC LIMIT ?").all(sourceId, DELEGATION_VIEW_LIMITS.receipts + 1);
+  result.complete = rows.length <= DELEGATION_VIEW_LIMITS.receipts;
+  let bytes = 0;
+  const seen = new Set;
+  for (const row2 of rows.slice(0, DELEGATION_VIEW_LIMITS.receipts)) {
+    bytes += Number(row2.bytes);
+    if (bytes > DELEGATION_VIEW_LIMITS.inputBytes) {
+      result.complete = false;
+      break;
+    }
+    if (typeof row2.receipt !== "string") {
+      result.complete = false;
+      seen.add(String(row2.plan));
+      continue;
+    }
+    let r;
+    try {
+      r = JSON.parse(row2.receipt);
+    } catch {
+      result.complete = false;
+      seen.add(String(row2.plan));
+      continue;
+    }
+    const d = r?.delegation;
+    if (!d)
+      continue;
+    if (seen.has(String(row2.plan)))
+      continue;
+    seen.add(String(row2.plan));
+    const a = d.declaration;
+    if (!a) {
+      result.complete = false;
+      continue;
+    }
+    if (d.sourceId !== sourceId || a.coordinatorSessionId !== sessionId)
+      continue;
+    if (!identifier(row2.plan) || r.plan !== row2.plan || a.oid !== row2.oid || !identifier(a.oid) || !Number.isSafeInteger(a.declaredRevision) || a.declaredRevision < 1 || r.rev !== a.declaredRevision || !Array.isArray(a.taskIds) || a.taskIds.length > DELEGATION_VIEW_LIMITS.tasks || !a.taskIds.every(identifier) || new Set(a.taskIds).size !== a.taskIds.length || a.dispatch !== null && (!a.dispatch || a.dispatch.tool !== "subagent" || !identifier(a.dispatch.messageId) || !identifier(a.dispatch.callId))) {
+      result.complete = false;
+      continue;
+    }
+    if (cleanupInstalled(db) && ["archived", "deleted"].includes(String(cleanupState(db, sourceId, r.plan)?.state ?? "")))
+      continue;
+    if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
+      continue;
+    const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes);
+    bytes += recovery.bytes;
+    if (!recovery.complete)
+      result.complete = false;
+    if (recovery.recovered)
+      continue;
+    if (result.refusals.length === 3) {
+      result.complete = false;
+      continue;
+    }
+    const reasons = ["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget", "dispatch-unconfirmed", "binding", "disabled", "capture-disabled", "not-found", "storage", "corrupt", "schema", "busy"];
+    result.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(d.reason) ? d.reason : "unverified", recovery: "redeclare-or-link" });
+  }
+  return result;
 }
 function claimHash(r) {
   return hash([r.outcome, r.summary]);
@@ -1948,6 +2106,26 @@ function finishRecovery(db, j, state) {
     db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
 }
 
+// shared/receipt-index.ts
+var name = "receipts_source_oid";
+function receiptIndexInstalled(db) {
+  const objects = db.prepare("SELECT type,name,tbl_name FROM main.sqlite_master WHERE name=? COLLATE NOCASE").all(name);
+  if (!objects.length)
+    return false;
+  requireProgress(objects.length === 1 && objects[0].type === "index" && objects[0].name === name && objects[0].tbl_name === "receipts", "schema");
+  const index = db.prepare("PRAGMA main.index_list('receipts')").all().find((r) => r.name === name);
+  requireProgress(index?.unique === 0 && index.partial === 0 && index.origin === "c", "schema");
+  const keys = db.prepare("PRAGMA main.index_xinfo('receipts_source_oid')").all().filter((r) => r.key === 1);
+  requireProgress(keys.length === 2 && keys.every((key, i) => key.seqno === i && Number(key.cid) >= 0 && key.name === ["source", "oid"][i] && key.desc === 0 && key.coll === "BINARY"), "schema");
+  return true;
+}
+function installReceiptIndex(db) {
+  if (receiptIndexInstalled(db))
+    return;
+  db.exec("CREATE INDEX receipts_source_oid ON receipts(source, oid)");
+  receiptIndexInstalled(db);
+}
+
 // shared/assignment-binding.ts
 function currentBinding(value, plan, itemId) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -1956,6 +2134,302 @@ function currentBinding(value, plan, itemId) {
   const item = plan.items.find((i) => i.id === itemId);
   const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
   return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier(b.childSessionId) && identifier(b.messageId) && identifier(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
+}
+
+// shared/delegation-validation.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// shared/change-digest.ts
+var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
+function emptyEvents() {
+  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
+}
+var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
+var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
+function compareTasks(before, after) {
+  const a = tasks(before), b = tasks(after), changes = [];
+  for (const id of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const old = a.get(id), next = b.get(id), facets = [];
+    if (!old) {
+      facets.push("added");
+      if (next.status === "blocked")
+        facets.push("blocked");
+    } else if (!next)
+      facets.push("removed");
+    else {
+      if (old.status !== "done" && next.status === "done")
+        facets.push("completed");
+      if (old.status === "done" && next.status !== "done")
+        facets.push("reopened");
+      if (old.status !== "blocked" && next.status === "blocked")
+        facets.push("blocked");
+      if (old.status === "blocked" && next.status !== "blocked")
+        facets.push("unblocked");
+      if (old.status !== "skipped" && next.status === "skipped")
+        facets.push("skipped");
+      if (old.status === "skipped" && next.status !== "skipped")
+        facets.push("unskipped");
+      const x = facts(old), y = facts(next);
+      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
+        facets.push("revised");
+    }
+    if (facets.length)
+      changes.push({ id, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
+  }
+  return changes;
+}
+function endpointCounts(before, after) {
+  const scope2 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const a = tasks(before), b = tasks(after);
+  for (const id of new Set([...a.keys(), ...b.keys()])) {
+    const old = a.get(id), next = b.get(id);
+    if (!old) {
+      if (next.status !== "skipped")
+        scope2.addedCounted++;
+      if (next.status === "done")
+        scope2.addedDone++;
+    } else if (!next) {
+      if (old.status !== "skipped")
+        scope2.removedCounted++;
+      if (old.status === "done")
+        scope2.removedDone++;
+    } else {
+      if (old.status !== "skipped" && next.status === "skipped")
+        scope2.skipped++;
+      if (old.status === "skipped" && next.status !== "skipped")
+        scope2.unskipped++;
+      if (old.status !== "done" && next.status === "done")
+        scope2.completed++;
+      if (old.status === "done" && next.status !== "done")
+        scope2.reopened++;
+    }
+  }
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope2 };
+}
+function aggregatePair(result, before, after, target) {
+  for (const { id, reference } of compareTasks(before, after)) {
+    for (const facet of reference.facets)
+      result.summary.events[facet]++;
+    let row2 = result.tasks.find((t) => t.id === id);
+    if (!row2 && result.tasks.length >= DIGEST_LIMITS.tasks) {
+      result.details.omittedTasks = true;
+      result.details.omittedTaskCount = null;
+      result.details.truncated = true;
+      continue;
+    }
+    if (!row2) {
+      const atTarget = target.items.find((i) => i.id === id && i.kind === "task");
+      const latest = atTarget ?? reference.after ?? reference.before;
+      row2 = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result.tasks.push(row2);
+    }
+    for (const facet of reference.facets)
+      row2.occurrences[facet]++;
+    if (row2.references.length < DIGEST_LIMITS.references)
+      row2.references.push(reference);
+    else {
+      row2.omittedReferences++;
+      result.details.truncated = true;
+    }
+  }
+}
+function validateDigestSnapshot(value, source, plan, revision) {
+  try {
+    const p = value;
+    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
+      return null;
+    const byId = new Map;
+    for (const i of p.items) {
+      if (!i || !identifier(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier)))
+        return null;
+      byId.set(i.id, i);
+    }
+    for (const i of p.items) {
+      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id) => id === i.id || byId.get(id)?.kind !== "task"))
+        return null;
+      const seen = new Set([i.id]);
+      let parent = i.parentId;
+      while (parent) {
+        if (seen.has(parent))
+          return null;
+        seen.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const visiting = new Set, visited = new Set;
+    const visit = (id) => {
+      if (visited.has(id))
+        return true;
+      if (visiting.has(id))
+        return false;
+      visiting.add(id);
+      for (const dep of byId.get(id)?.dependencies ?? [])
+        if (!visit(dep))
+          return false;
+      visiting.delete(id);
+      visited.add(id);
+      return true;
+    };
+    if (!p.items.every((i) => visit(i.id)))
+      return null;
+    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
+  } catch {
+    return null;
+  }
+}
+function capDigest(result) {
+  while (Buffer.byteLength(JSON.stringify(result)) > DIGEST_LIMITS.responseBytes && result.tasks.length) {
+    result.tasks.pop();
+    result.details.truncated = true;
+    result.details.omittedTasks = true;
+    if (result.details.omittedTaskCount !== null)
+      result.details.omittedTaskCount++;
+  }
+  return result;
+}
+
+// shared/delegation-validation.ts
+var DELEGATION_PROOF_LIMITS = { snapshots: DIGEST_LIMITS.snapshots, bytes: DIGEST_LIMITS.bytes };
+function plan(value, source, id, revision, owner) {
+  const p = value;
+  requireProgress(validateDigestSnapshot(p, source, id, revision), "conflict");
+  requireProgress(p.sessionId === owner && typeof p.directory === "string" && p.directory.length <= 4096 && (p.projectId === undefined || typeof p.projectId === "string") && Array.isArray(p.links) && p.links.length <= 64, "conflict");
+  requireProgress(p.lifecycle === "active", "closed");
+  const sessions = new Set, assigned = new Map;
+  const items = new Map(p.items.map((i) => [i.id, i]));
+  for (const link of p.links) {
+    requireProgress(link && identifier(link.sessionId) && link.sessionId !== owner && !sessions.has(link.sessionId) && Array.isArray(link.itemIds) && link.itemIds.length > 0 && link.itemIds.length <= 1000, "conflict");
+    sessions.add(link.sessionId);
+    for (const id2 of link.itemIds) {
+      requireProgress(identifier(id2) && !assigned.has(id2) && items.get(id2)?.kind === "task" && items.get(id2)?.assigneeSessionId === link.sessionId, "conflict");
+      assigned.set(id2, link.sessionId);
+    }
+  }
+  for (const item of p.items)
+    if (item.assigneeSessionId !== undefined)
+      requireProgress(identifier(item.assigneeSessionId) && assigned.get(item.id) === item.assigneeSessionId, "conflict");
+  return p;
+}
+function taskFacts(item, p) {
+  const copy = { ...item };
+  if (copy.blocker !== undefined) {
+    requireProgress(item.kind === "task" && item.status === "blocked" && validBlockerAnnotation(copy.blocker, p.revision), "conflict");
+    copy.blocker = { ...copy.blocker, validAtRevision: 0 };
+  }
+  if (copy.assignmentBinding !== undefined) {
+    requireProgress(currentBinding(copy.assignmentBinding, p, item.id), "conflict");
+    copy.assignmentBinding = { ...copy.assignmentBinding, validAtRevision: 0 };
+  }
+  return canonical(copy);
+}
+function disjointLink(previous, next, c, assigned) {
+  requireProgress(c.mode === "direct" && c.reporterSessionId === previous.sessionId && c.attributedSessionId === previous.sessionId, "conflict");
+  const oldLinks = new Map(previous.links.map((l) => [l.sessionId, l]));
+  const newLinks = new Map(next.links.map((l) => [l.sessionId, l]));
+  const changed = [...new Set([...oldLinks.keys(), ...newLinks.keys()])].filter((id) => canonical(oldLinks.get(id) ?? null) !== canonical(newLinks.get(id) ?? null));
+  requireProgress(changed.length === 1, "conflict");
+  const child = changed[0], oldLink = oldLinks.get(child), newLink = newLinks.get(child);
+  const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
+  const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
+  requireProgress(canonical(oldFacts) === canonical(newFacts), "conflict");
+  const scope2 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
+  requireProgress(scope2.size > 0 && assigned.every((id) => !scope2.has(id)), "conflict");
+  requireProgress(canonical(next.links) === canonical([...previous.links.filter((l) => l.sessionId !== child), ...newLink ? [newLink] : []]), "conflict");
+  const bound = next.items.filter((i) => i.assignmentBinding?.boundRevision === next.revision);
+  if (bound.length) {
+    requireProgress(bound.length <= 50 && next.reportedAt === previous.reportedAt && canonical(next.document) === canonical(previous.document), "conflict");
+    const first = bound[0].assignmentBinding;
+    for (const item of bound) {
+      const b = item.assignmentBinding;
+      requireProgress(currentBinding(b, next, item.id) && b.childSessionId === child && b.boundAt === c.reportedAt && b.messageId === first.messageId && b.callId === first.callId && b.observedAt === first.observedAt && previous.items.find((i) => i.id === item.id)?.assigneeSessionId === undefined, "conflict");
+    }
+    requireProgress(newLink && newLink.itemIds.length === (oldLink?.itemIds.length ?? 0) + bound.length && (oldLink?.itemIds ?? []).every((id, index) => newLink.itemIds[index] === id) && bound.every((i) => newLink.itemIds.includes(i.id)), "conflict");
+  } else
+    requireProgress(c.reportedAt === next.reportedAt, "conflict");
+  for (let index = 0;index < previous.items.length; index++) {
+    const a = previous.items[index], b = next.items[index];
+    taskFacts(a, previous);
+    const expected = structuredClone(a);
+    if (scope2.has(a.id)) {
+      if (newLink?.itemIds.includes(a.id))
+        expected.assigneeSessionId = child;
+      else
+        delete expected.assigneeSessionId;
+      if (!bound.length)
+        delete expected.assignmentBinding;
+      else if (bound.some((i) => i.id === a.id))
+        expected.assignmentBinding = b.assignmentBinding;
+    }
+    if (expected.blocker)
+      expected.blocker.validAtRevision = next.revision;
+    if (expected.assignmentBinding)
+      expected.assignmentBinding.validAtRevision = next.revision;
+    requireProgress(taskFacts(expected, next) === taskFacts(b, next), "conflict");
+  }
+}
+function delegationRevision(db, binding, intent) {
+  const r = parseRequest(intent.request), source = intent.caller.sourceId, owner = intent.caller.sessionId;
+  requireProgress(r.op === "delegate" && r.assign.length > 0 && identifier(source) && identifier(owner), "conflict");
+  const receipt = db.prepare("SELECT payload_hash FROM receipts WHERE source=? AND plan=? AND oid=?").get(source, r.plan, r.oid);
+  requireProgress(receipt?.payload_hash === createHash3("sha256").update(canonical([r, source, owner])).digest("hex"), "conflict");
+  requireProgress(binding.verified && binding.sourceId === source && db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified === 1, "source-unverified");
+  const control = runControl(db);
+  requireProgress(control.enabled && control.generation === intent.generation, "disabled");
+  const cleanup = cleanupInstalled(db) ? cleanupState(db, source, r.plan) : undefined;
+  requireProgress(cleanup?.state !== "deleted", "not-found");
+  requireProgress(cleanup?.state !== "archived", "closed");
+  let bytes = 0;
+  const admit = (text) => {
+    requireProgress(typeof text === "string", "conflict");
+    bytes += Buffer.byteLength(text);
+    requireProgress(bytes <= DELEGATION_PROOF_LIMITS.bytes, "conflict");
+    try {
+      return JSON.parse(text);
+    } catch {
+      requireProgress(false, "conflict");
+    }
+  };
+  const live = db.prepare("SELECT revision,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(DELEGATION_PROOF_LIMITS.bytes, source, r.plan);
+  requireProgress(live, "not-found");
+  const revision = Number(live.revision);
+  const current = plan(admit(live.snapshot), source, r.plan, revision, owner);
+  requireProgress(r.assign.every((id) => current.items.some((i) => i.id === id && i.kind === "task" && i.assigneeSessionId === undefined)), "assignment");
+  if (revision === r.rev)
+    return revision;
+  requireProgress(revision > r.rev && revision - r.rev < DELEGATION_PROOF_LIMITS.snapshots, "conflict");
+  const snapshot2 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
+  const contribution = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END AS payload FROM contributions WHERE source=? AND plan=? AND revision=?");
+  let previous;
+  for (let rev = r.rev;rev <= revision; rev++) {
+    const next = plan(admit(snapshot2.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
+    requireProgress(next.structuralRevision === current.structuralRevision, "conflict");
+    if (previous) {
+      const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.payload);
+      requireProgress(c && c.revision === rev && identifier(c.reporterSessionId) && identifier(c.attributedSessionId) && ["direct", "parent-relay"].includes(c.mode) && typeof c.reportedAt === "string" && Array.isArray(c.itemIds) && c.itemIds.length <= 50 && new Set(c.itemIds).size === c.itemIds.length && c.itemIds.every((id) => identifier(id) && !r.assign.includes(id) && next.items.some((i) => i.id === id && i.kind === "task")), "conflict");
+      requireProgress(c.mode === "direct" ? c.reporterSessionId === c.attributedSessionId : c.reporterSessionId === owner && c.attributedSessionId !== owner, "conflict");
+      if (c.attributedSessionId !== owner)
+        requireProgress(previous.links.some((l) => l.sessionId === c.attributedSessionId && c.itemIds.every((id) => l.itemIds.includes(id))), "conflict");
+      const { revision: _a, reportedAt: _b, items: _c, document: _d, links: _q, ...before } = previous;
+      const { revision: _e, reportedAt: _f, items: _g, document: _h, links: _r, ...after } = next;
+      requireProgress(canonical(before) === canonical(after) && previous.reportedAt <= next.reportedAt && previous.items.length === next.items.length, "conflict");
+      if (c.itemIds.length === 0)
+        disjointLink(previous, next, c, r.assign);
+      else {
+        requireProgress(c.reportedAt === next.reportedAt && canonical(previous.links) === canonical(next.links), "conflict");
+        for (let index = 0;index < previous.items.length; index++) {
+          const a = previous.items[index], b = next.items[index];
+          const { status: _i, reporterSessionId: _j, blocker: _k, assignmentBinding: _l, ...aStructure } = a;
+          const { status: _m, reporterSessionId: _n, blocker: _o, assignmentBinding: _p, ...bStructure } = b;
+          requireProgress(canonical(aStructure) === canonical(bStructure), "conflict");
+          if (r.assign.includes(a.id))
+            requireProgress(taskFacts(a, previous) === taskFacts(b, next), "conflict");
+        }
+      }
+    }
+    previous = next;
+  }
+  requireProgress(canonical(previous) === canonical(current), "conflict");
+  return revision;
 }
 
 // shared/document-comparison.ts
@@ -2212,163 +2686,12 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // shared/store.ts
-import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
 import path4 from "node:path";
 
 // shared/plan-task-search.ts
-import { createHash as createHash3 } from "node:crypto";
-
-// shared/change-digest.ts
-var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
-function emptyEvents() {
-  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
-}
-var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
-var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
-function compareTasks(before, after) {
-  const a = tasks(before), b = tasks(after), changes = [];
-  for (const id of [...new Set([...a.keys(), ...b.keys()])].sort()) {
-    const old = a.get(id), next = b.get(id), facets = [];
-    if (!old) {
-      facets.push("added");
-      if (next.status === "blocked")
-        facets.push("blocked");
-    } else if (!next)
-      facets.push("removed");
-    else {
-      if (old.status !== "done" && next.status === "done")
-        facets.push("completed");
-      if (old.status === "done" && next.status !== "done")
-        facets.push("reopened");
-      if (old.status !== "blocked" && next.status === "blocked")
-        facets.push("blocked");
-      if (old.status === "blocked" && next.status !== "blocked")
-        facets.push("unblocked");
-      if (old.status !== "skipped" && next.status === "skipped")
-        facets.push("skipped");
-      if (old.status === "skipped" && next.status !== "skipped")
-        facets.push("unskipped");
-      const x = facts(old), y = facts(next);
-      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
-        facets.push("revised");
-    }
-    if (facets.length)
-      changes.push({ id, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
-  }
-  return changes;
-}
-function endpointCounts(before, after) {
-  const scope2 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
-  const a = tasks(before), b = tasks(after);
-  for (const id of new Set([...a.keys(), ...b.keys()])) {
-    const old = a.get(id), next = b.get(id);
-    if (!old) {
-      if (next.status !== "skipped")
-        scope2.addedCounted++;
-      if (next.status === "done")
-        scope2.addedDone++;
-    } else if (!next) {
-      if (old.status !== "skipped")
-        scope2.removedCounted++;
-      if (old.status === "done")
-        scope2.removedDone++;
-    } else {
-      if (old.status !== "skipped" && next.status === "skipped")
-        scope2.skipped++;
-      if (old.status === "skipped" && next.status !== "skipped")
-        scope2.unskipped++;
-      if (old.status !== "done" && next.status === "done")
-        scope2.completed++;
-      if (old.status === "done" && next.status !== "done")
-        scope2.reopened++;
-    }
-  }
-  return { before: countItems(before.items), after: countItems(after.items), scope: scope2 };
-}
-function aggregatePair(result, before, after, target) {
-  for (const { id, reference } of compareTasks(before, after)) {
-    for (const facet of reference.facets)
-      result.summary.events[facet]++;
-    let row2 = result.tasks.find((t) => t.id === id);
-    if (!row2 && result.tasks.length >= DIGEST_LIMITS.tasks) {
-      result.details.omittedTasks = true;
-      result.details.omittedTaskCount = null;
-      result.details.truncated = true;
-      continue;
-    }
-    if (!row2) {
-      const atTarget = target.items.find((i) => i.id === id && i.kind === "task");
-      const latest = atTarget ?? reference.after ?? reference.before;
-      row2 = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
-      result.tasks.push(row2);
-    }
-    for (const facet of reference.facets)
-      row2.occurrences[facet]++;
-    if (row2.references.length < DIGEST_LIMITS.references)
-      row2.references.push(reference);
-    else {
-      row2.omittedReferences++;
-      result.details.truncated = true;
-    }
-  }
-}
-function validateDigestSnapshot(value, source, plan, revision) {
-  try {
-    const p = value;
-    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
-      return null;
-    const byId = new Map;
-    for (const i of p.items) {
-      if (!i || !identifier(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier)))
-        return null;
-      byId.set(i.id, i);
-    }
-    for (const i of p.items) {
-      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id) => id === i.id || byId.get(id)?.kind !== "task"))
-        return null;
-      const seen = new Set([i.id]);
-      let parent = i.parentId;
-      while (parent) {
-        if (seen.has(parent))
-          return null;
-        seen.add(parent);
-        parent = byId.get(parent)?.parentId;
-      }
-    }
-    const visiting = new Set, visited = new Set;
-    const visit = (id) => {
-      if (visited.has(id))
-        return true;
-      if (visiting.has(id))
-        return false;
-      visiting.add(id);
-      for (const dep of byId.get(id)?.dependencies ?? [])
-        if (!visit(dep))
-          return false;
-      visiting.delete(id);
-      visited.add(id);
-      return true;
-    };
-    if (!p.items.every((i) => visit(i.id)))
-      return null;
-    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
-  } catch {
-    return null;
-  }
-}
-function capDigest(result) {
-  while (Buffer.byteLength(JSON.stringify(result)) > DIGEST_LIMITS.responseBytes && result.tasks.length) {
-    result.tasks.pop();
-    result.details.truncated = true;
-    result.details.omittedTasks = true;
-    if (result.details.omittedTaskCount !== null)
-      result.details.omittedTaskCount++;
-  }
-  return result;
-}
-
-// shared/plan-task-search.ts
+import { createHash as createHash4 } from "node:crypto";
 var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
@@ -2382,7 +2705,7 @@ function searchMatches(tokens, title, id) {
   return tokens.every((word) => t.includes(word) || key.includes(word));
 }
 var safe = (n, min = 0) => Number.isSafeInteger(n) && Number(n) >= min;
-var hash2 = (v) => createHash3("sha256").update(JSON.stringify(v)).digest("hex");
+var hash2 = (v) => createHash4("sha256").update(JSON.stringify(v)).digest("hex");
 var fields = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
 function parseCursor(text) {
   requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
@@ -2402,8 +2725,8 @@ function parseCursor(text) {
 function searchIdentity(db, binding) {
   return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
 }
-function cleanup(db, installed, source, plan) {
-  const c = installed ? cleanupState(db, source, plan) : undefined;
+function cleanup(db, installed, source, plan2) {
+  const c = installed ? cleanupState(db, source, plan2) : undefined;
   return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
 }
 function validPlan(value, source, id, revision) {
@@ -2444,8 +2767,8 @@ function searchWindow(db, binding, options = {}) {
     if (!r.coverage.reasons.includes(reason))
       r.coverage.reasons.push(reason);
   };
-  const advance = (source, plan) => {
-    c.after = { source, plan };
+  const advance = (source, plan2) => {
+    c.after = { source, plan: plan2 };
     c.pending = null;
   };
   let hitBytes = 0;
@@ -2548,11 +2871,11 @@ function searchWindow(db, binding, options = {}) {
     }
     const tasks2 = matches.length ? matches : [null];
     const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
-    const plan = { id, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    const plan2 = { id, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
     requireProgress(pos.offset < tasks2.length);
     while (pos.offset < tasks2.length && r.hits.length < limit) {
       const task = tasks2[pos.offset];
-      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const hit = { plan: plan2, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
       const size = Buffer.byteLength(JSON.stringify(hit)) + 1;
       if (hitBytes + size > SEARCH_LIMITS.responseBytes - 16 * 1024)
         break;
@@ -2697,7 +3020,7 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
 
 // shared/store.ts
 function digest(value) {
-  return createHash4("sha256").update(value).digest("hex");
+  return createHash5("sha256").update(value).digest("hex");
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -2779,6 +3102,7 @@ class Store {
         try {
           this.db.exec(SCHEMA);
           this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
+          installReceiptIndex(this.db);
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -2788,6 +3112,7 @@ class Store {
         requireProgress(version === VERSION, "schema");
       requireProgress(this.db.prepare("PRAGMA table_info(meta)").all().some((r) => r.name === "product"), "corrupt");
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
+      this.transaction(false, () => receiptIndexInstalled(this.db));
     } catch (e) {
       this.db?.close();
       if (e instanceof PlatformError)
@@ -2801,7 +3126,10 @@ class Store {
     this.db.close();
   }
   installSubagentRuns() {
-    return this.transaction(true, () => installRuns(this.db));
+    return this.transaction(true, () => {
+      installReceiptIndex(this.db);
+      installRuns(this.db);
+    });
   }
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
@@ -2846,7 +3174,8 @@ class Store {
         requireProgress(actor.sourceId === i.caller.sourceId && actor.sessionId === i.caller.sessionId, "binding");
         const at = this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch);
         requireProgress(Number.isSafeInteger(at?.at), "corrupt");
-        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
+        const rev = delegationRevision(this.db, this.readBinding, i);
+        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
         this.db.exec("RELEASE run_binding");
         settleIntent(this.db, i, receipt);
       } catch (e) {
@@ -2863,6 +3192,9 @@ class Store {
     const r = parseRequest(value);
     requireProgress(r.op === "delegate");
     return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
+  }
+  delegationRefusals(sourceId, sessionId) {
+    return this.transaction(false, () => delegationRefusals(this.db, this.readBinding, sourceId, sessionId));
   }
   handoff(value, actor, now = Date.now(), epoch, capture) {
     const r = parseReportRequest(value);
@@ -3307,15 +3639,15 @@ class Store {
     });
   }
   changeDigest(request) {
-    const { source, plan, to, after, cleanupRev } = request;
+    const { source, plan: plan2, to, after, cleanupRev } = request;
     requireProgress(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
     return this.transaction(false, () => {
       const storeId = String(this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id);
       requireProgress(storeId === request.storeId, "conflict");
-      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan2);
       requireProgress(live, "not-found");
-      requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
-      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      requireProgress(live.id === plan2 && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan2) : undefined;
       requireProgress(state?.state !== "deleted", "not-found");
       const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
       requireProgress(cleanup2.revision === cleanupRev, "conflict");
@@ -3326,7 +3658,7 @@ class Store {
         storeId,
         sourceBinding: { ...this.readBinding },
         source,
-        plan,
+        plan: plan2,
         cleanup: cleanup2,
         interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
         availability: "target-unavailable",
@@ -3349,7 +3681,7 @@ class Store {
         else
           result.work.intervalSnapshots++;
         const remaining = DIGEST_LIMITS.bytes - result.work.inputBytes;
-        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan2, revision);
         if (!row2) {
           reason("missing-snapshot");
           return null;
@@ -3361,7 +3693,7 @@ class Store {
         result.work.inputBytes += Number(row2.bytes);
         let p = null;
         try {
-          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan, revision);
+          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan2, revision);
         } catch {}
         if (!p)
           reason("invalid-snapshot");
@@ -3519,7 +3851,7 @@ class Store {
         }
       }
       let changed;
-      if (r.op === "change") {
+      if (r.op === "change" || r.op === "finish" && r.changes) {
         const attributed = r.attributed ?? actor.sessionId;
         if (r.attributed)
           requireProgress(coordinator && r.attributed !== actor.sessionId, "assignment");
@@ -3689,7 +4021,6 @@ function normalizeTargets(targets) {
   };
   return { ...targets, configRoot: trim(targets.configRoot), dataRoot: trim(targets.dataRoot), storeRoot: trim(targets.storeRoot) };
 }
-
 class SetupError extends Error {
   code;
   constructor(code) {
@@ -3739,15 +4070,15 @@ function atomic(file, content, stagingRoot) {
 }
 function writeFiles(root, files) {
   privateDirectory(root);
-  for (const [name, body] of Object.entries(files)) {
-    need(/^[A-Za-z0-9_.-]+$/.test(name), "payload-invalid");
-    writeFileSync(path5.join(root, name), body, { mode: 384, flag: "wx" });
-    syncFile(path5.join(root, name));
+  for (const [name2, body] of Object.entries(files)) {
+    need(/^[A-Za-z0-9_.-]+$/.test(name2), "payload-invalid");
+    writeFileSync(path5.join(root, name2), body, { mode: 384, flag: "wx" });
+    syncFile(path5.join(root, name2));
   }
   fsyncDir(root);
 }
 function hashes(files) {
-  return Object.fromEntries(Object.entries(files).map(([name, body]) => [name, digest(body)]));
+  return Object.fromEntries(Object.entries(files).map(([name2, body]) => [name2, digest(body)]));
 }
 function releasePayload(binding, payload) {
   const files = { "index.js": payload.plugin, "SKILL.md": payload.guidance, "progress-binding.json": JSON.stringify({ ...binding, version: payload.version }) };
@@ -3798,14 +4129,14 @@ function verifyFiles(root, expected, extras = []) {
   if (!windows)
     safe2(root);
   need(lstatSync5(root).isDirectory(), "collision");
-  need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
-  const files = Object.keys(expected).map((name) => path5.join(root, name));
+  need(readdirSync(root).every((name2) => Object.hasOwn(expected, name2) || extras.includes(name2)), "foreign-files");
+  const files = Object.keys(expected).map((name2) => path5.join(root, name2));
   if (windows) {
-    const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
+    const extraFiles = extras.map((name2) => path5.join(root, name2)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash3] of Object.entries(expected)) {
-    const file = path5.join(root, name);
+  for (const [name2, hash3] of Object.entries(expected)) {
+    const file = path5.join(root, name2);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
       safe2(file);
@@ -3878,8 +4209,8 @@ function owned(targets) {
   return { root: info.packageRoot, manifest: m, binding: b, staged };
 }
 function removableSelectors(o) {
-  return o.staged.map((name) => {
-    const file = path5.join(o.root, name);
+  return o.staged.map((name2) => {
+    const file = path5.join(o.root, name2);
     let m;
     try {
       m = JSON.parse(readFileSync2(file, "utf8"));
@@ -3959,8 +4290,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
         const selectors = removableSelectors(o);
         for (const file2 of selectors)
           rmSync(file2);
-        for (const name of Object.keys(o.manifest.files))
-          rmSync(path5.join(o.root, name));
+        for (const name2 of Object.keys(o.manifest.files))
+          rmSync(path5.join(o.root, name2));
         rmSync(path5.join(o.root, ".ownership.json"));
         rmdirSync(o.root);
         fsyncDir(path5.dirname(o.root));
@@ -4044,7 +4375,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.3.0";
+var RELEASE = "1.4.0";
 
 // setup/cli.ts
 try {

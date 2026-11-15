@@ -7,7 +7,7 @@
 import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
 import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { DependencyMapInteraction, MAP_PANEL, MAP_ZOOM, mapPanelWidth, mapAnnouncementText, type MapAnnouncement, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_PANEL, MAP_TOUCH, MAP_ZOOM, mapPanelWidth, mapAnnouncementText, type MapAnnouncement, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
 import { mapAttribution } from './dependency-map-attribution.ts';
 import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
@@ -73,6 +73,25 @@ export interface DependencyMapViewInput extends MapSnapshot {
    * (`showsLiveness`). Absent or false: beads stay stationary. Read-only previews never pass it.
    */
   motion?: boolean;
+  /**
+   * Coarse primary pointer (`mapCoarsePointer`: the host's optional device hint, else the
+   * `(pointer: coarse)` media query). Presentation only: 44 px controls, touch help wording and the
+   * region's `data-pointer`. Touch gestures follow each event's own pointer type, never this flag.
+   */
+  coarse?: boolean;
+}
+/** The host's pointer hint when it is one the phone layout accepts ('coarse' or 'fine'), else null.
+ * Same rule as `applyDeviceHooks`, so the map and the root `data-device-pointer` hook always agree. */
+const pointerHint = (device: ViewContext<unknown>['device']): 'coarse' | 'fine' | null => {
+  const hint: unknown = device?.pointer;
+  return hint === 'coarse' || hint === 'fine' ? hint : null;
+};
+/** Coarse primary pointer: the host's optional `ready.device.pointer` hint wins; without a usable
+ * hint, the `(pointer: coarse)` media query. Never an identity or permission signal. */
+export function mapCoarsePointer(device: ViewContext<unknown>['device'], media: ((query: string) => { matches: boolean }) | undefined = globalThis.matchMedia?.bind(globalThis)): boolean {
+  const hint = pointerHint(device);
+  if (hint) return hint === 'coarse';
+  return !!media?.('(pointer: coarse)').matches;
 }
 export interface DependencyMapView {
   /** One paint into a (possibly new) host. State/geometry remain frame-owned, not DOM-owned. */
@@ -111,11 +130,15 @@ const MARK_TEXT: Record<InterfaceLanguage, Record<Mark, string>> = { en: {
 }, ru: {
   working: 'Сообщено: в работе', ready: 'Готова', waiting: 'Ожидает', 'waiting-skipped': 'Ожидает пропущенную задачу',
   blocked: 'Явно заблокирована', done: 'Выполнена', skipped: 'Пропущена', pending: 'Сообщено: ожидает',
+}, 'zh-CN': {
+  working: '报告为进行中', ready: '已就绪', waiting: '等待中', 'waiting-skipped': '等待已跳过的任务',
+  blocked: '明确报告为受阻', done: '已完成', skipped: '已跳过', pending: '报告为未开始',
 } };
 const EN = {
   planView: 'Plan view', list: 'List', map: 'Map', under: 'under 1%', viewList: 'View as list', retry: 'Try again', heading: 'Dependency map',
   closeDetails: 'Close task details', helpTitle: 'Map help and definitions', clearKey: ' clear selection · ',
   panHelp: '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.',
+  touchHelp: 'Touch: tap a card to select it, tap the background to clear the selection, drag with one finger to move the map and pinch with two to zoom. The buttons above the map do the same without gestures.',
   panelHelp: 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.',
   arrowKey: 'Arrow key. Blue beads: the prerequisite is reported working and the task it points to is still waiting or blocked. Moving beads are a looping sign of reported work, not progress and not proof that the work is happening now; still beads mean the same (they stop when motion is reduced, on large or zoomed-out maps, and outside a selected task’s chain). A bar before the arrowhead: the prerequisite is explicitly blocked. Dashed: the prerequisite was skipped. Faint: the prerequisite is done. Beads and bars appear only on an active plan’s current picture.',
   blockedSelection: ' An explicitly blocked task is never shown as ready, whatever its prerequisites.',
@@ -179,6 +202,7 @@ const RU: typeof EN = {
   planView: 'Вид плана', list: 'Список', map: 'Карта', under: 'менее 1%', viewList: 'Показать списком', retry: 'Повторить', heading: 'Карта зависимостей',
   closeDetails: 'Закрыть сведения о задаче', helpTitle: 'Справка и определения карты', clearKey: ' снять выбор · ',
   panHelp: '. Нажмите на фон, чтобы снять выбор; перетаскивайте или прокручивайте для сдвига. Tab выводит с карты.',
+  touchHelp: 'Касание: коснитесь карточки, чтобы выбрать её, коснитесь фона, чтобы снять выбор, ведите одним пальцем, чтобы сдвинуть карту, и сводите или разводите два пальца для масштаба. Кнопки над картой делают то же без жестов.',
   panelHelp: 'Выберите карточку, чтобы увидеть записанные зависимости, зависимые задачи и сообщённые сведения в панели справа на карте. Закройте панель, нажмите Escape или на фон, чтобы снять выбор.',
   arrowKey: 'Обозначения стрелок. Синие точки: по отчёту зависимость в работе, а задача, на которую указывает стрелка, ещё ожидает или заблокирована. Движение точек — циклический знак сообщённой работы, а не прогресс или доказательство работы прямо сейчас; неподвижные точки означают то же самое (движение останавливается при уменьшении анимации, на больших или отдалённых картах и вне цепочки выбранной задачи). Черта перед наконечником: зависимость явно заблокирована. Пунктир: зависимость пропущена. Бледная стрелка: зависимость выполнена. Точки и черты появляются только на текущей картине активного плана.',
   blockedSelection: ' Явно заблокированная задача никогда не показывается готовой независимо от зависимостей.',
@@ -238,7 +262,71 @@ const RU: typeof EN = {
     hidden: ['связанная задача', 'связанные задачи', 'связанных задач', 'связанной задачи'], unfinished: ['незавершённая записанная зависимость', 'незавершённые записанные зависимости', 'незавершённых записанных зависимостей', 'незавершённой записанной зависимости'],
   },
 };
-const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU };
+const ZH: typeof EN = {
+  touchHelp: '触控：轻点卡片可选中任务，轻点背景可清除选择；单指拖动可平移，双指捏合可缩放。地图上方的按钮也可完成这些操作，无需手势。',
+  planView: '计划视图', list: '列表', map: '依赖图', under: '低于 1%', viewList: '查看列表', retry: '重试', heading: '依赖图',
+  closeDetails: '关闭任务详情', helpTitle: '依赖图帮助与定义', clearKey: ' 清除选择 · ',
+  panHelp: '。点击背景可清除选择；拖动背景或滚动可平移。Tab 离开依赖图。',
+  panelHelp: '选择卡片，可在依赖图右侧面板查看其已记录的前置任务、后续任务和报告详情。关闭面板、按 Escape 或点击背景可清除选择。',
+  arrowKey: '箭头图例。蓝色圆点：前置任务报告为进行中，而箭头指向的任务仍在等待或受阻。移动的圆点循环表示报告中的工作状态，不代表进度，也不能证明工作正在执行；静止圆点含义相同（减少动态效果、大型或缩小的依赖图上，以及所选任务关联链之外会停止移动）。箭头前的横杠：前置任务明确报告为受阻。虚线：前置任务已跳过。淡色：前置任务已完成。圆点和横杠仅显示在活动计划的当前依赖图上。',
+  blockedSelection: ' 明确报告为受阻的任务，无论前置任务如何，都不会显示为已就绪。',
+  verifiedActivity: '仅对已验证的分配显示会话活动。',
+  mapDescription: '使用方向键浏览卡片。打开依赖图帮助与定义可查看全部按键。',
+  prerequisiteState: (n, working) => `${n} 个${working ? '报告为进行中' : '明确报告为受阻'}`,
+  unfinishedStates: states => ` 其中未完成的已记录前置任务包括：${states}。`,
+  waitingStates: (n, states) => `等待 ${n}${states ? `：${states}` : ''}。`,
+  unavailable: '依赖图不可用', notFound: '此计划已无记录', error: '无法读取依赖图', updatingMap: '正在更新依赖图…', loading: '正在加载依赖图…',
+  inconsistent: '当前计划无法匹配一致的依赖图，因此不再显示之前的图。任务列表不受影响。',
+  unsupported: '进度服务无法提供此依赖图所需的已记录前置任务，因此不绘制任何内容。任务列表不受影响。',
+  missing: '进度存储中已没有此计划。请选择其他计划或返回列表。',
+  failed: '无法读取依赖图。为避免显示不完整的图，当前不显示任何内容。', updating: '正在更新…',
+  changed: ' 读取依赖图时计划发生了变化。正在等待一致的图，不会绘制不完整的内容。',
+  waitingPicture: '正在等待完整计划及其已记录的前置任务。两者一致之前不会绘制任何内容。',
+  revision: r => `修订 ${r}`, showing: r => `正在显示修订 ${r}。`,
+  latestFailed: r => `无法读取最新依赖图。当前显示上次报告的修订 ${r}；读取成功前隐藏“已就绪”和“接下来可解锁”。`,
+  retained: r => ` 当前显示上次报告的修订 ${r}。匹配较新报告前隐藏“已就绪”和“接下来可解锁”。`,
+  work: '当前工作', working: '报告为进行中', ready: '已就绪', blocked: '明确报告为受阻', unlocks: '接下来可解锁',
+  guidance: '仅依据已记录的前置任务；“已就绪”和“接下来可解锁”均不是开始工作的许可。',
+  closed: '此计划已关闭。卡片仅显示报告状态，不显示“已就绪”或“接下来可解锁”提示。',
+  groupsOnly: '没有任务卡片。此计划仅记录了分组；其背景信息列于下方。 ', noTasksYet: '没有任务卡片。此计划尚未记录任务。 ',
+  noPrerequisites: '此计划未记录前置任务', listOrder: '。卡片按列表顺序排列，没有箭头。',
+  noTaskPrerequisites: '未记录任务之间的前置任务', groupArrows: '。分组前置任务列为分组背景信息，不绘制为箭头。',
+  arrows: '箭头从已记录的前置任务指向依赖它的任务。这只是已记录的信息，不是日程，也不能证明工作已执行。',
+  filters: '依赖图筛选', showTasks: '显示任务', all: '显示全部', unfinished: '未完成', allGroups: '所有分组', noGroup: '未记录分组', groupGone: '所选分组已无记录', group: '分组',
+  filtered: (visible, tasks, hidden, arrows) => `显示 ${tasks} 中的 ${visible} · 被筛选条件隐藏 ${hidden}${arrows ? `、${arrows}` : ''}`,
+  allShown: (tasks, arrows) => `显示全部 ${tasks}${arrows ? ` 和 ${arrows}` : ''}`,
+  taskMap: '任务依赖图', mapView: '依赖图视图', zoom: z => `缩放 ${z}`, zoomOut: '缩小', zoomIn: '放大', fit: '全部适配', current: '聚焦当前工作',
+  moved: where => `视图已向${where}移动。`, left: '左', up: '上', down: '下', right: '右', panLeft: '向左平移', panUp: '向上平移', panDown: '向下平移', panRight: '向右平移',
+  sessionOnly: text => `${text}，仅表示会话活动`, groupPath: path => `分组：${path}`,
+  direct: (up, down) => `${up}，${down}`, hiddenRelated: n => `被筛选条件隐藏 ${n}`, unlocksFor: n => `接下来可解锁 ${n}`,
+  relative: (name, rel) => `${name}。所选任务的${rel}`, upstream: '上游', downstream: '下游',
+  noCards: '没有任务卡片', emptyMap: '任务依赖图：没有任务卡片', gone: '所选分组已无记录。', noMatches: '没有任务符合这些筛选条件。', showAll: '显示全部任务',
+  selected: '所选任务', select: '选择卡片以查看其已记录的前置任务、后续任务和报告详情。', noInspect: '没有可查看的任务卡片。', hidden: '被筛选条件隐藏',
+  reason: '原因', next: '下一步', assignmentActivity: '分配和活动', assignment: '分配', links: '关联', reports: '报告', noReports: '未记录报告', activity: '会话活动', hiddenSuffix: ' · 被筛选条件隐藏',
+  prerequisites: '已记录的前置任务', none: '未记录。', dependents: '后续任务', noDependents: '没有任务将此任务记录为前置任务。',
+  chain: (up, down) => `图中已突出显示：此任务直接或间接等待的 ${up}，以及等待此任务的 ${down}。`,
+  unlockHelp: titles => `若报告为已完成，将满足以下任务最后一个未完成的已记录前置任务：${titles}。这不是开始这些任务的许可。`,
+  groupContext: '分组背景', groupHelp: (title, deps) => `分组“${title}”记录了自身的前置任务：${deps}。这些属于分组，而非此任务。`,
+  hiddenHelp: n => `当前筛选条件隐藏了 ${n}。选择其中一个可重新显示。`,
+  keys: '依赖图中的按键：', arrowKeys: '方向键', nearest: ' 最近的卡片 · ', firstPrerequisite: ' 第一个前置任务 · ', firstDependent: ' 第一个后续任务 · ', fitKey: ' 全部适配 · ', zoomKey: ' 缩放', drag: '。拖动背景或滚动可平移；Tab 离开依赖图。',
+  selectionHelp: '选择卡片后，它等待的任务标为上游（实线边框），等待它的任务标为下游（双线边框）。',
+  readinessHelp: '已就绪：所有已记录的前置任务均报告为已完成。接下来可解锁：若某卡片报告为已完成，将满足另一任务最后一个未完成的已记录前置任务。',
+  attributionHelp: '已分配给：此修订中已验证的委派。未验证的受派人：已有记录，但没有已验证的委派。关联至：会话链接，不是分配。受派会话名称前的方块表示此视图的运行记录显示该会话当前活跃（实心）或等待输入（空心）。这不说明会话正在处理哪个任务。',
+  groupDeps: deps => `记录了自身的前置任务：${deps}`, noGroupDeps: '未记录分组前置任务', groupMetadata: '分组的前置任务是分组元数据。任务不会继承这些前置任务，它们也不会绘制为箭头。',
+  selectedMapTask: '所选依赖图任务', skippedHelp: '跳过的工作对后续任务而言不算已完成。', blockedHelp: '某个智能体明确报告此任务受阻。无论前置任务如何，均不会显示为已就绪。',
+  closedPending: '计划关闭时报告为未开始。', pendingHelp: '报告为未开始。匹配当前修订前，已就绪状态会被隐藏。',
+  readyDeps: '所有已记录的前置任务均报告为已完成。“已就绪”仅描述已记录的前置任务。', readyNoDeps: '未记录前置任务。“已就绪”仅描述已记录的前置任务。',
+  skippedDeps: titles => `等待中：已记录的前置任务被跳过（${titles}），跳过的工作不算已完成。`, waitingDeps: n => `等待 ${n}。`,
+  notReported: '未报告', invalid: '无法读取报告的详情',
+  counts: {
+    task: ['个任务', '个任务', '个任务', '个任务'], arrow: ['条箭头', '条箭头', '条箭头', '条箭头'],
+    prerequisite: ['个直接已记录的前置任务', '个直接已记录的前置任务', '个直接已记录的前置任务', '个直接已记录的前置任务'],
+    dependent: ['个直接后续任务', '个直接后续任务', '个直接后续任务', '个直接后续任务'], related: ['个关联任务', '个关联任务', '个关联任务', '个关联任务'],
+    upstream: ['个上游任务', '个上游任务', '个上游任务', '个上游任务'], downstream: ['个下游任务', '个下游任务', '个下游任务', '个下游任务'],
+    hidden: ['个关联任务', '个关联任务', '个关联任务', '个关联任务'], unfinished: ['个未完成的已记录前置任务', '个未完成的已记录前置任务', '个未完成的已记录前置任务', '个未完成的已记录前置任务'],
+  },
+};
+const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU, 'zh-CN': ZH };
 function mapNoun(n: number, kind: keyof typeof EN.counts, language: InterfaceLanguage) {
   const category = new Intl.PluralRules(language).select(n);
   const index = ({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[category] ?? 3;
@@ -401,7 +489,7 @@ export function prerequisiteCounts(fact: Pick<DerivedTask, 'prerequisites'> | un
 /** "1 reported working, 1 explicitly blocked" (zero parts omitted); '' when both are zero. */
 export function prerequisiteStates(c: { working: number; blocked: number }, language: InterfaceLanguage = 'en'): string {
   const text = COPY[language];
-  return [c.working ? text.prerequisiteState(mapNumber(c.working, language), true) : '', c.blocked ? text.prerequisiteState(mapNumber(c.blocked, language), false) : ''].filter(Boolean).join(', ');
+  return [c.working ? text.prerequisiteState(mapNumber(c.working, language), true) : '', c.blocked ? text.prerequisiteState(mapNumber(c.blocked, language), false) : ''].filter(Boolean).join(language === 'zh-CN' ? '，' : ', ');
 }
 
 function mark(kind: Mark) {
@@ -590,8 +678,19 @@ export function createDependencyMapView(): DependencyMapView {
     if (v.hasPointerCapture(pointerId)) { releasing = true; try { v.releasePointerCapture(pointerId); } finally { releasing = false; } }
   }
   // Frame-owned gesture listeners survive root replacement; capture is rebound to each new viewport.
-  const onMove = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } }); };
-  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' }); };
+  // A finger that started on the canvas: whether this touch gesture panned or pinched, so the card's
+  // native click after it is not also a selection. Keyboard clicks (detail 0) are never suppressed.
+  let touchGesture: { starts: Map<number, { x: number; y: number }>; panned: boolean } | null = null, suppressTap = false;
+  const gestureOf = (id: number) => { const b = binding()?.state(); return !!b && (b.dragging === id || b.pinching === id); };
+  const onMove = (e: PointerEvent) => {
+    const start = touchGesture?.starts.get(e.pointerId);
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) >= MAP_TOUCH.slop) touchGesture!.panned = true;
+    const b = binding(); if (b && gestureOf(e.pointerId)) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } });
+  };
+  const onEnd = (e: PointerEvent) => {
+    if (touchGesture?.starts.delete(e.pointerId) && !touchGesture.starts.size) { suppressTap = touchGesture.panned; touchGesture = null; }
+    const b = binding(); if (b && gestureOf(e.pointerId)) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' });
+  };
   const onFocusIn = (e: FocusEvent) => { const t = e.target as Element | null; if (t?.closest) { binding()?.focusOwner(!!t.closest('[data-testid="map-region"],[data-map-focus-owner]')); binding()?.dispatch({ type: 'canvas-focus', id: t.closest<HTMLElement>('[data-testid="map-viewport"] button[data-task]')?.dataset.task ?? null }); } };
   const onBlur = () => binding()?.focusOwner(false);
   function listen(doc: Document) {
@@ -618,6 +717,7 @@ export function createDependencyMapView(): DependencyMapView {
     restoring = true; queueMicrotask(() => { restoring = false; });
     const v = input, b = v.interaction ?? null;
     const language = v.language ?? 'en', c = COPY[language], marks = MARK_TEXT[language];
+    const sentenceEnd = language === 'zh-CN' ? '。' : '.';
     const count = (n: number, kind: keyof typeof EN.counts) => mapCount(n, kind, language);
     if (b) { listen(host.ownerDocument); announcer = mapAnnouncer(host.ownerDocument); }
     const st = b?.state() ?? null;
@@ -636,6 +736,7 @@ export function createDependencyMapView(): DependencyMapView {
     region.dataset.revision = String(p?.graph.revision ?? '');
     region.dataset.tasks = String(layout?.order.length ?? 0); region.dataset.edges = String(layout?.edges.length ?? 0);
     if (b) region.dataset.interactive = '';
+    if (v.coarse) region.dataset.pointer = 'coarse';
 
     const listButton = (parent: Element) => button(parent, 'map-list', c.viewList, () => v.onList(v.selected), 'outline');
     const retryButton = (parent: Element) => button(parent, 'map-retry', c.retry, v.onRetry, 'outline');
@@ -866,7 +967,7 @@ export function createDependencyMapView(): DependencyMapView {
         return t;
       };
       const size = () => ({ w: viewportNode?.clientWidth || 320, h: viewportNode?.clientHeight || 240 });
-      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`); };
+      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}${sentenceEnd}`); };
       const panBy = (dx: number, dy: number, where: string) => { const bb = binding(); if (bb?.dispatch({ type: 'pan', x: dx, y: dy })) announce(c.moved(where)); };
       const zoomSet = el('div', 'ap-map-tool-set');
       zoomNode = testid(el('span', 'ap-map-zoom', zoomText(t0.zoom, language)), 'map-zoom-level');
@@ -893,7 +994,7 @@ export function createDependencyMapView(): DependencyMapView {
         const modified = e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.key.startsWith('Arrow'));
         if (!bb.dispatch({ type: 'key', key: e.key, canvas, modified, editable: false })) return;
         e.preventDefault();
-        if (e.key === '+' || e.key === '-') announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`);
+        if (e.key === '+' || e.key === '-') announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}${sentenceEnd}`);
       });
       // Tab into an off-screen roving card: pan just enough to show it (no selection change). Passive
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
@@ -908,17 +1009,33 @@ export function createDependencyMapView(): DependencyMapView {
         if (dx || dy) { bb.dispatch({ type: 'pan', x: dx, y: dy }); applyViewport(); }
         revealInPage(card);
       });
-      // Background drag pans; cards are buttons and never start a drag.
+      // Mouse/pen: a background drag pans; cards are buttons and never start a drag. Touch: one finger
+      // pans from the background or a card (a tap still selects through the card's click), two pinch.
+      // Other controls inside the canvas (Show all tasks) keep their own touch behaviour.
       viewport.addEventListener('pointerdown', e => {
         const bb = binding(); if (!bb) return;
-        const background = !(e.target as Element).closest('button,a,select,input,textarea,summary');
-        bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background, primary: e.isPrimary && e.button === 0 && !e.ctrlKey && !e.metaKey });
+        const control = (e.target as Element).closest('button,a,select,input,textarea,summary');
+        const touch = e.pointerType === 'touch';
+        if (touch) {
+          if (control && !control.classList.contains('ap-map-card')) return;
+          if (!touchGesture) { touchGesture = { starts: new Map(), panned: false }; suppressTap = false; }
+          touchGesture.starts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          if (touchGesture.starts.size > 1) touchGesture.panned = true;
+          const box = viewport.getBoundingClientRect();
+          bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background: !control, primary: true, touch: true, origin: { x: box.left, y: box.top } });
+          return;
+        }
+        suppressTap = false;
+        bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background: !control, primary: e.isPrimary && e.button === 0 && !e.ctrlKey && !e.metaKey });
       });
       viewport.addEventListener('lostpointercapture', e => {
-        // Root replacement detaches this node: that loss is rebound, not a gesture end.
+        // Root replacement detaches this node: that loss is rebound, not a gesture end. Only the
+        // canvas's own capture counts: a card losing a finger's implicit capture to the canvas bubbles here.
         const bb = binding();
-        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
+        if (e.target === viewport && !releasing && viewport.isConnected && bb && gestureOf(e.pointerId)) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
       });
+      // A long press must never open the platform's callout or text selection over the canvas.
+      viewport.addEventListener('contextmenu', e => { if (touchGesture) e.preventDefault(); });
       // Wheel/trackpad pans inside the canvas only. Ctrl/Cmd (browser zoom, pinch) is left alone.
       viewport.addEventListener('wheel', e => {
         const bb = binding(); if (!bb || e.ctrlKey || e.metaKey) return;
@@ -1087,12 +1204,16 @@ export function createDependencyMapView(): DependencyMapView {
           c.direct(count(prereqs, 'prerequisite'), count(dependents, 'dependent')),
           hiddenRel ? c.hiddenRelated(count(hiddenRel, 'related')) : '',
           unlocks.length ? c.unlocksFor(count(unlocks.length, 'task')) : '',
-        ].filter(Boolean).join('. ');
+        ].filter(Boolean).join(language === 'zh-CN' ? '。' : '. ');
         baseNames.set(id, name);
         card.setAttribute('aria-label', rel ? c.relative(name, rel === 'upstream' ? c.upstream : c.downstream) : name);
         // A click whose press moved focus onto this card has already had its name spoken.
         card.onpointerdown = () => { pointerFocused = document.activeElement === card ? null : id; };
-        card.onclick = () => { if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null; };
+        card.onclick = e => {
+          // The click a browser may still deliver after a finger panned or pinched is not a tap.
+          if (b && suppressTap && e.detail > 0) { suppressTap = false; pointerFocused = null; return; }
+          if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null;
+        };
         world.append(card);
         // Chain tag: a label on the card's top edge, outside its clipped content, so it never competes
         // with status words or chips. Decorative: the card's name carries the same words.
@@ -1275,6 +1396,7 @@ export function createDependencyMapView(): DependencyMapView {
       const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
       keys.append(el('strong', '', c.keys), k(c.arrowKeys), c.nearest, k('['), c.firstPrerequisite, k(']'), c.firstDependent, k('Escape'), c.clearKey, k('F'), c.fitKey, nowrap(k('+'), ' ', k('−'), c.zoomKey), c.panHelp);
       helpBody.append(keys);
+      if (v.coarse) helpBody.append(testid(el('p', '', c.touchHelp), 'map-touch-help'));
       if (panel) helpBody.append(el('p', '', c.panelHelp));
     }
     helpBody.append(el('p', '', c.arrows));
@@ -1341,10 +1463,11 @@ export function createDependencyMapView(): DependencyMapView {
         // A scrolled reader keeps the canvas where it was on screen when header text changes height.
         const page = viewport.ownerDocument.scrollingElement;
         if (before !== null && page && page.scrollTop > 0) { const delta = viewport.getBoundingClientRect().top - before; if (Math.abs(delta) >= 1) page.scrollTop += delta; }
-        // An active background drag continues on the replacement canvas.
-        const dragging = b.state().dragging;
-        if (dragging !== null && !viewport.hasPointerCapture(dragging)) {
-          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging, cancelled: true }); }
+        // An active background drag (and a pinch's second finger) continues on the replacement canvas.
+        for (const pointer of [b.state().dragging, b.state().pinching]) {
+          if (pointer !== null && !viewport.hasPointerCapture(pointer)) {
+            try { viewport.setPointerCapture(pointer); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: pointer, cancelled: true }); }
+          }
         }
         tryFocus(true);
         return true;
@@ -1505,6 +1628,9 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   });
   const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
+  // Without a host device hint the coarse presentation follows the pointer media query; repaint when it
+  // changes (a hint change already repaints through the ready context).
+  globalThis.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => { if (shown && !pointerHint(latest?.device)) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
   // Unavailable pictures do not acquire a perpetual refresh-driven repaint.
@@ -1537,6 +1663,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const snapshot = map.value;
       const attribution = input.runs ? mapAttribution({ snapshot, request: input.runs.request, runs: input.runs.panel, census: input.census, liveSeq: vc.live.seq ?? 0 }) : new Map();
       const graph = snapshot.picture?.graph ?? null, width = canvasWidth || CARD_METRICS.width;
+      const coarse = mapCoarsePointer(vc.device);
       // Same graph: reuse the full-plan layout (edgeless packing only re-packs for a new canvas width).
       // Board selection panel: from the measured map and canvas widths, never from the selection.
       const panel = mapPanelWidth(frame, mapWidth, canvasWidth);
@@ -1554,6 +1681,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
             status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight, cover: panel ? panel + MAP_PANEL.margin : 0 },
             // The board's large canvas never frames past 100%; the rail keeps its framing unchanged.
             ...(frame === 'board' ? { framingMax: MAP_ZOOM.fit } : {}),
+            // A coarse pointer frames at full size: 75% card text is too small at arm's length.
+            ...(coarse ? { readable: MAP_TOUCH.readable } : {}),
           });
         } finally { painting = false; }
       }
@@ -1564,7 +1693,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
         onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
-        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'),
+        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'), coarse,
       });
     },
     afterPaint(root, vc, plan, listFocus) {
@@ -1674,7 +1803,22 @@ const ATTRIBUTION_RU: typeof ATTRIBUTION_EN = {
   historical: r => `Скрыто, пока карта показывает редакцию ${r} по последнему отчёту.`,
   assignmentOnly: 'Показано только при подтверждённом назначении.', runsUnavailable: 'Записи запусков этого представления недоступны.', latestUnproven: 'Записи запусков этого представления не подтверждают последний запуск назначенной сессии.', inactive: 'Последний записанный запуск назначенной сессии сейчас не активен.',
 };
-const ATTRIBUTION: Record<InterfaceLanguage, typeof ATTRIBUTION_EN> = { en: ATTRIBUTION_EN, ru: ATTRIBUTION_RU };
+const ATTRIBUTION_ZH: typeof ATTRIBUTION_EN = {
+  unavailable: '此视图中不可用', unavailableNote: '无法核验此依赖图的分配来源。这不表示任务未分配。',
+  notShown: '未显示', activityUnavailable: '此视图中无法获取会话活动。',
+  more: n => `，另有 ${n} 个`, assigned: name => `已分配给 ${name}`,
+  unverified: name => `未验证的受派人 · ${name}`, linkedCard: (name, more) => `关联至 ${name}${more} · 无已验证的委派`,
+  recorded: name => `已记录的受派人 ${name} · 委派来源不可用`, noAssignee: '未记录受派人',
+  verified: r => `已验证的委派，适用于修订 ${r}。`,
+  unverifiedNote: '此修订没有已记录的已验证委派，因此依赖图不称为已分配。这不表示任务未分配。',
+  linksNote: '只有会话链接提及此任务。链接不等于分配。', linked: name => `关联至 ${name}`, unverifiedLink: name => `关联至 ${name} · 无已验证的委派`,
+  relay: (reporter, attributed) => `${reporter} 代 ${attributed} 报告`, direct: reporter => `${reporter} 直接报告`,
+  reports: (text, n) => `${text} · ${n} 条报告`, lastReporter: name => `最近由 ${name} 报告 · 报告方式不可用`,
+  active: '受派会话当前活跃', waiting: '受派会话当前等待输入', hedge: '仅表示会话活动：此视图的运行记录显示受派会话活跃，但不能证明它正在处理此任务。',
+  historical: r => `依赖图显示上次报告的修订 ${r} 时隐藏。`,
+  assignmentOnly: '仅对已验证的分配显示。', runsUnavailable: '此视图的运行记录不可用。', latestUnproven: '此视图的运行记录未确认受派会话的最新运行。', inactive: '受派会话最近记录的运行当前并不活跃。',
+};
+const ATTRIBUTION: Record<InterfaceLanguage, typeof ATTRIBUTION_EN> = { en: ATTRIBUTION_EN, ru: ATTRIBUTION_RU, 'zh-CN': ATTRIBUTION_ZH };
 export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string, language: InterfaceLanguage = 'en'): MapAttributionCopy {
   const c = ATTRIBUTION[language];
   if (!a) return {
