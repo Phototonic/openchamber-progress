@@ -8308,7 +8308,7 @@ function observeManagedFreshStore(j) {
       need4(matching2.length === 1, "managed-source-conflict");
     else if (matching2.length)
       need4(m.intent?.step.name === "register-source", "managed-source-conflict");
-    if (f.storeMode === "create") {
+    if (f.storeMode === "create" && m.state !== "complete") {
       need4(e.sources.length === matching2.length, "managed-source-conflict");
       if (initialized)
         need4(e.sources.length === 0 && !e.captureEnabled, "managed-migration-conflict");

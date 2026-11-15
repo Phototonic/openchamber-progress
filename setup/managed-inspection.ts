@@ -285,7 +285,9 @@ export function observeManagedFreshStore(j:ManagedFreshStepJournal):ManagedCaptu
     const registered=f.sourceMode==='reuse'||completed>=0&&last>=completed;
     if(registered)need(matching.length===1,'managed-source-conflict');
     else if(matching.length)need(m.intent?.step.name==='register-source','managed-source-conflict');
-    if(f.storeMode==='create'){
+    // Creation evidence stays strict throughout unfinished intent recovery.
+    // Complete is terminal: unrelated sources and later capture changes are valid.
+    if(f.storeMode==='create'&&m.state!=='complete'){
       need(e.sources.length===matching.length,'managed-source-conflict');
       if(initialized)need(e.sources.length===0&&!e.captureEnabled,'managed-migration-conflict');
     }

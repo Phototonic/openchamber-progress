@@ -282,6 +282,10 @@ available after verified completion with capture off.
 Rollback must retain format 3, stores, bindings, expectations and history. Older
 journal readers refuse format 3, including complete records; use a fresh-capable
 build for recovery, never down-convert or restore a global loader.
+Creation-only sole-source and initial capture-off checks apply while fresh work is
+unfinished, not after terminal completion. A completed store may serve other
+sources; Setup still verifies its selected source, Store identity, schema, private
+objects and actual capture setting.
 
 If bootstrap is refused, stop submitting setup actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no

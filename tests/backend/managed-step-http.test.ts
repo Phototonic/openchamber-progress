@@ -209,6 +209,23 @@ for(const kind of ['default','custom','retained-new','retained-reuse'] as const)
   }finally{await f.close();}
 });
 
+test('completed fresh creation remains verified after another source joins the shared Store',async()=>{
+  const f=await freshHttpFixture();try{
+    let p=(await f.begin()).body.progress!;
+    while(p.state!=='complete'){const r=await f.advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;}
+    const store=new Store(f.database);try{
+      store.registerSource({id:'second-source',configRoot:path.join(f.root,'second-config'),dataRoot:path.join(f.root,'second-data'),verified:true});
+    }finally{store.close();}
+    const read=await setupCall(f.host,null);assert.ok(read.ok);
+    assert.equal(read.setup.verified,true);assert.equal(read.setup.captureEnabled,true);
+    assert.equal(read.setup.delivery!.freshProgress!.state,'complete');assert.deepEqual(read.setup.diagnostics,[]);
+    for(const enabled of [false,true]){
+      const control=await setupCall(f.host,enabled?'managed-enable':'managed-disable',null,true,undefined,read.setup.delivery!.managedMigrationSteps);
+      assert.ok(control.ok,JSON.stringify(control));assert.equal(control.setup.verified,true);assert.equal(control.setup.captureEnabled,enabled);
+    }
+  }finally{await f.close();}
+});
+
 test('Windows old fresh routes refuse before body parsing, security, workers and writes',async()=>{
   const f=await freshHttpFixture();try{
     let workers=0;const dispatch=f.setup.request.bind(f.setup);f.setup.request=async(...args)=>{workers++;return dispatch(...args);};
