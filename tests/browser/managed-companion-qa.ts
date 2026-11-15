@@ -6,6 +6,14 @@ import { once } from 'node:events';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import { configureFreshSetup } from './fresh-setup-fixture.ts';
 
+export async function ensureManagedRailOpen(io:{
+  hostOpen:()=>Promise<boolean>;
+  toggle:()=>Promise<void>;waitForGuest:()=>Promise<unknown>;
+}) {
+  if(!await io.hostOpen())await io.toggle();
+  await io.waitForGuest();
+}
+
 export async function managedBrowser(options:{chromium:string;root:string;artifacts:string;url:string}) {
   const {root,artifacts,url}=options,profile=`${root}/browser`;
   const browser=spawn(options.chromium,['--headless=new','--no-sandbox','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-first-run','--disable-background-networking','--disable-sync','--disable-extensions','--window-size=1440,1100','about:blank'],{stdio:'ignore'});
@@ -65,7 +73,8 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       };
     };
     const guestClick=async(surface:string,selector:string,beforeProbe?:()=>Promise<void>)=>{
-      const found=await wait<any>(async()=>{if(beforeProbe)await beforeProbe();const context=await guestContext(surface);if(!context)return null;await evaluate(`document.querySelector(${literal(selector)})?.scrollIntoView({block:'nearest'})`,context.id,context.sessionId);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const local=await evaluate<any>(`(()=>{const e=document.querySelector(${literal(selector)});if(!e||!e.checkVisibility())return null;const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`,context.id,context.sessionId);return local?{context,local}:null;},Boolean,`visible actionable guest control: ${surface} ${selector}`);
+      // Center controls so a long Setup review cannot leave its checkbox at a clipped edge.
+      const found=await wait<any>(async()=>{if(beforeProbe)await beforeProbe();const context=await guestContext(surface);if(!context)return null;await evaluate(`document.querySelector(${literal(selector)})?.scrollIntoView({block:'center',behavior:'instant'})`,context.id,context.sessionId);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const local=await evaluate<any>(`(()=>{const e=document.querySelector(${literal(selector)});if(!e||!e.checkVisibility())return null;const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`,context.id,context.sessionId);return local?{context,local}:null;},Boolean,`visible actionable guest control: ${surface} ${selector}`);
       const {context,local}=found;
       const owner=await send('DOM.getFrameOwner',{frameId:context.frame});const box=await send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId});await pointer(local.x+box.model.content[0],local.y+box.model.content[1]);
     };
@@ -85,11 +94,14 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>evaluate('document.body.innerText'),v=>!v.includes('Allow and enable'),'approval accepted');await key('Escape');
     };
     const openRail=async()=>{
-      // An empty or grant-retired rail is still an open rail. Toggling it
-      // while its read is settling closes it instead of waiting for content.
-      if(await guestContext('panel'))return;
-      await click(`document.querySelector('button[aria-label="Agent progress"]')??document.querySelector('button[title="Agent progress"]')`);
-      await wait(()=>guest('panel','!!document.querySelector("[data-surface]")'),Boolean,'rail open');
+      // Retained host panels can be open before their guest is discoverable.
+      // Use host selection to decide whether to toggle, then wait for the guest.
+      const control=`document.querySelector('button[data-context-surface="plugin:agent-progress-probe"]')`;
+      await ensureManagedRailOpen({
+        hostOpen:async()=>(await wait(()=>evaluate(`${control}?.getAttribute("aria-pressed")`),v=>v==='true'||v==='false','host rail selection'))==='true',
+        toggle:()=>click(control),
+        waitForGuest:()=>wait(()=>guest('panel','!!document.querySelector("[data-surface]")'),Boolean,'rail open'),
+      });
     };
     const openBoard=async()=>{
       if(await guestContext('panel'))await click(`[...document.querySelectorAll('button[aria-label="Close panel"]')].findLast(e=>e.checkVisibility())`);
