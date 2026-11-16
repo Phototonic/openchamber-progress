@@ -816,6 +816,13 @@ At-a-glance tracking of a plan's sub-agents that goes beyond a todo list, withou
 
 A finished run is not a finished task, and a claim is not acceptance: a child that finished and claims done while its task is blocked shows all three as they are.
 
+A recorded Running run whose child session is absent from a current, complete
+host census adds **not seen in OpenChamber now** beside Running and its existing
+start time, with an accessible name. This qualifier never changes the recorded
+outcome or counts and disappears when the session is listed again. Missing or
+stale census data, incomplete directory coverage, truncation, conflicts or cycles
+never prove absence and never show the qualifier. Terminal runs never show it.
+
 ![Rail with a plan in scope: summary counts, a child waiting for an answer, a running child with its tasks, and a finished child that claims done while its task is still blocked (synthetic example)](images/subagent-runs-rail.png)
 
 - **A plan in scope is required (defect A).** Rail: the plan shown for the selected session. Work Status: the featured plan. Page: the selected plan, rooted in its coordinator (`ownerSessionId`), verified-source plans only, independent of the host's selection; the History and Document tabs have none. Without a plan in scope — including "No plan reported for this session", a draft, a child session without a plan, or a page with no plan selected — there is no section, heading, count, root row, history control or prompt, however many children the host lists or runs. Such views start no sub-agent read or reconciliation, and a plan → no-plan change retires the visit so held replies paint nothing. With a plan in scope, the section is still absent when there is nothing useful (no running, waiting, task-linked or recorded child). This is display gating only: the companion keeps capturing dispatches and plan-free child handoffs.
@@ -915,8 +922,10 @@ though managed activation remains unknown. Store/binding adoption retires old
 setup replies and requests replacement status for the adopted context.
 
 Review explains full-user plugin/service privileges and conditional lifecycle.
-After acknowledgement, configuration and compatibility mutations echo only the
-reviewed store, opaque expected identity and `confirmed:true`. Negotiated capture
+After acknowledgement, fresh begin echoes wire 2, a client operation ID, the
+opaque expected review identity and `confirmed:true`, with no paths or replacement
+identities. Older compatibility controls echo the reviewed store and nonce.
+Negotiated capture
 controls instead keep this same review, acknowledgement and Confirm/Cancel copy
 but submit the bodyless capture enable/disable route, then reread status. They
 use the current selected binding under fresh server validation, not a review
@@ -970,16 +979,29 @@ loaded-fingerprint observation went matching → different → matching after th
 report turn without restart; this does not independently attest which cached
 importer executed. No automatic restart or all-session activation is implied.
 
-### Step-by-step managed switch
+### Step-by-step managed setup and switch
 
-Setup negotiates the literal `managedMigrationSteps: 1` capability before using
-the step route. Opening or reopening Setup only reads status. A fresh installation
-with no legacy files or journal keeps the existing inspect → review → explicit
-configure flow; the capability alone never starts migration. Older services keep
-their existing flow; a step client never falls back to the old migration route.
+Setup independently negotiates `managedMigrationSteps: 1` (wire 1 migration) and
+`managedFreshSteps: 1` (wire 2 fresh setup) on the same step route, using one
+StepDriver/card and at most one in-flight request. Opening/reopening only reads
+status; capabilities never start work. Without fresh support, the fresh action
+shows update-together guidance and sends neither a fresh mutation nor an old-route
+fallback, regardless of browser OS. Migration and capture controls remain independent.
+
+Fresh review shows canonical folders, package version, create/retain store and
+create/reuse source choices, the frozen plan and capture consequence. New-store
+plans create the folder if needed, initialize the database off, publish expectation,
+register the source, publish binding, enable and reconcile, after prepare. Retained
+plans omit creation and capture effects; matching sources also omit registration.
+Retained reviews show the freshly observed capture setting when available within
+budget, otherwise unknown. Proposed identities are not configured-store authority.
+Fresh progress comes only from `delivery.freshProgress`; migration remains exclusively
+`migrationProgress`. Before a durable journal exists there is no progress. An absent
+fresh store reads unknown capture with partial-setup guidance, not corruption.
 
 An explicit reviewed confirmation starts a one-request-at-a-time run. The card
-shows the current stage out of nine, a part number for removal batches (not an
+shows the current stage out of nine for migration, or its actual frozen fresh-plan
+position and total, a part number for removal batches (not an
 invented file total or percentage), the last finished stage, and observed capture
 on/off/unknown. Pending, running, paused, stopped, failed, interrupted, capture
 review and complete are distinct. Capture off/unknown stays conspicuous while
@@ -1004,7 +1026,7 @@ Review opens with Cancel focused; Space acknowledges and Enter confirms. Running
 hands focus to Pause; a stopped run hands it to the relevant recovery control.
 Pause/Stop confirmation focuses Keep going/Cancel, Escape returns to its opener,
 and user-moved focus is never reclaimed. New capture warnings and failures are
-announced once, not on every repaint. EN/RU copy and controls wrap on narrow screens.
+announced once, not on every repaint. EN/RU/zh-CN fresh copy and controls wrap on narrow screens.
 
 The rendered synthetic-shell driver `tests/browser/managed-migration-qa.ts --source`
 checks these journeys, fresh configuration, failed replay and occupied-port copy.
@@ -1299,7 +1321,7 @@ disposable; failures exit nonzero and retain measured evidence.
   - `setup-status` (heading `setup-status-heading`, also the unconfigured form's title), `setup-disable`, `setup-enable`, `setup-update`, `setup-remove`, `setup-reinstall`
   - `setup-confirm-disable`, `setup-confirm-enable`, `setup-confirm-remove-capture`
   - `setup-error` (`data-code`), `setup-notice`, `setup-reload`, `setup-recovery`, `setup-loading`
-  - managed steps: `setup-migration-progress` (`data-state`, `data-worker`, `data-effect`, `data-capture`, `data-recovery`, `data-sequence`, `data-driving`, `data-step`, `data-batch`); `setup-migration-heading`, `setup-migration-step`, `setup-migration-state`, `setup-migration-capture`, `setup-migration-capture-warning` (`data-capture`), `setup-migration-failure` (`data-stage`, `data-code`)
+  - managed steps: `setup-migration-progress` (`data-family`, `data-state`, `data-worker`, `data-effect`, `data-capture`, `data-recovery`, `data-sequence`, `data-driving`, `data-step`, `data-batch`; fresh also `data-store-mode`, `data-source-mode`, `data-total`); `setup-migration-heading`, `setup-migration-step`, `setup-migration-state`, `setup-migration-capture`, `setup-migration-capture-warning` (`data-capture`), `setup-migration-failure` (`data-stage`, `data-code`)
   - step actions: `setup-migration-pause`, `setup-migration-continue`, `setup-migration-resume`, `setup-migration-review-capture`, `setup-migration-status`, `setup-migration-abandon`; `setup-migration-confirm`, `setup-migration-confirm-pause`, `setup-migration-confirm-abandon`, `setup-migration-cancel`; `setup-migration-capture-review`, `setup-migration-inspecting`, `setup-migration-cancel-inspect`
   - companion update: `update-notice` (`data-kind` = `upgrade` | `rebuild` | `downgrade`) with `update-notice-review`; `update-review-panel` (a review started from that notice); `setup-update-notice` (in the Setup card); `setup-review` (`data-action`, `data-kind`), `setup-review-versions`
 - **States:** the testids in the table above.

@@ -14,6 +14,7 @@ import { Store } from '../../shared/store.ts';
 import { createManagedBindingDirectory,managedBindingFile } from '../../shared/managed-binding.ts';
 import { isolatedEnvironment } from '../fixtures/managed.ts';
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { writerTarget,writerTargetPort } from '../../shared/platform.ts';
 
 function fixture() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-backend-reassembly-');
@@ -206,7 +207,13 @@ test('HTTP verified ownership with an unverified source makes no update claim',a
 test('HTTP comparison orders prerelease identifiers and numeric release components',async()=>{
   const f=fixture();let running:Awaited<ReturnType<typeof serve>>|undefined;
   try {
-    running=await serve(f);assert.equal((await running.request('/v1/setup/install',f.targets)).status,200);
+    const fencePorts=[...new Set([writerTarget('scope',path.dirname(serviceBindingFile(f.env))),
+      writerTarget('store',f.targets.storeRoot)].map(writerTargetPort))].sort((a,b)=>a-b);
+    running=await serve(f);const installed=await running.request('/v1/setup/install',f.targets);
+    const body=await installed.json().catch(()=>null);
+    // Keep failure evidence path-free: never dump the response or target keys.
+    const code=typeof body?.error==='string'&&/^[a-z][a-z0-9-]{0,79}$/.test(body.error)?body.error:null;
+    assert.equal(installed.status,200,JSON.stringify({status:installed.status,code,fencePorts}));
     const [major,minor,patch]=f.payload.version.split('.').map(Number);
     for(const [version,expected]of [[`${f.payload.version}-rc.10`,'available'],[`${major}.${minor}.${patch!+1}-rc.2`,'newer-installed'],[`${major}.${minor!+1}.0`,'newer-installed']] as const){
       lifecycle('update',f.targets,{...f.payload,version});

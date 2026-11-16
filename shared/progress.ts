@@ -133,11 +133,25 @@ export interface ManagedReview {
   targets: { configRoot: string; dataRoot: string; storeRoot: string };
   storeId: string | null; sourceId: string | null;
 }
+export interface ManagedFreshReview extends ManagedReview {
+  planKind: 'fresh';
+  storeId: string; sourceId: string;
+  storeMode: import('./managed-steps.ts').ManagedFreshStoreMode;
+  sourceMode: import('./managed-steps.ts').ManagedFreshSourceMode;
+  capturePolicy: import('./managed-steps.ts').ManagedFreshCapturePolicy;
+  packageVersion: string;
+  capture: import('./managed-steps.ts').ManagedCaptureObservation;
+  plan: import('./managed-steps.ts').ManagedFreshStepRef[];
+}
 export interface ManagedDelivery {
   kind: 'managed'; revision: 1;
   /** Advertised only by a complete bounded-step implementation. Absent means unsupported. */
   managedMigrationSteps?: 1;
   migrationProgress?: import('./managed-steps.ts').ManagedStepProgress;
+  managedFreshSteps?: 1;
+  freshProgress?: import('./managed-steps.ts').ManagedFreshStepProgress;
+  /** Presentation family, including refused partial setup without usable progress. Not authority. */
+  planKind?: 'fresh';
   configuration: 'unconfigured' | 'configured' | 'invalid';
   migration: ManagedMigrationState;
   /** Local service cannot establish host grant, inventory or watched-file mode. */

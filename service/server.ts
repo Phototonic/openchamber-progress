@@ -19,7 +19,7 @@ import { blockedTiming } from './blocked-timing.ts';
 import { RELEASE } from '../shared/release.ts';
 import { parseCleanup } from '../shared/cleanup.ts';
 import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
-import {MANAGED_STEP_ROUTE,MANAGED_STEP_LIMITS,managedStepRequest,type ManagedStepResponse,type ManagedStepDiagnostic} from '../shared/managed-steps.ts';
+import {MANAGED_STEP_ROUTE,MANAGED_STEP_LIMITS,managedSetupStepRequest,type ManagedSetupStepResponse,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic} from '../shared/managed-steps.ts';
 import {withSetupWriter} from './request-worker.ts';
 import {managedDiagnostic} from '../setup/managed-diagnostic.ts';
 import { needsYou } from './needs-you.ts';
@@ -55,9 +55,9 @@ export function createProgressServer(store: Store | undefined, token: string, un
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
     const admittedAt=process.hrtime.bigint();
-    let stepRoute=false,stepStage:ManagedStepDiagnostic['stage']='journal';
+    let stepRoute=false,stepVersion:1|2=1,stepStage:ManagedStepDiagnostic['stage']|ManagedFreshStepDiagnostic['stage']='journal';
     const stepRefusal=(code:string,accounting={securitySpawns:0,elapsedMs:Number(process.hrtime.bigint()-admittedAt)/1_000_000})=>
-      answer(managedStepHttpStatus(code),{version:1,disposition:'refused',inspection:null,progress:null,error:{stage:stepStage,code},accounting} satisfies ManagedStepResponse);
+      answer(managedStepHttpStatus(code),{version:stepVersion,disposition:'refused',inspection:null,progress:null,error:{stage:stepStage,code},accounting} as ManagedSetupStepResponse);
     let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false, delegationRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
@@ -145,18 +145,21 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!['inspect','install','update','disable','enable','remove-capture','managed-inspect','managed-configure','managed-migrate','managed-enable','managed-disable','managed-step'].includes(action))return answer(404,{error:'not-found'});
         if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
         // Refuse old monolithic input before discovery, body parsing or workers.
-        if(action==='managed-migrate'){req.resume();return answer(409,{error:'managed-action-required'});}
+        if(action==='managed-migrate'||process.platform==='win32'&&['managed-inspect','managed-configure'].includes(action)){
+          req.resume();return answer(409,{error:'managed-action-required'});
+        }
         stepRoute=url.pathname===MANAGED_STEP_ROUTE;
         let size=0;const chunks:Buffer[]=[];
         for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>(stepRoute?MANAGED_STEP_LIMITS.requestBytes:LIMITS.requestBytes)){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
         let body:unknown;try{const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));body=text?JSON.parse(text):{};}catch{throw new ProgressError('invalid');}
         if(stepRoute){
-          const parsed=managedStepRequest(body);if(!parsed)return stepRefusal('invalid');
+          stepVersion=(body as {version?:unknown}|null)?.version===2?2:1;
+          const parsed=managedSetupStepRequest(body);if(!parsed)return stepRefusal('invalid');
           stepStage=parsed.action==='begin'?'prepare':parsed.action==='advance'?parsed.step.name:parsed.action==='inspect'?'roots':parsed.action==='status'?'journal':'lock';
           const reply=await setup.request({action:'managed-step',body:parsed},admittedAt);
           if(!reply.ok){if(reply.refusal)return answer(managedStepHttpStatus(reply.code),reply.refusal);
             if(reply.code==='managed-step-port-busy'||reply.code==='managed-step-unsettled')stepStage='lock';return stepRefusal(reply.code,reply.accounting);}
-          const value=reply.value as ManagedStepResponse;
+          const value=reply.value as ManagedSetupStepResponse;
           return answer(value.error?managedStepHttpStatus(value.error.code):200,value);
         }
         // Fresh configuration retains the legacy single-request budget and
@@ -175,7 +178,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
         const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
         const {subagentRuns,...health}=snapshot;
-        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1,managedFreshSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
           protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       }
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
