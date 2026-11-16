@@ -436,7 +436,7 @@ test('copy: EN/RU for every stage and code, short step text, no paths', () => {
   const strings = (o: unknown): string[] => typeof o === 'string' ? [o] : typeof o === 'function' ? [String((o as (...a: unknown[]) => string)(3, 9, 'X', 2))] : o && typeof o === 'object' ? Object.values(o).flatMap(strings) : [];
   for (const s of [...strings(en), ...strings(ru)]) assert.doesNotMatch(s, /[\\/]|[A-Za-z]:\\/, s);
   const p = fx.replies.disabled.progress!;
-  assert.equal(migrationStepText({ ...p, step: { name: 'disable', batch: 0 } }), 'Step 3 of 9: Turning off capture');
+  assert.equal(migrationStepText({ ...p, step: { name: 'disable', batch: 0 } }), 'Step 3 of 9: Turning off recording');
   assert.equal(migrationStepText(p, 'ru'), 'Шаг 5 из 9: Удаление старых файлов плагина (часть 1)');
   assert.equal(migrationTitle(fx.replies.pausedOff.progress!, false), 'paused');
   assert.equal(migrationTitle(fx.replies.restarted.progress!, false), 'interrupted');
@@ -554,6 +554,20 @@ function freshDriver(engine: ReturnType<typeof freshEngine>) {
 }
 const freshActions = (engine: ReturnType<typeof freshEngine>) => engine.requests.map(r => r.action === 'advance' ? `advance:${r.step.name}` : r.action === 'inspect' && 'cursor' in r && r.cursor ? 'inspect:next' : r.action);
 const sameKeys = (a: object, b: object) => assert.deepEqual(Object.keys(a).sort(), Object.keys(b).sort());
+
+test('fresh grouped review keeps original consent binding and refuses changed reviewed facts',async()=>{
+  const engine=freshEngine(),{driver}=freshDriver(engine);
+  await driver.inspect('begin',{family:'fresh'});
+  const reviewed=driver.state.review!.review.expected;
+  driver.setAck(true);
+  engine.review.expected='b'.repeat(64); // service invalidates the reviewed facts
+  await driver.confirmBegin();
+  const begin=engine.requests.find(r=>r.action==='begin');
+  assert.equal(begin?.expected,reviewed,'the UI never silently refreshes consent');
+  assert.equal(driver.state.outcome?.code,'managed-review-stale');
+  assert.equal(engine.progress,null);
+  assert.ok(!engine.requests.some(r=>r.action==='advance'));
+});
 
 for(const capture of ['on','off'] as const)test(`fresh status and restart never claim retained capture ${capture}`,async()=>{
   const engine=freshEngine({storeMode:'retain',retainedCapture:capture}),{driver}=freshDriver(engine);
@@ -772,17 +786,17 @@ test('fresh copy: EN/RU/zh-CN for every fresh stage and override; plan-relative 
   for (const key of ['reviewTitle', 'effect', 'mode', 'storeValue', 'sourceValue', 'warn', 'stays', 'unsupported', 'partial', 'complete'] as const) {
     assert.equal(new Set(fresh.map(f => JSON.stringify(strings(f[key])))).size, 3, key);
   }
-  assert.match(fresh[2].warn.create.off.body, /智能体/); assert.match(fresh[2].warn.create.off.title, /采集/);
+  assert.match(fresh[2].warn.create.off.body, /智能体/); assert.match(fresh[2].warn.create.off.title, /记录/);
   const p = freshProgress;
   const at = (name: string) => ({ ...p, step: p.plan.find(s => s.name === name)!, lastCompleted: p.plan[p.plan.findIndex(s => s.name === name) - 1] });
-  assert.equal(migrationStepText(p), 'Step 2 of 8: Creating the store folder');
-  assert.equal(migrationStepText(at('create-store')), 'Step 3 of 8: Creating the progress store');
-  assert.equal(migrationStepText(at('register-source'), 'ru'), 'Шаг 5 из 8: Регистрация этого источника OpenCode');
-  assert.equal(migrationStepText(at('enable'), 'zh-CN'), '第 7 步，共 8 步：开启采集');
+  assert.equal(migrationStepText(p), 'Step 1 of 4: Create a private progress folder');
+  assert.equal(migrationStepText(at('create-store')), 'Step 1 of 4: Create a private progress folder');
+  assert.equal(migrationStepText(at('register-source'), 'ru'), 'Шаг 2 из 4: Подключить её к OpenCode');
+  assert.equal(migrationStepText(at('enable'), 'zh-CN'), '第 3 步，共 4 步：开启记录');
   const reuse = managedFreshStepFixtures('retain', false, 'reuse').replies.prepared.progress!;
-  assert.equal(migrationStepText(reuse), 'Step 2 of 4: Checking the bundled companion');
+  assert.equal(migrationStepText(reuse), 'Step 2 of 3: Connect it to OpenCode');
   assert.equal(migrationTitle(p, true), 'running');
-  assert.equal(managedFamilyStepCopy('fresh').titles.running, 'Setting up capture');
+  assert.equal(managedFamilyStepCopy('fresh').titles.running, 'Setting up');
   assert.equal(setupErrorText('managed-step-conflict', 'en', 'fresh'), managedErrorText('managed-step-conflict', 'en', 'fresh'));
   assert.notEqual(setupErrorText('managed-step-conflict', 'en', 'fresh'), setupErrorText('managed-step-conflict', 'en'));
 });

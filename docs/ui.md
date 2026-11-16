@@ -1004,8 +1004,13 @@ status; capabilities never start work. Without fresh support, the fresh action
 shows update-together guidance and sends neither a fresh mutation nor an old-route
 fallback, regardless of browser OS. Migration and capture controls remain independent.
 
-Fresh review shows canonical folders, package version, create/retain store and
-create/reuse source choices, the frozen plan and capture consequence. New-store
+Fresh review leads with a purpose sentence, up to four plain-language groups,
+an explicit unchecked account-access consent and Start setup. One native,
+keyboard-operable “What Setup changes on this computer” disclosure contains
+canonical folders, proposed identities, package version, create/retain store and
+create/reuse source choices, the frozen internal plan, capture consequence and
+delivery facts. Opening it is optional and does not grant consent or change the
+review token; stale reviewed facts still refuse. New-store
 plans create the folder if needed, initialize the database off, publish expectation,
 register the source, publish binding, enable and reconcile, after prepare. Retained
 plans omit creation and capture effects; matching sources also omit registration.
@@ -1016,12 +1021,24 @@ Fresh progress comes only from `delivery.freshProgress`; migration remains exclu
 fresh store reads unknown capture with partial-setup guidance, not corruption.
 
 An explicit reviewed confirmation starts a one-request-at-a-time run. The card
-shows the current stage out of nine for migration, or its actual frozen fresh-plan
-position and total, a part number for removal batches (not an
-invented file total or percentage), the last finished stage, and observed capture
-on/off/unknown. Pending, running, paused, stopped, failed, interrupted, capture
-review and complete are distinct. Capture off/unknown stays conspicuous while
-unfinished, including after reopening. Completion does not prove a managed load.
+shows the current stage out of nine for migration, with plain wording and a part
+number for removal batches (not an invented file total or percentage). Fresh setup
+groups its own frozen plan: folder (prepare, optional folder and database creation),
+connection (expectation, optional source registration, binding), recording (enable),
+and check (reconcile). Empty groups are omitted; an existing folder is named
+truthfully. Each step belongs to exactly one contiguous group. The displayed
+position and total count groups, but requests and pause/resume remain per internal
+step. A group is complete only after all its steps are durably complete. Its
+current paused/failed/stopped state remains visible; internal steps and the last
+finished stage are available in the disclosure. Pending, running, paused, stopped,
+failed, interrupted, capture review and complete are distinct.
+
+Fresh setup always shows a plain recording-state line outside the disclosure.
+While actively running it has no recording warning box, except during a pause
+confirmation. Recording off/unknown is conspicuous on pause, failure, close/reopen
+and completion, with the applicable recovery action (retained recording remains
+unchanged, and can be turned on after reconnection). Migration keeps its existing
+conspicuous warning and ungrouped sequence. Completion does not prove a managed load.
 
 Pause waits for the in-flight step; Stop retains completed work and recovery
 state. Neither undoes work or turns capture back on. Continue, Resume and a fresh
@@ -1043,6 +1060,11 @@ hands focus to Pause; a stopped run hands it to the relevant recovery control.
 Pause/Stop confirmation focuses Keep going/Cancel, Escape returns to its opener,
 and user-moved focus is never reclaimed. New capture warnings and failures are
 announced once, not on every repaint. EN/RU/zh-CN fresh copy and controls wrap on narrow screens.
+Stable hooks include `setup-fresh-groups`, `setup-fresh-group-{folder,connect,record,check}`
+with `data-state` and `aria-current="step"`, `setup-changes`,
+`setup-changes-summary`, and `setup-recording-state`. The internal-plan hooks
+`setup-fresh-plan` and `setup-fresh-plan-<stage>` remain inside the disclosure;
+existing mutation and recovery hooks are unchanged.
 
 The rendered synthetic-shell driver `tests/browser/managed-migration-qa.ts --source`
 checks these journeys, fresh configuration, failed replay and occupied-port copy.
