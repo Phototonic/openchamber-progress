@@ -251,6 +251,8 @@ startView<Ui>({
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   // No plan cleanup from a source-wide inbox reading.
   actionPlan: (vc) => (vc.ui.inbox ? null : selectedPlan(vc)),
+  tidyPlans: (vc) => isSearching(vc) ? [] : visiblePlans(vc),
+  tidyScope: readingScope,
   forgetPlans: (keys, ui) => {
     if (!keys.has(ui.selected ?? '')) return {};
     captures.retire(); reporting.retire(); search.select(null); return { selected: null };

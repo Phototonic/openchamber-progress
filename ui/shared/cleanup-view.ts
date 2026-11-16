@@ -1,7 +1,8 @@
 import { button, el, offerPlanActions, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
 import type { PlanView } from './model.ts';
-import { cleanupClosed, cleanupFeedback } from './cleanup.ts';
+import { cleanupClosed, cleanupFeedback, tidyCopy } from './cleanup.ts';
+import { lifecycleLabel } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
 
 const en = {
@@ -85,10 +86,62 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
 const shown = new WeakSet<object>();
 
 export function cleanupNotice<U>(vc: ViewContext<U>) {
-  if (!vc.cleanup.message) return null;
+  const tidy = tidyBlock(vc);
+  if (!vc.cleanup.message) return tidy;
   const box = testid(el('div', vc.cleanup.error ? 'ap-cleanup-error' : 'ap-note'), vc.cleanup.error ? 'cleanup-error' : 'cleanup-notice');
   box.tabIndex = -1;
   box.setAttribute('role', vc.cleanup.error ? 'alert' : 'status');
   box.textContent = cleanupFeedback(vc.cleanup.message, vc.env.locale);
+  const wrapper = el('div'); wrapper.append(tidy, box); return wrapper;
+}
+
+// Keep the polite live region across root replacement. Only new result text mutates it,
+// so ordinary paints do not re-announce the same action.
+let tidyLive: HTMLElement | null = null;
+function tidyBlock<U>(vc: ViewContext<U>) {
+  const box = testid(el('section', 'ap-cleanup'), 'tidy-actions');
+  const text = tidyCopy(vc.env.locale), state = vc.cleanup.tidy;
+  tidyLive ??= testid(el('p', 'ap-note'), 'tidy-result');
+  tidyLive.setAttribute('role', 'status');
+  tidyLive.setAttribute('aria-atomic', 'true');
+  const result = state?.result;
+  const message = result ? text.result(result.succeeded.length, result.total, result.action === 'restore') : '';
+  if (tidyLive.textContent !== message) tidyLive.textContent = message;
+  box.append(tidyLive);
+  if (state?.confirmation) {
+    const c = state.confirmation;
+    const confirm = testid(el('div', 'ap-cleanup-confirm'), 'tidy-confirm');
+    confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-labelledby', 'tidy-heading');
+    const heading = el('h3', '', text.heading); heading.id = 'tidy-heading';
+    confirm.append(heading, el('p', '', text.count(c.targets.length, c.total)), el('p', '', text.effect), el('p', 'ap-note', text.failed));
+    const list = el('ul');
+    // Fifty literal titles must not push confirmation controls out of a phone frame.
+    list.style.maxHeight = 'min(40vh, 20rem)';
+    list.style.overflowY = 'auto';
+    list.tabIndex = 0;
+    list.setAttribute('aria-labelledby', 'tidy-heading');
+    for (const target of c.targets) {
+      // Titles are literal text, not markup. The captured outcome cannot change at confirmation.
+      const row = el('li', 'ap-cleanup-title', target.title);
+      row.append(el('span', 'ap-note', ` — ${lifecycleLabel(target.lifecycle, vc.env.locale)}`));
+      list.append(row);
+    }
+    confirm.append(list);
+    const actions = el('div', 'ap-row');
+    button(actions, 'tidy-cancel', text.cancel, vc.cancelTidy, 'outline', vc.cleanup.pending);
+    button(actions, 'tidy-confirm-archive', vc.cleanup.pending ? text.pending : text.confirm, () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.confirmTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
+    confirm.append(actions);
+    confirm.addEventListener('keydown', event => { if (event.key === 'Escape' && !vc.cleanup.pending) { event.preventDefault(); vc.cancelTidy(); } });
+    box.append(confirm);
+    if (!shown.has(c)) {
+      shown.add(c);
+      requestAnimationFrame(() => { if (confirm.isConnected) confirm.scrollIntoView({ block: 'nearest' }); });
+    }
+  } else if (result) {
+    const actions = el('div', 'ap-row');
+    if (result.action === 'archive' && result.succeeded.length) button(actions, 'tidy-undo', vc.cleanup.pending ? text.restoring : text.undo, () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.undoTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
+    if (result.succeeded.length < result.total) button(actions, 'tidy-retry', text.retry, result.action === 'restore' ? vc.undoTidy : vc.requestTidy, 'outline', vc.cleanup.pending || !!vc.failure);
+    box.append(actions);
+  }
   return box;
 }

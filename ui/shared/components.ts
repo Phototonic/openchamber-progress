@@ -17,6 +17,7 @@ import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 import type { DeviceView, IntentRefusal } from './model.ts';
 import { currentIntent, type CurrentIntent } from './intent.ts';
+import { tidyCopy, tidyEligible } from './cleanup.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -636,8 +637,12 @@ export class ProgressShell {
       items.push({ separator: true });
     }
     // Tidy and hidden-items owners supply only applicable actions here.
-    for (const action of options.menuActions ?? []) { items.push({ ...action }); runs.set(action.id, action.run); }
-    if (options.menuActions?.length) items.push({ separator: true });
+    const menuActions = [...(options.menuActions ?? [])];
+    if (vc.health?.planCleanup === 1 && vc.tidyPlans?.().some(tidyEligible)) menuActions.unshift({
+      id: 'tidy', label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure,
+    });
+    for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
+    if (menuActions.length) items.push({ separator: true });
     add('language', t.language + ' ›', () => {});
     add('setup', t.setup, () => open('setup'));
     add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
