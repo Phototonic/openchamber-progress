@@ -2,6 +2,14 @@
 
 ## Current use and development
 
+`dev` now carries source only. Build with `bun run build:all` before standalone
+checks that read runtime entries. Installable refs are default/main, explicit
+`#main` and published tags, never `#dev`. Maintainer promotion builds and commits
+the nine outputs on a separate local branch; host gates run on that promotion
+checkout. Historical built-dev evidence below describes its tested revision,
+not current development-branch installation support. See the
+[promotion guide](../CONTRIBUTING.md#versioned-main-promotions-and-releases).
+
 The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
 **2.7.1** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
 historical and do not certify managed delivery. Isolated Linux web 2.7.1 /

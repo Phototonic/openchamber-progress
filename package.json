@@ -29,15 +29,17 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:backend": "node --experimental-strip-types --test tests/backend/*.test.ts",
+    "test:backend": "bun run build:all && node --experimental-strip-types --test tests/backend/*.test.ts",
     "build:backend": "bun scripts/build.ts",
-    "build": "bun run build:backend",
-    "package": "node --experimental-strip-types scripts/package.ts",
-    "verify:package": "node --experimental-strip-types scripts/verify-package.ts",
+    "build:all": "node --experimental-strip-types scripts/build-all.ts",
+    "build": "bun run build:all",
+    "promote": "node --experimental-strip-types scripts/promote.ts",
+    "package": "bun run build:all && node --experimental-strip-types scripts/package.ts",
+    "verify:package": "bun run build:all && node --experimental-strip-types scripts/verify-package.ts",
     "bundle:guest": "openchamber-guest-bundle",
-    "prepare:probe": "bun scripts/prepare-probe.ts",
-    "setup": "node build/setup/main.js",
-    "check": "bun run typecheck && bun run test:backend && bun run build:backend && bun run package && bun run verify:package"
+    "prepare:probe": "bun run build:all && bun scripts/prepare-probe.ts",
+    "setup": "bun run build:all && node build/setup/main.js",
+    "check": "bun run build:all && bun run typecheck && node --experimental-strip-types --test tests/backend/*.test.ts && node --experimental-strip-types scripts/package.ts && node --experimental-strip-types scripts/verify-package.ts"
   },
   "dependencies": {
     "@openchamber/sdk": "2.7.1",

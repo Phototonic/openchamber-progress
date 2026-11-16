@@ -4,22 +4,22 @@ Guidance for AI coding agents working in this repository. Humans should read [CO
 
 ## Project shape
 
-- TypeScript is the source of truth. Git installs run the checked-in JavaScript, so built outputs are tracked on purpose.
+- TypeScript is the source of truth. `dev` carries source only; Git installs use generated JavaScript tracked on `main` and release tags.
 - Durable behaviour and architecture contracts live in `docs/` (`contracts.md`, `backend.md`, `ui.md`, `setup.md`, `compatibility.md`). When you change behaviour, update the relevant doc in the same change. Do not relax a documented safety contract to make a check pass; raise the conflict instead.
 
 ## Built outputs
 
-- Tracked runtime outputs: `build/service/main.js`, `build/setup/main.js`, `build/companion/{index.js,package.json,SKILL.md}`, and `ui/{panel,status,page}/main.js`.
-- Any change to plugin, companion, shared or UI source must include its regenerated outputs in the same commit. CI's generated-entry parity check fails otherwise.
-- Regenerate with the existing scripts only, never by hand, and only for the affected entries:
-  - `bun run build:backend` (service, companion, setup; does not build guests)
-  - `bun run bundle:guest ui/<view>/main.ts ui/<view>/main.js` per affected view
+- Nine generated outputs: `build/service/main.js`, `build/setup/main.js`, `build/companion/{index.js,package.json,SKILL.md}`, `background/main.js`, and `ui/{panel,status,page}/main.js`.
+- Never commit these outputs to `dev` or a PR targeting anything but `main`. They are ignored; resolve old bundle modify/delete conflicts by keeping the deletion.
+- Run `bun run build:all` before standalone tests or drivers that read outputs. Source-capable rendered drivers can use `--source` instead for guests; build first if they also use the service.
+- CI builds source revisions before tests and checks a second build for reproducibility. Distribution revisions must track all nine and equal a rebuild.
+- Maintainers use `bun run promote <main-revision> <dev-revision> <new-branch>` (see CONTRIBUTING) to produce a local two-parent promotion commit. It never pushes, tags or publishes. Never merge `main` into `dev`.
 - Do not commit `build/artifacts/`, dependencies, databases or logs.
 
 ## Branches and versions
 
 - Branch from `dev` and target `dev`. `main` is the versioned distribution branch.
-- Do not bump versions or regenerate unrelated outputs in a routine change.
+- Do not bump versions in a routine change. Local outputs are disposable; never hand-edit them.
 
 ## Checks
 
