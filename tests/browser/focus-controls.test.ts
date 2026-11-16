@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
 import { countItems, type Item, type PlanSummary } from '../../shared/progress.ts';
 import { parsePlanPage } from '../../ui/shared/adapter.ts';
@@ -348,6 +349,7 @@ function controller(options: { surface?: 'panel' | 'status'; heads?: boolean } =
     AbortController,
     exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } }, queueMicrotask, performance, console, setTimeout: (fn: () => void, ms: number) => { timers.push(ms); planned.push({ fn, ms }); return timers.length; }, clearTimeout() {},
     require: (name: string) => {
+      if (name in appCountsModules) return appCountsModules[name];
       if (name === '@openchamber/sdk') return { connectHost: () => h };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       // Controller detail-read starts are counted apart from the pages (and internal restarts) they request.

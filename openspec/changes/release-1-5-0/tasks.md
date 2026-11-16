@@ -37,10 +37,10 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 5. Incomplete-count indicator
 
-- [ ] 5.1 Model the set of incomplete-count reasons per surface and put plus marks on every affected count: Needs you, sub-agents, plan list and map.
-- [ ] 5.2 Replace the Partial cue and all coverage notices with the single indicator: expansion, Load more, device-remembered dismissal keyed by the reason set, and the recording-gap acknowledgement with its failure and conflict handling. Keep failed-read, recording-off and other-install lines separate.
-- [ ] 5.3 List reasons, limits and record totals in Advanced details and append the fixed-vocabulary lines to the support summary; assert every earlier line is unchanged and identical across languages.
-- [ ] 5.4 Update sub-agent, inbox and reporting-health tests and rendered drivers, including recent, old, dismissed and legacy gaps and the returning indicator. Establish the sub-agent screenshot driver's baseline on the development branch first and repair a pre-existing fixture failure in this pull request if it blocks the check. Update `docs/ui.md` and `docs/contracts.md`; regenerate the three guests.
+- [x] 5.1 Model the set of incomplete-count reasons per surface and put plus marks on every affected count: Needs you, sub-agents, plan list and map.
+- [x] 5.2 Replace the Partial cue and all coverage notices with the single indicator: expansion, Load more, device-remembered dismissal keyed by the reason set, and the recording-gap acknowledgement with its failure and conflict handling. Keep failed-read, recording-off and other-install lines separate.
+- [x] 5.3 List reasons, limits and record totals in Advanced details and append the fixed-vocabulary lines to the support summary; assert every earlier line is unchanged and identical across languages.
+- [x] 5.4 Update sub-agent, inbox and reporting-health tests and rendered drivers, including recent, old, dismissed and legacy gaps and the returning indicator. Establish the sub-agent screenshot driver's baseline on the development branch first and repair a pre-existing fixture failure in this pull request if it blocks the check. Update `docs/ui.md` and `docs/contracts.md`; regenerate the three guests.
 
 ## 6. Tidy: bulk archive
 

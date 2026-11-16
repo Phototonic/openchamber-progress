@@ -15,7 +15,7 @@ import { participantIndex, type PlanDetail, type PlanView } from '../../ui/share
 import { refreshLabels } from '../../ui/shared/components.ts';
 import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
 import { EARLIER_STEP, ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
-import { cueTone, earlierPager, routineNote } from '../../ui/shared/census-view.ts';
+import { earlierPager, separateNote } from '../../ui/shared/census-view.ts';
 import type { DismissLossReply, DismissLossRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { at, planPage, plansPage, summary } from './fixtures.ts';
@@ -305,7 +305,8 @@ test('Running absent from a complete current census is qualified without changin
   for (const census of censuses) {
     const roster = project(census);
     assert.ok(entries(roster).every(e => !e.ran.notSeen), JSON.stringify(census));
-    assert.deepEqual(roster.summary, absent.summary, 'absence never changes counts');
+    assert.deepEqual(roster.summary.map(s => [s.kind, s.count]), absent.summary.map(s => [s.kind, s.count]), 'absence never changes numeric facts');
+    assert.equal(roster.summary.find(s => s.kind === 'running')?.text, '1+ running', 'incomplete current activity is a lower bound');
   }
   const present = project(censusFor('A', alpha.directory, snap([rec('A', null), rec('absent-0', 'A', { activity: 'running' })])));
   assert.equal(entries(present).find(e => e.runId === 'absent-0')!.ran.notSeen, undefined, 'reappearing clears qualifier');
@@ -415,7 +416,7 @@ test('many children: only running/waiting and task-linked are featured; the rest
   const read = readOf(rows, { running: 1, succeeded: 152, failed: 2, interrupted: 1, unknown: 0, runs: 156, children: 156 }, { nextCursor: 'next' });
   const r = rosterFor(input({ facts: planFacts(plan, { state: 'ready', value: d }, plan.sourceId), runs: panel(read, [], { hasMore: true }) }))!;
   assert.deepEqual(r.featured.map((e) => e.sessionId), ['C1'], 'one running child (with its tasks) is featured; finished plan-context children are not');
-  assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '152 finished', '2 failed', '1 interrupted']);
+  assert.deepEqual(r.summary.map((s) => s.text), ['1+ running', '152 finished', '2 failed', '1 interrupted']);
   assert.equal(r.earlierTotal, 155);
   assert.equal(r.canPage, true);
   assert.ok(!r.notes.length, 'complete coverage: no warning at all');
@@ -572,6 +573,26 @@ test('runs controller: one visit per eligible paint; retired, hidden and held re
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('runs controller: an unchanged successful retry repaints away a retained-read failure', async () => {
+  const base = readOf([run('succeeded')]);
+  const request: RunRequest = { storeId: base.storeId, binding: base.sourceBinding, source: base.source, root: base.root, plan: base.plan!, cleanupRev: 0, view: 'useful' };
+  let failed = false, paints = 0;
+  const ctl = new RunsController({ visible: () => true, changed: () => { paints++; }, service: () => ({
+    serviceRequest: async () => failed ? { status: 503, body: JSON.stringify({ error: 'busy' }) } : { status: 200, body: JSON.stringify(base) },
+  }) });
+  const claim = { owner: 'example', request, capable: true, captureEnabled: true };
+  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  const panel = () => { ctl.beginPaint(); const p = ctl.claim(claim); ctl.endPaint(); return p; };
+  panel(); await flush();
+  failed = true; ctl.poll(); await flush();
+  assert.equal(panel().failure?.kind, 'busy');
+  const before = paints;
+  failed = false; panel().retryRead!(); await flush();
+  assert.equal(panel().failure, null);
+  assert(paints > before, 'the visible failed-read line must clear even when every recorded fact is unchanged');
+  ctl.retire();
+});
+
 test('runs controller: an unreconciled root asks for history once per frame, not per repaint or poll', async () => {
   const replies: string[] = [];
   const base = readOf([run('succeeded')], {}, { recovery: { state: 'not-requested', reason: null, token: null }, coverage: { scope: 'retained', complete: false, reasons: ['history-not-reconciled'] } });
@@ -639,7 +660,7 @@ test('coverage gate: retained host rows during a reload or incomplete coverage g
     const r = roster(coverage);
     const all = [...r.featured, ...r.earlier];
     assert.ok(!r.summary.some((s) => s.kind === 'waiting'), `no "waiting on you" from retained rows (${JSON.stringify(coverage)})`);
-    assert.deepEqual(r.summary.map((s) => s.text), ['1 running'], 'only the recorded Running fact is counted');
+    assert.deepEqual(r.summary.map((s) => s.text), ['1+ running'], 'only the recorded Running fact is counted, with incomplete current activity qualified');
     const k1 = all.find((e) => e.runId === live.id)!;
     assert.deepEqual([k1.ran.kind, k1.ran.label], ['active', 'Running'], 'the recorded Running fact does not expire');
     assert.equal(all.find((e) => e.sessionId === 'W1'), undefined, 'a host-only waiting child is not shown as current');
@@ -999,14 +1020,14 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   const texts = (r: ReturnType<typeof rosterFor>) => r!.summary.map((s) => s.text);
   // First page only: K50 is recorded but not loaded, so the host row must not add a 52nd.
   const first = rosterFor(input({ census: census('running'), runs: panel(read, [], { hasMore: true }) }))!;
-  assert.deepEqual(texts(first), ['51 running']);
+  assert.deepEqual(texts(first), ['51+ running']);
   // Loading the remaining row changes nothing: K50 was already in the recorded total.
   assert.deepEqual(texts(rosterFor(input({ census: census('running'), runs: panel(read, [rows[50]]) }))), ['51 running']);
   // Waiting on an unloaded child: listed (waiting first) but not counted twice; once loaded it is
   // counted once, as waiting, and not also as running.
   const unloaded = rosterFor(input({ census: census('waiting-question'), runs: panel(read, [], { hasMore: true }) }))!;
   assert.equal(unloaded.featured[0].sessionId, 'K50', 'still shown, first');
-  assert.deepEqual(texts(unloaded), ['51 running'], 'not added to any count while it may be recorded');
+  assert.deepEqual(texts(unloaded), ['51+ running'], 'not added to any count while it may be recorded; current activity remains qualified');
   assert.deepEqual(texts(rosterFor(input({ census: census('waiting-question'), runs: panel(read, [rows[50]]) }))), ['1 waiting on you', '50 running']);
   // Every recorded child loaded: a host-only child really is unrecorded and is counted (once).
   const extra = censusFor('A', alpha.directory, snap([rec('A', null), rec('K0', 'A', { activity: 'running' }), rec('X1', 'A', { activity: 'running' }), rec('X2', 'A', { activity: 'waiting-permission' })]));
@@ -1026,9 +1047,21 @@ test('host row limit: a truncated host census is disclosed and host-only counts 
   assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting on you', '127 running']);
 });
 
-test('coverage cue: routine notes go behind the rail/board "Partial" cue; unavailability, failures, loading and capture off stay visible', () => {
-  const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(routineNote).map((n) => n.kind);
-  const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter((n) => !routineNote(n)).map((n) => n.kind);
+test('lower-bound marks are count-specific in three languages; complete completed-run totals stay exact', () => {
+  for (const language of ['en', 'ru', 'zh-CN'] as const) for (const count of [1, 2, 5, 11, 21]) {
+    const r = readOf([run('succeeded')], { succeeded: count });
+    const census = censusFor('A', alpha.directory, snap());
+    const truncated = census.state === 'ready' ? { ...census, gaps: ['rows' as const] } : census;
+    const exact = rosterFor(input({ census: truncated, runs: panel(r) }), language)!;
+    assert(!exact.summary.find(s => s.kind === 'finished')!.text.includes('+'), 'host truncation cannot lower a complete recorded finished count');
+    const partial = rosterFor(input({ runs: panel({ ...r, recovery: { state: 'partial', token: 'next', reason: 'budget' }, coverage: { scope: 'retained', complete: false, reasons: ['partial-history'] } }) }), language)!;
+    assert(partial.summary.find(s => s.kind === 'finished')!.text.includes(`${count}+`));
+  }
+});
+
+test('qualifications share the count indicator; read failures and recording off stay separate', () => {
+  const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(n => !separateNote(n)).map((n) => n.kind);
+  const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(separateNote).map((n) => n.kind);
   const kids = [rec('A', null), ...Array.from({ length: 129 }, (_, i) => rec(`H${i}`, 'A', { createdAt: i, activity: 'running' }))];
   // Storage loss, partly loaded history and a hit host limit: all routine, nothing visible.
   const routine = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids)), runs: panel(readOf([run('succeeded')], {}, { capture: { enabled: true, state: 'last-known', loss: true }, recovery: { state: 'partial', reason: null, token: 't' } })) }))!;
@@ -1042,10 +1075,10 @@ test('coverage cue: routine notes go behind the rail/board "Partial" cue; unavai
   // The agreed split for every note kind.
   // Behind the cue nothing is orange: every routine note has the neutral tone.
   for (const kind of ['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) {
-    assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), true, kind);
-    assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral', kind);
+    assert.equal(separateNote({ kind } as Parameters<typeof separateNote>[0]), false, kind);
   }
-  for (const kind of ['runs-unavailable', 'runs-error', 'history-failed', 'history-request-failed', 'host-activity-unavailable', 'capture-off', 'history-loading', 'history-unavailable'] as const) assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), false, kind);
+  for (const kind of ['runs-unavailable', 'history-failed', 'history-request-failed', 'host-activity-unavailable', 'history-loading', 'history-unavailable'] as const) assert.equal(separateNote({ kind } as Parameters<typeof separateNote>[0]), false, kind);
+  for (const kind of ['runs-error', 'capture-off'] as const) assert.equal(separateNote({ kind }), true);
 });
 
 test('recording gap: attention and dismissal come from the service; the gap stays listed, routine and incomplete', () => {
@@ -1059,19 +1092,19 @@ test('recording gap: attention and dismissal come from the service; the gap stay
     const roster = rosterFor(input({ runs: panel(r) }))!;
     const n = roster.notes.find((x) => x.kind === 'capture-loss');
     assert.ok(n && n.kind === 'capture-loss', 'the gap is always listed while loss is recorded');
-    assert.ok(routineNote(n), 'behind the Partial cue, never a visible line');
-    return { lastLossAt: n.lastLossAt, dateKind: n.dateKind, attention: n.attention, canDismiss: n.canDismiss, tone: cueTone(n) };
+    assert.equal(separateNote(n), false, 'the surface-wide indicator owns recording-gap qualification');
+    return { lastLossAt: n.lastLossAt, dateKind: n.dateKind, attention: n.attention, canDismiss: n.canDismiss };
   };
   // Recent and undismissed: warning tone, its stored date, dismissable.
-  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 2 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: true, canDismiss: true, tone: 'warning' });
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 2 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: true, canDismiss: true });
   // Exactly 24 hours old, or dismissed: muted, the same date kept, no control.
-  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 86_400_000, dismissedThrough: 2 })), { lastLossAt: at - 86_400_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
-  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 3 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 86_400_000, dismissedThrough: 2 })), { lastLossAt: at - 86_400_000, dateKind: 'known', attention: false, canDismiss: false });
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 3 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: false, canDismiss: false });
   // Migrated before dates were kept, and an older service without the metadata: unknown, muted.
-  assert.deepEqual(loss(read(2, { sequence: 0, lastLossAt: null, dismissedThrough: 0 })), { lastLossAt: null, dateKind: 'migrated-unknown', attention: false, canDismiss: false, tone: 'neutral' });
-  assert.deepEqual(loss(read(1)), { lastLossAt: null, dateKind: 'legacy-unknown', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(2, { sequence: 0, lastLossAt: null, dismissedThrough: 0 })), { lastLossAt: null, dateKind: 'migrated-unknown', attention: false, canDismiss: false });
+  assert.deepEqual(loss(read(1)), { lastLossAt: null, dateKind: 'legacy-unknown', attention: false, canDismiss: false });
   // The seam: only an attended gap is orange; every other routine note stays neutral.
-  for (const kind of ['history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral');
+  for (const kind of ['history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) assert.equal(separateNote({ kind } as Parameters<typeof separateNote>[0]), false);
 });
 
 test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {

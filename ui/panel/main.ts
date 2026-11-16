@@ -59,9 +59,9 @@ const railMap = createMapFrame<Ui>('rail', (vc) => chooseView(vc, 'list'));
 const shell = new ProgressShell();
 const compactInbox = new CompactInbox();
 let frame: ViewContext<Ui> | null = null;
-const reporting = new ReportingHealth({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}), copy: async text => { await navigator.clipboard.writeText(text); } });
+const reporting = new ReportingHealth({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.invalidate(), copy: async text => { await navigator.clipboard.writeText(text); } });
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, pick?: HTMLElement | null) {
-  const claim = () => reporting.claim({ key: JSON.stringify([vc.identity, vc.session?.id, plan?.key, plan?.revision, vc.read?.captureEnabled, !!vc.failure]), read: vc.read, plan, stale: !!vc.failure });
+  const claim = () => reporting.claim({ key: JSON.stringify([vc.identity, vc.session?.id, plan?.key, plan?.revision, vc.read?.captureEnabled, !!vc.failure]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
   return shell.paint(root, vc, plan, {
     picker: pick,
     menuActions: hiddenInboxAction(vc.inbox, compactInbox, vc.env.locale, () => shell.showView(vc), 'panel'),
@@ -297,7 +297,7 @@ function hooks(vc: ViewContext<Ui>, plan: PlanView) {
 /** The title-picker: every scoped plan with its done/total or lifecycle, and the helping role. */
 function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void, language: InterfaceLanguage) {
   return planPicker({
-    title: current.title, index: plans.indexOf(current) + 1, count: plans.length, value: current.key, standalone, locale: language,
+    title: current.title, index: plans.indexOf(current) + 1, count: plans.length, incomplete: frame?.read?.truncated, value: current.key, standalone, locale: language,
     options: plans.map((p) => {
       const s = summarize(p);
       const role = sessionId && p.ownerSessionId !== sessionId ? messages[language].helping : '';

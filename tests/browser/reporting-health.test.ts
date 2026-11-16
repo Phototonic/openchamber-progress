@@ -7,6 +7,7 @@ import { readList } from '../../ui/shared/source.ts';
 import { parseSetup } from '../../ui/shared/adapter.ts';
 import { ReportingHealth, setupFacts, supportSummary, type HealthClaim } from '../../ui/shared/reporting-health.ts';
 import { managedCopy } from '../../ui/shared/managed-copy.ts';
+import { emptyCountFacts } from '../../ui/shared/incomplete-counts.ts';
 
 async function fixture(){
  const f=captureFixture();f.record('private-document-sentinel');const request=f.request();
@@ -101,4 +102,16 @@ test('hidden observations and delayed clipboard results lose authority',async()=
  const claim:HealthClaim={key:'one',read:null,plan:null,stale:false};const panel=()=>c.claim(claim);
  panel().toggle();visible=false;c.retire();resolve({status:200,body:JSON.stringify({configured:false,installed:false,separateLifecycle:true})});await new Promise(r=>setTimeout(r,0));visible=true;assert.equal(panel().facts,null);
  panel().toggle();resolve({status:200,body:JSON.stringify({configured:false,installed:false,separateLifecycle:true})});await new Promise(r=>setTimeout(r,0));panel().copySummary();panel().toggle();copied();await new Promise(r=>setTimeout(r,0));assert.equal(panel().copy,'');assert.equal(panel().facts,null);
+});
+test('count facts append identically to copied support summaries in all interface languages', async () => {
+ const x=await fixture();try {
+  x.claim.counts={...emptyCountFacts(),reasons:['plans-not-checked','recording-gap'],detection:3,lastLossAt:1234,gapDate:'known',plans:5,runs:11,historicalSessions:2};
+  x.panel().toggle();await x.until(()=>!!x.panel().facts);
+  for(const locale of ['en','ru','zh-CN']) {
+   const before=x.copied.length;x.controller.claim(x.claim,locale).copySummary();await x.until(()=>x.copied.length>before);
+  }
+  assert.equal(x.copied[0],x.copied[1]);assert.equal(x.copied[1],x.copied[2]);
+  assert.match(x.copied[0],/count-reasons: plans-not-checked,recording-gap/);
+  assert.match(x.copied[0],/last-detected=1970-01-01T00:00:01.234Z/);
+ }finally{await x.stop();}
 });

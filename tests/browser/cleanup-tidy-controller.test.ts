@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import * as source from '../../ui/shared/source.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
@@ -60,6 +61,7 @@ function frame(surface: 'page' | 'panel') {
     setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (key: string, fn: any) => { listeners[key] = fn; } },
     require: (name: string) => ({
+      ...appCountsModules,
       '@openchamber/sdk': { connectHost: () => host }, '@openchamber/sdk/ui': { applyHostReady() {} },
       './source.ts': source, './cleanup.ts': cleanup, './refresh.ts': refresh, './language.ts': language, './session-context.ts': sessionContext, './path.ts': path,
       './phone-layout.ts': { applyDeviceHooks() {} }, './setup.ts': { retireSetupSteps() {} },

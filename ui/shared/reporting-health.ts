@@ -1,13 +1,18 @@
 import type { PlanView, SetupView, StoreRead } from './model.ts';
 import { readPlanHead, setupCall, type ServiceHost } from './source.ts';
 import { resolveLanguage } from './i18n.ts';
+import { COUNT_REASONS, emptyCountFacts, type CountFacts } from './incomplete-counts.ts';
+import { CENSUS_LIMITS } from './census.ts';
+import { NEEDS_YOU_LIMITS } from '../../shared/needs-you.ts';
+import { LIST_LIMIT, MAX_LIST_PAGES } from './source.ts';
+import { RUN_READ_LIMITS } from './adapter.ts';
 
 const en = { idle: '', copying: 'Copying…', copied: 'Copied.', failed: 'Copy unavailable. Select the preview text and copy it manually.' };
 const ru: typeof en = { idle: '', copying: 'Копирование…', copied: 'Скопировано.', failed: 'Копирование недоступно. Выделите текст предпросмотра и скопируйте его вручную.' };
 const zh: typeof en = { idle: '', copying: '正在复制…', copied: '已复制。', failed: '无法复制。请选择预览文本并手动复制。' };
 export const reportingCopyText = (state:keyof typeof en,locale='en') => { const language=resolveLanguage('auto',locale); return (language==='ru'?ru:language==='zh-CN'?zh:en)[state]; };
 
-export interface HealthClaim { key: string; read: StoreRead | null; plan: PlanView | null; stale: boolean }
+export interface HealthClaim { key: string; read: StoreRead | null; plan: PlanView | null; stale: boolean; counts?: CountFacts }
 export interface HealthFacts { service: string; scope: string; installation: string; loaded: string; capture: string; report: string; viewer: string; version: string; platform: string; tools: string }
 export const unknownFacts = (): HealthFacts => ({service:'unknown',scope:'unknown',installation:'unknown',loaded:'unknown',capture:'unknown',report:'not-checked',viewer:'unknown',version:'unknown',platform:'unknown',tools:'unknown'});
 function serviceState(code:string){return ({busy:'busy',corrupt:'damaged',schema:'incompatible',storage:'store-unavailable',NOT_GRANTED:'not-approved',DISABLED:'paused'} as Record<string,string>)[code]??'unavailable';}
@@ -28,12 +33,22 @@ const allowed: Record<keyof HealthFacts, readonly string[]> = {
   report:['not-checked','recorded-revision','unavailable','context-changed'],viewer:['unknown','stale','selected-report','revision-changed'],version:[],platform:['unknown'],tools:['unknown'],
 };
 /** Serialization starts from a fixed schema, never from setup, diagnostics or a plan object. */
-export function supportSummary(f: HealthFacts) {
+export function supportSummary(f: HealthFacts, counts: CountFacts = emptyCountFacts()) {
   return ['Agent progress reporting observations',...Object.keys(allowed).map(k=>{
     const key=k as keyof HealthFacts;const value=f[key];
     const safe=allowed[key].includes(value)||(key==='version'&&/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value));
     return `${key}: ${safe?value:'unknown'}`;
-  }),'Observed states only; no session tool availability or task completion proof.'].join('\n');
+  }),'Observed states only; no session tool availability or task completion proof.', ...countSupportLines(counts)].join('\n');
+}
+/** Appended only: earlier observation lines keep their bytes and order in every language. */
+export function countSupportLines(f: CountFacts) {
+  const n = (value: number) => Number.isSafeInteger(value) && value >= 0 ? value : 'unknown';
+  return [
+    `count-reasons: ${COUNT_REASONS.filter(reason => f.reasons.includes(reason)).join(',') || 'none'}`,
+    `count-limits: list-pages=${MAX_LIST_PAGES}; list-rows=${LIST_LIMIT}; inbox-plans=${NEEDS_YOU_LIMITS.plans}; inbox-rows=${NEEDS_YOU_LIMITS.rows}; inbox-windows=8; host-rows=${CENSUS_LIMITS.rows}; host-records=${CENSUS_LIMITS.records}; host-depth=${CENSUS_LIMITS.depth}; run-page=${RUN_READ_LIMITS.page}; run-traversal=2000; run-depth=32`,
+    `count-gap: detection=${f.detection === null ? 'none' : n(f.detection)}; last-detected=${f.gapDate === 'known' && f.lastLossAt !== null && Number.isFinite(new Date(f.lastLossAt).getTime()) ? new Date(f.lastLossAt).toISOString() : ['none', 'migrated-unknown', 'legacy-unknown'].includes(f.gapDate) ? f.gapDate : 'unknown'}`,
+    `count-records: plans=${n(f.plans)}; runs=${n(f.runs)}; historical-sessions=${n(f.historicalSessions)}`,
+  ];
 }
 interface Visit { serial:number; key: string; claim: HealthClaim; open: boolean; busy: boolean; epoch: number; facts: HealthFacts | null; copy: keyof typeof en }
 interface ReportingHost {service:(current:()=>boolean)=>ServiceHost;visible:()=>boolean;changed:()=>void;copy:(text:string)=>Promise<void>}
@@ -47,10 +62,10 @@ export class ReportingHealth {
     if(this.visit?.key!==claim.key)this.visit={serial:++this.serial,key:claim.key,claim,open:false,busy:false,epoch:0,facts:null,copy:'idle'};
     const v=this.visit!;v.claim=claim;
     const own=()=>this.visit===v&&this.host.visible();
-    return {observation:`${v.serial}:${v.epoch}`,open:v.open,busy:v.busy,facts:v.facts,copy:reportingCopyText(v.copy,locale),copyState:v.copy,
+    return {observation:`${v.serial}:${v.epoch}`,open:v.open,busy:v.busy,facts:v.facts,counts:claim.counts,copy:reportingCopyText(v.copy,locale),copyState:v.copy,
       toggle:()=>{if(!own())return;if(v.open){v.open=false;v.epoch++;v.busy=false;v.facts=null;v.copy='idle';this.host.changed();}else{v.open=true;void this.refresh(v);}},
       refresh:()=>{if(own())void this.refresh(v);},
-      copySummary:()=>{if(!own()||!v.open||!v.facts)return;const epoch=v.epoch;v.copy='copying';this.host.changed();void this.host.copy(supportSummary(v.facts)).then(()=>finish('copied'),()=>finish('failed'));function finish(message:keyof typeof en){if(own()&&v.open&&epoch===v.epoch){v.copy=message;thisController.host.changed();}}const thisController=this;},
+      copySummary:()=>{if(!own()||!v.open||!v.facts)return;const epoch=v.epoch;v.copy='copying';this.host.changed();void this.host.copy(supportSummary(v.facts,v.claim.counts)).then(()=>finish('copied'),()=>finish('failed'));function finish(message:keyof typeof en){if(own()&&v.open&&epoch===v.epoch){v.copy=message;thisController.host.changed();}}const thisController=this;},
     };
   }
   private async refresh(v:Visit){

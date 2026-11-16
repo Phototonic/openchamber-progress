@@ -252,10 +252,10 @@ try {
   real.partial(); await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`);
   for (const surface of ['panel', 'page']) {
     await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
-    await wait(surface, `!!d.querySelector('[data-testid="needs-you-more-retry"] button')`);
+    await wait(surface, `!!d.querySelector('[data-testid="incomplete-counts-retry"]')`);
     const retryAt = await evaluate<number>('qa.requests.length');
-    await click(surface, '[data-testid="needs-you-more-retry"] button');
-    await wait(surface, `!d.querySelector('[data-testid="needs-you-more-failed"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
+    await click(surface, '[data-testid="incomplete-counts-retry"]');
+    await wait(surface, `!d.querySelector('[data-testid="incomplete-counts-load-error"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
     check(`${surface}-retry-recovers-first-continuation`, await evaluate<boolean>(`qa.requests.slice(${retryAt}).some(q=>q.frame===${js(surface)}&&q.path==='/v1/needs-you')`));
   }
   await evaluate(`qa.show('panel',600);true`);

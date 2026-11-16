@@ -33,6 +33,9 @@ import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkp
 import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { DeviceViewState } from './device-view-state.ts';
+import { countFacts, type CountFacts } from './incomplete-counts.ts';
+import { COUNT_CSS, IncompleteCounts } from './incomplete-counts-view.ts';
+import { censusFor, type Census } from './census.ts';
 import { INBOX_CSS } from './inbox-style.ts';
 import { INTENT_CSS } from './intent.ts';
 import { applyDeviceHooks } from './phone-layout.ts';
@@ -110,6 +113,7 @@ export interface ViewContext<U> {
   health: HealthView | null;
   /** Data for the current scope only (null while that scope is loading or not configured). */
   read: StoreRead | null;
+  countFacts: CountFacts;
   failure: ReadFailure | null;
   lastGoodAt: number | null;
   live: LiveSnapshot;
@@ -168,7 +172,7 @@ export interface ViewContext<U> {
    * Sub-agent runs of one root with a plan in scope (runs.ts). Call it only while painting an eligible
    * section; a paint without a call retires the visit and any held reply. Null without a store read.
    */
-  runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
+  runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>, census?: Census) => RunsPanel | null;
   /**
    * Source-wide Needs you inbox of the current read (inbox.ts), for surfaces that ask for it
    * (spec.needsYou). Null without a current read; its controls are bound to that store/binding.
@@ -280,23 +284,16 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
   return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
 };
 
-/**
- * Sub-agents coverage controls (census-view.ts): the Partial cue, Load more / Retry history and
- * Dismiss warning. Any update (this frame's history request or dismissal, history completed or a
- * gap dismissed elsewhere, a host census back under its limit) can remove one from the next paint.
- * Focus that was on it goes to the surviving cue (from a control inside its notes), else to the
- * section heading, only in a section of the same scope (plan and selected session); otherwise
- * nothing is moved. Nothing else falls back here.
- */
-const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"],[data-testid="subagent-dismiss-loss"]';
+/** Count controls removed by a successful read/dismissal hand focus on within the same scope only. */
+const COVERAGE_CONTROL = '[data-testid="incomplete-counts-toggle"],[data-testid="incomplete-counts-more"],[data-testid="incomplete-counts-dismiss"],[data-testid="incomplete-counts-retry"]';
 const coverageFocus = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
-  const scope = active.closest<HTMLElement>('[data-testid="subagent-activity"]')?.dataset.scope;
-  return scope ? { scope, inNotes: !!active.closest('[data-testid="subagent-coverage-notes"]') } : null;
+  const scope = root.dataset.countScope;
+  return scope ? { scope } : null;
 };
 function coverageLanding(root: HTMLElement, from: NonNullable<ReturnType<typeof coverageFocus>>) {
-  const section = [...root.querySelectorAll<HTMLElement>('[data-testid="subagent-activity"]')].find((s) => s.dataset.scope === from.scope);
-  return (from.inNotes ? section?.querySelector<HTMLElement>('[data-testid="subagent-coverage-cue"]') : null) ?? section?.querySelector<HTMLElement>('[data-testid="subagent-heading"]') ?? null;
+  if (root.dataset.countScope !== from.scope) return null;
+  return root.querySelector<HTMLElement>('[data-testid="incomplete-counts-toggle"]') ?? root.querySelector<HTMLElement>('[data-testid="more-trigger"]');
 }
 
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
@@ -560,6 +557,10 @@ export function startView<U>(spec: ViewSpec<U>) {
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
   const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.data++; schedule(); }) : null;
+  const incomplete = new IncompleteCounts(() => bump());
+  let paintedRuns: RunsPanel | null = null;
+  let paintedCensus: Census | null = null;
+  let paintedRunScope = '';
   const inbox = spec.needsYou ? new InboxController({
     device: deviceView ?? undefined,
     service: (current) => guardedHost(current),
@@ -1219,7 +1220,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, countFacts: incomplete.facts, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1322,14 +1323,17 @@ export function startView<U>(spec: ViewSpec<U>) {
         return c?.result ? { result: c.result, current: () => canReadPart() && details.get(p.key) === c && generation === cacheGeneration && document.visibilityState !== 'hidden' } : null;
       },
       refreshSerial: listReads,
-      runs: (claim) => {
+      runs: (claim, census) => {
         if (disposed || !read || !identity) return null;
         runs ??= new RunsController({
           service: (current) => guardedHost(current),
           visible: () => document.visibilityState !== 'hidden',
-          changed: () => { versions.ui++; schedule(); },
+          changed: bump,
         });
-        return runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
+        paintedCensus = census ?? censusFor(claim.request.root, directory, live.snapshot);
+        paintedRunScope = JSON.stringify([claim.request.source, claim.request.root, claim.request.plan]);
+        paintedRuns = runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
+        return paintedRuns;
       },
       inbox: inbox && read && identity && readScope === scopeKey(currentScope()) ? inbox.panel() : null,
     };
@@ -1423,7 +1427,17 @@ export function startView<U>(spec: ViewSpec<U>) {
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
     digests?.beginPaint(); runs?.beginPaint();
     beginInfoPaint(root);
+    paintedRuns = null; paintedCensus = null; paintedRunScope = '';
     spec.paint(root, vc);
+    if (spec.surface !== 'status' && !root.querySelector('.ap-surface-panel')) {
+      incomplete.paint(root, {
+        facts: countFacts(vc.read, vc.inbox, paintedRuns, paintedCensus), store: vc.read?.storeId ?? '',
+        surface: spec.surface, device: deviceView, runs: paintedRuns, inbox: vc.inbox, locale: vc.env.locale,
+        lastGoodAt: vc.lastGoodAt,
+        refresh: vc.refreshSerial,
+      });
+      root.dataset.countScope = JSON.stringify([identity, vc.session?.id, scopeKey(currentScope()), paintedRunScope]);
+    }
     document.documentElement.lang = vc.env.locale;
     digests?.endPaint(); runs?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
@@ -1681,7 +1695,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     applyHostReady(next, document.documentElement);
     applyDeviceHooks(document.documentElement, next.device);
     if (!document.getElementById('ap-style')) {
-      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS);
+      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS + COUNT_CSS);
       style.id = 'ap-style';
       document.head.append(style);
     }
@@ -1776,6 +1790,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     language.dispose();
     digests?.dispose();
     runs?.retire();
+    incomplete.dispose();
     inbox?.retire('dispose');
     spec.retire?.('dispose');
     html.dataset.apHidden = '';
