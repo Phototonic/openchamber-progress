@@ -718,4 +718,40 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 @media(forced-colors:active){.ap-fold-toggle{border:1px solid CanvasText}}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
-${PHONE_CSS}`;
+${PHONE_CSS}
+/* Surface shell: one menu and one view switch, independent of the Map/List owner. */
+.ap-more{position:relative;flex:none}
+.ap-more button{color:var(--oc-fg);font:inherit}
+.ap-more .ap-actions-btn{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;border:0;border-radius:4px;background:transparent;cursor:pointer}
+.ap-more .ap-actions-btn:hover{background:var(--oc-hover)}
+.ap-more-popup[hidden]{display:none}
+.ap-more-popup{position:absolute;z-index:100;right:0;top:calc(100% + 4px);display:flex;flex-direction:column;width:max-content;min-width:220px;max-width:min(320px,calc(100vw - 32px));max-height:min(640px,70vh);overflow:auto;padding:6px;background:var(--oc-elevated,var(--oc-bg));border:1px solid var(--oc-border);border-radius:8px;box-shadow:0 8px 24px #0002}
+.ap-more-row{border:0;border-radius:4px;background:none;text-align:start;padding:8px 12px;min-height:36px;white-space:normal;cursor:pointer}
+.ap-more-row:hover,.ap-more-row:focus{background:var(--oc-hover);outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-more-row:disabled{opacity:.55;cursor:default}
+.ap-more-row[data-destructive]{color:var(--oc-error-text,var(--oc-error))}
+.ap-more-row[aria-checked="true"]::before{content:'✓ ';color:var(--oc-primary-text,var(--oc-primary))}
+.ap-more-separator{height:1px;background:var(--oc-border);margin:5px 4px}
+.ap-more-popup .ap-note{padding:8px 12px;max-width:28ch}
+.ap-surface-settings{display:flex;justify-content:flex-end}
+.ap-surface-panel{display:flex;flex-direction:column;gap:14px}
+.ap-surface-panel>.ap-h{text-transform:none;letter-spacing:0;font-size:15px}
+.ap-surface-view-switch{display:flex;gap:2px;align-items:center}
+.ap-surface-view-switch button:focus-visible,.ap-more .ap-actions-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5}
+.ap-progress-line .ap-seg{order:0}
+.ap-progress-line .ap-fraction{order:1}
+.ap-progress-line .ap-fraction strong{font-size:15px;letter-spacing:0}
+.ap-history-dot{display:block;width:6px;height:6px;border-radius:50%;background:var(--oc-primary);position:absolute;right:3px;top:3px}
+.ap-list-help>summary{cursor:pointer;color:var(--oc-muted);min-height:32px}
+.ap-board-picker{display:none}
+.ap-plan-list>[data-testid="plan-list-heading"]{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+/* The shell supplies the plan header, counts and single view switch. The map owner retains
+   its region label and unavailable/error states; its controls are simplified separately. */
+.ap-map-host .ap-map[data-tasks]:not([data-tasks="0"]) .ap-map-top,
+.ap-map-host .ap-map-summary{display:none}
+@media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,300px) minmax(0,1fr)}}
+@media(max-width:819px){.ap-board-picker{display:block}.ap-board>.ap-plan-list>.ap-board-project{display:none}}
+@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary{min-height:44px;min-width:44px}}
+[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary){min-height:44px;min-width:44px}
+}`;

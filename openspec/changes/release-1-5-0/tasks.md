@@ -13,10 +13,10 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 2. Surface shell and More menu
 
-- [ ] 2.1 Reorder rail and board to header, progress with text legend, Map or List, Needs you, sub-agents; place the single Map | List switch; apply the narrow-frame List default; keep the default-view rule and its reset behaviour.
-- [ ] 2.2 Build the single More menu with its groups, menu semantics and focus return; open Plan document, History, Sessions, Setup and Troubleshooting as panels with Back; keep the settings group in every state; move the language choice into it; add the History dot from the saved review point.
-- [ ] 2.3 Remove the default-UI controls listed in the hierarchy requirement and move every Details and reporting-health fact to Troubleshooting → Advanced details. Leave service reads and the existing support-summary lines untouched.
-- [ ] 2.4 Extend browser logic tests and rendered drivers for menu keyboard use, panel focus return, the no-plan, not-set-up and failed-read states, and language selection inside the menu, at desktop width and 390 px in three languages. Update `docs/ui.md` and affected images; regenerate the three guests.
+- [x] 2.1 Reorder rail and board to header, progress with text legend, Map or List, Needs you, sub-agents; place the single Map | List switch; apply the narrow-frame List default; keep the default-view rule and its reset behaviour.
+- [x] 2.2 Build the single More menu with its groups, menu semantics and focus return; open Plan document, History, Sessions, Setup and Troubleshooting as panels with Back; keep the settings group in every state; move the language choice into it; add the History dot from the saved review point.
+- [x] 2.3 Remove the default-UI controls listed in the hierarchy requirement and move every Details and reporting-health fact to Troubleshooting → Advanced details. Leave service reads and the existing support-summary lines untouched.
+- [x] 2.4 Extend browser logic tests and rendered drivers for menu keyboard use, panel focus return, the no-plan, not-set-up and failed-read states, and language selection inside the menu, at desktop width and 390 px in three languages. Update `docs/ui.md` and affected images; regenerate the three guests.
 
 ## 3. Map as the main component
 

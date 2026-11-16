@@ -10,7 +10,8 @@ import {
   ALL_PARTICIPANTS, documentStateText, elapsedAt, jumpTargets, lifecycleLabel, nextJump, participantIndex, participants, relationsOf, showsLiveness, statusLabel, summarize, summaryText, taskProjection,
   type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
-import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
+import { icon, infoDisclosure, moreMenu, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
+import { CheckpointStore } from './change-digest-checkpoint.ts';
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
@@ -551,6 +552,170 @@ export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' =
   return head;
 }
 
+const SHELL_COPY = {
+  en: { more: 'More', back: 'Back', document: 'Plan document', history: 'History', sessions: 'Sessions', setup: 'Setup', troubleshooting: 'Troubleshooting', language: 'Language', automatic: 'Automatic (OpenChamber)', unsupported: "Follows OpenChamber’s language on this version.", progress: 'Copy progress update…', handoff: 'Copy handoff note…', advanced: 'Advanced details', newHistory: 'More, new history', help: 'Help & filters', all: 'Show all', unfinished: 'Unfinished', pending: 'not started', working: 'in progress', blocked: 'blocked', skipped: 'skipped', done: 'All done' },
+  ru: { more: 'Ещё', back: 'Назад', document: 'Документ плана', history: 'История', sessions: 'Сессии', setup: 'Настройка', troubleshooting: 'Устранение неполадок', language: 'Язык', automatic: 'Автоматически (OpenChamber)', unsupported: 'В этой версии используется язык OpenChamber.', progress: 'Скопировать прогресс…', handoff: 'Скопировать заметку для передачи…', advanced: 'Дополнительные сведения', newHistory: 'Ещё, есть новая история', help: 'Справка и фильтры', all: 'Показать всё', unfinished: 'Незавершённые', pending: 'не начато', working: 'в работе', blocked: 'заблокировано', skipped: 'пропущено', done: 'Всё выполнено' },
+  'zh-CN': { more: '更多', back: '返回', document: '计划文档', history: '历史', sessions: '会话', setup: '设置', troubleshooting: '故障排查', language: '语言', automatic: '自动（OpenChamber）', unsupported: '此版本跟随 OpenChamber 的语言。', progress: '复制进度更新…', handoff: '复制交接备注…', advanced: '高级详情', newHistory: '更多，有新历史', help: '帮助与筛选', all: '显示全部', unfinished: '未完成', pending: '未开始', working: '进行中', blocked: '受阻', skipped: '已跳过', done: '全部完成' },
+} satisfies Record<InterfaceLanguage, Record<string, string>>;
+export const shellCopy = (locale: string) => SHELL_COPY[resolveLanguage('auto', locale)];
+export type SurfacePanel = 'document' | 'history' | 'sessions' | 'setup' | 'troubleshooting';
+/** Hidden same-origin fixture/host frames can report a provisional 300 px viewport.
+ * Do not turn that unallocated size into a latched choice. Cross-origin guests have no
+ * frameElement and use their ordinary allocated viewport. */
+export function narrowSurface() {
+  return window.innerWidth > 0 && window.innerWidth < 320 && window.frameElement?.getBoundingClientRect().width !== 0;
+}
+
+/** One frame's shell. Later features join through menuActions and the content mounts in the
+ * entry files; they must not create a second menu or own the surface's navigation state. */
+export class ProgressShell {
+  private key = '';
+  private panel: SurfacePanel | null = null;
+  private menu: ReturnType<typeof moreMenu> | null = null;
+  private focus: 'heading' | 'more' | null = null;
+  private review: { key: string; revision: number | null } | null = null;
+  reset() { this.key = ''; this.panel = null; this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null; }
+  get activePanel() { return this.panel; }
+  /** Reconcile selection before callers decide which view is active, not only during paint. */
+  reconcile<U>(vc: ViewContext<U>, plan: PlanView | null, options: { board?: boolean; scope?: string } = {}) {
+    const key = JSON.stringify([vc.ctx.connection?.account, vc.identity, options.board ? null : vc.session?.id, options.scope, plan?.key]);
+    if (key !== this.key) { this.reset(); this.key = key; }
+  }
+  showView<U>(vc: ViewContext<U>) { this.panel = null; vc.setUi({}); }
+  reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
+  /** Called after root replacement, not before (focus must land on a connected control). */
+  afterPaint(root: HTMLElement) {
+    const target = this.focus === 'heading' ? '[data-testid="surface-panel-heading"]' : this.focus === 'more' ? '[data-testid="more-trigger"]' : null;
+    this.focus = null;
+    if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
+  }
+  paint<U>(root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, options: {
+    board?: boolean; scope?: string; picker?: HTMLElement | null;
+    renderPanel: (kind: SurfacePanel) => HTMLElement;
+    menuActions?: PlanAction[];
+    openPanel?: (kind: SurfacePanel) => void;
+  }) {
+    this.reconcile(vc, plan, options);
+    const key = this.key;
+    this.menu?.dispose();
+    const t = shellCopy(vc.env.locale);
+    const detail = plan ? vc.detail(plan) : null;
+    const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
+    const items: MenuItem[] = [], runs = new Map<string, () => void>();
+    const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
+    const open = (kind: SurfacePanel) => {
+      if (this.key !== key) return;
+      this.panel = kind; this.focus = 'heading'; options.openPanel?.(kind);
+      vc.setUi({});
+    };
+    const summary = plan ? vc.summary(plan) : null;
+    if (summary) {
+      add('summary-progress', t.progress, () => summary.open('progress'));
+      add('summary-handoff', t.handoff, () => summary.open('handoff'));
+      items.push({ separator: true });
+    }
+    if (plan) {
+      add('document', t.document, () => open('document'));
+      if (options.board) add('history', t.history, () => open('history'));
+      const count = participants(plan, ready).length;
+      add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
+      items.push({ separator: true });
+    }
+    // Tidy and hidden-items owners supply only applicable actions here.
+    for (const action of options.menuActions ?? []) { items.push({ ...action }); runs.set(action.id, action.run); }
+    if (options.menuActions?.length) items.push({ separator: true });
+    add('language', t.language + ' ›', () => {});
+    add('setup', t.setup, () => open('setup'));
+    add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
+    const reviewKey = options.board && plan && vc.read && vc.ctx.features?.deviceStorage === true ? JSON.stringify([key, vc.read.storeId, vc.read.binding, vc.refreshSerial]) : null;
+    if (reviewKey && this.review?.key !== reviewKey) {
+      this.review = { key: reviewKey, revision: this.review?.revision ?? null };
+      const identity = { integrationAccount: vc.ctx.connection?.account || null, storeId: vc.read!.storeId, binding: vc.read!.binding, source: plan!.sourceId, plan: plan!.id };
+      void new CheckpointStore(vc.storage, () => vc.ctx.features?.deviceStorage === true).read(identity).then(saved => {
+        if (this.key !== key || this.review?.key !== reviewKey) return;
+        const revision = saved.state === 'saved' ? saved.revision : null;
+        if (this.review.revision !== revision) { this.review.revision = revision; vc.setUi({}); }
+      });
+    }
+    const newHistory = !!(plan && reviewKey && this.review?.revision !== null && this.review?.revision !== undefined && this.review.revision < plan.revision);
+    const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
+    const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
+    const menu = this.menu = moreMenu({ label: newHistory ? t.newHistory : t.more, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language });
+    if (newHistory) { const dot = testid(el('span', 'ap-history-dot'), 'more-history-dot'); dot.setAttribute('aria-hidden', 'true'); menu.trigger.append(dot); }
+    const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
+    holder.append(menu.root);
+    if (plan && vc.reading) MENU_SLOTS.set(vc.reading, {
+      plan: plan.key, add: (actions, focusHook) => {
+        // Per-plan archive/restore before settings; destructive actions remain last.
+        const normal = actions.filter(a => !a.destructive), destructive = actions.filter(a => a.destructive);
+        const settings = items.findIndex(i => !('separator' in i) && i.id === 'language');
+        if (normal.length) items.splice(settings, 0, ...normal.map(a => ({ id: a.id, label: a.label, disabled: a.disabled })), { separator: true });
+        if (destructive.length) items.push({ separator: true }, ...destructive.map(a => ({ id: a.id, label: a.label, disabled: a.disabled, destructive: true })));
+        for (const action of actions) runs.set(action.id, action.run);
+        if (focusHook) holder.dataset.testid = focusHook;
+        menu.update(items);
+      },
+    });
+    if (plan) {
+      const head = planHeader(plan, vc.env, 'h2', { picker: options.picker, actions: holder });
+      head.dataset.testid = 'surface-header';
+      // Rail has no location row. Board keeps location and the gated main-session action.
+      const meta = head.querySelector<HTMLElement>('.ap-meta')!;
+      meta.replaceChildren();
+      if (options.board) {
+        meta.append(el('span', '', planLocation(plan, vc.live, vc.env.boundSource, vc.env.locale)), el('span', '', say('Main session', vc.env.locale)));
+        const nav = navButton(plan, plan.ownerSessionId, coverageFor(plan.ownerSessionId, plan.directory, vc.live), vc.env); if (nav) meta.append(nav);
+      }
+      if (plan.lifecycle === 'active' && Date.now() - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
+      if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
+      if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('Unverified OpenCode setup', vc.env.locale)));
+      root.append(head);
+      const s = summarize(plan, ready);
+      root.append(progressBlock(s, false, vc.env.locale));
+      const legend = testid(el('p', 'ap-progress-legend'), 'progress-legend');
+      // The progress denominator already excludes skipped tasks.
+      const pending = ready ? Math.max(0, s.total - s.done - s.working - s.blocked) : 0;
+      legend.textContent = s.total > 0 && s.remaining === 0 && !s.skipped ? t.done : [[s.working, t.working], [s.blocked, t.blocked], [pending, t.pending], [s.skipped, t.skipped]].filter(([n]) => Number(n) > 0).map(([n, word]) => `${displayCount(Number(n), vc.env.locale)} ${word}`).join(' · ');
+      root.append(legend);
+      if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
+    } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
+    if (!this.panel) return false;
+    const kind = this.panel;
+    const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
+    box.setAttribute('aria-label', t[kind]);
+    const back = () => { if (this.key !== key) return; this.panel = null; this.focus = 'more'; vc.setUi({}); };
+    button(box, 'surface-panel-back', t.back, back, 'ghost');
+    const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
+    box.append(h, options.renderPanel(kind));
+    box.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented && !(e.target as Element).closest('[role="menu"],[role="listbox"]')) { e.preventDefault(); back(); } });
+    root.append(box);
+    return true;
+  }
+}
+
+/** Shared List help/filter mount. Map owns its corresponding help control. */
+export function listFilters(reading: ReadingView | null, locale: string) {
+  const t = shellCopy(locale), box = testid(el('details', 'ap-list-help'), 'list-help-filters');
+  box.append(el('summary', '', t.help));
+  if (reading) for (const [id, label] of [['all', t.all], ['unfinished', t.unfinished]] as const) {
+    const b = button(box, `list-filter-${id}`, label, () => reading.set({ status: id }), 'ghost').querySelector('button');
+    b?.setAttribute('aria-pressed', String(reading.status === id));
+  }
+  return box;
+}
+
+export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string) {
+  const language = resolveLanguage('auto', locale);
+  const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
+  const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
+  box.setAttribute('role', 'group'); box.setAttribute('aria-label', names[2]!);
+  for (const [index, mode] of ['map', 'list'].entries()) {
+    const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
+    const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
+  }
+  return box;
+}
+
 /**
  * The rail's title-picker: the SDK select, shown as "⌄ 1 of 3" beside the plan title. Its name
  * says which plan of how many is shown; every option keeps its full title in the popup.
@@ -1024,7 +1189,7 @@ function stateChipRow(p: Paint) {
 }
 
 /** Concrete qualifications, always visible as compact lines (never behind ⓘ). */
-function qualifiers(p: Paint) {
+function qualifiers(p: Pick<Paint, 'proj' | 'plan' | 'env'>) {
   const box = testid(el('div', 'ap-quals'), 'progress-qualifiers');
   const r = p.proj.readiness;
   box.dataset.readiness = r.state;
@@ -1325,7 +1490,7 @@ function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null
     if (!details.open) { disposeInfoWithin(body); body.replaceChildren(); return; }
     if (body.childNodes.length) return;
     const { dl, text } = rowFacts(p, row);
-    body.append(dl, copyBox(p, item, text));
+    body.append(dl);
   };
   details.addEventListener('toggle', fill);
   fill();
@@ -1606,7 +1771,7 @@ function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 
  * header (for example the rail's contributing-session note). `pending`: the frame's default view is
  * still being decided (docs/ui.md Default view): only the loading placeholder, never complete rows.
  */
-export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null; picker?: HTMLElement | null; actions?: PlanAction[]; info?: HTMLElement | null; pending?: boolean }) {
+export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null; picker?: HTMLElement | null; actions?: PlanAction[]; info?: HTMLElement | null; pending?: boolean; shell?: boolean }) {
   const root = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
   root.dataset.lifecycle = plan.lifecycle;
   root.dataset.source = plan.sourceId;
@@ -1639,18 +1804,18 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     };
     root.dataset.delegation = paint.intent!.state;
   }
-  const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
-  root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));
-  const progress = progressBlock(summary, false, env.locale);
-  root.append(progress);
-  if (paint) { const chips = stateChipRow(paint); if (chips) root.append(chips); root.append(qualifiers(paint)); }
-  if (hooks.summary) { const s = summaryBlock(hooks.summary, env.locale); if (s) root.append(s); }
+  if (!options.shell) {
+    const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
+    root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));
+    root.append(progressBlock(summary, false, env.locale));
+    if (hooks.summary) { const s = summaryBlock(hooks.summary, env.locale); if (s) root.append(s); }
+  }
   if (paint && panel?.plan === plan.key) {
     if (panel.kind === 'task-view' && reading) root.append(taskViewPanel(paint));
     else if (panel.kind === 'document' && options.document === 'disclosure') root.append(plainPanel(paint, 'document', say('Plan document', env.locale), documentBlock(plan, env, 'inline', hooks.document)));
     else if (panel.kind === 'sessions') root.append(sessionsPanel(paint));
   }
-  if (paint) root.append(taskList(paint));
+  if (paint) root.append(listFilters(reading, env.locale), taskList(paint));
   else {
     // No task controls until complete matching detail exists: loading or failed is never "no matches".
     const tasks = el('section', 'ap-section ap-tasks');
@@ -1658,7 +1823,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     root.append(tasks);
   }
   // One compact session row; the Sessions panel holds every participant.
-  if (!(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
+  if (!options.shell && !(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
   if (options.document === 'inline') root.append(documentBlock(plan, env, 'inline', hooks.document));
   return root;
 }
@@ -1768,6 +1933,30 @@ export function detailsBlock(read: StoreRead | null, plan: PlanView | null, extr
     d.append(ul);
   }
   return d;
+}
+
+/** Content of Troubleshooting's single Advanced details fold, not another disclosure.
+ * Keeps every former Details fact and the complete held report provenance; no new reads. */
+export function advancedDetails<U>(vc: ViewContext<U>, plan: PlanView | null, extra: [string, string][]) {
+  const legacy = detailsBlock(vc.read, plan, extra, vc.env);
+  const body = el('div'); body.append(...[...legacy.children].slice(1));
+  if (vc.read?.truncated) body.append(el('p', 'ap-note', `${say('Coverage', vc.env.locale)}: truncated`));
+  const value = plan ? vc.detail(plan) : null;
+  if (!plan || value?.state !== 'ready' || value.value.revision !== plan.revision) return body;
+  const detail = value.value;
+  const proj = progressProjection(plan, detail, vc.reading ?? { status: 'all', participant: ALL_PARTICIPANTS, cursor: { working: null, blocked: null } });
+  if (proj) body.append(qualifiers({ proj, plan, env: vc.env }));
+  const facts = testid(el('dl', 'ap-facts'), 'advanced-report-authorship');
+  const add = (label: string, value: string) => facts.append(el('dt', '', label), el('dd', '', value));
+  const label = recordedLabel(plan, vc.env);
+  for (const item of detail.items) {
+    if (item.reporterSessionId) add(item.title, `${say('Reported', vc.env.locale)}: ${label(item.reporterSessionId)}`);
+    const b = item.reportedBlocker;
+    if (b?.state === 'reported') add(item.title, `${say('Details', vc.env.locale)}: ${label(b.reporterSessionId)} · ${b.mode} · ${label(b.attributedSessionId)}`);
+  }
+  for (const report of detail.contributions) add(say('Reported', vc.env.locale), `${label(report.reporterSessionId)} · ${report.mode} · ${label(report.attributedSessionId)} · ${report.itemIds.join(', ')} · ${report.revision}${report.reportedAt ? ` · ${absoluteTime(report.reportedAt, vc.env.locale)}` : ''}`);
+  body.append(facts);
+  return body;
 }
 
 export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: string }> = {

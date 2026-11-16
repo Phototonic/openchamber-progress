@@ -1,6 +1,8 @@
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { button, detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, recoveredHeading, retryRead, revealCurrentTask, staleBlock, testid } from '../shared/components.ts';
+import { advancedDetails, button, documentBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, narrowSurface, peopleBlock, planDetail, planPicker, ProgressShell, recoveredHeading, retryRead, revealCurrentTask, staleBlock, surfaceViewSwitch, testid } from '../shared/components.ts';
+import { ReportingHealth } from '../shared/reporting-health.ts';
+import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 import { checkReading, inboxSection, openReading, readingHeader, ReadingFocus, readingRequest, type InboxReading, type ReadingCheck } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
@@ -55,6 +57,27 @@ let selectionGeneration = 0;
 const viewChoice = new DefaultViewChoice();
 const chooseView = (vc: ViewContext<Ui>, mode: 'list' | 'map') => { const plan = current(vc); if (plan && vc.session) viewChoice.choose(viewReadingKey(vc, `rail:${vc.session.id}`, plan), mode); vc.setUi({ presentation: mode }); };
 const railMap = createMapFrame<Ui>('rail', (vc) => chooseView(vc, 'list'));
+const shell = new ProgressShell();
+let frame: ViewContext<Ui> | null = null;
+const reporting = new ReportingHealth({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}), copy: async text => { await navigator.clipboard.writeText(text); } });
+function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, pick?: HTMLElement | null) {
+  const claim = () => reporting.claim({ key: JSON.stringify([vc.identity, vc.session?.id, plan?.key, plan?.revision, vc.read?.captureEnabled, !!vc.failure]), read: vc.read, plan, stale: !!vc.failure });
+  return shell.paint(root, vc, plan, {
+    picker: pick,
+    openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
+    renderPanel: kind => {
+      if (kind === 'setup') return setupBlock(vc);
+      if (kind === 'troubleshooting') {
+        const p = claim(); if (!p.open) p.toggle();
+        const content = advancedDetails(vc, plan, [[messages[resolveLanguage('auto', vc.env.locale)].watched, String(vc.sessionSubscriptions)], ...failureFacts(vc.failure, vc.env.locale)]);
+        return reportingHealthBlock(p, vc.env.locale, content);
+      }
+      if (plan && kind === 'document') return documentBlock(plan, vc.env, 'inline', { get: () => vc.document(plan), request: () => vc.requestDocument(plan) });
+      const detail = plan ? vc.detail(plan) : null;
+      return plan ? peopleBlock(plan, detail?.state === 'ready' ? detail.value : null, vc.env) : el('div');
+    },
+  });
+}
 const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-view-list"] button');
 /** Reveal-once and focus follow-ups of the inbox reading; the last paint's revalidation. */
 // Created on first use: frames that never open an inbox reading construct nothing.
@@ -82,7 +105,10 @@ startView<Ui>({
   // Source-wide Needs you rows with waiting times, on the ordinary list read.
   needsYou: 'rows',
   prepareUi: (vc) => {
-    const decision = resolveDefaultView(viewChoice, vc, `rail:${vc.session?.id ?? ''}`, current(vc));
+    const plan = current(vc), scope = `rail:${vc.session?.id ?? ''}`;
+    const settling = plan ? viewChoice.identify(viewReadingKey(vc, scope, plan)).pending : false;
+    let decision = resolveDefaultView(viewChoice, vc, scope, plan);
+    if (plan && settling && !decision.pending && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, scope, plan), 'list');
     const presentation = decision.view === 'map' ? 'map' : 'list';
     return vc.ui.presentation === presentation ? null : { presentation };
   },
@@ -116,8 +142,9 @@ startView<Ui>({
   },
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return railMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); inboxFocus?.reset(reason); } railMap.retire(reason); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(); inboxFocus?.reset(reason); } reporting.retire(); railMap.retire(reason); },
   afterPaint: (root, vc) => {
+    shell.afterPaint(root);
     railMap.afterPaint(root, vc, vc.ui.inbox ? null : current(vc), listSwitch);
     inboxFocus?.afterPaint(root, vc.ui.inbox, inboxCheck, revealCurrentTask);
   },
@@ -143,11 +170,13 @@ startView<Ui>({
     }).catch(() => {});
   },
   paint(root, vc) {
+    frame = vc;
     const { read, failure, env } = vc;
     const language = resolveLanguage('auto', env.locale), t = messages[language];
     // Map work belongs to the selected session's reading of its plan, and runs only while Map is shown.
     const shown = vc.ui.inbox ? null : current(vc), session = vc.session?.id;
-    const mapShown = vc.ui.presentation === 'map' && !!shown && !!session;
+    if (!vc.ui.inbox) shell.reconcile(vc, shown);
+    const mapShown = vc.ui.presentation === 'map' && !!shown && !!session && !shell.activePanel;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));
     if (vc.progressAction) root.append(pinnedScope(vc, language));
@@ -157,7 +186,7 @@ startView<Ui>({
       state.setAttribute('role', 'status');
       root.append(state);
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
-      root.append(languageBlock(vc.language, env.locale));
+      surface(root, vc, null);
       return;
     }
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
@@ -167,9 +196,8 @@ startView<Ui>({
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
       else if (vc.health && !vc.health.ready) {
         root.append(emptyBlock('setup-needed', t.setup, t.connect, true));
-        root.append(setupBlock(vc, { compact: true }));
       } else if (vc.session?.id) root.append(loadingBlock(env.locale));
-      root.append(languageBlock(vc.language, env.locale));
+      surface(root, vc, null);
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
@@ -181,26 +209,25 @@ startView<Ui>({
       // A labelled, read-only reading of the current plan, revalidated before its task is revealed.
       const r = vc.ui.inbox, request = inboxRequestOf(vc)!, detail = vc.detail(request);
       const check = inboxCheck = checkReading(r, detail, vc.detailPlan(request), { storeId: read.storeId, boundSource: env.boundSource }, env.locale);
+      if (surface(root, vc, check.kind === 'ready' ? check.plan : null)) return;
       root.append(readingHeader(r, check, 'panel', env.locale, () => closeInbox(vc), vc.retry));
-      if (check.kind === 'ready') root.append(planDetail(check.plan, env, { detail, retryDetail: vc.retry, document: { get: () => vc.document(check.plan), request: () => vc.requestDocument(check.plan) } }, { document: 'omit', compareSession: null, reading: vc.reading }));
-      root.append(languageBlock(vc.language, env.locale));
+      if (check.kind === 'ready') root.append(planDetail(check.plan, env, { detail, retryDetail: vc.retry, document: { get: () => vc.document(check.plan), request: () => vc.requestDocument(check.plan) } }, { document: 'omit', compareSession: null, reading: vc.reading, shell: true }));
       return;
     }
-    // Source-wide and independent of the selected session's plan: at the start, before it.
-    if (vc.inbox) root.append(inboxSection(vc.inbox, env, { open: (row) => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
     const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
     const runRequest = shown && session ? runClaim(read, session, shown) : null;
     const runs = runRequest && verified ? vc.runs(runRequest) : null;
     if (scope.kind === 'none') {
+      if (surface(root, vc, null)) return;
       root.append(emptyBlock('unscoped-state', t.noSession, t.openPlan));
     } else if (!scope.plans.length) {
+      if (surface(root, vc, null)) return;
       root.append(emptyBlock('empty-state', t.noPlan, t.appears));
     } else {
       const generation = selectionGeneration;
       const plan = pickPlan(scope.plans, vc.ui.selected);
-      if (vc.progressAction && scope.plans.length > 1) root.append(testid(el('p', 'ap-note', ACTION_CHOICE[language][scope.plans.some(p => p.key === vc.ui.selected) ? 'chosen' : 'automatic']), 'session-action-choice'));
       // The title is the picker (several plans): built fresh each paint, so it carries this paint's choice guard.
       const choose = plan && scope.plans.length > 1 ? (standalone = false) => picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, standalone, (key) => {
         if (generation !== selectionGeneration) return;
@@ -211,15 +238,10 @@ startView<Ui>({
       // Plan view: List / Map, first (also with one plan), like the board's tabs above its detail.
       // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
       // activation records the explicit choice (including re-pressing the provisional List).
-      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }, language));
-      // Contribution context, not ownership: behind the header's ⓘ.
-      const helping = plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId
-        ? info(`${plan.key}|helping`, t.about, testid(el('p', '', t.contribution(recordedLabel(plan, env)(plan.ownerSessionId))), 'helping-note')) : null;
+      if (surface(root, vc, plan, choose?.() ?? null)) { if (plan) root.append(cleanupBlock(vc, plan)); return; }
+      if (plan && session) root.append(surfaceViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }, language));
       if (plan && mapShown && session) {
         // The map keeps its own header and title; the compact picker stays above it.
-        const pick = choose?.(true);
-        if (pick) { const row = el('div', 'ap-rail-pick'); row.append(pick); if (helping) row.append(helping); root.append(row); }
-        else if (helping) root.append(helping);
         const host = testid(el('div', 'ap-map-host'), 'map-host');
         root.append(host);
         railMap.paint(host, vc, { plan, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
@@ -228,16 +250,16 @@ startView<Ui>({
         // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
         // only the loading placeholder paints (no complete rows) until List or Map is settled.
         const article = planDetail(plan, env, hooks(vc, plan), {
-          document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading,
-          picker: choose?.() ?? null, info: helping, actions: [{ id: 'details', label: t.details, run: openDetails }],
+          document: 'omit', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading, shell: true,
           pending: viewChoice.current.pending,
         });
         // An explicit task focus/reveal or pointer selection here is what Map opens on.
         railMap.listTargets(article);
         root.append(article, cleanupBlock(vc, plan));
       }
-      if (read.truncated) root.append(el('p', 'ap-note', t.truncated));
     }
+    // Needs-you owner replaces this mount with scoped, compact rows; no placement ownership.
+    if (vc.inbox) root.append(inboxSection(vc.inbox, env, { open: (row) => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
     // Sub-agents of the selected session, only with a plan in scope, kept apart from the plan above.
     if (shown && session && verified) {
       const census = subagentsBlock({
@@ -246,8 +268,7 @@ startView<Ui>({
       });
       if (census) root.append(census);
     }
-    root.append(detailsBlock(read, current(vc), [[t.watched, String(vc.sessionSubscriptions)], ...failureFacts(failure, env.locale)], env));
-    root.append(languageBlock(vc.language, env.locale));
+    // Incomplete-count indicator owner mounts after the sub-agents line.
   },
 });
 
@@ -288,16 +309,6 @@ function hooks(vc: ViewContext<Ui>, plan: PlanView) {
     retryDetail: vc.retry,
     document: { get: () => vc.document(plan), request: () => vc.requestDocument(plan) },
   };
-}
-
-/** ⋯ → Details: open the collapsed diagnostics below and move focus to them. */
-function openDetails() {
-  const d = document.querySelector<HTMLDetailsElement>('[data-testid="details"]');
-  if (!d) return;
-  d.open = true;
-  const summary = d.querySelector<HTMLElement>('summary');
-  summary?.focus({ preventScroll: true });
-  summary?.scrollIntoView({ block: 'nearest' });
 }
 
 /** The title-picker: every scoped plan with its done/total or lifecycle, and the helping role. */

@@ -1,4 +1,4 @@
-import { button, el, testid } from './components.ts';
+import { button, el, shellCopy, testid } from './components.ts';
 import { reportingCopyText, supportSummary, type ReportingHealth } from './reporting-health.ts';
 import { resolveLanguage } from './i18n.ts';
 import { managedCopy } from './managed-copy.ts';
@@ -99,14 +99,26 @@ const zh: typeof en = {
     unknown:'未知；此检查没有支持该结果的观察记录。',
   },
 };
-export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, locale='en'){
+const PANEL_COPY = {
+  en: { intro: 'If something looks wrong, copy this summary into a support request; it contains no plan text or file paths.', refresh: 'Check again' },
+  ru: { intro: 'Если что-то не так, скопируйте эту сводку в обращение в поддержку; в ней нет текста плана или путей к файлам.', refresh: 'Проверить снова' },
+  'zh-CN': { intro: '如果发现问题，请将此摘要复制到支持请求中；它不包含计划文本或文件路径。', refresh: '重新检查' },
+};
+export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, locale='en', facts?: HTMLElement){
   const language=resolveLanguage('auto',locale);
   const text=language==='ru'?ru:language==='zh-CN'?zh:en;
   const box=testid(el('section','ap-health'),'reporting-health');
-  button(box,'reporting-health-toggle',p.open?text.close:text.title,p.toggle,'ghost');
-  box.querySelector('button')?.setAttribute('aria-expanded',String(p.open));
-  if(!p.open)return box;
-  box.append(el('p','ap-note',text.checked));
+  const copy = PANEL_COPY[language];
+  box.append(el('p','ap-note',copy.intro));
+  const controls = el('div', 'ap-row');
+  button(controls,'reporting-support-copy',text.copy,p.copySummary,'default',!p.facts || p.busy);
+  button(controls,'reporting-health-refresh',copy.refresh,p.refresh,'outline',p.busy);
+  box.append(controls);
+  const status=el('p','ap-note',reportingCopyText(p.copyState,locale));status.setAttribute('role','status');box.append(status);
+  const advanced=testid(el('details','ap-health-details'),'advanced-details');
+  advanced.append(el('summary','',shellCopy(locale).advanced));
+  if (facts) advanced.append(facts);
+  advanced.append(el('p','ap-note',text.checked));
   box.setAttribute('aria-busy',String(p.busy));
   if(p.busy)box.append(el('p','ap-note',text.checking));
   if(p.facts){
@@ -118,16 +130,16 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
     const neutral=new Set(['unknown','not-checked','not-observed','association-unknown']);
     const list=el('dl','ap-health-grid');
     for(const [key,label] of labels){const value=p.facts[key];const row=el('div','ap-health-row');const status=el('dd','ap-health-status');status.dataset.tone=positive.has(value)?'good':neutral.has(value)?'neutral':'attention';const mark=el('span','ap-health-mark',positive.has(value)?'✓':neutral.has(value)?'—':'!');mark.setAttribute('aria-hidden','true');status.append(mark,el('span','',short[value]??text.short.unknown));row.append(el('dt','',label),status);list.append(row);}
-    box.append(list);
+    advanced.append(list);
     const details=testid(el('details','ap-health-details'),'reporting-explanations');details.append(el('summary','',text.meanings));
     const explanations=el('dl','ap-health-explanations');
     for(const [key,label] of labels)explanations.append(el('dt','',label),el('dd','',key==='service'&&p.facts[key]==='unavailable'?text.serviceUnavailable:explain[p.facts[key]]??explain.unknown));
-    details.append(explanations,el('p','ap-note',text.limits),el('p','ap-note',managed.lifecycle),el('p','ap-note',managed.reach));box.append(details);
+    details.append(explanations,el('p','ap-note',text.limits),el('p','ap-note',managed.lifecycle),el('p','ap-note',managed.reach));advanced.append(details);
     const support=testid(el('details','ap-health-details'),'reporting-support');support.append(el('summary','',text.support));
     const preview=testid(el('textarea'),'reporting-support-preview');preview.dataset.observation=p.observation;preview.readOnly=true;preview.value=supportSummary(p.facts);preview.rows=8;preview.className='ap-summary-text';preview.setAttribute('aria-label',text.preview);support.append(preview);
-    button(support,'reporting-support-copy',text.copy,p.copySummary);
-    const status=el('p','ap-note',reportingCopyText(p.copyState,locale));status.setAttribute('role','status');support.append(status);box.append(support);
+    advanced.append(support);
+    if(p.copyState==='failed') { const fallback=preview.cloneNode(true) as HTMLTextAreaElement; fallback.value=preview.value; fallback.dataset.testid='reporting-copy-fallback'; box.append(fallback); }
   }
-  button(box,'reporting-health-refresh',text.refresh,p.refresh,'outline',p.busy);
+  box.append(advanced);
   return box;
 }
