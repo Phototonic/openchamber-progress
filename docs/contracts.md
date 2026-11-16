@@ -560,8 +560,9 @@ service/RPC field, durable hint state, prompt configuration or global gate.
 
 A qualifying write leaves independent writer and verified direct-parent flags,
 at most two recipients. Only that exact parent is looked up: returned ID must
-match, absolute directories must be lexically normalized-equal, project IDs must
-match, and immediately visible self/two-node cycles exclude relay. No ancestor
+match, project IDs must match, and absolute directories must be lexically
+normalized-equal or the parent's directory must be in the host's worktree list
+for the writer's project. Immediately visible self/two-node cycles exclude relay. No ancestor
 search or sibling/grandparent fallback exists. Each recipient still requires a
 verified session/source, enabled capture and an effective report tool. An
 ineligible child drops only its own flag; an ineligible parent receives nothing.
@@ -578,6 +579,30 @@ not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
+
+Plan-shaped Markdown paths are named `plan`, inside `plans`/`.plans`, or exactly
+`openspec/changes/<change>/tasks.md` or `proposal.md`. Archived changes, spec
+deltas and design notes do not qualify. Paths are accepted inside the writer's
+directory or a root/worktree directory listed by the host for that same project.
+Only lexical path and host metadata are used: no file, folder or repository
+metadata is read. A missing, failing, malformed or timed-out worktree list
+declines cross-directory observation and relay.
+
+Hints also travel in completed tool results, independently of forwarded system
+text. The latest verified eligible context must expose both the report tool and
+the observed tool directly. Unknown eligibility, hidden report tools, disabled
+recording, failed/partial calls, and unknown content shapes leave results intact.
+Native-proven string or content-array results get one fixed note after the
+original content, with `output`, metadata and returned child identity unchanged.
+At most one note is delivered per source/session/model message; recent calls
+dedupe within the existing bound. Context and result carriers consume their
+own reason bits once; a child's plan observation can reach its verified direct
+parent on the parent's next qualifying call, including the returning dispatch.
+No plan-presence lookup suppresses notes on already-mirrored work.
+Code Mode inner calls still raise context hints, but receive no result note:
+they are absent from the direct tool inventory, and native proof shows their
+content note is lost on the way back to the script/model. Structured-only
+results likewise stay unchanged. Neither carrier reports or grants authority.
 
 The dispatch hint conditionally asks coordinators of planned or multi-step work
 to start an Agent Progress mirror with `op=start` and the complete real task
@@ -1709,15 +1734,25 @@ counts/documentState/detailPageSize without items; explicit 0-based page returns
 paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
 
-The report description front-loads the same conditional rule as native and skill
-guidance: tracker updates are not Agent Progress reports; explicitly mirror
+The report description, context section and inline/packaged skill open with the
+same four-step checklist: `start` when a plan is ready with real tasks and
+prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to working;
+`finish` explicitly (finished, cancelled or failed). The listing line asks agents
+to load the skill when writing, receiving or coordinating plans and before
+dispatching sub-agents. The description is at most 4,096 characters, with the
+checklist and executable prerequisite start example inside the first 2,048.
+Operation details remain in the skill. The following conditional rule still applies:
+tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
 canonical states, not detected plugin events. PLAN_READY mirrors actionable
 structure, not implementation completion or approval. Review and owner approval
 are separate; reflect only existing canonical gate/work items, never invent review
 tasks. Dispatch is not work start. No file or automatic per-turn report is required.
-Description-only clients may omit/truncate tool descriptions; delivery does not
+No custom instructions or provider-specific branch is needed. System-dropping
+providers retain tool definitions and result notes; providers forwarding system
+text retain the owned section too. Clients can still omit/truncate descriptions
+below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The start/revise guidance floor asks agents to report only known real prerequisites

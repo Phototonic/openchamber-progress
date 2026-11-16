@@ -139,3 +139,47 @@ Each feature ships as its own pull request with its documentation, three-languag
 Feature checks use source-built disposable guests and real browser interaction with screenshots at 390 px and a desktop width, in three languages where copy changes, with keyboard and accessibility-tree assertions. They are synthetic-host evidence, not physical-phone or native-host acceptance. Service checks use real authenticated requests against a disposable store. Guidance text gets a semantic read, not a phrase search.
 
 Rollback is by reverting pull requests in reverse order. No store format, schema or journal changes, so nothing is migrated in either direction. Device-stored view records are ignored by older guests and may be left in place. The additive read fact is ignored by older guests.
+
+## 14. Plan mirroring guidance
+
+**What was found.**
+
+- The host runs the companion's context hook for every provider, with the host's own tool names, and its outgoing request carries the companion's section and the full tool descriptions. The existing native checks with a scripted provider show this.
+- The Claude Code provider plugin (`@openchamber/opencode-claude`, inspected at 1.7.0) receives that request through a local proxy and lets Claude Code bring its own system prompt. It appends only the parts of the host prompt it recognises by their shape: a custom agent's prompt, the Code Mode catalog, MCP server notes, the skills list, instruction-file blocks and host session-context blocks. All other system text is discarded, a plugin's section included. It renames tools to `mcp__<host>__<name>` after the hook has run and forwards their descriptions and results. It raises Claude Code's description cut to 8,192 characters unless the user set one; Claude Code's own cut has been 2,048 and later 4,096.
+- So under that provider the section and every hint are lost, while the tool description, the skills list and tool results arrive. The hook's effective-tool check is not the cause.
+- The pinned plugin API gives a plugin no per-session instruction entry. Its post-execute hook may replace a completed call's result.
+- Plan recognition is lexical and confined to the writer's own directory, and a parent is flagged only when it shares that directory. The hook tests forbid reading project files, and that stays.
+
+**Decisions.**
+
+1. **One checklist, first, on every surface.** Four steps in the agent's order of work: start when the plan is ready, with real tasks and prerequisites; declare or link before dispatch; mark work start; finish explicitly. The tool description, the context section, the inline and packaged skill and the skill's listing line all open with it. Prohibitions follow, stated once each.
+2. **A description that survives a cut.** The checklist and one valid start example with a prerequisite sit inside the first 2,048 characters, the smallest cut recorded for a supported client. The whole description is at most 4,096 characters. Delegation, staging, handoff and blocker detail move to the skill, which the description names. These two numbers are checked by a test because clients truncate this field mechanically; wording is checked by reading.
+3. **A second carrier for hints: the observed call's result.** When a dispatch, plan write or tracker update qualifies under the existing metadata rules, and the session's latest context showed the report tool as effective, a fixed note of one or two sentences is appended to that call's result. The note is chosen by observation kind, names the report tool in a way that reads correctly under a host prefix, and repeats the hint's condition. At most one note is added per session per model step. The context section and its hint are unchanged, so providers that forward both show the advice twice in one request; the wording already says a repeated hint is no reason to report again. Cadence matches today's hint: one per step that had a qualifying call.
+4. **Parent relay on the same carrier.** A child's plan write still flags its verified direct parent. The parent's note is added to the result of the parent's next observed dispatch, plan write or tracker update. For a dispatch the parent was waiting on, that is the result returning the planner, which is the moment a ready plan is handed over. The existing bounds on pending recipients and recent calls apply; no new queue is added.
+5. **Recognise spec-change files.** `tasks.md` and `proposal.md` directly inside one folder under `openspec/changes/` count as plan documents. Deeper paths, including the archive, do not.
+6. **Recognise sibling worktrees from host facts.** A plan-shaped path outside the writer's directory is accepted only when it lies inside a directory the host lists as the root or a worktree of the writer's own project. The host's worktree list is asked once, and only after the path already has a plan shape. Any failure or absence means no hint. The parent relay accepts a parent in the same project whose directory is another host-listed worktree of it. The companion still reads no file.
+7. **Honesty rules are unchanged.** No carrier reports, starts, assigns, links or infers. Notes are fixed text with no path, title, prompt or output. Hook execution still performs no plan lookup, document read or store write, so a note cannot say whether a plan is already mirrored; it stays conditional.
+
+**Alternatives rejected.**
+
+- Shaping the section like the host's instruction or session-context blocks so the provider's patterns keep it: it imitates host-owned content and depends on another project's private parsing.
+- Putting the hint into the per-request tool description: it invalidates the prompt cache for the whole conversation twice per hint.
+- Appending to the user's message or inserting a synthetic session message: both change the conversation and are presented to the model as coming from the person.
+- Branching on the provider's identifier: one more provider with the same design would repeat the failure.
+- Looking up whether the session already has a plan, to stay silent when it does: it puts a store read on the tool path and ends the no-lookup rule that keeps hints observational. It can be added later behind the same note if repeated notes prove noisy.
+- Dropping the section's hint in favour of the note alone: the section is proven on the native host and still covers a parent that makes no further observed call.
+- Observing shell commands: their success, paths and partial writes cannot be qualified from metadata.
+
+**Failure modes.**
+
+- The host may ignore a replaced result, or adding text may hide a result that had structured output only. This is checked first on the native host for each kind of call, by comparing what the scripted provider receives with and without the note. A kind whose original output cannot be preserved gets no note. If no kind can carry one, the note carrier does not ship and this design is amended; no other carrier is substituted.
+- A call made inside Code Mode returns its result to a script, not to the model. Unless the native check shows such a call can be told apart and its note reaches the model without changing what the script receives, it gets no note.
+- Run recording reads the dispatch's structured result in its own post-execute observer. The note must not alter those fields, and the result must be the same whichever observer runs first.
+- With no context seen since the companion loaded, eligibility is unknown and no note is added; the section path still applies.
+- A slow or failing worktree list delays only the hint, never the tool, and yields no hint.
+- A user-set description limit below 2,048 can still cut the checklist; the skill listing line and the notes remain.
+- Delivery is not compliance. The contract still says guidance does not guarantee reporting.
+
+**Mixed versions and rollback.** Only text and hook behaviour change: no store, schema, protocol, route, permission or tool-input change. New guidance bytes change the activation fingerprint, so an updated install reads as needing a reload until the host loads it, as for any companion update. Rollback is a revert; nothing is persisted.
+
+**Verification.** The production plugin runs through the installed adapter against a provider view that keeps only what a system-dropping provider forwards: tool definitions under prefixed names, tool results and messages. The native scripted-provider check covers real dispatch and write results. The guidance text is judged by a recorded read of what an agent holding only the companion's text would do at each step of the reported workflow, not by phrase search.

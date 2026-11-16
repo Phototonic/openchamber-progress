@@ -12,6 +12,7 @@ import { RELEASE } from '../../shared/release.ts';
 import { Store } from '../../shared/store.ts';
 import { DISPATCH_OBSERVATION, TRACKER_OBSERVATION } from '../../plugin/activation.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
+import { checkNativeCarrier } from './result-note-probe.ts';
 
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const root = process.argv[3];
@@ -57,7 +58,7 @@ if (process.argv[2] !== '--driver') {
 } else {
   assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[4]); assert.deepEqual(Object.keys(networkInterfaces()), ['lo']);
   assert.equal(spawnSync('/usr/sbin/ip', ['route', 'show', 'default'], { encoding: 'utf8' }).stdout.trim(), '');
-  const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', PROXY_SHAPE_ROOT: root };
+  const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', PROXY_SHAPE_ROOT: root, RESULT_NOTE_PROBE: process.env.RESULT_NOTE_PROBE ?? '0' };
   const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
   assert.equal(version.status, 0);
   fs.writeFileSync(`${root}/runtime-version.json`, JSON.stringify(requireRuntimeVersion('opencode', version.stdout)));
@@ -151,6 +152,11 @@ if (process.argv[2] !== '--driver') {
         const qualified = fresh.some(e => e.type === 'execute.after' && e.status === 'completed' &&
           (e.tool === 'subagent' || e.tool.startsWith('linear_save_') && e.input.mode?.startsWith('live-shape') && e.input.mode !== 'live-shape-partial' && e.input.mode !== 'live-shape-error'));
         const outgoing = fresh.filter(e => e.type === 'outgoing' && e.sessionID === session.id);
+        checkNativeCarrier(fresh.filter(e => e.type === 'note-probe'), outgoing, process.env.PROXY_CODEMODE === '1');
+        for (const event of fresh.filter(e => e.type === 'execute.after' && e.status === 'completed')) {
+          const expected = process.env.PROXY_CODEMODE !== '1' && qualified && ['subagent', 'linear_save_issue', 'linear_save_comment'].includes(event.tool);
+          assert.equal(JSON.stringify(event.result.content).includes('Agent Progress note'), expected, `direct-only result carrier: ${id}`);
+        }
         const hints = outgoing.filter(e => JSON.stringify(e.system).includes(DISPATCH_OBSERVATION) || JSON.stringify(e.system).includes(TRACKER_OBSERVATION));
         assert.equal(hints.length, qualified ? 1 : 0, `conditional actor hint once: ${id}`);
         for (const e of outgoing) {

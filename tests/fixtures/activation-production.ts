@@ -31,7 +31,7 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
     const permissions: any[] = [];
     let lookupCount = 0, closed = false, cleanup: any;
     const info = (id: string) => ({ id, agent: 'coordinator-x', projectID: 'fixture-project', location: { directory: `${root}/project` }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) } });
-    const f: any = { root, binding, store, hooks, tools, permissions, info, lookup: async (id: string) => info(id), denyRead: false, get lookupCount() { return lookupCount; } };
+    const f: any = { root, binding, store, hooks, tools, permissions, info, lookup: async (id: string) => info(id), worktrees: async () => [{ directory: `${root}/project` }, { directory: `${root}/sibling` }], denyRead: false, get lookupCount() { return lookupCount; } };
     const registration = () => ({ dispose: Effect.void });
     const hook = (domain: string) => (name: string, callback: Callback) => Effect.gen(function* () {
       // Host registrations are additive: delegation and file hints observe the
@@ -47,7 +47,9 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
       yield* Effect.addFinalizer(() => dispose); return { dispose };
     });
     const domains: Record<string, any> = {
+      location: { directory: `${root}/project` },
       event: { subscribe: () => Stream.empty },
+      worktree: { list: (input: any) => Effect.tryPromise({ try: () => f.worktrees(input), catch: error => error }) },
       session: { hook: hook('session'), get: ({ sessionID }: any) => Effect.tryPromise({ try: async () => { lookupCount++; return f.lookup(sessionID); }, catch: error => error }) },
       tool: { hook: hook('tool'), transform: (callback: any) => Effect.sync(() => { callback({ namespace() {}, add(value: any) { tools.set('agent_progress_report', value); } }); return registration(); }), list: () => Effect.succeed([...tools].map(([id, value]) => ({ id, ...value }))) },
       skill: { transform: (callback: any) => Effect.sync(() => { callback({ add(value: any) { f.skill = value; } }); return registration(); }) },
@@ -64,6 +66,11 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
     } });
     const deliver = (key: string, event: any) => Effect.runPromise(hooks.get(key)!(event));
     f.after = (event: any) => deliver('tool:execute.after', event);
+    f.before = (event: any) => deliver('tool:execute.before', event);
+    f.afterReverse = (event: any) => Effect.runPromise(Effect.forEach([...listeners.get('tool:execute.after')!].reverse(), cb => cb(event), { discard: true }));
+    // Invoke the production advisory owner alone when proving it cannot write;
+    // the independent run recorder intentionally persists real dispatch facts.
+    f.afterHint = (event: any) => Effect.runPromise([...listeners.get('tool:execute.after')!][0](event));
     f.context = (event: any) => deliver('session:context', event);
     f.report = async (value: any, sessionID = 'ses_M') => {
       const result = await Effect.runPromise(tools.get('agent_progress_report').execute(value, { sessionID, agent: 'coordinator-x', messageID: 'msg_report', id: 'call_report', progress: () => Effect.void }) as Effect.Effect<any>);

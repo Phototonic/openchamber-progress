@@ -1,6 +1,6 @@
 # Tasks
 
-Each numbered group is one pull request into the development branch. It carries its own documentation, English/Russian/Simplified Chinese copy, regenerated outputs and checks, and passes portable CI alone. Groups 1 and 2 come first; later groups rebase after each merge and regenerate their outputs rather than merging bundles by hand.
+Each numbered group is one pull request into the development branch. It carries its own documentation, English/Russian/Simplified Chinese copy, regenerated outputs and checks, and passes portable CI alone. Groups 1 and 2 come first; later groups rebase after each merge and regenerate their outputs rather than merging bundles by hand. Group 11 touches the companion only, depends on no other group and merges before group 9.
 
 ## 1. Needs you membership: main session only
 
@@ -71,8 +71,20 @@ Each numbered group is one pull request into the development branch. It carries 
 - [ ] 10.1 After the groups above have merged, run one rendered journey across rail, board, Work Status and Setup on the development branch at desktop width and 390 px in three languages, covering the main-session rule, scopes, actions, hide, bulk archive with Undo, the indicator and the More panels, with keyboard-only passes.
 - [ ] 10.2 Run portable CI in a fresh full-history disposable checkout with a cleared environment for each pull request and for the joined branch, and review each public diff for private data.
 
+## 11. Plan mirroring guidance
+
+- [x] 11.1 Before changing behaviour, establish on the native host with the scripted provider what the model receives when the post-execute hook appends text to a completed dispatch, write, edit and tracker result: whether the text arrives, whether the original output still arrives first, and whether the structured result read by run recording is unchanged in either observer order. Include a call made inside Code Mode, whose result returns to a script. Record the outcome per kind of call. Give no note to a kind that fails. If every kind fails or the native host is unavailable, stop the note carrier and raise a design amendment; tasks 11.2, 11.4 and 11.5 do not depend on it.
+- [x] 11.2 Add a test provider view that keeps only tool definitions under host-prefixed names, tool results and messages, and drops plugin system text. Through the production plugin and the installed adapter, show that today's section and hints are absent from that view, as the failing baseline for 11.3.
+- [x] 11.3 Add the result note as a second hint carrier for qualifying dispatch, plan-write and tracker calls: eligibility from the session's latest context, fixed text by kind, at most one per model step, original output preserved, parent relay on the parent's next observed call. Keep the context section and its hint as they are. Cover hidden tool, unverified source, recording off, unknown eligibility, failed and partial calls, duplicate calls, disposal, and an unchanged store after delivery.
+- [x] 11.4 Extend plan recognition to `tasks.md` and `proposal.md` of one spec change and to plan-shaped paths inside host-listed worktrees of the writer's project, and let the parent relay cross those worktrees. Cover the archive, spec deltas and design notes, a path outside the project, an unavailable worktree list, a different project, and the existing no-file-read guard.
+- [x] 11.5 Rewrite the tool description, context section, inline and packaged skill and the skill's listing line to open with the checklist, with prohibitions after it and operation detail in the skill. Keep every advertised example executable. Add the description-budget test (checklist and start example inside 2,048 characters, whole description at most 4,096) and update the native driver's wording assertion.
+- [x] 11.6 Judge the result by reading, not phrase search: given only the companion's text and a neutral transcript of a planned workflow (planner hand-off, spec-change files, review, three parallel dispatches), record what a coordinator, an assigned sub-agent and a plan-owning sub-agent would do at each step, with and without a user's own reminder. Confirm no step asks for a report on mere activity.
+- [x] 11.7 Update the advisory-activation and active-tool sections of `docs/contracts.md`, the activation sections of `docs/backend.md` and the provider finding in `docs/compatibility.md`; regenerate the backend entries; run the existing activation, invocation and production-contract suites unchanged except where wording intentionally moved.
+
 ## Deferred acceptance and out-of-scope follow-up
 
 - [ ] Physical-phone and native-host acceptance of the new surfaces. Emulated and synthetic-host evidence does not establish them.
 - [ ] A host capability to open a session with a drafted reply. Requested upstream; not part of this change.
+- [ ] Live confirmation that an agent on a provider that drops plugin system text mirrors a plan unprompted. Delivery is verified here; model compliance is not, and needs the owner's own session.
+- [ ] A request to the Claude Code provider project to forward plugin-added system sections, and a plugin-facing per-session instruction entry in the host API. Not part of this change.
 - [ ] Release preparation (version, changelog, notes) and promotion to the distribution branch follow the existing release policy after this change is accepted.
