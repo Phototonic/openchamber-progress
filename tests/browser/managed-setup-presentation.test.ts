@@ -43,6 +43,28 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
 }
 
 const prepared=managedFreshStepFixtures().replies.prepared.progress!;
+for (const [store, missing, source] of [['create',true,'create'],['create',false,'create'],['retain',false,'create'],['retain',false,'reuse']] as const)
+test(`fresh groups ${store}/${missing}/${source}: frozen order, durable completion and stopped states`,()=>{
+  const fixture=managedFreshStepFixtures(store,missing,source),plan=fixture.review.plan;
+  const before=structuredClone(plan),groups=steps.freshStepGroups(plan);
+  assert.deepEqual(groups.flatMap(g=>g.steps),plan,'every internal step belongs to exactly one contiguous group');
+  assert.deepEqual(groups.map(g=>g.id),store==='create'?['folder','connect','record','check']:['folder','connect','check']);
+  assert.equal(groups[0].existingFolder,!missing);
+  assert.ok(groups.every(g=>g.state==='pending'));
+  for(let at=1;at<plan.length;at++){
+    for(const state of ['pending','running','paused','failed','abandoned'] as const){
+      const p:ManagedFreshStepProgress={...fixture.replies.prepared.progress!,step:plan[at],lastCompleted:plan[at-1],state,worker:state==='running'?'active':'idle'};
+      const shown=steps.freshStepGroups(plan,p),current=shown.findIndex(g=>g.steps.some(s=>s.name===plan[at].name));
+      assert.equal(shown[current].state,state==='pending'?'paused':state,'a partly finished or reopened group is not complete');
+      assert.ok(shown.slice(0,current).every(g=>g.state==='complete'));
+      assert.ok(shown.slice(current+1).every(g=>g.state==='pending'));
+    }
+  }
+  const completed=steps.freshStepGroups(plan,{...fixture.replies.prepared.progress!,state:'complete',step:null,lastCompleted:plan.at(-1)!});
+  assert.ok(completed.every(g=>g.state==='complete'));
+  assert.deepEqual(plan,before,'presentation never mutates the frozen plan');
+});
+
 for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: last-action stage and bounded code remain visible beside localized guidance`,()=>{
   const code='managed-step-deadline',stage='create-store';
   const p:ManagedFreshStepProgress={...prepared,state:'failed',sequence:2,step:{name:stage,batch:0},
@@ -83,6 +105,11 @@ test('fresh pending read failure still offers explicit continuation; completed r
   assert.match(shown.text,/Setup finished/);
   assert.equal(shown.text.includes(copy.managedFreshCopy().partial),false);
   assert.equal(shown.has('setup-migration-resume'),false);
+  assert.ok(shown.has('setup-migration-capture-warning'),'completion with unknown recording keeps the warning');
+  assert.ok(shown.has('setup-recording-state'),'recording state remains outside the disclosure');
+  assert.ok(shown.has('setup-migration-status'),'completion with unknown recording offers a status check');
+  assert.ok(shown.text.includes(copy.managedFreshCopy().completedRecording.unknown));
+  assert.ok(!shown.text.includes(copy.managedFreshCopy().warn.create.unknown.body),'completion never asks to finish the finished operation');
 });
 
 test('fresh retention wording distinguishes database creation in an existing directory from reconnection',()=>{

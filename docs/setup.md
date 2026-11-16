@@ -62,6 +62,25 @@ expectation bytes or package consent refuse rather than being silently refreshed
 The card shows real steps and on/off/unknown capture, not a percentage. Pause or
 Stop waits for the active request and retains work, without undoing it. Reopening
 requires explicit continuation. Before storage exists, capture is unknown, not off.
+Fresh setup presents these internal steps in at most four groups: create a private
+progress folder, connect it to OpenCode, turn on recording, and check that it works.
+The frozen plan alone determines membership and order. An existing folder is named
+as existing; groups without internal steps are omitted (retained storage has no
+turn-on group). A group completes only after its last internal step is durably
+complete. Pausing or failing inside a group leaves that group paused or failed,
+not complete. Migration keeps its separate internal sequence with plain labels.
+
+The fresh review shows its purpose, grouped steps and one unchecked consent line:
+the progress service runs with your account's access. Canonical paths, proposed
+identities, package and delivery facts, recording consequences and internal steps
+are in one disclosure that can be opened before confirmation. Consent remains
+bound to the same reviewed facts whether or not the disclosure was opened; changed
+facts still refuse stale consent. Running fresh setup shows a plain recording line;
+pause, failure, close/reopen and completion with recording off or unknown keep a
+conspicuous warning and the applicable recovery action. Retained recording stays
+unchanged. This is presentation only: step requests, journal, deadlines, budgets
+and platform checks are unchanged.
+
 Each request has at most six security launches, a 17-second work deadline and an
 18-second response deadline below the host's 20-second limit. Health remains cheap
 while workers run. Portable counters measure six launches for prepare, folder and

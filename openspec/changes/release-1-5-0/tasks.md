@@ -55,10 +55,10 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 8. Setup presentation
 
-- [ ] 8.1 Derive the grouped presentation from the frozen plan as a pure function and test it for every plan grammar, including retained stores, reused sources and preserved recording, with pause, failure and completion inside each group.
-- [ ] 8.2 Rework the review to the purpose sentence, grouped steps, consent line and single disclosure, keeping consent binding, acknowledgement and stale-consent refusal; replace the running-state warning box with the plain recording line and keep the conspicuous state on pause, failure, close and completion.
-- [ ] 8.3 Reword migration steps and states in plain language without regrouping; keep the retained-data assurances.
-- [ ] 8.4 Extend the Setup logic tests and the rendered Setup driver for review, running, paused, failed and complete states in three languages at phone width with keyboard use. Update `docs/setup.md` and `docs/ui.md`; regenerate the rail and board guests.
+- [x] 8.1 Derive the grouped presentation from the frozen plan as a pure function and test it for every plan grammar, including retained stores, reused sources and preserved recording, with pause, failure and completion inside each group.
+- [x] 8.2 Rework the review to the purpose sentence, grouped steps, consent line and single disclosure, keeping consent binding, acknowledgement and stale-consent refusal; replace the running-state warning box with the plain recording line and keep the conspicuous state on pause, failure, close and completion.
+- [x] 8.3 Reword migration steps and states in plain language without regrouping; keep the retained-data assurances.
+- [x] 8.4 Extend the Setup logic tests and the rendered Setup driver for review, running, paused, failed and complete states in three languages at phone width with keyboard use. Update `docs/setup.md` and `docs/ui.md`; regenerate the rail and board guests.
 
 ## 9. Plain-language copy pass
 

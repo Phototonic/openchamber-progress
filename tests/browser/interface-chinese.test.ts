@@ -84,7 +84,7 @@ test('cleanup, search, digest and health feedback are Chinese without changing m
   assert.equal(digestStatusText({ kind: 'saving' }, 'zh-CN'), '正在保存审阅…');
   assert.match(digestStatusText({ kind: 'saved', revision: 3 }, 'zh-CN'), /修订 3/);
   assert.equal(reportingCopyText('copied', 'zh-CN'), '已复制。');
-  assert.equal(managedCopy('zh-CN').title, '扩展受管采集');
+  assert.equal(managedCopy('zh-CN').title, '设置');
   assert.match(managedErrorText('managed-migration-conflict', 'zh-CN')!, /冲突/);
   assert.equal(managedErrorText('unknown-code', 'zh-CN'), null);
 });

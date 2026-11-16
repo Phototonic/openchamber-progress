@@ -37,6 +37,35 @@ export const isFreshProgress = (p: ManagedSetupStepProgress | null | undefined):
 export const isFreshReview = (r: ManagedReview | ManagedFreshReview): r is ManagedFreshReview => 'planKind' in r;
 export const progressFamily = (p: ManagedSetupStepProgress): StepFamily => isFreshProgress(p) ? 'fresh' : 'migration';
 
+export type FreshGroup = 'folder' | 'connect' | 'record' | 'check';
+const FRESH_GROUP: Record<ManagedFreshStep, FreshGroup> = {
+  prepare: 'folder', 'store-directory': 'folder', 'create-store': 'folder',
+  expectation: 'connect', 'register-source': 'connect', 'publish-binding': 'connect',
+  enable: 'record', reconcile: 'check',
+};
+/** Presentation only. Completion comes from the durable checkpoint, never from a request,
+ * elapsed time or an observed recording setting. Each frozen step occurs in exactly one group. */
+export function freshStepGroups(plan: readonly ManagedFreshStepRef[], progress?: ManagedFreshStepProgress | null) {
+  const done = progress?.lastCompleted ? plan.findIndex(s => s.name === progress.lastCompleted!.name) : -1;
+  return plan.reduce<{ id: FreshGroup; steps: ManagedFreshStepRef[]; existingFolder: boolean; state: 'pending' | 'complete' | ManagedFreshStepProgress['state'] }[]>((groups, step, index) => {
+    const id = FRESH_GROUP[step.name];
+    let group = groups.at(-1);
+    if (!group || group.id !== id) {
+      group = { id, steps: [], existingFolder: id === 'folder' && !plan.some(s => s.name === 'store-directory'), state: 'pending' };
+      groups.push(group);
+    }
+    group.steps.push({ ...step });
+    if (index <= done) group.state = 'complete';
+    else if (progress?.step && group.steps.some(s => s.name === progress.step!.name)) {
+      // A pending checkpoint is not a live run: after close/reopen it needs explicit
+      // Continue. The renderer overrides this with running only while it owns a run.
+      group.state = progress.state === 'pending' || progress.state === 'running' && progress.worker !== 'active' ? 'paused' : progress.state;
+    }
+    else group.state = 'pending';
+    return groups;
+  }, []);
+}
+
 function stepRef(v: unknown): ManagedStepRef | undefined {
   if (!isRec(v) || !exact(v, ['name', 'batch']) || !MANAGED_MIGRATION_STEPS.includes(v.name as ManagedMigrationStep) || !count(v.batch)) return;
   if (!REMOVAL.includes(v.name as string) && v.batch !== 0) return;
