@@ -55,6 +55,50 @@ try {
   // Fixture chrome only: mobile screenshots must use a 1:1 CSS-pixel viewport, not the browser's
   // legacy 980px mobile layout scaled down around the 390px guest.
   await evaluate(`(()=>{const n=document.createElement('meta');n.name='viewport';n.content='width=device-width,initial-scale=1';document.head.append(n);document.querySelectorAll('section').forEach(n=>n.style.margin='0');return true})()`);
+  const reviewRegressions = async () => {
+    // Keep these plans and durable picker preference out of the existing opening/language matrix.
+    fx!.reportMap('P-opening-scroll', {op:'start',title:'Opening scroll',items:[
+      {id:'F',title:'Long blocker',kind:'task',status:'blocked',blocker:{reason:'Recorded blocker.\n'.repeat(25),nextAction:'Choose the next step'}},
+      {id:'N',title:'Another task',kind:'task',status:'pending'},
+    ]});
+    fx!.reportMap('P-opening-packed', {op:'start',title:'Opening packed',items:Array.from({length:4},(_,n)=>({id:`Packed-${n}`,title:`Pending task ${n}`,kind:'task',status:'pending'}))});
+    const regressions: {id:string;pass:boolean;facts:unknown}[] = [];
+    // Fresh rail entry: provisional one-column geometry must not frame the final two-row grid.
+    await c.send('Emulation.setDeviceMetricsOverride',{width:900,height:1000,deviceScaleFactor:1,mobile:false});
+    const packedReload = await evaluate<number>(`qa.show(['panel'],574);frame('panel').style.height='950px';qa.railPreferences={'rail-plan:M':'source-alpha/P-opening-packed'};const sequence=qa.reload('panel');qa.context('M');sequence`);
+    await wait('panel', `qa.loaded.panel===${packedReload}`);
+    await wait('panel', `d.querySelector('[data-testid="plan-selector"]')?.textContent.includes('Opening packed')&&d.querySelector('[data-testid="plan-view-map"] button')`);
+    await guest('panel', `d.querySelector('[data-testid="plan-view-map"] button').click();return true`);
+    await wait('panel', `d.querySelector('[data-testid="map-title"]')?.textContent==='Opening packed'&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&d.querySelector('[data-testid="map-viewport"]')?.clientWidth>0`);
+    await guest('panel', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
+    const packed = await guest('panel', `const n=d.querySelector('[data-testid="map-viewport"]'),v=n.getBoundingClientRect(),m=new w.DOMMatrix(w.getComputedStyle(d.querySelector('[data-testid="map-world"]')).transform);return {width:n.clientWidth,height:v.height,zoom:m.a,cards:[...d.querySelectorAll('.ap-map-card')].map(n=>{const r=n.getBoundingClientRect();return {top:r.top-v.top,bottom:r.bottom-v.top,left:r.left-v.left,right:r.right-v.left}})}`);
+    regressions.push({id:'opening:four-pending-538px-final-height',pass:packed.cards.length===4&&packed.width===538&&packed.height>=210&&packed.height<=214&&packed.cards.every((r:any)=>r.top>=0&&r.bottom<=packed.height&&r.left>=0&&r.right<=540),facts:packed});
+    for (const [surface,width] of [['panel',574],['page',700]] as const) {
+      await evaluate(`qa.show([${js(surface)}],${width});frame(${js(surface)}).style.height='950px';true`);
+      if (surface==='panel') await pickRailPlan('Opening scroll');
+      else {
+        await wait(surface, `d.querySelector('[data-testid="plan-row-P-opening-scroll"]')`);
+        await guest(surface, `d.querySelector('[data-testid="plan-row-P-opening-scroll"]').click();return true`);
+      }
+      await wait(surface, `d.querySelector('[data-testid="surface-header"]')?.textContent.includes('Opening scroll')&&d.querySelector('[data-testid="plan-view-map"] button')`);
+      await guest(surface, `d.querySelector('[data-testid="plan-view-map"] button').click();return true`);
+      await wait(surface, `d.querySelector('[data-testid="map-title"]')?.textContent==='Opening scroll'&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`);
+      await guest(surface, `d.querySelector('[data-testid="map-card-F"]').click();return true`);
+      await wait(surface, `d.querySelector('[data-testid="map-inspector"]')?.dataset.selected==='F'&&d.querySelector('[data-testid="map-inspector"]').scrollHeight>d.querySelector('[data-testid="map-inspector"]').clientHeight`);
+      const before = await guest(surface, `const n=d.querySelector('[data-testid="map-inspector"]');n.scrollTop=120;w.__scrollInspector=n;return {top:n.scrollTop,key:n.dataset.scrollKey,placement:n.dataset.placement}`);
+      fx!.reportMap('P-opening-scroll',{op:'change',changes:[{id:'N',status:surface==='panel'?'working':'pending'}]});
+      await wait(surface, `d.querySelector('[data-testid="map-region"]')?.dataset.revision==='${surface==='panel'?2:3}'&&d.querySelector('[data-testid="map-region"]').dataset.current==='true'&&d.querySelector('[data-testid="map-inspector"]')!==w.__scrollInspector`);
+      const after = await guest(surface, `const n=d.querySelector('[data-testid="map-inspector"]');return {top:n.scrollTop,key:n.dataset.scrollKey,placement:n.dataset.placement}`);
+      await guest(surface, `d.querySelector('[data-testid="map-card-N"]').click();return true`);
+      await wait(surface, `d.querySelector('[data-testid="map-inspector"]')?.dataset.selected==='N'`);
+      const changed = await guest(surface, `const n=d.querySelector('[data-testid="map-inspector"]');return {top:n.scrollTop,key:n.dataset.scrollKey}`);
+      regressions.push({id:`inspector:${surface}:stacked-scroll-survives-background-paint`,pass:before.top>0&&before.placement!=='over'&&after.top===before.top&&!!before.key&&after.key===before.key&&changed.top===0&&changed.key!==before.key,facts:{before,after,changed}});
+    }
+    writeFileSync(join(artifacts,'review-regressions.json'),JSON.stringify(regressions,null,2));
+    for (const regression of regressions) checks.push(regression);
+    const failed = regressions.filter(r=>!r.pass);
+    if (failed.length) throw Error(`Review regressions failed: ${JSON.stringify(failed)}`);
+  };
   if (!measureOnly) {
     await evaluate(`qa.show(['panel'],390);frame('panel').style.height='950px';qa.context('M');true`);
     await wait('panel', `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`);
@@ -162,6 +206,7 @@ try {
     fx.reportMap('P-map', { op: 'revise', items: [] });
     await wait('page', `d.querySelector('[data-testid="map-region"]')?.dataset.tasks==='0'&&d.activeElement?.dataset.testid==='map-viewport'`);
     check('last-focused-card-removed:empty-target-reachable', await guest('page', `return d.activeElement?.tabIndex===0&&d.activeElement.hasAttribute('data-map-empty-target')&&d.querySelector('[data-testid="map-viewport"]').clientHeight>=100`));
+    await reviewRegressions();
   }
   writeFileSync(join(artifacts, measureOnly ? 'threshold.json' : 'opening.json'), JSON.stringify({ evidence: 'Source guests, real disposable service, Chromium; not native host or physical phone', threshold: 0.7, readable: 0.8, titleAtThreshold: 8.75, decision: measureOnly ? 'Pending visual review of the threshold captures before implementation.' : 'Retain measured 70% threshold, 80% readable zoom; coarse pointers 100%.', measurements, checks, passed: true }, null, 2) + '\n');
   console.log(JSON.stringify({ passed: true, measurements: measurements.length }));

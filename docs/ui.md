@@ -1544,6 +1544,8 @@ Rendering keeps the existing root-replacement controller: keyed state and cached
 
 ### Interaction and accessibility
 
+Stacked and overlaid selected-task summaries use the same reading-and-selection scroll key: background paints preserve internal scroll, while choosing another task starts at the top. An initially unframed edgeless reading waits for its width-based packing and resulting content-height frame to be measured before completing its opening; later updates still preserve the reader's view.
+
 The opening regression suite covers the 70% boundary, direct-neighbour framing, deterministic priority, no implicit selection/focus, no poll reframing, coarse pointers, closed/no-current plans and reference 100/980-task plans. `dependency-map-opening-qa.ts --measure-only` records actual fit scale/title pixels before a change; its ordinary mode checks source guests at rail/board widths, all three languages, light/dark, main-versus-child blockers, literal summary text, help/filter keyboard and accessibility-tree names, and one-shot brief zoom feedback. The Status artifact guard rejects renderer, interaction and layout JavaScript, while allowing the shared shell's CSS selectors.
 
 Both production frames bind interaction; the shared stylesheet carries no map code. The view takes an optional `interaction` binding (the frame controller's `state`, `dispatch` and `focusOwner`) and applies the controller's action-local commands through `command()`: viewport transforms (coalesced into one animation frame, never a root repaint), generation-bound focus, pointer capture and announcements. Selection, filters and the list reveal remain frame reading state.

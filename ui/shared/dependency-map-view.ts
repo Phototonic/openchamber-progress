@@ -1249,17 +1249,18 @@ export function createDependencyMapView(): DependencyMapView {
     inspector.setAttribute('aria-labelledby', `${uid}-inspector`);
     const ih = el('h3', 'ap-h', c.selected); ih.id = `${uid}-inspector`;
     inspector.hidden = !selected;
-    if (selected) inspector.tabIndex = 0;
+    if (selected) {
+      inspector.tabIndex = 0;
+      // Every layout can scroll internally; preserve only this reading's same-task position.
+      inspector.dataset.scrollKey = `map-inspector|${st?.identity ?? plan.key}|${selected.id}`;
+    }
     if (panel) {
       inspector.dataset.placement = 'over';
       inspector.style.width = `${panel}px`;
       // Shown only with a selection: no empty panel (the hint lives in the map help instead).
       if (!selected) inspector.hidden = true;
       else {
-        // A focusable, labelled region so long content scrolls by keyboard; never modal. Its scroll
-        // position survives same-selection repaints (the owner's data-scroll-key restoration).
-        inspector.tabIndex = 0;
-        inspector.dataset.scrollKey = `map-inspector|${st?.identity ?? plan.key}|${selected.id}`;
+        // A focusable, labelled region so long content scrolls by keyboard; never modal.
         const head = el('div', 'ap-map-inspector-head');
         const close = testid(el('button', 'ap-map-tool ap-map-close'), 'map-inspector-close');
         close.type = 'button';
@@ -1587,6 +1588,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   // Measured canvas, kept across root replacement. Until it is measured, a conservative single-card row.
   let canvasWidth = 0, canvasHeight = 400, mapWidth = 0;
   let lastLayout: MapLayout | null = null, lastGraph: MapPicture['graph'] | null = null, packedWidth = 0;
+  let awaitingOpeningMeasurement = false;
   // View as list: reveal the map's selected task once in the canonical list of the same reading.
   let reveal: { id: string | null; identity: string | null } | null = null;
   let listTransition: { frame: number; bridge: HTMLElement; tabIndex: string | null } | null = null;
@@ -1636,7 +1638,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
     refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
   });
-  const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; canvasWidth = mapWidth = 0; reveal = null; };
+  const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; canvasWidth = mapWidth = 0; awaitingOpeningMeasurement = false; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.invalidate(); });
   // Without a host device hint the coarse presentation follows the pointer media query; repaint when it
   // changes (a hint change already repaints through the ready context).
@@ -1686,8 +1688,11 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const panel = mapPanelWidth(frame, mapWidth, canvasWidth);
       const reusable = graph === lastGraph && lastLayout && (lastLayout.edges.length > 0 || packedWidth === width);
       const layout = graph && innerWidth > 0 ? reusable ? lastLayout : geometry.compute(graph.items, CARD_METRICS, width) : null;
+      // A new edgeless packing changes the content-height frame. Do not consume initial framing
+      // (or a list target) with the previous layout's measured height.
+      awaitingOpeningMeasurement = !!layout && layout.edges.length === 0 && !interaction.value.initialFramingDone && !reusable;
       lastLayout = layout; lastGraph = graph; packedWidth = width;
-      if (layout && snapshot.picture && canvasWidth > 0) {
+      if (layout && snapshot.picture && canvasWidth > 0 && !awaitingOpeningMeasurement) {
         painting = true;
         try {
           const items = snapshot.picture.detail.detail.items, guidance = snapshot.current && snapshot.picture.detail.plan.lifecycle === 'active';
@@ -1728,7 +1733,9 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         if (!listTransition) reveal = null; // back on Map, unless an explicit departure is crossing paint
         const viewport = root.querySelector<HTMLElement>('[data-testid="map-viewport"]');
         const width = root.querySelector<HTMLElement>('[data-testid="map-region"]')?.clientWidth ?? 0;
-        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight || width !== mapWidth)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; mapWidth = width; vc.invalidate(); }
+        const openingMeasured = awaitingOpeningMeasurement;
+        awaitingOpeningMeasurement = false;
+        if (viewport && (openingMeasured || viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight || width !== mapWidth)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; mapWidth = width; vc.invalidate(); }
         return;
       }
       const r = reveal; if (!r) return;
