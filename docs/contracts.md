@@ -807,8 +807,27 @@ store and verified binding, `readAt`, `captureEnabled`, `rows`, cumulative
 one row per explicitly blocked task in plan-ID keyset then stored task order.
 Rows carry source/plan/revision/structural revision/cleanup generation, plan title,
 coordinator, task identity/title, up to eight ancestors and `omittedAncestors`.
-Only validated current blocker categories `decision` or `review` enter `needs-you`;
-everything else enters `also-blocked`. Absent/invalid annotations contain no text;
+Wire groups and their cumulative counts retain revision-1 category-only meaning:
+validated current categories `decision` or `review` enter `needs-you`; everything
+else enters `also-blocked`. They are not the person-facing Needs you counts.
+Each row and list/detail plan summary additionally carries response-only
+`mainSessionKind: 'top-level' | 'subagent' | 'unknown'`, read from one bounded,
+source/session-keyed recorded identity lookup per plan. Missing, malformed or
+unreadable parent identity is `unknown`, not top-level. Snapshots and stored
+reports are never rewritten, migrated or deleted for this rule.
+
+Person-facing membership uses the shared `isNeedsYou` predicate: valid current
+decision/review details, reported by the plan's main session, whose recorded
+identity positively establishes no parent. A top-level main-session relay counts;
+a sub-agent's direct or handoff report does not, even for its own plan. Unknown
+parent status does not count. Excluded tasks remain blocked with their literal
+details, waiting time and other-blocked count. New guests count from held rows,
+retaining the details' reporter and reported revision, not the category-only wire
+counts. Missing row facts from older services make Needs you unavailable with
+update-together guidance, never a guessed empty. Older guests ignore this
+additive fact and retain their earlier behavior; capability revision stays 1.
+
+Absent/invalid annotations contain no text;
 future categories preserve only validated prose/provenance with `unclassified`.
 Optional timing is reported blocked time, exact or lower-bound, never activity;
 missing timing is unknown/unavailable, not zero. Annotation text remains bounded

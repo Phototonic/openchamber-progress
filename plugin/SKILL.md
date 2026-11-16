@@ -140,6 +140,7 @@ deliberately re-report them rather than inferring or reviving old text. Never se
 unsupported fields automatically to an older tool. Reported waiting time, when
 available, is derived from status history, not a caller-supplied duration or proof
 that a model is active. No automatic notification, approval or action is implied.
+Decision and review blockers reach the person's Needs you list only when the plan's top-level main session reports their details (including a relay); a sub-agent needing the person must tell its parent, even when it owns its own plan.
 
 If not already reported, mirror an actionable plan or meaningful change; repeated
 guidance or a possible-plan file hint alone is not a reason to report again.

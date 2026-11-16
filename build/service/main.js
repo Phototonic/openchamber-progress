@@ -4695,10 +4695,23 @@ class Store {
       throw storageError(e);
     }
   }
+  mainSessionKind(source, session) {
+    const row2 = this.db.prepare("SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?").get(source, session);
+    try {
+      const a = JSON.parse(String(row2?.actor));
+      if (!a || a.sourceId !== source || a.sessionId !== session)
+        return "unknown";
+      if (a.parentId === null)
+        return "top-level";
+      return identifier(a.parentId) ? "subagent" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
   summary(p) {
     const { items, links: _links, boundCanonicalPath: _bound, ...rest } = p;
     const state = cleanupInstalled(this.db) ? cleanupState(this.db, p.sourceId, p.id) : undefined;
-    return { ...rest, ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
+    return { ...rest, mainSessionKind: this.mainSessionKind(p.sourceId, p.sessionId), ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
   }
   metadata() {
     const meta = this.db.prepare("SELECT * FROM meta WHERE singleton=1").get();
@@ -9740,6 +9753,7 @@ function needsYou(store, request, now = new Date) {
         continue;
       }
       const tasks2 = p.items.filter((i) => i.kind === "task" && i.status === "blocked");
+      const mainSessionKind = store.mainSessionKind(request.source, p.sessionId);
       const pos = pending ?? { plan: id, revision, cleanup: generation, offset: 0 };
       requireProgress(!pending || pos.offset < tasks2.length, "conflict");
       while (pos.offset < tasks2.length && r.rows.length < limit) {
@@ -9753,6 +9767,7 @@ function needsYou(store, request, now = new Date) {
           cleanup: { state: "visible", revision: generation },
           planTitle: p.title,
           coordinatorSessionId: p.sessionId,
+          mainSessionKind,
           task: { id: item.id, title: item.title, kind: "task", status: "blocked" },
           ...context2(p, item),
           group: primary ? "needs-you" : "also-blocked",

@@ -710,9 +710,17 @@ the default mode retains adversarial mock and localized/touch checks.
 The rail starts with a **Needs you** inbox, above the selected session's plans;
 the board places the same inbox before its list/search content. It spans all
 current plans in the verified source, not just the chosen session or board filter.
-Only explicitly reported decision and review waits enter Needs you. **Also blocked**
+Only current decision/review details reported by the plan's main session enter
+Needs you, and only when its recorded identity positively establishes that it has
+no parent session. A top-level main session's relay counts; direct sub-agent
+reports (including handoff) and sub-agent-owned plans do not. Unknown parent
+status does not count. Membership uses `shared/needs-you.ts`'s pure predicate;
+`model.ts` exposes `itemNeedsYou` for plan-task consumers. The List's neutral
+Blocked group and Map's Explicitly blocked label remain unchanged, including all
+excluded tasks and their literal reason, next step and waiting time.
+**Also blocked**
 is a separate, initially collapsed disclosure of other reported blockers: dependency/external/other waits,
-unknown categories, and tasks with no usable details. These are reported waits,
+unknown categories, tasks with no usable details, and excluded sub-agent waits. These are reported waits,
 not inferred obligations or proof that the viewer must act.
 
 Rows name the plan and task, reported category, reason, next step and reported
@@ -737,8 +745,14 @@ summary on an unverified binding: the ordinary list remains readable and the
 inbox reports unavailable. During board search, the first search-freshness batch
 of each existing refresh cycle carries and adopts one inbox window instead.
 There is no extra timer or inbox poll. **Check more plans** explicitly
-requests `/v1/needs-you`, pinned to store/source and timing mode. Counts are
-cumulative, never added as page deltas. On unchanged first-window refreshes, loaded
+requests `/v1/needs-you`, pinned to store/source and timing mode. Person-facing
+counts derive from the distinct held rows using the shared membership predicate,
+not the wire's category-only cumulative counts (which remain validated for
+compatibility). Missing `mainSessionKind` on an older service's rows makes Needs
+you unavailable and asks to update extension and service together, never
+classifies those rows or claims empty. Explicit `unknown` is a supplied fact and
+keeps the task in Also blocked. An upgrade reclassifies existing stored blockers
+on the first read without changing the stored report. On unchanged first-window refreshes, loaded
 pages are re-traversed from its cursor, replacing at most one continuation page
 per refresh. Rows stay readable under a **Rechecking loaded plans** notice; until
 the traversal finishes, only the first window's counts have authority, shown as

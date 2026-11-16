@@ -15,7 +15,7 @@ const binding = { sourceId: 'source-alpha', verified: true as const };
 export const INBOX_WINDOW: NeedsYouWindow = freeze({
   protocolVersion: 2, schemaVersion: 2, needsYouInbox: 1, storeId: 'store-fixture', sourceBinding: binding, readAt: at, captureEnabled: true,
   rows: [{
-    ...identity, planTitle: 'Release example', coordinatorSessionId: 'coordinator-alpha',
+    ...identity, planTitle: 'Release example', coordinatorSessionId: 'coordinator-alpha', mainSessionKind: 'top-level',
     task: { id: 'task-a', title: 'Choose a direction', kind: 'task', status: 'blocked' },
     ancestors: [], omittedAncestors: 0, group: 'needs-you',
     blocker: { state: 'reported', annotation: { category: 'decision', reason: 'Choose <one> option', nextAction: 'Review the alternatives', reportedRevision: 2, validAtRevision: 3, reportedAt: at, reporterSessionId: 'coordinator-alpha', attributedSessionId: 'coordinator-alpha', mode: 'direct' } },
@@ -30,6 +30,31 @@ export const INBOX_PARTIAL: NeedsYouWindow = freeze({
   coverage: { kind: 'observed-current', complete: false, exhausted: false, gapped: false, skippedRecords: 0, reasons: [] },
 });
 export const INBOX_EMPTY: NeedsYouWindow = freeze({ ...structuredClone(INBOX_WINDOW), rows: [], counts: { needsYou: 0, alsoBlocked: 0 } });
+/** Frozen upgrade examples: wire grouping stays category-only under capability revision 1. */
+export const INBOX_MEMBERSHIP: NeedsYouWindow = freeze({
+  ...structuredClone(INBOX_WINDOW),
+  rows: [
+    { ...structuredClone(INBOX_WINDOW.rows[0]), task: { id: 'main', title: 'Main decision', kind: 'task', status: 'blocked' } },
+    ...(['direct', 'handoff', 'relay', 'subagent-plan', 'unknown-plan'] as const).map(id => {
+      const row = structuredClone(INBOX_WINDOW.rows[0]);
+      row.task.id = id; row.task.title = id;
+      if (row.blocker.state !== 'reported') throw new Error('fixture annotation');
+      if (id === 'direct' || id === 'handoff') {
+        row.blocker.annotation.reporterSessionId = 'child-alpha';
+        row.blocker.annotation.attributedSessionId = 'child-alpha';
+      } else if (id === 'relay') {
+        row.blocker.annotation.mode = 'parent-relay';
+        row.blocker.annotation.attributedSessionId = 'child-alpha';
+      } else row.mainSessionKind = id === 'subagent-plan' ? 'subagent' : 'unknown';
+      return row;
+    }),
+  ],
+  counts: { needsYou: 6, alsoBlocked: 0 },
+});
+export const INBOX_LEGACY: NeedsYouWindow = freeze({
+  ...structuredClone(INBOX_WINDOW),
+  rows: INBOX_WINDOW.rows.map(({ mainSessionKind: _kind, ...row }) => structuredClone(row)),
+});
 const declaration = { oid: 'declaration-fixture', coordinatorSessionId: 'coordinator-alpha', declaredRevision: 2, taskIds: ['task-a'], dispatch: null };
 const view = (token: string, disposition: DelegationDisposition): DelegationView => freeze({
   ...identity, protocolVersion: 2, schemaVersion: 2, delegationIntent: 1, storeId: 'store-fixture', sourceBinding: binding,

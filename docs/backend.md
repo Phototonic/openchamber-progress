@@ -14,8 +14,18 @@ list/freshness response; the directly pinned inbox route still returns 409.
 The reader uses the current verified store/source binding and existing snapshots,
 not source-root discovery or new durable storage. A transaction walks bounded
 plan-ID keyset candidates, validating snapshots before emitting tasks in stored
-order. Decision/review annotations enter Needs you; other, absent and unreadable
-categories remain Also blocked. Unknown categories never become decisions.
+order. Wire decision/review annotations keep the `needs-you` group; other, absent
+and unreadable categories keep `also-blocked`. Wire groups and cumulative counts
+are category-only compatibility facts, not the person-facing classification.
+Each row and list/detail summary supplies `mainSessionKind` from one bounded
+recorded-session lookup per plan in `Store.mainSessionKind`: `top-level` requires
+an explicit null parent, `subagent` a valid parent, otherwise `unknown`.
+The guest's shared predicate counts only current decision/review details reported
+by that top-level main session, including its relays. Sub-agent direct/handoff
+reports and sub-agent-owned plans stay blocked but outside Needs you.
+No live host lookup, snapshot rewrite, migration or capability revision change
+is involved. Missing identity fails closed; old guests ignore the additive fact.
+Unknown categories never become decisions.
 All prose is validated, bounded reported text, not permission or inference.
 
 Bounds are 64 plan slots, 8 MiB input, 50 rows and 256 KiB output per window.
@@ -32,7 +42,10 @@ continuation, timing and read-only behavior. The rendered integration driver is
 `tests/browser/needs-you-inbox-qa.ts --source --real-service --artifacts <dir>`:
 three source-built guests, real HTTP service and disposable synthetic SQLite
 store, with a synthetic SDK host and an explicitly stripped older-capability
-seam. It exercises real bounded continuation, cumulative counts and a real 409
+seam. Its membership fixture also serves the pre-rule guest from public history
+and the new guest against the same unchanged stored blockers: category-only
+count four becomes two person-facing items, with both excluded tasks retained
+in List and Map. It exercises real bounded continuation, cumulative counts and a real 409
 restart as well as keyboard/pointer reading. Not native-host certification.
 
 ## Deterministic large-plan QA fixture

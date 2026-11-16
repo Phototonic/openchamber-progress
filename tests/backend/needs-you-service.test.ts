@@ -11,6 +11,44 @@ import { pathToFileURL } from 'node:url';
 import { Store } from '../../shared/store.ts';
 import { launchNeedsYouService } from '../fixtures/needs-you.ts';
 import type { Envelope, PlanRead } from '../../shared/progress.ts';
+import { isNeedsYou } from '../../shared/needs-you.ts';
+
+test('HTTP additive main-session facts reclassify existing blockers without rewriting stored reports', async () => {
+  const f = await fixture();
+  try {
+    const main = f.actor, child = { ...main, sessionId: 'child-alpha', parentId: main.sessionId, ancestry: [main.sessionId] };
+    f.seedPlan('plan-alpha', 'Alpha', ['main','direct','relay'].map(id => ({ id, title: id, kind: 'task', status: 'blocked' })));
+    f.apply('plan-alpha', { op: 'link', child: child.sessionId, assign: ['direct','relay'] }, main, child);
+    f.apply('plan-alpha', { op: 'change', changes: [{ id: 'main', status: 'blocked', blocker: { category: 'decision' } }] });
+    f.apply('plan-alpha', { op: 'change', changes: [{ id: 'direct', status: 'blocked', blocker: { category: 'decision', reason: 'Ask parent for input' } }] }, child);
+    f.apply('plan-alpha', { op: 'change', attributed: child.sessionId, changes: [{ id: 'relay', status: 'blocked', blocker: { category: 'review' } }] }, main, child);
+    f.seedPlan('plan-beta', 'Beta', [{ id: 'owned', title: 'Child-owned decision', kind: 'task', status: 'blocked' }], child);
+    f.apply('plan-beta', { op: 'change', changes: [{ id: 'owned', status: 'blocked', blocker: { category: 'decision', reason: 'Parent must choose' } }] }, child);
+    const dump = () => ['sqlite_master','sessions','plans','revisions','contributions','receipts','meta'].map(t => f.store.db.prepare(`SELECT * FROM ${t}`).all());
+    const before = dump();
+    const r = await f.get(`/v1/needs-you?${f.query()}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.value.counts, { needsYou: 4, alsoBlocked: 0 });
+    assert(r.value.rows.every((row: any) => row.group === 'needs-you'));
+    assert.deepEqual(r.value.rows.map((row: any) => row.mainSessionKind), ['top-level','top-level','top-level','subagent']);
+    assert.deepEqual(r.value.rows.filter((row: any) => isNeedsYou(row.blocker.annotation.category, row.blocker.annotation.reporterSessionId, row.coordinatorSessionId, row.mainSessionKind)).map((row: any) => row.task.id), ['main','relay']);
+    const normal = await f.get(`/v1/plans?session=${main.sessionId}`);
+    assert.deepEqual(normal.value.data.map((p: any) => [p.id, p.mainSessionKind]), [['plan-alpha', 'top-level']]);
+    for (const [id, kind] of [['plan-alpha','top-level'],['plan-beta','subagent']]) {
+      const detail = await f.get(`/v1/plan?source=${f.alpha.id}&plan=${id}`);
+      assert.equal(detail.value.plan.mainSessionKind, kind);
+    }
+    assert.deepEqual(dump(), before, 'upgrade read adds facts without rewriting snapshots, reports or schema');
+    f.store.db.prepare('DELETE FROM sessions WHERE source=? AND id=?').run(f.alpha.id, main.sessionId);
+    const missing = await f.get(`/v1/needs-you?${f.query()}`);
+    assert(missing.value.rows.filter((row: any) => row.plan === 'plan-alpha').every((row: any) => row.mainSessionKind === 'unknown'));
+    assert.equal((await f.get(`/v1/plan?source=${f.alpha.id}&plan=plan-alpha`)).value.plan.mainSessionKind, 'unknown');
+    for (const actor of [{ ...main, parentId: undefined }, { ...main, parentId: 7 }, { ...main, sourceId: 'other-source' }]) {
+      f.store.db.prepare('INSERT OR REPLACE INTO sessions VALUES(?,?,?)').run(f.alpha.id, main.sessionId, JSON.stringify(actor));
+      assert.equal((await f.get(`/v1/plan?source=${f.alpha.id}&plan=plan-alpha`)).value.plan.mainSessionKind, 'unknown');
+    }
+  } finally { await f.close(); }
+});
 
 async function fixture() {
   const f = searchFixture(false), token = 'synthetic-inbox-token';
