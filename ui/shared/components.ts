@@ -1971,6 +1971,12 @@ export function advancedDetails<U>(vc: ViewContext<U>, plan: PlanView | null, ex
   const add = (label: string, value: string) => facts.append(el('dt', '', label), el('dd', '', value));
   const label = recordedLabel(plan, vc.env);
   for (const item of detail.items) {
+    if (item.assigneeSessionId) add(item.title, `${say('Assignee', vc.env.locale)}: ${label(item.assigneeSessionId)}`);
+    if (item.delegation) {
+      const b = item.delegation;
+      add(item.title, `${label(b.coordinatorSessionId)} → ${label(b.childSessionId)} · ${say('Revision', vc.env.locale)}: ${b.boundRevision}–${b.validAtRevision}`);
+    }
+    for (const link of detail.links.filter(link => link.itemIds.includes(item.id))) add(item.title, `${say('Linked to ', vc.env.locale)}${label(link.sessionId)}`);
     if (item.reporterSessionId) add(item.title, `${say('Reported', vc.env.locale)}: ${label(item.reporterSessionId)}`);
     const b = item.reportedBlocker;
     if (b?.state === 'reported') add(item.title, `${say('Details', vc.env.locale)}: ${label(b.reporterSessionId)} · ${b.mode} · ${label(b.attributedSessionId)}`);

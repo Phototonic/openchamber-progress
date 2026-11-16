@@ -212,12 +212,17 @@ startView<Ui>({
       // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
       // activation records the explicit choice (including re-pressing the provisional List).
       if (surface(root, vc, plan, choose?.() ?? null)) { if (plan) root.append(cleanupBlock(vc, plan)); return; }
-      if (plan && session) root.append(surfaceViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }, language));
+      const viewSwitch = plan && session ? surfaceViewSwitch(vc.ui.presentation, (mode) => {
+        if (mode === 'list' && mapShown) { railMap.leave(true); return; }
+        if (mode === 'map') railMap.enter(); else railMap.leave();
+        chooseView(vc, mode);
+      }, language) : undefined;
+      if (viewSwitch && !mapShown) root.append(viewSwitch);
       if (plan && mapShown && session) {
         // The map keeps its own header and title; the compact picker stays above it.
         const host = testid(el('div', 'ap-map-host'), 'map-host');
         root.append(host);
-        railMap.paint(host, vc, { plan, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
+        railMap.paint(host, vc, { plan, viewSwitch, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
         root.append(cleanupBlock(vc, plan));
       } else if (plan) {
         // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so

@@ -24,6 +24,8 @@ export interface Driver {
   pageErrors: () => string[];
 }
 const hook = (id: string) => `[data-testid="${id}"]`;
+// Shared shell CSS may mention map-host; map JavaScript owners and runtime hooks must not ship in Status.
+export const STATUS_MAP_RUNTIME = /createDependencyMapView|DependencyMapInteraction|DependencyMapLayout|Invalid map metrics|The selected task is no longer recorded|map-announcer|plan-view-map|\/v1\/plan-graph|ap-map-viewport/;
 const region = hook('map-region'), viewport = hook('map-viewport'), inspector = hook('map-inspector');
 const planShown = (source = 'source-alpha', plan = 'P-map') => `!!d.querySelector('article[data-source="${source}"][data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${source}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`;
 const stat = (xs: number[]) => ({ samples: xs, median: [...xs].sort((a,b)=>a-b)[1] });
@@ -31,19 +33,30 @@ export async function productionMapQa(d: Driver) {
   const { guest, evaluate, wait, key, click, frames2, check, c } = d;
   const boardUi = boardInput({ guest, wait, click });
   let fx = d.fx;
-  const button = (s: string, id: string) => guest<string>(s, `const n=d.querySelector(${literal(hook(id))});return n?.matches('button')?${literal(hook(id))}:${literal(hook(id)+' button')}`);
-  const activate = async (s: string, id: string) => { const selector = await button(s,id); await guest(s, `d.querySelector(${literal(selector)}).focus();return true`); await key('Enter'); await frames2(); };
+  const button = (s: string, id: string) => guest<string>(s, `const n=d.querySelector(${literal(hook(id))});return n?.matches('button,summary')?${literal(hook(id))}:${literal(hook(id)+' button')}`);
+  const activate = async (s: string, id: string) => {
+    if (id === 'map-list') id = 'plan-view-list';
+    if (id.startsWith('map-status-') && !await guest(s, `return d.querySelector('[data-testid="map-help"]')?.open`)) await activate(s, 'map-help-trigger');
+    const selector = await button(s,id); await guest(s, `d.querySelector(${literal(selector)}).focus();return true`); await key('Enter'); await frames2();
+  };
+  const readable = async (s: string) => {
+    for (let step = 0; step < 40 && await guest<number>(s, `return parseFloat(d.querySelector('[data-testid="map-zoom-level"]').textContent)||0`) < 80; step++) await activate(s, 'map-zoom-in');
+  };
+  const pan = async (s: string) => {
+    await guest(s, `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await frames2();
+    const [x,y] = await guest<[number,number]>(s, `const a=d.querySelector('${viewport}').getBoundingClientRect(),b=w.frameElement.getBoundingClientRect();return[b.x+a.x+a.width/2,b.y+a.y+a.height/2]`);
+    await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 60, deltaY: 0 }); await frames2();
+  };
   const selected = (s: string) => guest<string>(s, `return d.querySelector('${inspector}')?.dataset.selected??''`);
   const ready = (s: string, rev?: number) => wait(s, `d.querySelector('${region}')?.dataset.current==='true'${rev ? `&&d.querySelector('${region}').dataset.revision==='${rev}'` : ''}&&d.querySelector('${viewport}')`, 'production paired map');
   const expose = (s: string) => evaluate(`document.querySelector('section[data-frame=${s}]').style.display='block';qa.visibility('${s}',true);true`);
   const reload = async (s: string) => { const seq=await evaluate<number>(`qa.reload('${s}')`);await wait(s,`qa.loaded['${s}']===${seq}`,'guest navigation completed'); };
   const open = async (s: string) => {
     await expose(s);
-    if (s === 'page') { await wait(s, `d.querySelector('[data-testid="detail-tabs"] [data-id="map"]')`, 'Map tab'); await click(s, '[data-testid="detail-tabs"] [data-id="map"]'); }
-    else { await wait(s, `d.querySelector('${hook('plan-view-map')} button')`, 'Map switch'); await activate(s,'plan-view-map'); }
+    await wait(s, `d.querySelector('${hook('plan-view-map')} button')`, 'Map switch'); await activate(s,'plan-view-map');
     await ready(s);
   };
-  const list = async (s: string) => { await expose(s); return s === 'page' ? click(s, '[data-testid="detail-tabs"] [data-id="progress"]') : activate(s,'plan-view-list'); };
+  const list = async (s: string) => { await expose(s); return activate(s,'plan-view-list'); };
   const pickBoard = async (id = 'P-map', source = 'source-alpha') => {
     await expose('page');
     await boardUi.revealPlan(`[data-testid="plan-row-${id}"][data-source="${source}"]`);
@@ -74,8 +87,8 @@ export async function productionMapQa(d: Driver) {
     await guest(s, `d.querySelector(${literal(hook('map-card-'+id))}).focus();return true`); await key('Enter');
     await wait(s, `d.querySelector('${inspector}')?.dataset.selected===${literal(id)}`, 'selected card'); await frames2();
   };
-  const positions = (s: string) => guest<Record<string, string>>(s, `return Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>[n.dataset.task,JSON.stringify([n.dataset.x,n.dataset.y])]))`);
-  const screen = (s: string) => guest<Record<string, number[]>>(s, `return Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>{const r=n.getBoundingClientRect();return[n.dataset.task,[r.x,r.y,r.width,r.height]]}))`);
+  const positions = (s: string) => guest<Record<string, string>>(s, `return Object.fromEntries([...d.querySelectorAll('.ap-map-card[data-task]')].map(n=>[n.dataset.task,JSON.stringify([n.dataset.x,n.dataset.y])]))`);
+  const screen = (s: string) => guest<Record<string, number[]>>(s, `return Object.fromEntries([...d.querySelectorAll('.ap-map-card[data-task]')].map(n=>{const r=n.getBoundingClientRect();return[n.dataset.task,[r.x,r.y,r.width,r.height]]}))`);
   const inView = (s: string, id: string) => guest<boolean>(s, `const n=d.querySelector(${literal(hook('map-card-'+id))}),a=n?.getBoundingClientRect(),b=d.querySelector('${viewport}')?.getBoundingClientRect();return !!a&&!!b&&n.tabIndex===0&&a.left>=b.left+8&&a.top>=b.top+8&&a.right<=b.right-8&&a.bottom<=b.bottom-8`);
   const coords = (s: string) => guest(s, `const n=d.querySelector('${hook('map-world')}');return n?.getAttribute('style')`);
   const polls = async (s: string) => { const mark = await evaluate('qa.replies.length'); await wait(s, `qa.replies.slice(${mark}).filter(r=>r.frame==='${s}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two completed ordinary polls'); return mark; };
@@ -206,12 +219,12 @@ export async function productionMapQa(d: Driver) {
       await action('group-reset',()=>group('G-10'),()=>group('*'));
       await action('upstream',()=>select(s,'T-01-00'),()=>key('['));
       await action('downstream',()=>select(s,'T-00-00'),()=>key(']'));
-      await action('fit-all',()=>activate(s,'map-focus-current'),()=>activate(s,'map-fit-all'));
+      await action('fit-all',()=>activate(s,'map-zoom-in'),()=>activate(s,'map-fit-all'));
       await action('neighbour',()=>select(s,'T-00-00'),()=>key('ArrowRight'));
-      await action('pan',()=>activate(s,'map-fit-all'),()=>activate(s,'map-pan-right'));
+      await action('pan',()=>activate(s,'map-fit-all'),()=>pan(s));
       await action('zoom',()=>activate(s,'map-fit-all'),()=>activate(s,'map-zoom-in'));
       await select(s,'T-10-24');
-      const dom=await guest(s,`return {cards:d.querySelectorAll('[data-task]').length,edges:d.querySelectorAll('path[data-from]').length,nodes:d.querySelectorAll('*').length}`);
+      const dom=await guest(s,`return {cards:d.querySelectorAll('.ap-map-card[data-task]').length,edges:d.querySelectorAll('path[data-from]').length,nodes:d.querySelectorAll('*').length}`);
       check(`${name}:full-plan`,dom.cards===980&&dom.edges===2000,undefined,dom);
       if(!index){
         // Arrow motion fallback (docs/ui.md, Arrows): 2,000 arrows exceed the shipped ceiling, so with
@@ -257,8 +270,8 @@ export async function productionMapQa(d: Driver) {
 
   await setup();
   await ready('page'); await ready('panel');
-  check('entry:board-edge-map-default',await guest('page',`return d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]').dataset.id==='map'`));
-  check('entry:map-fourth',await guest('page',`return [...d.querySelectorAll('[data-testid="detail-tabs"] [role=tab]')].map(n=>n.dataset.id).join(',')==='progress,document,history,map'`));
+  check('entry:board-edge-map-default',await guest('page',`return d.querySelector('[data-testid="plan-view-map"] button').getAttribute('aria-pressed')==='true'`));
+  check('entry:one-map-list-switch',await guest('page',`return d.querySelectorAll('[data-testid="plan-view"]').length===1&&d.querySelector('[data-testid="map-toolbar"] [data-testid="plan-view"]')&&!d.querySelector('[data-testid="detail-tabs"]')`));
   check('entry:rail-edge-map-default',await guest('panel',`return d.querySelector('${hook('plan-view-map')} button').getAttribute('aria-pressed')==='true'`));
   for(const s of ['page','panel'])check(`${s}:visible-default-map-reads-graph`,await d.count('/v1/plan-graph',s)>0);
   check('status:zero-graph-at-entry',await d.count('/v1/plan-graph','status')===0);
@@ -287,7 +300,8 @@ export async function productionMapQa(d: Driver) {
   }
   check('status:no-map-dom',await guest('status',`return !d.querySelector('[data-testid^="map-"],[data-testid^="plan-view"],[data-map-style]')`));
   check('status:zero-graph',await d.count('/v1/plan-graph','status')===0);
-  check('status:map-free-bundle',!/(map-announcer|map-host|plan-view-map|\/v1\/plan-graph|ap-map-viewport)/.test(readFileSync('ui/status/main.js','utf8')));
+  // Shared shell CSS names map-host since the shell change; that is not map runtime code.
+  check('status:map-free-bundle',!STATUS_MAP_RUNTIME.test(readFileSync('ui/status/main.js','utf8')));
   await photo('work-status-no-map','status');
   await c.send('Accessibility.enable');
   const frameTree=await c.send('Page.getFrameTree');
@@ -306,7 +320,7 @@ export async function productionMapQa(d: Driver) {
       const full=await c.send('Accessibility.getFullAXTree',{frameId:child.frame.id});
       save(`${name}/ax.json`,{nodes:full.nodes.map((n:any)=>({role:n.role?.value,name:n.name?.value,ignored:n.ignored,properties:n.properties?.filter((p:any)=>['focusable','focused','pressed','live'].includes(p.name)),childIds:n.childIds,nodeId:n.nodeId}))});
       check(`${name}:AX-task-map-region`,full.nodes.some((n:any)=>!n.ignored&&n.role?.value==='region'&&n.name?.value==='Task map'));
-      check(`${name}:AX-full-title-status-context`,full.nodes.some((n:any)=>!n.ignored&&n.role?.value==='button'&&n.name?.value?.includes('Build a deliberately long Unicode branch')&&n.name.value.includes('Reported working')));
+      check(`${name}:AX-full-title-status-context`,full.nodes.some((n:any)=>!n.ignored&&n.role?.value==='button'&&n.name?.value?.includes('Build a deliberately long Unicode branch')&&n.name.value.includes('In progress')));
       check(`${name}:AX-includes-offscreen-unfiltered-cards`,full.nodes.filter((n:any)=>!n.ignored&&n.role?.value==='button'&&n.name?.value?.includes('recorded prerequisite')).length===9);
       check(`${name}:canvas-one-tab-stop`,await guest(s,`return [...d.querySelector('${viewport}').querySelectorAll('button,[tabindex]')].filter(n=>n.tabIndex===0).length===1`));
       await select(s,'B');await key('ArrowRight');check(`${name}:arrow-neighbour`,await selected(s)!=='B');
@@ -317,15 +331,16 @@ export async function productionMapQa(d: Driver) {
       check(`${name}:filtered-cards-absent-from-AX`,filteredAX.nodes.filter((n:any)=>!n.ignored&&n.role?.value==='button'&&n.name?.value?.includes('recorded prerequisite')).length===7);
       await activate(s,'map-status-all');
       const unfilteredPositions=await positions(s);
+      await guest(s,`d.querySelector('${hook('map-help')}').open=true;return true`);await frames2();
       await guest(s,`d.querySelector('${hook('map-group')}').focus();return true`);await key('End');await frames2();
-      check(`${name}:native-group-filter-by-keyboard`,await guest(s,`return d.querySelector('${hook('map-group')}').value!=='*'&&d.querySelectorAll('[data-task]').length===1`));
+      check(`${name}:native-group-filter-by-keyboard`,await guest(s,`return d.querySelector('${hook('map-group')}').value!=='*'&&d.querySelectorAll('.ap-map-card[data-task]').length===1`));
       await key('Home');await frames2();check(`${name}:group-reset-keeps-full-layout`,JSON.stringify(unfilteredPositions)===JSON.stringify(await positions(s)));
       for(const theme of ['light','dark'] as const){
         await d.theme(theme);
         await select(s,'B'); // the canvas Tab stop is its selected/roving card, not an arbitrary -1 card
         const targets=[['toolbar','map-fit-all'],['card','map-card-B'],...(s==='panel'?[['switch','plan-view-map']]:[])];
         for(const [label,id]of targets){await guest(s,`d.activeElement?.blur();return true`);await d.shot(`${name}/focus-${label}-${theme}-off`,hook(id),12,850,s);await guest(s,`const n=d.querySelector('${hook(id)}');(n.matches('button')?n:n.querySelector('button')).focus();return true`);await key('Tab');await key('Tab',1,8);check(`${name}:${theme}:${label}:visible-focus`,await guest(s,`const n=d.activeElement,style=getComputedStyle(n);return !!n.closest('${hook(id)}')&&((style.outlineStyle!=='none'&&parseFloat(style.outlineWidth)>0)||style.boxShadow!=='none')`));await d.shot(`${name}/focus-${label}-${theme}-on`,hook(id),12,850,s);}
-        if(s==='page'){await guest(s,`d.activeElement?.blur();return true`);await d.shot(`${name}/focus-tab-${theme}-off`,'[data-id="map"][role="tab"]',12,850,s);await guest(s,`d.querySelector('[data-id="map"][role="tab"]').focus();return true`);await key('Tab');await key('Tab',1,8);await d.shot(`${name}/focus-tab-${theme}-on`,'[data-id="map"][role="tab"]',12,850,s);}
+        if(s==='page'){await guest(s,`d.activeElement?.blur();return true`);await d.shot(`${name}/focus-switch-${theme}-off`,hook('plan-view-map'),12,850,s);await guest(s,`d.querySelector('[data-testid="plan-view-map"] button').focus();return true`);await key('Tab');await key('Tab',1,8);await d.shot(`${name}/focus-switch-${theme}-on`,hook('plan-view-map'),12,850,s);}
       }
       await d.theme('light');
       for(const factor of [2,4]){
@@ -344,7 +359,7 @@ export async function productionMapQa(d: Driver) {
       if(s==='page'||width===360){
         // The zoom-reflow pass intentionally used Fit all in a 90 CSS-pixel viewport. Restore a
         // readable work framing before judging forced-color strokes, status shapes and focus.
-        await activate(s,'map-focus-current');await select(s,'B');
+        await readable(s);await select(s,'B');
         await c.send('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'active'},{name:'prefers-reduced-motion',value:'reduce'}]});await frames2();
         check(`${name}:forced-colors-active`,await guest(s,`return w.matchMedia('(forced-colors: active)').matches`));
         save(`${name}/forced-colors-styles.json`,await guest(s,`const edge=d.querySelector('path[data-from]'),card=d.querySelector('[data-task]');return {edge:getComputedStyle(edge).stroke,card:getComputedStyle(card).borderColor,marks:d.querySelectorAll('[data-mark]').length}`));
@@ -406,6 +421,8 @@ export async function productionMapQa(d: Driver) {
   }
   await photo('rail-resize','panel');
   await activate('panel','map-list');await wait('panel',`d.activeElement?.dataset?.testid==='item-B'`,'canonical row focus');
+  await activate('panel','plan-view-list');
+  check('rail:reactivating-list-does-not-replay-map-target', await guest('panel',`return !!d.activeElement?.closest('[data-testid="plan-view-list"]')`));
   await open('panel');check('rail:list-map-target',await selected('panel')==='B');
   await select('panel','C');await activate('panel','map-list');await wait('panel',`d.activeElement?.dataset?.testid==='item-C'`,'new selected row');
   await d.shot('rail-list-handoff',hook('item-C'),12,850,'panel');await open('panel');check('rail:no-consumed-target-replay',await selected('panel')==='C');
@@ -454,20 +471,20 @@ export async function productionMapQa(d: Driver) {
   // Finish/reopen changes readiness guidance, not topology.
   fx.reportMap('P-map',{op:'change',changes:['B','C','D','E','F','W','I'].map(id=>({id,status:'done'}))});
   fx.reportMap('P-map',{op:'finish',outcome:'finished'});await ready('page',4);
-  check('lifecycle:finished-no-ready',await guest('page',`return !d.querySelector('.ap-map-stat[data-kind="ready"]')`));
+  check('lifecycle:finished-no-ready',await guest('page',`return !d.querySelector('.ap-map-card[data-mark="ready"]')`));
   fx.reportMap('P-map',{op:'revise',reopen:true,items:mapItems.map(i=>i.kind==='task'?{...i,status:i.id==='C'?'pending':i.id==='S'?'skipped':'done'}:i)});await ready('page',5);
-  check('lifecycle:reopened-guidance-and-stable-geometry',await guest('page',`return !!d.querySelector('.ap-map-stat[data-kind="ready"]')`)&&JSON.stringify(original)===JSON.stringify(await positions('page')));
+  check('lifecycle:reopened-guidance-and-stable-geometry',await guest('page',`return d.querySelector('${hook('map-card-C')}')?.dataset.mark==='ready'`)&&JSON.stringify(original)===JSON.stringify(await positions('page')));
   await fx.setCapture(false);await polls('page');check('capture:off-explicit',await guest('page',`return !!d.querySelector('${hook('capture-off')}')`));await fx.setCapture(true);await polls('page');
   // Held graph across leaving Map cannot revive cards or steal focus.
   await list('page');await pickBoard('P-map-none');
   await evaluate(`qa.holds.push({tag:'final-graph',path:'/v1/plan-graph',frame:'page'});true`);
-  await click('page','[data-testid="detail-tabs"] [data-id="map"]');await wait('page',`qa.held.some(h=>h.tag==='final-graph')`,'held graph');
+  await activate('page','plan-view-map');await wait('page',`qa.held.some(h=>h.tag==='final-graph')`,'held graph');
   await list('page');await evaluate(`qa.release('final-graph');true`);await polls('page');
   check('retire:leaving-map-no-late-picture',await guest('page',`return !d.querySelector('${region}')`));
   await open('page');check('no-edges:honest-statement',await guest('page',`return d.querySelector('${region}').textContent.includes('No prerequisites recorded for this plan')`));
   await pickBoard('P-map-paged');await wait('page',planShown('source-alpha','P-map-paged'),'selected paged reading');await list('page');await wait('page',`d.querySelector('${hook('item-T0')}')`,'canonical paged task');await click('page',hook('item-T0'));
   await evaluate(`qa.holds.push({tag:'focus-graph',path:'/v1/plan-graph',frame:'page'});true`);
-  await click('page','[data-testid="detail-tabs"] [data-id="map"]');await wait('page',`qa.held.some(h=>h.tag==='focus-graph')`,'held initial graph with task target');
+  await activate('page','plan-view-map');await wait('page',`qa.held.some(h=>h.tag==='focus-graph')`,'held initial graph with task target');
   await click('page','#ap-search-q');await evaluate(`qa.release('focus-graph');true`);await ready('page');await frames2();
   check('focus:held-initial-graph-does-not-steal-after-reader-moves',await guest('page',`return d.activeElement?.id==='ap-search-q'`));
   await list('page');await pickBoard('P-map-groups');await open('page');check('group:metadata-not-task-edges',await guest('page',`return d.querySelector('${region}').dataset.tasks==='1'&&d.querySelector('${region}').dataset.edges==='0'`));
@@ -476,23 +493,31 @@ export async function productionMapQa(d: Driver) {
   await fx.cleanupElsewhere('archive','P-map-finished');
   // Current view must retire a cleanup identity; board archive browsing remains board-only.
   await polls('page');check('archive:current-reading-retired',await guest('page',`return !d.querySelector('${hook('map-title')}')?.textContent.includes('Finished plan')`));
-  await activate('page','cleanup-archived');await pickBoard('P-map-finished');await open('page');
+  await boardUi.openFilters();await activate('page','cleanup-archived');await boardUi.closeFilters();await pickBoard('P-map-finished');await open('page');
   check('archive:map-inspectable-in-archived-scope',await guest('page',`return d.querySelector('${hook('cleanup-archived')} button').getAttribute('aria-pressed')==='true'&&d.querySelector('${hook('map-title')}').textContent==='Finished plan'`));await photo('archived-map','page');
-  await fx.cleanupElsewhere('restore','P-map-finished');await polls('page');await activate('page','cleanup-visible');await pickBoard('P-map-finished');await open('page');
+  await fx.cleanupElsewhere('restore','P-map-finished');await polls('page');await boardUi.openFilters();await activate('page','cleanup-visible');await boardUi.closeFilters();await pickBoard('P-map-finished');await open('page');
   const activity=fx.enableMapAttribution();
   await list('page');await pickBoard();await list('panel');await pickRail();
   for(const s of ['page','panel']){
     await open(s);await wait(s,`d.querySelector('${hook('map-card-live-B')}')`,'verified assigned session activity');
-    check(`attribution:${s}:verified-only`,await guest(s,`return d.querySelector('${hook('map-card-who-B')}').textContent==='Assigned to Session map-child'&&d.querySelectorAll('[data-testid^="map-card-live-"]').length===1&&d.querySelector('${hook('map-card-C')}').dataset.attribution==='recorded'`));
-    await select(s,'B');check(`attribution:${s}:report-separate`,await guest(s,`const r=d.querySelector('${hook('map-attribution-reports')}');return !!r&&r.textContent.includes('Session M')&&r.textContent.includes('Session map-child')`));
+    check(`attribution:${s}:verified-only`,await guest(s,`return d.querySelector('${hook('map-card-who-B')}').textContent==='Session map-child'&&d.querySelectorAll('[data-testid^="map-card-live-"]').length===1&&d.querySelector('${hook('map-card-C')}').dataset.attribution==='recorded'&&!d.querySelector('${hook('map-card-who-C')}')`));
+    await select(s,'B');check(`attribution:${s}:summary-not-report-authorship`,await guest(s,`const r=d.querySelector('${inspector}');return !d.querySelector('${hook('map-attribution-reports')}')&&r.textContent.includes('Session map-child')&&!r.textContent.includes('Reported directly by')`));
+    check(`attribution:${s}:unlisted-session-not-openable`,await guest(s,`return !d.querySelector('[data-testid="map-open-session"]')`));
     await photo(s==='page'?'verified-running':'rail-verified-running',s);
   }
+  await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',[{id:'M',title:'Coordinator',projectId:'alpha',directory:'/fixture/main',parentId:null,archivedAt:null,worktree:null,activity:'idle',outcome:null,items:[]},{id:'map-child',title:'Map worker',projectId:'alpha',directory:'/fixture/main',parentId:'M',archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]}]);true`);
+  await wait('page',`d.querySelector('[data-testid="map-open-session"]')`,'verified listed session action');
+  const navigation = await guest('page',`return {revision:d.querySelector('${region}').dataset.revision,selected:d.querySelector('${inspector}').dataset.selected}`);
+  const navigationRequests = await evaluate<number>('qa.requests.length');
+  await activate('page','map-open-session');
+  check('attribution:open-session-does-not-report',await evaluate(`qa.requests.slice(${navigationRequests}).every(q=>q.method==='GET')`) && await guest('page',`return d.querySelector('${region}').dataset.revision===${literal(navigation.revision)}&&d.querySelector('${inspector}').dataset.selected===${literal(navigation.selected)}`));
+  await evaluate(`qa.setSessions('alpha',[]);true`);
   const attributedPositions=await positions('page');activity.terminal();await polls('page');
   await wait('page',`!d.querySelector('${hook('map-card-live-B')}')`,'terminal activity withdrawn');
   check('attribution:terminal-no-movement',JSON.stringify(attributedPositions)===JSON.stringify(await positions('page')));await photo('terminal-run','page');
   await list('page');await pickBoard('P-map-none');
   await evaluate(`qa.holds.push({tag:'account-graph',path:'/v1/plan-graph',frame:'page'});true`);
-  await click('page','[data-testid="detail-tabs"] [data-id="map"]');await wait('page',`qa.held.some(h=>h.tag==='account-graph')`,'held graph before account switch');
+  await activate('page','plan-view-map');await wait('page',`qa.held.some(h=>h.tag==='account-graph')`,'held graph before account switch');
   const retiredAccountIdentity=await guest<string>('page',`return d.querySelector('${region}')?.dataset.mapIdentity??''`);
   await evaluate(`qa.account='account-next';qa.ready();true`);await wait('page',`!d.querySelector('${region}')`,'account retires map');
   await evaluate(`qa.release('account-graph');true`);await polls('page');
@@ -500,13 +525,13 @@ export async function productionMapQa(d: Driver) {
   await pickBoard();await open('page');
   const retiredStoreIdentity=await guest<string>('page',`return d.querySelector('${region}').dataset.mapIdentity`);
   await evaluate(`qa.store=1;true`);await polls('page');await ready('page');
-  check('identity:store-retires-old-map-and-resolves-new-default',await guest('page',`return d.querySelector('${region}').dataset.mapIdentity!==${literal(retiredStoreIdentity)}&&d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id==='map'&&!d.querySelector('${inspector}')?.dataset.selected`));
+  check('identity:store-retires-old-map-and-resolves-new-default',await guest('page',`return d.querySelector('${region}').dataset.mapIdentity!==${literal(retiredStoreIdentity)}&&d.querySelector('[data-testid="plan-view-map"] button')?.getAttribute('aria-pressed')==='true'&&!d.querySelector('${inspector}')?.dataset.selected`));
   await evaluate(`qa.store=0;true`);await polls('page');
   await evaluate(`qa.stripGraph=true;true`);await reload('page');await reload('panel');
   await pickBoard();await pickRail();
   for(const s of ['page','panel']){
     const mark=await d.count('/v1/plan-graph',s);
-    if(s==='page')await click(s,'[data-testid="detail-tabs"] [data-id="map"]');else await activate(s,'plan-view-map');
+    await activate(s,'plan-view-map');
     await wait(s,`d.querySelector('${region}')?.dataset.state==='unavailable'`,'old-service unavailable');
     check(`${s}:old-service-zero-graph`,await d.count('/v1/plan-graph',s)===mark);
     await photo(`${s}-unavailable`,s);await activate(s,'map-list');await wait(s,`d.querySelector('article[data-reading]')`,'ordinary list alternative');
@@ -556,7 +581,7 @@ export async function productionMapQa(d: Driver) {
     check(`${s}:reading-change-retires-delivered-and-pending-speech`,await guest(s,`return w.__announcer===d.querySelector('[data-testid="map-announcer"]')&&w.__announcer.textContent===''&&w.__speech.length===0`),undefined,await speech(s));
     await select(s,'A');await wait(s,`d.querySelector('[data-testid="map-announcer"]').textContent.includes('Unrelated dependent A')`,'delivered before leaving Map');
     await observeSpeech(s);
-    await guest(s,`d.querySelector('[data-testid="map-card-C"]').click();d.querySelector('[data-testid="map-list"] button').click();return true`);
+    await guest(s,`d.querySelector('[data-testid="map-card-C"]').click();d.querySelector('[data-testid="plan-view-list"] button').click();return true`);
     await wait(s,`!d.querySelector('[data-testid="map-region"]')&&d.querySelector('article[data-reading]')`,'ordinary list after retirement');
     await frames2();await polls(s);
     check(`${s}:view-retirement-clears-speech-keeps-node`,await guest(s,`return w.__announcer===d.querySelector('[data-testid="map-announcer"]')&&w.__announcer.textContent===''&&w.__speech.length===0`),undefined,await speech(s));
@@ -574,7 +599,7 @@ export async function productionMapQa(d: Driver) {
     await guest(s,`d.querySelector('[data-testid="map-card-C"]').focus();return true`);await key('Enter');await frames2();
     const selection=await selected(s);
     await key(']');await frames2();const navigation=await selected(s);
-    const panBefore=await coords(s);await activate(s,'map-pan-right');const toolbar=(await coords(s))!==panBefore;
+    const panBefore=await coords(s);await activate(s,'map-zoom-in');const toolbar=(await coords(s))!==panBefore;
     await polls(s);
     resumes.push({surface:s,selection,navigation,toolbar,repins,extraPins:(await d.count('/v1/plan-graph',s))-graphBefore-repins,sameRevision:revision===await guest(s,`return d.querySelector('${region}').dataset.revision`)});
   }

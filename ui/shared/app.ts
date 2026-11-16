@@ -117,6 +117,8 @@ export interface ViewContext<U> {
   language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
   ui: U;
   setUi: (patch: Partial<U>) => void;
+  /** Background data/presentation changed; preserves open pickers and active presses. */
+  invalidate: () => void;
   /** Functional update against the latest UI state (safe after an await). */
   updateUi: (fn: (ui: U) => Partial<U>) => void;
   retry: () => void;
@@ -562,7 +564,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     device: deviceView ?? undefined,
     service: (current) => guardedHost(current),
     visible: () => document.visibilityState !== 'hidden',
-    changed: () => { versions.ui++; schedule(); },
+    changed: (action) => { if (action) versions.ui++; else versions.data++; schedule(); },
   }) : null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
@@ -1225,6 +1227,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         localLanguageAction = false;
       } },
       setUi: (patch) => applyUi(patch),
+      invalidate: bump,
       updateUi: (fn) => applyUi(fn(ui)),
       retry, sessionSubscriptions: live.sessionSubscriptionCount,
       handoff: (h) => { const from = focusKey(mount!); handoff = from ? { ...h, from } : null; },

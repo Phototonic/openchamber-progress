@@ -17,6 +17,9 @@ export function seedMapAttribution(f: ReturnType<typeof searchFixture>) {
   for (let n = 0; n < 2; n++) f.apply('P-map', { op: 'change', attributed: child.sessionId, changes: [{ id: 'B', status: 'working' }] }, f.actor, child);
   return {
     child,
+    blocker() {
+      f.apply('P-map', { op: 'change', changes: [{ id: 'B', status: 'blocked', blocker: { category: 'decision', reason: '<b>Ask the main session</b>', nextAction: 'Choose a format' } }] }, child);
+    },
     terminal() { f.store.observeExecution({ source: f.alpha.id, child: child.sessionId, id: 'map-end', sequence: 2, at: base + 1000, state: 'succeeded', errorType: null, interruptionReason: null }); },
   };
 }
