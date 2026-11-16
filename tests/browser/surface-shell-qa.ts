@@ -187,8 +187,10 @@ try {
   for (const surface of ['panel', 'page']) {
     await viewport(390);
     await evaluate(`qa.show(${js(surface)},390,844);true`);
+    if (await guest(surface, `return d.querySelector('[data-testid="needs-you-toggle"]')?.getAttribute('aria-expanded')==='false'`)) await click(surface, '[data-testid="needs-you-toggle"]');
+    if (!await guest(surface, `return !!d.querySelector('.ap-inbox-open')`)) await click(surface, '[data-testid="needs-you-other-plans"] button');
     await click(surface, '.ap-inbox-open');
-    await wait(surface, `!!d.querySelector('[data-testid="needs-you-reading"]') && !!d.querySelector('.ap-tasks[data-complete]')`);
+    await wait(surface, `!!d.querySelector('.ap-inbox-facts:not([hidden])') && !d.querySelector('[data-testid="needs-you-reading"]')`);
     check(`${surface}-inbox-one-menu`, await guest(surface, `return d.querySelectorAll('[data-testid="more-trigger"]').length===1`));
     await viewport(280);
     await evaluate(`qa.show(${js(surface)},280,844);frame(${js(surface)}).src='/ui/${surface}/index.html?narrow=1';true`);
@@ -209,12 +211,12 @@ try {
   };
   await submitSearch('fixture-no-matching-result');
   await wait('page', `!!d.querySelector('[data-testid="search-empty"]') && !!d.querySelector('[data-testid="search-pick"]')`);
-  check('board-empty-search-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-inbox"] .ap-inbox-open')`));
+  check('board-empty-search-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-other-plans"] button') && !d.querySelector('.ap-inbox-open')`));
   await shot('page-empty-search-inbox');
+  await click('page', '[data-testid="needs-you-other-plans"] button');
+  await wait('page', `!!d.querySelector('.ap-inbox-open') && !!d.querySelector('[data-testid="search-pick"]')`);
   await click('page', '.ap-inbox-open');
-  await wait('page', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready'`);
-  await click('page', '[data-testid="needs-you-back"]');
-  await wait('page', `!!d.querySelector('[data-testid="search-pick"]')`);
+  await wait('page', `!!d.querySelector('.ap-inbox-facts:not([hidden])') && !!d.querySelector('[data-testid="search-pick"]')`);
   await submitSearch('phone');
   await wait('page', `!!d.querySelector('[data-testid^="search-plan-"][data-testid$="/P-phone"]')`);
   await click('page', '[data-testid^="search-plan-"][data-testid$="/P-phone"]');
@@ -226,7 +228,7 @@ try {
   await click('page', '[data-testid="board-filters-trigger"]');
   await click('page', '[data-testid="cleanup-archived"] button');
   await wait('page', `!!d.querySelector('[data-testid="empty-state"]')`);
-  check('board-empty-archived-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-inbox"] .ap-inbox-open')`));
+  check('board-empty-archived-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-other-plans"] button') && !d.querySelector('.ap-inbox-open')`));
   await shot('page-empty-archived-inbox');
   check('no-final-guest-errors', browser.page.errors.length === 0, browser.page.errors);
 } catch (error) { failure = String(error); }

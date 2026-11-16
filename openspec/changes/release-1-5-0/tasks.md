@@ -28,12 +28,12 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 4. Needs you: compact, scoped, actions and hide
 
-- [ ] 4.1 Add the device view-state store for the three states with its versioned records, bounds, pruning and failure behaviour, and unit tests for unsupported hosts, malformed records and failed writes.
-- [ ] 4.2 Partition inbox rows into session, selected-plan and all-plans scopes; apply the exact-or-plus rule; add bounded automatic continuation on the existing refresh cycle with the per-traversal limit; assert no extra timer and at most one inbox request per cycle.
-- [ ] 4.3 Replace the cards with the collapsed line, one-line items, in-place opening and the quiet other-blocked count; remove the pinned "opened from" reading; show the other-plans link, the empty state and the failed-read line.
-- [ ] 4.4 Add Open session behind the existing open gate, Copy reply with clipboard confirmation and fallback, and Hide with Undo, the hidden count and show/unhide in the list and the More menu.
-- [ ] 4.5 Show each plan's Needs you count on the board's plan rows from the same rows.
-- [ ] 4.6 Extend inbox logic tests and the rendered driver against the real service: scopes, plus marks, continuation bounds, actions that change nothing, hide surviving reload and returning after a new report, keyboard and accessible names, 390 px and desktop in three languages. Update `docs/ui.md` and `docs/contracts.md`; regenerate the three guests.
+- [x] 4.1 Add the device view-state store for the three states with its versioned records, bounds, pruning and failure behaviour, and unit tests for unsupported hosts, malformed records and failed writes.
+- [x] 4.2 Partition inbox rows into session, selected-plan and all-plans scopes; apply the exact-or-plus rule; add bounded automatic continuation on the existing refresh cycle with the per-traversal limit; assert no extra timer and at most one inbox request per cycle.
+- [x] 4.3 Replace the cards with the collapsed line, one-line items, in-place opening and the quiet other-blocked count; remove the pinned "opened from" reading; show the other-plans link, the empty state and the failed-read line.
+- [x] 4.4 Add Open session behind the existing open gate, Copy reply with clipboard confirmation and fallback, and Hide with Undo, the hidden count and show/unhide in the list and the More menu.
+- [x] 4.5 Show each plan's Needs you count on the board's plan rows from the same rows.
+- [x] 4.6 Extend inbox logic tests and the rendered driver against the real service: scopes, plus marks, continuation bounds, actions that change nothing, hide surviving reload and returning after a new report, keyboard and accessible names, 390 px and desktop in three languages. Update `docs/ui.md` and `docs/contracts.md`; regenerate the three guests.
 
 ## 5. Incomplete-count indicator
 

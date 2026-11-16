@@ -1556,6 +1556,8 @@ export interface MapFrame<U> {
   leave: () => void;
   /** Explicit list task focus/reveal or pointer selection in this frame's canonical list. */
   listTargets: (article: HTMLElement) => void;
+  /** Explicit task reveal from another control in this reading, without moving keyboard focus. */
+  revealTask: (id: string) => boolean;
   paint: (host: HTMLElement, vc: ViewContext<U>, input: MapFramePaint) => void;
   /** `listFocus`: the frame's List control (rail switch / board Progress tab), when nothing else took focus. */
   afterPaint: (root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, listFocus: (root: HTMLElement) => HTMLElement | null) => void;
@@ -1653,6 +1655,13 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     },
     enter() { cancelListTransition(); reveal = null; interaction.enter(document.hasFocus()); },
     leave() { cancelListTransition(); reveal = null; view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); interaction.leave(); },
+    revealTask(id) {
+      if (!shown || !latest || !map.value.current) return false;
+      interaction.listTarget(id);
+      interaction.enter(false);
+      latest.setUi({});
+      return true;
+    },
     listTargets(article) {
       article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
       article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });

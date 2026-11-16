@@ -1,12 +1,14 @@
 // Needs you inbox presentation: the compact rail/board section, the Work Status line and the
 // labelled source-wide reading a row opens. Read-only: no control here changes a task, a plan,
 // the host session or the session-action pin. Only fixed copy is translated, never reported text.
-import { ATTENTION_HOOKS, button, el, testid, type Env } from './components.ts';
+import { ATTENTION_HOOKS, button, el, revealCurrentTask, testid, type Env } from './components.ts';
 import { absoluteTime, clockTime, elapsedText, formatCount } from './format.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
-import { inboxGroup, inboxRequest, inboxTarget, type InboxModel, type InboxPanel } from './inbox.ts';
+import { inboxGroup, inboxRequest, inboxTarget, scopeInbox, type InboxModel, type InboxPanel } from './inbox.ts';
+import { hiddenItemKey, type ViewSurface } from './device-view-state.ts';
+import { canOpen, coverageFor } from './live.ts';
 import { elapsedAt, itemNeedsYou, type BlockerCategory, type InboxRowView, type InboxTaskTarget, type ItemView, type PlanDetail, type PlanView } from './model.ts';
-import type { Loadable } from './app.ts';
+import type { Loadable, ReadingView } from './app.ts';
 import { icon, warningLine } from './primitives.ts';
 
 /** Needs you rows shown before "Show N more" (loaded rows only; more plans load explicitly). */
@@ -25,7 +27,7 @@ export const INBOX_COPY = {
     tasks: (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`,
     atLeastTasks: (n: number) => `at least ${n} ${n === 1 ? 'task' : 'tasks'}`,
     summary: (n: number) => (n === 1 ? '1 task needs you' : `${n} tasks need you`),
-    summaryAtLeast: (n: number) => `At least ${n} ${n === 1 ? 'task needs' : 'tasks need'} you`,
+    summaryAtLeast: (n: number) => `${n}+ tasks need you`,
     none: 'Nothing needs you right now.',
     noneShort: 'Nothing needs you',
     noneYet: 'Nothing found yet that needs you',
@@ -56,8 +58,8 @@ export const INBOX_COPY = {
     categories: { decision: 'Decision', review: 'Review', dependency: 'Dependency', external: 'External', other: 'Other' } as Record<BlockerCategory, string>,
     unclassified: 'Category unknown', unclassifiedHelp: 'The report used a category this version doesn’t recognize.',
     absent: 'No details reported', invalidDetails: 'Reported details couldn’t be read',
-    lineAria: (summary: string) => `${summary} across all current plans. Open progress`,
-    lineScope: 'all plans',
+    lineAria: (summary: string) => `${summary} in this session. Open progress`,
+    lineScope: 'this session',
     readingLabel: 'Opened from Needs you',
     readingNote: 'This is the current plan. Nothing here changes the task.',
     backPanel: 'Back to session progress', backBoard: 'Back to plans',
@@ -78,7 +80,7 @@ export const INBOX_COPY = {
     tasks: (n: number) => `${num(n, 'ru')} ${forms(n, 'ru', 'задача', 'задачи', 'задач')}`,
     atLeastTasks: (n: number) => `не менее ${num(n, 'ru')} ${forms(n, 'ru', 'задачи', 'задач', 'задач')}`,
     summary: (n: number) => `Нужно ваше участие: ${num(n, 'ru')} ${forms(n, 'ru', 'задача', 'задачи', 'задач')}`,
-    summaryAtLeast: (n: number) => `Нужно ваше участие: не менее ${num(n, 'ru')} ${forms(n, 'ru', 'задачи', 'задач', 'задач')}`,
+    summaryAtLeast: (n: number) => `Нужно ваше участие: ${num(n, 'ru')}+`,
     none: 'Сейчас ничего не требует вашего участия.',
     noneShort: 'Ничего не требует вашего участия',
     noneYet: 'Пока не найдено задач, где нужно ваше участие',
@@ -109,8 +111,8 @@ export const INBOX_COPY = {
     categories: { decision: 'Решение', review: 'Проверка', dependency: 'Зависимость', external: 'Внешнее', other: 'Другое' } as Record<BlockerCategory, string>,
     unclassified: 'Категория неизвестна', unclassifiedHelp: 'В отчёте указана категория, неизвестная этой версии.',
     absent: 'Сведения не указаны', invalidDetails: 'Не удалось прочитать записанные сведения',
-    lineAria: (summary: string) => `${summary} во всех текущих планах. Открыть прогресс`,
-    lineScope: 'все планы',
+    lineAria: (summary: string) => `${summary} в этой сессии. Открыть прогресс`,
+    lineScope: 'эта сессия',
     readingLabel: 'Открыто из раздела «Нужно ваше участие»',
     readingNote: 'Это текущий план. Здесь ничего не меняет задачу.',
     backPanel: 'Назад к прогрессу сессии', backBoard: 'Назад к планам',
@@ -131,7 +133,7 @@ export const INBOX_COPY = {
     tasks: (n: number) => `${num(n, 'zh-CN')} 个任务`,
     atLeastTasks: (n: number) => `至少 ${num(n, 'zh-CN')} 个任务`,
     summary: (n: number) => `${num(n, 'zh-CN')} 个任务需要你处理`,
-    summaryAtLeast: (n: number) => `至少 ${num(n, 'zh-CN')} 个任务需要你处理`,
+    summaryAtLeast: (n: number) => `${num(n, 'zh-CN')}+ 个任务需要你处理`,
     none: '目前没有需要你处理的事项。', noneShort: '没有需要你处理的事项', noneYet: '尚未找到需要你处理的事项',
     partial: '目前只检查了部分计划，可能还有其他事项需要你处理。',
     partialNone: '尚未找到事项。并非所有计划都已检查。',
@@ -159,7 +161,7 @@ export const INBOX_COPY = {
     categories: { decision: '决策', review: '审阅', dependency: '依赖', external: '外部', other: '其他' } as Record<BlockerCategory, string>,
     unclassified: '类别未知', unclassifiedHelp: '报告使用了此版本无法识别的类别。',
     absent: '未报告详情', invalidDetails: '无法读取报告的详情',
-    lineAria: (summary: string) => `${summary}，涵盖所有当前计划。打开进度`, lineScope: '所有计划',
+    lineAria: (summary: string) => `${summary}，限此会话。打开进度`, lineScope: '此会话',
     readingLabel: '从“需要你处理”打开', readingNote: '这是当前计划。此处的操作不会更改任务。',
     backPanel: '返回会话进度', backBoard: '返回计划',
     revealNeeds: (task: string) => `需要你处理：${task}`, revealAlso: (task: string) => `其他受阻任务：${task}`,
@@ -172,6 +174,67 @@ export const INBOX_COPY = {
   },
 } satisfies Record<InterfaceLanguage, Record<string, unknown>>;
 export const inboxCopy = (locale: string) => INBOX_COPY[resolveLanguage('auto', locale)];
+
+const COMPACT_COPY = {
+  en: { session: 'This session', plan: 'This plan', all: 'All plans', open: 'Open session', unavailable: 'This session is not available here.', copy: 'Copy reply', copied: 'Reply frame copied.', fallback: 'Copy this reply frame:', hide: 'Hide', undo: 'Undo hide', unhide: 'Show again', savedFailed: 'Could not save this choice on this device.', readFailed: 'Could not read saved choices on this device.', other: (n: string) => `${n} need you in other plans`, hidden: (n: number) => `Hidden items · ${n}`, reply: (task: string, plan: string) => `Reply about “${task}” in “${plan}”:\n\n` },
+  ru: { session: 'Эта сессия', plan: 'Этот план', all: 'Все планы', open: 'Открыть сессию', unavailable: 'Эта сессия здесь недоступна.', copy: 'Скопировать ответ', copied: 'Шаблон ответа скопирован.', fallback: 'Скопируйте шаблон ответа:', hide: 'Скрыть', undo: 'Отменить скрытие', unhide: 'Показать снова', savedFailed: 'Не удалось сохранить выбор на этом устройстве.', readFailed: 'Не удалось прочитать сохранённый выбор на этом устройстве.', other: (n: string) => `Нужно ваше участие в других планах: ${n}`, hidden: (n: number) => `Скрытые задачи · ${n}`, reply: (task: string, plan: string) => `Ответ по задаче «${task}» в плане «${plan}»:\n\n` },
+  'zh-CN': { session: '此会话', plan: '此计划', all: '所有计划', open: '打开会话', unavailable: '此会话在这里不可用。', copy: '复制回复', copied: '回复模板已复制。', fallback: '复制此回复模板：', hide: '隐藏', undo: '撤销隐藏', unhide: '重新显示', savedFailed: '无法在此设备上保存选择。', readFailed: '无法读取此设备上保存的选择。', other: (n: string) => `其他计划中有 ${n} 项需要你处理`, hidden: (n: number) => `已隐藏事项 · ${n}`, reply: (task: string, plan: string) => `关于“${plan}”中“${task}”的回复：\n\n` },
+};
+export const compactInboxCopy = (locale: string) => COMPACT_COPY[resolveLanguage('auto', locale)];
+export const replyFrame = (row: InboxRowView, locale: string) => compactInboxCopy(locale).reply(row.task.title, row.planTitle);
+const hiddenNotice = (locale: string) => ({
+  en: 'Hidden on this device until the task’s details change.',
+  ru: 'Скрыто на этом устройстве, пока сведения задачи не изменятся.',
+  'zh-CN': '已在此设备上隐藏，任务详情更改后将重新显示。',
+})[resolveLanguage('auto', locale)];
+export function revealInboxTask(reading: ReadingView | null, plan: PlanView | null, row: InboxRowView, revealMap?: (id: string) => boolean) {
+  if (!plan || plan.key !== row.planKey) return;
+  if (revealMap?.(row.task.id)) return;
+  const restoreFocus = (root: ParentNode) => {
+    // Use the final paint: a filtered List reveal may schedule another reading.set.
+    [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find(n => n.dataset.row === row.rowKey)?.querySelector<HTMLElement>('.ap-inbox-open')?.focus({ preventScroll: true });
+  };
+  reading?.set({}, root => {
+    const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find(n => n.dataset.testid === `plan-${row.plan}`);
+    if (article) revealCurrentTask(article, plan, row.task.id, '', revealed => restoreFocus(revealed.ownerDocument));
+    else restoreFocus(root);
+  });
+}
+
+interface InboxReplyCopy {
+  text: string;
+  result: 'idle' | 'copied' | 'fallback';
+  pending: boolean;
+  preview: HTMLTextAreaElement | null;
+  selection: { start: number; end: number; direction: 'forward' | 'backward' | 'none'; top: number } | null;
+}
+
+/** Every non-device state stays frame-local and is retired on scope/installation change. */
+export class CompactInbox {
+  private identity = '';
+  private openedRow: string | null = null;
+  private copy: InboxReplyCopy | null = null;
+  all = false;
+  get opened() { return this.openedRow; }
+  set opened(row: string | null) {
+    if (row !== this.openedRow) this.copy = null;
+    this.openedRow = row;
+  }
+  replyCopy(row: string, text: string): InboxReplyCopy | null {
+    if (row !== this.opened) return null;
+    if (!this.copy || this.copy.text !== text) this.copy = { text, result: 'idle', pending: false, preview: null, selection: null };
+    return this.copy;
+  }
+  currentCopy(copy: InboxReplyCopy) { return this.copy === copy; }
+  showHidden = false;
+  undo: string | null = null;
+  expanded: boolean | null = null;
+  matches(identity: string) { return this.identity === identity; }
+  reconcile(identity: string) {
+    if (identity === this.identity) return;
+    this.identity = identity; this.all = false; this.opened = null; this.showHidden = false; this.undo = null; this.expanded = null;
+  }
+}
 
 /** The compact count statement: exact only for complete coverage, otherwise a known minimum. */
 export function inboxSummary(m: InboxModel, locale: string) {
@@ -296,82 +359,178 @@ function rowList(rows: InboxRowView[], prefix: string, label: string, m: InboxMo
   return ul;
 }
 
-/**
- * The compact source-wide section at the start of the rail and board. `stale`: the time of the
- * last good read while the latest refresh failed. Unsupported, unverified and unreadable inboxes
- * say so instead of an empty claim; a complete empty first group says nothing needs the user.
- */
-export function inboxSection(panel: InboxPanel, env: Env, options: { open: (row: InboxRowView) => void; stale: number | null }) {
-  const m = panel.model, t = inboxCopy(env.locale), locale = resolveLanguage('auto', env.locale);
-  const box = testid(el('section', 'ap-inbox'), ATTENTION_HOOKS.inbox);
+export interface CompactInboxOptions {
+  open: (row: InboxRowView) => void;
+  stale: number | null;
+  state: CompactInbox;
+  surface: ViewSurface;
+  keys: ReadonlySet<string>;
+  scopeComplete: boolean;
+  identity: string;
+  changed: () => void;
+  focus: (hook: string) => void;
+  plans: PlanView[];
+  shownPlan?: string | null;
+  retry?: () => void;
+}
+export function hiddenInboxAction(panel: InboxPanel | null, state: CompactInbox, locale: string, changed: () => void, surface: ViewSurface) {
+  const n = panel?.model.needsYou.filter(row => panel.device?.hidden(hiddenItemKey(panel.storeId ?? '', row))).length ?? 0;
+  return n ? [{ id: 'needs-you-hidden', label: compactInboxCopy(locale).hidden(n), run: () => { state.showHidden = true; state.expanded = true; void panel?.device?.setExpanded(surface, true); changed(); } }] : [];
+}
+
+/** One disclosure, scoped rows and one in-place reading. No task or host composer writes. */
+export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxOptions) {
+  const { state, surface } = options, device = panel.device;
+  state.reconcile(options.identity);
+  const t = inboxCopy(env.locale), c = compactInboxCopy(env.locale);
+  const isHidden = (row: InboxRowView) => device?.hidden(hiddenItemKey(panel.storeId ?? '', row)) ?? false;
+  const m = scopeInbox(panel.model, state.all ? null : options.keys, options.stale === null && (state.all || options.scopeComplete), device, panel.storeId).model;
+  const other = scopeInbox(panel.model, options.keys, options.scopeComplete, device, panel.storeId).other;
+  const hidden = panel.model.needsYou.filter(isHidden);
+  if (state.opened && !m.needsYou.some(row => row.rowKey === state.opened)) state.opened = null;
+  if (state.undo && !device?.hidden(state.undo)) state.undo = null;
+  const expanded = state.expanded ?? device?.expanded(surface) ?? surface === 'page';
+  const box = testid(el('section', 'ap-inbox ap-inbox-compact'), ATTENTION_HOOKS.inbox);
   box.dataset.availability = m.availability;
+  if (surface === 'panel' && m.availability === 'ready' && m.complete && !m.counts.needsYou && !other && !hidden.length && options.stale === null && !device?.error) box.hidden = true;
   box.setAttribute('aria-labelledby', 'ap-inbox-h');
-  const head = el('div', 'ap-inbox-head');
-  const h = testid(el('h2', 'ap-inbox-title'), 'needs-you-heading');
-  h.id = 'ap-inbox-h';
-  h.tabIndex = -1;
-  h.append(el('span', '', t.heading));
+  const toggle = testid(el('button', 'ap-inbox-toggle'), 'needs-you-toggle');
+  toggle.type = 'button'; toggle.id = 'ap-inbox-h';
+  toggle.setAttribute('aria-expanded', String(expanded)); toggle.setAttribute('aria-controls', 'ap-inbox-content');
+  toggle.append(el('span', '', t.heading));
   if (m.availability === 'ready') {
-    const n = m.counts.needsYou;
-    const count = testid(el('span', 'ap-inbox-count'), ATTENTION_HOOKS.count);
-    Object.assign(count.dataset, { count: String(n), exact: String(m.complete) });
-    if (n) count.dataset.tone = 'attention';
-    const shown = el('span', '', m.complete ? num(n, locale) : `${num(n, locale)}+`);
-    shown.setAttribute('aria-hidden', 'true');
-    count.append(shown, el('span', 'ap-sr', `, ${m.complete ? t.tasks(n) : t.atLeastTasks(n)}`));
-    h.append(count);
+    const count = testid(el('span', 'ap-inbox-count', `${m.counts.needsYou}${m.complete ? '' : '+'}`), ATTENTION_HOOKS.count);
+    Object.assign(count.dataset, { count: String(m.counts.needsYou), exact: String(m.complete) });
+    if (m.counts.needsYou) count.dataset.tone = 'attention';
+    if (m.loadingMore || m.rechecking) count.setAttribute('aria-busy', 'true');
+    toggle.append(count);
+    const oldest = m.needsYou.filter(row => row.wait).sort((a, b) => elapsedAt(b.wait!, env.mono) - elapsedAt(a.wait!, env.mono))[0];
+    if (oldest) { const wait = waitLabel(oldest, m, env); wait.classList.add('ap-inbox-oldest'); toggle.append(wait); }
   }
-  head.append(h);
-  box.append(head);
+  toggle.addEventListener('click', () => {
+    if (device && device.error !== 'read') void device.setExpanded(surface, !expanded).then(ok => { if (ok && state.matches(options.identity)) { state.expanded = null; options.changed(); } }); else state.expanded = !expanded;
+    options.changed();
+  });
+  const h = testid(el('h2', 'ap-inbox-title'), 'needs-you-heading'); h.append(toggle); box.append(h);
   if (m.availability !== 'ready') {
     box.append(testid(warningLine(m.availability === 'unsupported' ? t.unsupported : m.availability === 'unverified' ? t.unverified : t.invalid, 'info', 'p'), 'needs-you-unavailable'));
+    if (options.retry) button(box, 'needs-you-retry', t.retry, options.retry, 'ghost');
     return box;
   }
-  box.append(el('p', 'ap-note ap-inbox-scope', t.scope));
-  const notes = el('div', 'ap-inbox-notes');
-  if (options.stale !== null) notes.append(testid(warningLine(t.stale(clockTime(options.stale, env.locale)), 'warning', 'p'), 'needs-you-stale'));
-  if (!m.captureEnabled) notes.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
-  if (m.restarted) notes.append(testid(warningLine(t.restarted, 'info', 'p'), 'needs-you-restarted'));
-  if (m.rechecking) notes.append(testid(warningLine(t.rechecking, 'info', 'p'), 'needs-you-rechecking'));
-  if (m.moreFailed) {
-    notes.append(testid(warningLine(t.moreFailed, 'warning', 'p'), 'needs-you-more-failed'));
-    if (!m.canContinue) notes.append(testid(warningLine(t.recheckWaiting, 'info', 'p'), 'needs-you-recheck-waiting'));
+  if (options.stale !== null) {
+    box.append(testid(warningLine(t.stale(clockTime(options.stale, env.locale)), 'warning', 'p'), 'needs-you-stale'));
+    if (options.retry) button(box, 'needs-you-retry', t.retry, options.retry, 'ghost');
   }
-  if (m.gapped) notes.append(testid(warningLine(t.gapped, 'warning', 'p'), 'needs-you-gapped'));
-  if (notes.childNodes.length) box.append(notes);
-  if (!m.needsYou.length) {
-    const empty = testid(el('p', 'ap-inbox-empty', m.complete ? t.none : t.partialNone), 'needs-you-empty');
-    empty.dataset.complete = String(m.complete);
-    box.append(empty);
-  } else {
-    const shown = m.expanded ? m.needsYou : m.needsYou.slice(0, INBOX_COMPACT);
-    const list = rowList(shown, 'n', t.listLabel, m, env, options.open);
-    box.append(list);
-    const hidden = m.needsYou.length - INBOX_COMPACT;
-    if (hidden > 0) {
-      const toggle = testid(el('button', 'ap-link ap-inbox-expand', m.expanded ? t.showFewer : t.showMore(hidden)), 'needs-you-expand');
-      toggle.type = 'button';
-      toggle.setAttribute('aria-expanded', String(m.expanded));
-      toggle.setAttribute('aria-controls', list.id);
-      toggle.addEventListener('click', () => panel.expand(!m.expanded));
-      box.append(toggle);
+  if (!m.captureEnabled) box.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
+  if (!m.counts.needsYou && !state.all && other) button(box, 'needs-you-other-plans', c.other(`${other}${panel.model.complete && options.stale === null ? '' : '+'}`), () => { state.all = true; state.expanded = true; void device?.setExpanded(surface, true); options.changed(); }, 'ghost');
+  const body = testid(el('div', 'ap-inbox-content'), 'needs-you-content'); body.id = 'ap-inbox-content'; body.hidden = !expanded;
+  box.append(body);
+  const scopes = testid(el('div', 'ap-row ap-inbox-scopes'), 'needs-you-scope');
+  for (const [all, label] of [[false, surface === 'panel' ? c.session : c.plan], [true, c.all]] as const) {
+    const b = button(scopes, `needs-you-scope-${all ? 'all' : 'current'}`, label, () => { state.all = all; state.opened = null; options.changed(); }, 'ghost');
+    b.querySelector('button')!.setAttribute('aria-pressed', String(state.all === all));
+  }
+  body.append(scopes);
+  if (device?.error) {
+    box.append(testid(warningLine(device.error === 'read' ? c.readFailed : c.savedFailed, 'warning', 'p'), 'needs-you-device-error'));
+    button(box, 'needs-you-device-retry', t.retry, () => { void device.refresh(true); }, 'ghost');
+  }
+  if (m.moreFailed) {
+    body.append(testid(warningLine(t.moreFailed, 'warning', 'p'), 'needs-you-more-failed'));
+    button(body, 'needs-you-more-retry', t.retry, panel.retry, 'ghost');
+  }
+  if (!m.needsYou.length) body.append(testid(el('p', 'ap-inbox-empty', m.complete ? t.none : t.noneYet), 'needs-you-empty'));
+  const list = el('ul', 'ap-inbox-list'); list.setAttribute('aria-label', t.listLabel); body.append(list);
+  for (const row of m.needsYou) {
+    const hook = `needs-you-open-${row.rowKey}`;
+    const li = testid(el('li', 'ap-inbox-row'), 'needs-you-row');
+    Object.assign(li.dataset, { row: row.rowKey, task: row.task.id, plan: row.plan, group: 'needs-you', revision: String(row.revision), info: `inbox:${row.rowKey}` });
+    const open = testid(el('button', 'ap-inbox-open'), hook); open.type = 'button';
+    open.append(el('span', 'ap-inbox-task', row.task.title));
+    if (state.all) open.append(el('span', 'ap-inbox-plan', row.planTitle));
+    const meta = el('span', 'ap-inbox-line-meta'); meta.append(categoryTag(row, env.locale), waitLabel(row, m, env)); open.append(meta);
+    open.setAttribute('aria-expanded', String(state.opened === row.rowKey));
+    const detailsId = `ap-inbox-details-${list.childElementCount}`; open.setAttribute('aria-controls', detailsId);
+    open.addEventListener('click', () => { state.opened = state.opened === row.rowKey ? null : row.rowKey; if (state.opened) options.open(row); options.changed(); });
+    li.append(open);
+    const facts = el('div', 'ap-inbox-facts'); facts.id = detailsId; facts.hidden = state.opened !== row.rowKey;
+    li.addEventListener('keydown', e => { if (e.key === 'Escape' && state.opened === row.rowKey) { e.preventDefault(); e.stopPropagation(); state.opened = null; options.focus(hook); options.changed(); } });
+    if (!state.all) facts.append(el('p', 'ap-inbox-plan', row.planTitle));
+    if (row.blocker.state === 'reported') {
+      for (const [label, value, id] of [[t.reason, row.blocker.reason, 'needs-you-reason'], [t.next, row.blocker.nextAction, 'needs-you-next']] as const) {
+        facts.append(el('span', 'ap-muted', label), testid(el('blockquote', 'ap-inbox-quote', value ?? t.unknown), id));
+      }
+    }
+    const actions = el('div', 'ap-row ap-inbox-actions');
+    const directory = options.plans.find(p => p.key === row.planKey)?.directory ?? '';
+    if (env.openSession && canOpen(row.source, env.boundSource, coverageFor(row.coordinatorSessionId, directory, env.live))) {
+      button(actions, 'needs-you-open-session', c.open, () => env.openSession!(row.coordinatorSessionId), 'outline');
+    } else facts.append(testid(el('p', 'ap-note', c.unavailable), 'needs-you-session-unavailable'));
+    const status = testid(el('p', 'ap-note'), 'needs-you-copy-status'); status.setAttribute('role', 'status');
+    const text = replyFrame(row, env.locale), copy = state.replyCopy(row.rowKey, text);
+    if (copy?.result === 'fallback' && copy.preview?.isConnected) {
+      const previous = copy.preview;
+      copy.selection = { start: previous.selectionStart, end: previous.selectionEnd, direction: previous.selectionDirection, top: previous.scrollTop };
+    }
+    status.textContent = copy?.result === 'copied' ? c.copied : copy?.result === 'fallback' ? c.fallback : '';
+    const fallback = testid(el('textarea', 'ap-input'), 'needs-you-copy-fallback'); fallback.readOnly = true; fallback.hidden = copy?.result !== 'fallback'; fallback.value = text; fallback.setAttribute('aria-label', c.fallback);
+    if (copy) {
+      copy.preview = fallback;
+      if (copy.selection) {
+        fallback.setSelectionRange(copy.selection.start, copy.selection.end, copy.selection.direction);
+        fallback.scrollTop = copy.selection.top;
+      }
+    }
+    button(actions, 'needs-you-copy-reply', c.copy, () => {
+      if (!copy || !state.currentCopy(copy) || copy.pending) return;
+      copy.pending = true;
+      options.changed();
+      void (async () => {
+        let copied = false;
+        try { await navigator.clipboard.writeText(text); copied = true; } catch {}
+        // Closing/reopening the item or changing its reply retires the old completion.
+        if (!state.currentCopy(copy)) return;
+        copy.pending = false;
+        copy.result = copied ? 'copied' : 'fallback';
+        if (!copied) {
+          copy.selection = { start: 0, end: text.length, direction: 'none', top: 0 };
+          // A pending request may span several paints; select the latest preview, not
+          // the node captured by the Copy button's original closure.
+          const preview = copy.preview;
+          if (preview?.isConnected) { preview.hidden = false; preview.focus(); preview.select(); }
+        }
+        options.changed();
+      })();
+    }, 'outline', copy?.pending ?? false);
+    if (device?.canHide) button(actions, 'needs-you-hide', c.hide, () => {
+      const key = hiddenItemKey(panel.storeId ?? '', row);
+      options.focus('needs-you-toggle');
+      void device.hide(key).then(ok => { if (ok && state.matches(options.identity)) { state.undo = key; state.opened = null; options.changed(); } });
+    }, 'ghost');
+    facts.append(actions, status, fallback); li.append(facts); list.append(li);
+  }
+  if (state.undo) {
+    const notice = testid(el('p', 'ap-note', hiddenNotice(env.locale)), 'needs-you-hidden-notice'); notice.setAttribute('role', 'status'); body.append(notice);
+    button(body, 'needs-you-undo-hide', c.undo, () => { void device?.unhide(state.undo!).then(ok => { if (ok) { state.undo = null; options.changed(); } }); }, 'ghost');
+  }
+  if (hidden.length) {
+    const b = button(body, 'needs-you-hidden-count', c.hidden(hidden.length), () => { state.showHidden = !state.showHidden; options.changed(); }, 'ghost');
+    b.querySelector('button')!.setAttribute('aria-expanded', String(state.showHidden));
+    if (state.showHidden) for (const row of hidden) {
+      const line = testid(el('div', 'ap-inbox-hidden-row'), 'needs-you-hidden-row');
+      line.dataset.info = hiddenItemKey(panel.storeId ?? '', row);
+      line.append(el('span', '', `${row.task.title} · ${row.planTitle}`));
+      button(line, 'needs-you-unhide', c.unhide, () => { void device?.unhide(hiddenItemKey(panel.storeId ?? '', row)); }, 'ghost'); body.append(line);
     }
   }
-  if (!m.complete && m.needsYou.length && !m.gapped) box.append(testid(el('p', 'ap-note', t.partial), 'needs-you-partial'));
-  if (m.canContinue) {
-    const row = testid(el('div', 'ap-row ap-inbox-continue'), 'needs-you-continue');
-    button(row, 'needs-you-more', m.loadingMore ? t.moreLoading : m.moreFailed ? t.retry : t.more, panel.more, 'outline', m.loadingMore);
-    if (m.loadingMore) { const s = el('span', 'ap-sr', t.moreLoading); s.setAttribute('role', 'status'); row.append(s); }
-    box.append(row);
-  }
   if (m.alsoBlocked.length) {
-    const also = testid(el('details', 'ap-inbox-also'), ATTENTION_HOOKS.alsoBlocked);
-    also.dataset.count = String(m.counts.alsoBlocked);
-    const summary = el('summary');
-    summary.append(icon('chevron-down'), el('span', '', t.also(m.counts.alsoBlocked, m.complete)));
-    also.append(summary, el('p', 'ap-note', t.alsoNote), rowList(m.alsoBlocked, 'a', t.alsoListLabel, m, env, options.open));
-    box.append(also);
+    const also = el('div', 'ap-note'); also.dataset.count = String(m.counts.alsoBlocked);
+    const row = m.alsoBlocked.find(r => r.planKey === options.shownPlan);
+    if (row) button(also, ATTENTION_HOOKS.alsoBlocked, t.also(m.counts.alsoBlocked, m.complete), () => options.open(row), 'ghost');
+    else { also.dataset.testid = ATTENTION_HOOKS.alsoBlocked; also.textContent = t.also(m.counts.alsoBlocked, m.complete); }
+    body.append(also);
   }
+  if (m.canContinue) button(body, 'needs-you-more', m.loadingMore ? t.moreLoading : t.more, panel.more, 'outline', m.loadingMore);
   return box;
 }
 

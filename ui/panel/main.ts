@@ -3,7 +3,7 @@ import { RecentMemory } from '../shared/refresh.ts';
 import { advancedDetails, button, documentBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, narrowSurface, peopleBlock, planDetail, planPicker, ProgressShell, recoveredHeading, retryRead, revealCurrentTask, staleBlock, surfaceViewSwitch, testid } from '../shared/components.ts';
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
-import { checkReading, inboxSection, openReading, readingHeader, ReadingFocus, readingRequest, type InboxReading, type ReadingCheck } from '../shared/inbox-view.ts';
+import { CompactInbox, hiddenInboxAction, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
@@ -43,9 +43,8 @@ const ACTION_CHOICE = {
 
 /**
  * `presentation`: Plan view List (default) or Map, in this frame only; never stored.
- * `inbox`: an open source-wide Needs you reading (inbox-view.ts); never stored, never the session pin.
  */
-type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map'; inbox: InboxReading | null };
+type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
 // Recent sessions' chosen plan, so a remembered session repaints with its own selection at once
 // (host storage stays the durable copy and is still read on every switch).
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
@@ -58,12 +57,14 @@ const viewChoice = new DefaultViewChoice();
 const chooseView = (vc: ViewContext<Ui>, mode: 'list' | 'map') => { const plan = current(vc); if (plan && vc.session) viewChoice.choose(viewReadingKey(vc, `rail:${vc.session.id}`, plan), mode); vc.setUi({ presentation: mode }); };
 const railMap = createMapFrame<Ui>('rail', (vc) => chooseView(vc, 'list'));
 const shell = new ProgressShell();
+const compactInbox = new CompactInbox();
 let frame: ViewContext<Ui> | null = null;
 const reporting = new ReportingHealth({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}), copy: async text => { await navigator.clipboard.writeText(text); } });
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, pick?: HTMLElement | null) {
   const claim = () => reporting.claim({ key: JSON.stringify([vc.identity, vc.session?.id, plan?.key, plan?.revision, vc.read?.captureEnabled, !!vc.failure]), read: vc.read, plan, stale: !!vc.failure });
   return shell.paint(root, vc, plan, {
     picker: pick,
+    menuActions: hiddenInboxAction(vc.inbox, compactInbox, vc.env.locale, () => shell.showView(vc), 'panel'),
     openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
     closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
@@ -80,29 +81,15 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, 
   });
 }
 const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-view-list"] button');
-/** Reveal-once and focus follow-ups of the inbox reading; the last paint's revalidation. */
-// Created on first use: frames that never open an inbox reading construct nothing.
-let inboxFocus: ReadingFocus | null = null;
-const readingFocus = () => (inboxFocus ??= new ReadingFocus());
-let inboxCheck: ReadingCheck | null = null;
-const inboxRequestOf = (vc: ViewContext<Ui>) => {
-  if (!vc.ui.inbox) return null;
-  const request = readingRequest(vc.ui.inbox, vc.inbox?.model);
-  return readingRequest(vc.ui.inbox, vc.inbox?.model, vc.detailPlan(request));
-};
 const openInbox = (vc: ViewContext<Ui>, row: InboxRowView) => {
-  if (!vc.read) return;
-  const reading = openReading(row, vc.read.storeId);
-  readingFocus().opening(reading);
-  vc.setUi({ inbox: reading });
+  revealInboxTask(vc.reading, current(vc), row, id => railMap.revealTask(id));
 };
-const closeInbox = (vc: ViewContext<Ui>) => { if (vc.ui.inbox) readingFocus().leaving(vc.ui.inbox); vc.setUi({ inbox: null }); };
 
 // Right rail: the selected session's plan, progress first; diagnostics collapsed at the end.
 startView<Ui>({
   surface: 'panel',
   maxSessionSubscriptions: 4,
-  initialUi: () => ({ selected: null, setup: initialSetupUi(), presentation: 'list', inbox: null }),
+  initialUi: () => ({ selected: null, setup: initialSetupUi(), presentation: 'list' }),
   // Source-wide Needs you rows with waiting times, on the ordinary list read.
   needsYou: 'rows',
   prepareUi: (vc) => {
@@ -113,8 +100,7 @@ startView<Ui>({
     const presentation = decision.view === 'map' ? 'map' : 'list';
     return vc.ui.presentation === presentation ? null : { presentation };
   },
-  // No plan cleanup from a source-wide inbox reading.
-  actionPlan: (vc) => (vc.ui.inbox ? null : current(vc)),
+  actionPlan: current,
   tidyPlans: (vc) => vc.session?.id ? vc.read?.plans ?? [] : [],
   forgetPlans: (keys, ui, vc) => {
     selectionGeneration++;
@@ -133,22 +119,18 @@ startView<Ui>({
     const own = session ? planProject(session.id, directory ?? '', live) : undefined;
     return [...new Set([...(own ? [own.id] : []), ...projectsFor(read.plans, live, directory)])];
   },
-  wantDetails: (vc) => { const r = inboxRequestOf(vc); if (r) return [r]; const p = current(vc); return p ? [p] : []; },
-  refreshDetails: (vc) => { const request = inboxRequestOf(vc); return request ? [request] : []; },
+  wantDetails: (vc) => { const p = current(vc); return p ? [p] : []; },
   // Task reading belongs to the selected session's view of the plan: another session (even of the
   // same plan) or plan starts at Show all again; nothing about it is stored.
   reading: (vc) => {
-    // An inbox reading is its own identity: it never shares task-reading state with the rail's plan.
-    const r = inboxRequestOf(vc); if (r) return { plan: r.key, scope: `inbox:${vc.ui.inbox!.token}` };
     const p = current(vc); return p && vc.session ? { plan: p.key, scope: `rail:${vc.session.id}` } : null;
   },
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return railMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(reason === 'reset'); inboxFocus?.reset(reason); } reporting.retire(); railMap.retire(reason); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(reason === 'reset'); } reporting.retire(); railMap.retire(reason); },
   afterPaint: (root, vc) => {
     shell.afterPaint(root);
-    railMap.afterPaint(root, vc, vc.ui.inbox ? null : current(vc), listSwitch);
-    inboxFocus?.afterPaint(root, vc.ui.inbox, inboxCheck, revealCurrentTask);
+    railMap.afterPaint(root, vc, current(vc), listSwitch);
   },
   preserveFocus: preserveMapFocus,
   // The chosen plan is remembered per session, so reopening the panel keeps it.
@@ -162,8 +144,7 @@ startView<Ui>({
     // A new rail reading (also A → B → A, or none) starts on List with no map or task-target state.
     railMap.resetReading();
     viewChoice.reset();
-    // A session switch also leaves any source-wide inbox reading (its target belongs to the old context).
-    vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null, presentation: 'list', inbox: null });
+    vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null, presentation: 'list' });
     if (!id) return;
     void vc.storage.get(storeKey(id)).then((v) => {
       if (typeof v !== 'string' || generation !== selectionGeneration) return;
@@ -176,8 +157,8 @@ startView<Ui>({
     const { read, failure, env } = vc;
     const language = resolveLanguage('auto', env.locale), t = messages[language];
     // Map work belongs to the selected session's reading of its plan, and runs only while Map is shown.
-    const shown = vc.ui.inbox ? null : current(vc), session = vc.session?.id;
-    if (!vc.ui.inbox) shell.reconcile(vc, shown);
+    const shown = current(vc), session = vc.session?.id;
+    shell.reconcile(vc, shown);
     const mapShown = vc.ui.presentation === 'map' && !!shown && !!session && !shell.activePanel;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));
@@ -206,16 +187,6 @@ startView<Ui>({
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
     if (!read.captureEnabled) root.append(testid(warningLine(t.capture), 'capture-off'));
-    inboxCheck = null;
-    if (vc.ui.inbox) {
-      // A labelled, read-only reading of the current plan, revalidated before its task is revealed.
-      const r = vc.ui.inbox, request = inboxRequestOf(vc)!, detail = vc.detail(request);
-      const check = inboxCheck = checkReading(r, detail, vc.detailPlan(request), { storeId: read.storeId, boundSource: env.boundSource }, env.locale);
-      if (surface(root, vc, check.kind === 'ready' ? check.plan : null)) return;
-      root.append(readingHeader(r, check, 'panel', env.locale, () => closeInbox(vc), vc.retry));
-      if (check.kind === 'ready') root.append(planDetail(check.plan, env, { detail, retryDetail: vc.retry, document: { get: () => vc.document(check.plan), request: () => vc.requestDocument(check.plan) } }, { document: 'omit', compareSession: null, reading: vc.reading, shell: true }));
-      return;
-    }
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
     const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
@@ -261,7 +232,12 @@ startView<Ui>({
       }
     }
     // Needs-you owner replaces this mount with scoped, compact rows; no placement ownership.
-    if (vc.inbox) root.append(inboxSection(vc.inbox, env, { open: (row) => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
+    if (vc.inbox) root.append(inboxSection(vc.inbox, env, {
+      open: row => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null,
+      state: compactInbox, surface: 'panel', keys: new Set(session ? read.plans.map(p => p.key) : []), scopeComplete: !read.truncated,
+      identity: JSON.stringify([vc.identity, session]), plans: read.plans, shownPlan: shown?.key, changed: () => vc.setUi({}), retry: vc.retry,
+      focus: hook => vc.handoff({ to: hook }),
+    }));
     // Sub-agents of the selected session, only with a plan in scope, kept apart from the plan above.
     if (shown && session && verified) {
       const census = subagentsBlock({

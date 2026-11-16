@@ -7,7 +7,7 @@ import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY, INBOX_MEMBERSHIP, INBOX_LEGAC
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
 import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, openReading, readingRequest, ReadingFocus, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { checkReading, CompactInbox, inboxSummary, openReading, readingRequest, ReadingFocus, revealInboxTask, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import { itemNeedsYou, type InboxWindowView, type PlanDetail, type ItemView } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
@@ -68,6 +68,32 @@ function wire(rows: [string, string, string | null][], extra: Rec = {}): Rec {
   return { ...base, storeId: STORE, sourceBinding: { sourceId: SRC, verified: true }, rows: built, counts, ...extra };
 }
 const partial = (cursor: string) => ({ nextCursor: cursor, coverage: { kind: 'observed-current', complete: false, exhausted: false, gapped: false, skippedRecords: 0, reasons: [] } });
+
+test('reply-copy state belongs only to the opened row and unchanged reply text', () => {
+  const state = new CompactInbox();
+  state.reconcile('scope-example');
+  state.opened = 'row-a';
+  const first = state.replyCopy('row-a', 'Reply A')!;
+  first.pending = true;
+  assert.equal(state.replyCopy('row-a', 'Reply A'), first, 'background paints retain the pending operation');
+  first.result = 'fallback'; first.pending = false;
+  first.selection = { start: 1, end: 4, direction: 'backward', top: 0 };
+  assert.equal(state.replyCopy('row-a', 'Reply A')?.selection?.start, 1);
+  assert.equal(state.replyCopy('row-b', 'Reply B'), null, 'unopened rows do not own copy state');
+  state.opened = null;
+  state.opened = 'row-a';
+  assert.equal(state.currentCopy(first), false, 'closing and reopening retires pending completions');
+  const reopened = state.replyCopy('row-a', 'Reply A')!;
+  assert.equal(reopened.result, 'idle');
+  reopened.pending = true;
+  const changed = state.replyCopy('row-a', 'Changed reply')!;
+  assert.equal(state.currentCopy(reopened), false, 'a text change retires the earlier request');
+  assert.equal(changed.result, 'idle');
+  assert.equal(changed.pending, false);
+  assert.equal(changed.selection, null);
+  state.reconcile('another-scope');
+  assert.equal(state.currentCopy(changed), false);
+});
 const parse = (v: Rec, previous: InboxWindowView['counts'] | null = null, timing = true) => parseNeedsYouWindow(v, PIN, previous, timing, 1000);
 
 test('inbox windows are re-validated: identity, category grouping, counts, coverage and timing anchors', () => {
@@ -216,7 +242,7 @@ test('a cursor-only first-window change retires held continuation and uses the n
   assert.equal(s.calls.at(-1)?.query?.cursor, 'new-cursor');
 });
 
-test('continuation is explicit, pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
+test('continuation on refresh is pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
   let held: ReturnType<typeof deferred<GuestRequestResult>> | null = null;
   const s = service((q) => (held = deferred<GuestRequestResult>(), held.promise));
   let visible = true, changes = 0;
@@ -224,12 +250,12 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   const owner = JSON.stringify(['acct', 'store-1|src-local|true']);
   const w1 = wire([['plan-alpha', 'a', 'decision'], ['plan-beta', 'c', 'external']], partial('cursor-1'));
   assert.equal(c.adopt(owner, first(w1)), true);
-  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), false, 'a new read time alone repaints nothing');
+  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), true, 'the ordinary refresh admits one automatic continuation');
   let m = c.model()!;
   assert.equal(m.complete, false); assert.equal(m.canContinue, true);
-  assert.equal(inboxSummary(m, 'en'), 'At least 1 task needs you');
-  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: не менее 1 задачи');
-  assert.equal(s.calls.length, 0, 'nothing loads more on its own');
+  assert.equal(inboxSummary(m, 'en'), '1+ tasks need you');
+  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: 1+');
+  assert.equal(s.calls.length, 1, 'one window on the ordinary refresh');
   c.panel()!.more();
   assert.equal(s.calls.length, 1);
   const q = s.calls[0];
@@ -273,6 +299,63 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   assert.equal(s.calls.length, 4); assert.equal(c.model()!.availability, 'unsupported');
 });
 
+test('review regression: explicit retry recovers a failed first continuation with an unchanged first window', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let fail = true;
+  const s = service(() => fail ? { status: 503, body: JSON.stringify({ error: 'busy' }) }
+    : ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed() {} });
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(c.model()!.moreFailed?.kind, 'busy');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 1, 'ordinary refresh does not retry a failed first append');
+  fail = false;
+  // Optional access also exercises the pre-fix facade, where the retry path is absent.
+  (c.panel() as ReturnType<InboxController['panel']> & { retry?: () => void })?.retry?.();
+  await settle();
+  assert.equal(s.calls.length, 2, 'Try again must directly admit the failed continuation');
+  assert.equal(s.calls[1].query?.cursor, 'cursor-1');
+  assert.equal(c.model()!.moreFailed, null);
+  assert.equal(c.model()!.complete, true);
+});
+
+test('review regression: inbox selection delegates to map reveal without needing a rendered card', () => {
+  const row = parse(wire([['plan-alpha', 'task-a', 'decision']])).rows[0];
+  const plan = inboxRequest({ storeId: STORE, source: row.source, plan: row.plan, task: row.task.id, revision: row.revision, cleanupRev: row.cleanupRev }, row.planTitle, row.coordinatorSessionId);
+  const revealed: string[] = [];
+  revealInboxTask(null, plan, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'a filtered-out card must reach the controller reveal path');
+  revealInboxTask(null, { ...plan, key: 'another/plan' }, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'another plan must not acquire the inbox selection');
+});
+
+test('automatic continuation stops at eight windows and completion never chains another request', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let visible = true;
+  const s = service(q => {
+    const n = Number(q.query!.cursor!.slice('cursor-'.length));
+    return ok(wire([['p', `t-${n}`, 'review']], { ...partial(`cursor-${n + 1}`), counts: { needsYou: n + 1, alsoBlocked: 0 } }));
+  });
+  const c = new InboxController({ service: () => s.host, visible: () => visible, changed: () => {} });
+  c.adopt('owner', top);
+  for (let n = 1; n <= 7; n++) {
+    c.adopt('owner', top);
+    assert.equal(s.calls.length, n, 'one request on this ordinary refresh');
+    await settle();
+    assert.equal(s.calls.length, n, 'completion never chains another request');
+  }
+  assert.equal(c.model()!.needsYou.length, 8);
+  c.more(); await settle();
+  assert.equal(s.calls.length, 8, 'explicit activation admits the ninth window');
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-8');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-1', 'refresh rechecks instead of automatically extending past the cap');
+  visible = false; c.retire('hidden');
+  const calls = s.calls.length;
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(s.calls.length, calls, 'hidden frames request nothing');
+});
+
 test('unchanged first windows recheck loaded pages one per refresh and remove resolved later tasks', async () => {
   const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
   let resolved = false;
@@ -285,13 +368,13 @@ test('unchanged first windows recheck loaded pages one per refresh and remove re
   assert.equal(c.model()!.complete, true);
   resolved = true; // No first-window row, count or cursor changes.
   c.adopt('owner', first(top));
-  assert.equal(c.model()!.complete, false, 'old later-page counts are not exact during rechecking');
-  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.equal(c.model()!.complete, true, 'a completed traversal retains authority until a reread actually differs');
+  assert.deepEqual(c.model()!.counts, { needsYou: 3, alsoBlocked: 0 });
   assert.equal(c.model()!.rechecking, true);
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b', 'c'], 'rows remain readable under the rechecking notice');
   await settle();
   assert.equal(s.calls.length, 3, 'one continuation reread in the first refresh');
-  assert.equal(c.model()!.complete, false);
+  assert.equal(c.model()!.complete, true, 'the first continuation reread is unchanged');
   c.adopt('owner', first(top)); await settle();
   assert.equal(s.calls.length, 4, 'one continuation reread in the second refresh');
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b']);

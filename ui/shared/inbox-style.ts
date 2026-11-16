@@ -2,6 +2,30 @@
 // only from host tokens. Coarse pointers get 44px targets from the shared device hook or the
 // pointer media query; nothing here depends on hover.
 export const INBOX_CSS = `
+.ap-inbox.ap-inbox-compact{padding:8px 10px;background:transparent;gap:4px}
+.ap-inbox-compact[hidden],.ap-inbox-compact [hidden]{display:none!important}
+.ap-inbox-toggle{display:flex;align-items:center;gap:8px;min-height:28px;width:100%;border:0;background:none;padding:0;color:var(--oc-fg);font:inherit;text-align:start;cursor:pointer}
+.ap-inbox-toggle:before{content:"›";font-size:16px;color:var(--oc-muted)}
+.ap-inbox-toggle[aria-expanded="true"]:before{transform:rotate(90deg)}
+.ap-inbox-toggle:focus-visible{outline:2px solid var(--oc-focus,var(--oc-info));outline-offset:2px;border-radius:4px}
+.ap-inbox-content{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-inbox-compact .ap-inbox-list{display:flex;gap:0;align-items:stretch}
+.ap-inbox-compact .ap-inbox-row{border:0;border-radius:0;background:transparent;padding:0}
+.ap-inbox-compact .ap-inbox-open{display:flex;flex-direction:row;align-items:baseline;gap:8px;width:100%;min-height:28px;padding:4px 0}
+.ap-inbox-compact .ap-inbox-task{font-size:12.5px;font-weight:500;flex:1}
+.ap-inbox-compact .ap-inbox-plan{max-width:42%;text-align:end}
+.ap-inbox-line-meta{display:inline-flex;gap:6px;align-items:baseline;flex:none;font-size:11.5px;color:var(--oc-muted)}
+.ap-inbox-line-meta .ap-inbox-cat{font-size:inherit;background:none;padding:0}
+.ap-inbox-oldest{margin-inline-start:auto;font-size:11.5px;color:var(--oc-muted);font-weight:400}
+@media(max-width:480px){.ap-inbox-compact .ap-inbox-open{flex-wrap:wrap}.ap-inbox-compact .ap-inbox-task{flex-basis:55%}.ap-inbox-line-meta{margin-inline-start:auto}.ap-inbox-compact .ap-inbox-plan{max-width:none;text-align:start}}
+.ap-inbox-compact .ap-inbox-facts{padding:6px 8px 10px;border-inline-start:2px solid var(--oc-border);margin-bottom:6px;font-size:12px}
+.ap-inbox-quote{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.ap-inbox-actions{flex-wrap:wrap;gap:6px}
+.ap-inbox-scopes [aria-pressed="true"]{background:var(--oc-hover);color:var(--oc-fg);font-weight:600}
+.ap-inbox-hidden-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;overflow-wrap:anywhere}
+.ap-inbox-compact textarea{box-sizing:border-box;width:100%;min-height:80px;resize:vertical;font:inherit}
+@media(pointer:coarse){.ap-inbox-compact :is(.ap-inbox-toggle,.ap-inbox-open,button){min-height:44px}}
+[data-device-pointer="coarse"] .ap-inbox-compact :is(.ap-inbox-toggle,.ap-inbox-open,button){min-height:44px}
 .ap-inbox{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:color-mix(in srgb,var(--oc-warning) 4%,var(--oc-bg))}
 .ap-inbox[data-availability]:not([data-availability="ready"]){background:transparent;padding:10px 12px}
 .ap-inbox-head{display:flex;align-items:center;gap:8px;min-width:0}

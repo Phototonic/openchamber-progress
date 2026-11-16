@@ -862,8 +862,8 @@ Each read transaction admits at most 64 raw plan-slot attempts (including an
 exhaustion lookup), 1,000 items per plan, 8 MiB snapshot input, 50 rows and 256 KiB
 encoded output. Timing for displayed rows shares one budget of 128 snapshot
 visits and 8 MiB history input across the entire window, not per task or plan.
-No timing scan is performed for a count-only window. There is no full-table count,
-background job, cache or automatic continuation.
+No timing scan is performed for a count-only window. The service has no full-table
+count, background job, cache or automatic continuation.
 
 Counts are cumulative through the cursor, not page deltas. Coverage is
 `{kind:'observed-current',complete,exhausted,gapped,skippedRecords,reasons}`;
@@ -874,6 +874,31 @@ and any mid-plan revision/cleanup generation; changed or missing pinned records
 return 409 and require restarting, never splicing windows. Earlier completed plans
 are not pinned forever: multiple windows are observations, not an atomic source
 census. Reads never update task status, cleanup, history, assignments or acceptance.
+
+Guests partition the same held rows into the current session's plans (including
+helped plans), the board's selected plan, or explicitly chosen All plans. They
+never widen an empty scope automatically. Visible guests admit at most one
+continuation request per existing successful refresh, with eight automatic
+windows per traversal including the first; beyond that, Load more admits one
+window per activation. No timer or per-task read is added. A completed unchanged
+traversal retains exactness during its bounded recheck; differing, failed or
+retired observations withdraw exactness. Session counts additionally require a
+complete session plan list.
+
+Hide is a device preference, not an acknowledgement or progress write. Its key
+is store/source/plan/task/current-details-reported-revision; unrelated plan
+reports do not unhide an item, replacement details do. All device counts exclude
+hidden items. Device storage is used only after explicit host support, with no
+instance/server/browser fallback. The versioned view record holds at most 200
+hidden keys (oldest evicted, stale keys pruned after complete traversal), one
+expanded value per rail/board and one incomplete-indicator dismissal identity
+per rail/board. Failed/malformed reads are not repaired; failed writes are never
+confirmed. Other frames converge through existing refreshes. Shared browser
+profiles/installations share preferences, not isolated authenticated-user state.
+Open session uses the existing verified-source/host-listed-session gate; Copy
+reply copies literal task/plan titles in a localized reply frame, with selectable
+fallback on failure. Neither sends a message, drafts one, changes a task or
+removes an item.
 
 ## Plan graph revision 1 (additive v2 read)
 
