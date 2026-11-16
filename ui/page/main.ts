@@ -21,7 +21,7 @@ import { criteriaKey, queryProblem, searchable, SearchController, type SearchCri
 import {
   announceSearch, boardBar, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, statusLine, unavailableNote, type ChipKind, type SearchDraft,
 } from '../shared/search-view.ts';
-import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
+import { captureOffNote, initialSetupUi, reloadNote, retireSetupSteps, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
@@ -293,7 +293,7 @@ startView<Ui>({
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service, vc.health?.needsYouInbox === 1 ? { demand: 'rows', mono: () => performance.now() } : undefined) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(); resetBoard(); inboxFocus?.reset(reason); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(reason === 'reset'); resetBoard(); inboxFocus?.reset(reason); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
@@ -778,6 +778,7 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
   return shell.paint(root, vc, plan, {
     board: true, scope: readingScope(vc), picker,
     openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
+    closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
       if (kind === 'setup') return setupBlock(vc);
       if (kind === 'troubleshooting') {

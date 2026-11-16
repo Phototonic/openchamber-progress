@@ -57,10 +57,32 @@ function fixture(locale = 'en', saved: number | null = null) {
   };
   const shell = new exports.ProgressShell();
   const panel = new Element('div');
-  const options = { board: true, renderPanel: () => panel };
+  const closed: string[] = [];
+  const options = { board: true, renderPanel: () => panel, closePanel: (kind: string) => closed.push(kind) };
   const paint = (p: any = null) => { const root = new Element('div'); const opened = shell.paint(root, vc, p, options); return { root, opened }; };
-  return { shell, vc, plan, menus, buttons, paint, options, panel, checkpointReads, exports, window };
+  return { shell, vc, plan, menus, buttons, paint, options, panel, closed, checkpointReads, exports, window };
 }
+for (const exit of ['Back', 'Escape', 'showView', 'reset', 'reconcile', 'another panel']) test(`Setup panel retires once on ${exit}, not on repaint`, () => {
+  const f = fixture(); f.paint(); f.menus.at(-1).onSelect('setup');
+  f.paint(); const { root } = f.paint();
+  assert.deepEqual(f.closed, [], 'a same-panel repaint keeps its presentation');
+  if (exit === 'Back') f.buttons.at(-1).listeners.click();
+  if (exit === 'Escape') {
+    const box = root.children.find(n => n.dataset.testid === 'surface-panel-setup')!;
+    let prevented = false;
+    box.listeners.keydown({ key: 'Escape', defaultPrevented: false, target: { closest: () => null }, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+  }
+  if (exit === 'showView') f.shell.showView(f.vc);
+  if (exit === 'reset') f.shell.reset();
+  if (exit === 'reconcile') { f.vc.identity = 'new-store'; f.shell.reconcile(f.vc, null, f.options); }
+  if (exit === 'another panel') f.menus.at(-1).onSelect('troubleshooting');
+  assert.deepEqual(f.closed, ['setup']);
+  f.paint();
+  assert.deepEqual(f.closed, ['setup'], 'painting the next view does not retire twice');
+  f.menus.at(-1).onSelect('setup');
+  assert.equal(f.paint().opened, true, 'Setup can reopen after retirement');
+});
 for (const locale of ['en', 'ru', 'zh-CN']) test(`settings menu remains available without readable plans (${locale})`, () => {
   const f = fixture(locale);
   for (const state of ['empty', 'not-set-up', 'failed']) {
@@ -74,6 +96,18 @@ for (const locale of ['en', 'ru', 'zh-CN']) test(`settings menu remains availabl
     f.buttons.at(-1).listeners.click();
     assert.equal(f.paint().opened, false, 'Back restores the reading');
   }
+});
+test('same-reading reset retires Setup presentation but keeps the panel, not other panels', () => {
+  const f = fixture(); f.paint(); f.menus.at(-1).onSelect('setup'); f.paint();
+  f.shell.reset(true);
+  assert.deepEqual(f.closed, ['setup'], 'step presentation is retired on the data reset');
+  assert.equal(f.paint().opened, true);
+  assert.equal(f.shell.activePanel, 'setup');
+  f.vc.identity = 'new-authority';
+  assert.equal(f.paint().opened, false, 'preservation never crosses authority changes');
+  f.menus.at(-1).onSelect('troubleshooting'); f.paint();
+  f.shell.reset(true);
+  assert.equal(f.paint().opened, false, 'other panels still close on data reset');
 });
 test('plan menu is shared with closed-plan cleanup and keeps destructive actions last', () => {
   const f = fixture();

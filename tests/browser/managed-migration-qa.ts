@@ -177,6 +177,9 @@ try {
     await viewport(width, height);
     await evaluate(`(()=>{try{frame().contentWindow.__stale=true}catch{}return true})()`);
     await evaluate(`qa.load(${literal(locale)},${literal(mode)})`);
+    await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="more-trigger"]')`, 'surface menu');
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
     await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="setup-panel"][data-steps="1"],[data-testid="setup-panel"][data-phase]')`, 'setup panel');
     await watchAlerts();
   }
@@ -236,6 +239,33 @@ try {
   await click('[data-testid="setup-migration-continue"] button');
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`,'explicit Continue completes');
   check('hide-show:explicit-continue-finishes',engine.progress?.state==='complete');
+
+  // Shell close is presentation retirement, not a pause/cancel of the operation in flight.
+  for (const close of ['Back', 'Escape']) {
+    await open('en', 'light', close === 'Escape' ? 390 : 1280, 900);
+    await startSwitch(); const releaseClosed = engine.hold(5); await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="disable"]')`, 'held disable before panel close');
+    const sentBefore = stepCalls();
+    if (close === 'Back') await click('[data-testid="surface-panel-back"] button');
+    else await key('Escape');
+    await wait(`!d.querySelector('[data-testid="surface-panel-setup"]')`, `${close} closes Setup`);
+    check(`panel-${close}:focus-returns-to-more`, await focused() === 'more-trigger', await focused());
+    releaseClosed();
+    for (const end = Date.now() + 10_000; engine.progress?.step?.name !== 'remove-discovery'; await sleep(40)) {
+      if (Date.now() > end) throw new Error('held operation did not settle after panel close');
+    }
+    await frames();
+    check(`panel-${close}:operation-settles-without-control-request`, engine.progress?.capture.state === 'off' && stepCalls() === sentBefore);
+    await idle(`panel-${close}:no-unattended-continuation`);
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-step="remove-discovery"][data-capture="off"][data-driving="false"]')&&d.querySelector('[data-testid="setup-migration-continue"]')`, 'reopened current durable state');
+    check(`panel-${close}:reopen-is-read-only`, stepCalls() === sentBefore);
+    await shot(`panel-${close.toLowerCase()}-reopened`);
+    await click('[data-testid="setup-migration-continue"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'explicit continuation after panel reopen');
+    check(`panel-${close}:explicit-continue-finishes`, engine.progress?.state === 'complete');
+  }
 
   // 2. Failure at a middle step, RU phone light: fixed stage/code, actionable text, Resume focused.
   await open('ru', 'light', 390, 844, e => e.faults.fail.add('remove-discovery:2'));
@@ -577,6 +607,13 @@ try {
   await confirmByKeyboard();
   await wait(`d.querySelector('[data-testid="setup-enable"]')`, 'capture off observed');
   check('fresh-capture:bodyless-disable', log.slice(controlAt).filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/capture/disable' && captureControl === false);
+  check('fresh-capture:disable-keeps-setup-open', await guest(`return !!d.querySelector('[data-testid="surface-panel-setup"]')`));
+  await click('[data-testid="setup-enable"] button');
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-enable"]')`, 'capture on confirmation');
+  await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-disable"]')`, 'capture on observed');
+  check('fresh-capture:enable-keeps-setup-open', await guest(`return !!d.querySelector('[data-testid="surface-panel-setup"]')`) && captureControl === true);
+  check('fresh-capture:bodyless-enable', log.slice(controlAt).filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/capture/disable,/v1/capture/enable');
 
   // Capability mismatch: a service without managedFreshSteps gets update-together guidance, no requests.
   freshCapable = false;
