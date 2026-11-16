@@ -736,6 +736,10 @@ in place at a time, quoting the agent's reason and request without translation.
 Missing facts stay Unknown. Escape closes it and returns focus to its row.
 Where that plan is shown, its task is also selected on Map or revealed in List;
 there is no separate pinned “Opened from Needs you” reading.
+Map selection uses the interaction controller's explicit reveal path, clearing
+only filters that hide the task while keeping keyboard focus in the inbox.
+Device-preference notifications are background updates: they wait until an
+in-progress pointer activation finishes before replacing its controls.
 
 Counts show N only after a complete ungapped traversal (and complete session
 plan list); otherwise N+. An unchanged completed traversal retains exactness
@@ -770,7 +774,9 @@ keeps the task in Also blocked. An upgrade reclassifies existing stored blockers
 on the first read without changing the stored report. On unchanged first-window refreshes, loaded
 pages are re-traversed from its cursor, replacing at most one continuation page
 per refresh. Rows stay readable. Failed rechecks keep a failure line and qualified
-counts and retry only on the existing refresh cadence;
+counts; automatic retries wait for the existing refresh cadence.
+**Try again** explicitly retries the failed continuation window, including a
+failed first continuation whose ordinary first window has not changed;
 hiding retires held reads and restarts rechecking from the first cursor. An unchanged
 refresh preserves an unfinished explicit continuation, but its page joins the bounded
 recheck sweep before its counts can become exact. Changed first windows (including cursor-only

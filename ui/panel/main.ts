@@ -82,7 +82,7 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, 
 }
 const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-view-list"] button');
 const openInbox = (vc: ViewContext<Ui>, row: InboxRowView) => {
-  revealInboxTask(vc.reading, current(vc), row);
+  revealInboxTask(vc.reading, current(vc), row, id => railMap.revealTask(id));
 };
 
 // Right rail: the selected session's plan, progress first; diagnostics collapsed at the end.

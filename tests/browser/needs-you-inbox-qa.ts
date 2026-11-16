@@ -29,16 +29,17 @@ const plans = [
   ] },
 ];
 const real = await inboxIntegration(SRC, plans);
-const membership = await needsYouMembershipIntegration(SRC, S.M, S.C1);
+const membership = await needsYouMembershipIntegration(SRC, S.M, S.C1, true);
 const assets = createGuestAssets({ source: process.argv.includes('--source') });
 let fail = false, unsupported = false, rulePhase = false;
+const failFirstContinuation = new Set<string>();
 const project = { id: 'example', name: 'Example', directory: '/fixture/Alpha' };
 const sessions = [S.M, S.U].map(id => ({ id, title: 'Example session', parentId: null, projectId: project.id, directory: project.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }));
 const light = { background: '#fafafa', elevated: '#fff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#fff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' };
 const dark = { ...light, background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', border: '#414650', hover: '#343944', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', primary: '#83aff7', warningText: '#e8c372', focus: '#90b8ff' };
 const html = `<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font:14px system-ui}iframe{display:block;width:100%;height:844px;border:0}section{width:600px;display:none}</style><script>
 const frames=['panel','page','status'],frame=f=>document.querySelector('iframe[data-frame="'+f+'"]'),send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
-window.frame=frame;window.qa={session:${js(S.M)},locale:'en',dark:false,phone:false,storage:new Map(),requests:[],messages:[],storageSupported:true};
+window.frame=frame;window.qa={session:${js(S.M)},locale:'en',dark:false,phone:false,storage:new Map(),requests:[],messages:[],storageSupported:true,holdStorage:false,pendingStorage:[]};
 const project=${js(project)},sessions=${js(sessions)},light=${js(light)},dark=${js(dark)};
 const ready=f=>send(f,{type:'ready',payload:{theme:{mode:qa.dark?'dark':'light',tokens:qa.dark?dark:light},locale:qa.locale,directory:project.directory,session:{id:qa.session},surface:f,connection:{connected:true,account:'example-account'},settings:{},features:{deviceStorage:qa.storageSupported},item:null,...(qa.phone?{device:{formFactor:'phone',pointer:'coarse',insets:{top:0,right:0,bottom:0,left:0},keyboard:0}}:{})}});
 qa.ready=()=>frames.forEach(ready);qa.show=(f,width)=>{for(const n of document.querySelectorAll('section')){n.style.display=n.dataset.frame===f?'block':'none';n.style.width=width+'px'}};
@@ -47,8 +48,8 @@ const snapshot=q=>q.kind==='projects'?{kind:'projects',state:'ready',projects:[p
 addEventListener('message',async e=>{const node=[...document.querySelectorAll('iframe')].find(n=>n.contentWindow===e.source),m=e.data;if(!node||m.channel!=='openchamber.sdk')return;const f=node.dataset.frame,result=payload=>send(f,{type:'result',id:m.id,ok:true,payload});qa.messages.push({type:m.type,payload:m.type==='open-session'?m.payload:undefined});
 if(m.type==='hello')ready(f);
 else if(m.type==='workspace-subscribe'){result();send(f,{type:'workspace',payload:{subscriptionId:m.payload.subscriptionId,snapshot:snapshot(m.payload.query)}})}
-else if(m.type==='storage'){const q=m.payload,k=(q.scope==='device'?'device':f)+':'+q.key;if(q.op==='set')qa.storage.set(k,q.value);if(q.op==='delete')qa.storage.delete(k);result({storage:true,op:q.op,found:qa.storage.has(k),value:qa.storage.get(k),...(q.op==='keys'?{keys:[]}:{})})}
-else if(m.type==='service-request'){qa.requests.push({frame:f,method:m.payload.method,path:m.payload.path,cursor:!!m.payload.query?.cursor});const r=await fetch('/service',{method:'POST',body:JSON.stringify(m.payload)});result(await r.json())}else if(m.id)result()});
+else if(m.type==='storage'){const q=m.payload,k=(q.scope==='device'?'device':f)+':'+q.key;if(q.op==='set')qa.storage.set(k,q.value);if(q.op==='delete')qa.storage.delete(k);const reply=()=>result({storage:true,op:q.op,found:qa.storage.has(k),value:qa.storage.get(k),...(q.op==='keys'?{keys:[]}:{})});if(f==='panel'&&q.op==='get'&&q.key==='progress-view.v1'&&qa.holdStorage)qa.pendingStorage.push(reply);else reply()}
+else if(m.type==='service-request'){qa.requests.push({frame:f,method:m.payload.method,path:m.payload.path,cursor:!!m.payload.query?.cursor});const r=await fetch('/service?frame='+f,{method:'POST',body:JSON.stringify(m.payload)});result(await r.json())}else if(m.id)result()});
 </script>${['panel','page','status'].map(f => `<section data-frame="${f}"><iframe data-frame="${f}" src="/ui/${f}/index.html"></iframe></section>`).join('')}</html>`;
 const server = createServer(async (req, res) => {
   try {
@@ -60,7 +61,8 @@ const server = createServer(async (req, res) => {
       let text = ''; for await (const part of req) text += part;
       const q = JSON.parse(text);
       if (unsupported) { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
-      const r = fail && q.path === '/v1/plans' ? { status: 503, body: { error: 'busy' } } : await (rulePhase ? membership : real).request(q);
+      const failWindow = q.path === '/v1/needs-you' && failFirstContinuation.delete(url.searchParams.get('frame') ?? '');
+      const r = (fail && q.path === '/v1/plans') || failWindow ? { status: 503, body: { error: 'busy' } } : await (rulePhase ? membership : real).request(q);
       if (unsupported && q.path === '/health') delete r.body.needsYouInbox;
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
     }
@@ -77,11 +79,14 @@ const wait = async (f: string, condition: string, ms = 20000) => {
   const ok = await evaluate<boolean>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame(${js(f)}).contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
   if (!ok) throw Error(`Timeout ${f}: ${condition}`);
 };
-const key = async (k: string) => { for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: k === 'Tab' ? 9 : k === 'Escape' ? 27 : 13, ...(k === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) }); };
-const click = async (f: string, selector: string, touch = false) => {
+const key = async (k: string) => { for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: k === 'Tab' ? 9 : k === 'Escape' ? 27 : k === 'Home' ? 36 : k === 'ArrowDown' ? 40 : 13, ...(k === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) }); };
+const click = async (f: string, selector: string, touch = false, duringPress?: () => Promise<void>) => {
    const p = await evaluate<number[]>(`(async()=>{const fr=frame(${js(f)}),selector=${js(selector)};fr.contentDocument.querySelector(selector)?.scrollIntoView({block:'center'});fr.scrollIntoView();await new Promise(r=>requestAnimationFrame(r));const n=fr.contentDocument.querySelector(selector);if(!n)throw Error('Missing '+selector);const a=n.getBoundingClientRect(),b=fr.getBoundingClientRect();if(!a.width||!a.height)throw Error('Hidden '+selector);const x=a.x+b.x+Math.min(12,a.width/2),y=a.y+b.y+Math.min(12,a.height/2);if(!n.contains(fr.contentDocument.elementFromPoint(x-b.x,y-b.y)))throw Error('Obscured '+selector);return [x,y]})()`);
   if (touch) { await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p[0], y: p[1] }] }); await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); }
-  else for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: p[0], y: p[1], button: 'left', clickCount: 1 });
+  else for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await c.send('Input.dispatchMouseEvent', { type, x: p[0], y: p[1], button: 'left', clickCount: 1 });
+    if (type === 'mousePressed') await duringPress?.();
+  }
 };
 const tabTo = async (f: string, selector: string) => { await guest(f, 'w.focus();return true'); for (let i = 0; i < 100; i++) { if (await guest<boolean>(f, `return !!d.activeElement?.matches(${js(selector)})`)) return; await key('Tab'); } throw Error(`Tab never reached ${selector}`); };
 const shot = async (name: string) => { const r = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); };
@@ -98,7 +103,17 @@ try {
   check('rail-default-session-collapsed', await guest('panel', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='false' && !d.querySelector(${js(row('task-d'))})`));
   await tabTo('panel', '[data-testid="needs-you-toggle"]'); await key('Enter');
   await wait('panel', `d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='true'`);
-  await click('panel', open('task-a'));
+  // Another frame's saved preference arrives on the existing device refresh while
+  // this opener is pressed. Hold the real SDK response to exercise that boundary.
+  await evaluate(`const saved=structuredClone(qa.storage.get('device:progress-view.v1'));saved.dismissed.page='another-frame';qa.storage.set('device:progress-view.v1',saved);qa.holdStorage=true;true`);
+  await wait('panel', 'qa.pendingStorage.length>0');
+  await guest('panel', `d.addEventListener('pointerdown',e=>{w.pressNode=e.target.closest('.ap-inbox-open')},{capture:true,once:true});return true`);
+  await click('panel', open('task-a'), false, async () => {
+    await evaluate('qa.holdStorage=false;qa.pendingStorage.splice(0).forEach(reply=>reply());true');
+    await guest('panel', 'return new Promise(resolve=>w.requestAnimationFrame(()=>w.requestAnimationFrame(resolve)))');
+    const press = await guest('panel', `return { captured:!!w.pressNode, connected:w.pressNode?.isConnected, same:w.pressNode===d.querySelector(${js(open('task-a'))}) }`);
+    check('pointer-opener-survives-device-refresh', press.captured && press.connected && press.same, press);
+  });
   await wait('panel', `${'!!'}d.querySelector(${js(row('task-a'))})?.querySelector('.ap-inbox-facts:not([hidden])')`);
   check('literal-in-place-no-pinned-reading', await guest('panel', `return d.querySelector('${row('task-a')} [data-testid="needs-you-reason"]').textContent==='Two formats meet the brief.' && !d.querySelector('[data-testid="needs-you-reading"]')`));
   await c.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
@@ -184,8 +199,17 @@ try {
   fail = true; await wait('panel', `!!d.querySelector('[data-testid="needs-you-stale"]')`);
   check('failed-read-not-empty', await guest('panel', `return !!d.querySelector('[data-testid="needs-you-retry"]')`)); await shot('failed-read'); fail = false;
   await wait('panel', `!d.querySelector('[data-testid="needs-you-stale"]')`);
+  failFirstContinuation.add('panel'); failFirstContinuation.add('page');
   real.partial(); await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`);
-  await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
+  for (const surface of ['panel', 'page']) {
+    await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
+    await wait(surface, `!!d.querySelector('[data-testid="needs-you-more-retry"] button')`);
+    const retryAt = await evaluate<number>('qa.requests.length');
+    await click(surface, '[data-testid="needs-you-more-retry"] button');
+    await wait(surface, `!d.querySelector('[data-testid="needs-you-more-failed"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
+    check(`${surface}-retry-recovers-first-continuation`, await evaluate<boolean>(`qa.requests.slice(${retryAt}).some(q=>q.frame===${js(surface)}&&q.path==='/v1/needs-you')`));
+  }
+  await evaluate(`qa.show('panel',600);true`);
   check('automatic-continuation-on-refresh', await evaluate<boolean>(`qa.requests.some(q=>q.frame==='panel'&&q.path==='/v1/needs-you')`));
   real.empty();
   await wait('panel', `d.querySelector('[data-testid="needs-you-inbox"]')?.hidden && d.querySelector('[data-testid="needs-you-inbox"]').getBoundingClientRect().height===0`);
@@ -198,6 +222,25 @@ try {
   await wait('panel', `w.location.search==='?reload=${ruleReload}' && ${count(2)} && !!d.querySelector('[data-testid="map-card-direct"]')`);
   await click('panel', '[data-testid="needs-you-scope-all"] button');
   check('main-session-rule-excludes-direct-and-owned', await guest('panel', `return ${count(2)} && !d.querySelector(${js(row('direct'))}) && !d.querySelector(${js(row('owned'))})`));
+  for (const surface of ['panel', 'page']) {
+    await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
+    if (surface === 'page') {
+      await wait(surface, `d.querySelector('[data-testid="plan-row-plan-alpha"]')?.textContent.includes('Main session plan')`);
+      await click(surface, '[data-testid="plan-row-plan-alpha"]');
+      await wait(surface, `d.querySelector('[data-testid="plan-row-plan-alpha"]')?.getAttribute('aria-selected')==='true'`);
+    }
+    await wait(surface, `!!d.querySelector('[data-testid="map-card-direct"]') && !!d.querySelector(${js(open('main'))})`);
+    await click(surface, '[data-testid="map-card-direct"]');
+    await tabTo(surface, '[data-testid="map-group"]');
+    await key('Home'); await key('ArrowDown');
+    await wait(surface, `d.querySelector('[data-testid="map-group"]')?.value==='' && !d.querySelector('[data-testid="map-card-main"]')`);
+    check(`${surface}-map-filter-hides-inbox-target`, await guest(surface, `return d.querySelector('[data-testid="map-card-direct"]')?.getAttribute('aria-current')==='true'`));
+    await click(surface, open('main'));
+    await wait(surface, `d.querySelector('[data-testid="map-card-main"]')?.getAttribute('aria-current')==='true' && d.querySelector('[data-testid="map-group"]')?.value==='*'`);
+    check(`${surface}-inbox-reveals-filtered-map-target`, await guest(surface, `return d.activeElement?.matches(${js(open('main'))}) && !!d.querySelector('${row('main')} .ap-inbox-facts:not([hidden])')`));
+    await shot(`${surface}-inbox-map-reveal`);
+  }
+  await evaluate(`qa.show('panel',600);true`);
   await shot('rule-rail');
   await click('panel', '[data-testid="map-card-direct"]');
   await wait('panel', `d.querySelector('[data-testid="map-inspector"]')?.textContent.includes('Parent must supply the sample')`);

@@ -37,6 +37,7 @@ export interface InboxModel {
 export interface InboxPanel {
   model: InboxModel;
   more: () => void;
+  retry: () => void;
   expand: (open: boolean) => void;
   device?: DeviceViewState;
   storeId?: string;
@@ -200,6 +201,7 @@ export class InboxController {
       storeId: this.first?.state === 'ready' ? this.first.window.storeId : '',
       // Controls painted under another store/binding do nothing.
       more: () => { if (this.owner === owner) this.more(); },
+      retry: () => { if (this.owner === owner && this.failed) this.readPage(this.recheck ?? undefined); },
       expand: (open) => { if (this.owner === owner && this.expanded !== open) { this.expanded = open; this.deps.changed(); } },
     };
   }

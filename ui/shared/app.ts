@@ -557,7 +557,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
-  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.ui++; schedule(); }) : null;
+  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.data++; schedule(); }) : null;
   const inbox = spec.needsYou ? new InboxController({
     device: deviceView ?? undefined,
     service: (current) => guardedHost(current),

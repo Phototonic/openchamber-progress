@@ -187,17 +187,14 @@ const hiddenNotice = (locale: string) => ({
   ru: 'Скрыто на этом устройстве, пока сведения задачи не изменятся.',
   'zh-CN': '已在此设备上隐藏，任务详情更改后将重新显示。',
 })[resolveLanguage('auto', locale)];
-export function revealInboxTask(reading: ReadingView | null, plan: PlanView | null, row: InboxRowView) {
+export function revealInboxTask(reading: ReadingView | null, plan: PlanView | null, row: InboxRowView, revealMap?: (id: string) => boolean) {
   if (!plan || plan.key !== row.planKey) return;
+  if (revealMap?.(row.task.id)) return;
   reading?.set({}, root => {
-    const card = [...root.querySelectorAll<HTMLElement>('[data-testid^="map-card-"]')].find(n => n.dataset.testid === `map-card-${row.task.id}`);
-    if (card) card.click();
-    else {
-      const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find(n => n.dataset.testid === `plan-${row.plan}`);
-      if (article) revealCurrentTask(article, plan, row.task.id, '');
-      // Reading details must not pull the keyboard away from the inbox itself.
-      [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find(n => n.dataset.row === row.rowKey)?.querySelector<HTMLElement>('.ap-inbox-open')?.focus({ preventScroll: true });
-    }
+    const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find(n => n.dataset.testid === `plan-${row.plan}`);
+    if (article) revealCurrentTask(article, plan, row.task.id, '');
+    // Reading details must not pull the keyboard away from the inbox itself.
+    [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find(n => n.dataset.row === row.rowKey)?.querySelector<HTMLElement>('.ap-inbox-open')?.focus({ preventScroll: true });
   });
 }
 
@@ -417,7 +414,7 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
   }
   if (m.moreFailed) {
     body.append(testid(warningLine(t.moreFailed, 'warning', 'p'), 'needs-you-more-failed'));
-    if (options.retry) button(body, 'needs-you-more-retry', t.retry, options.retry, 'ghost');
+    button(body, 'needs-you-more-retry', t.retry, panel.retry, 'ghost');
   }
   if (!m.needsYou.length) body.append(testid(el('p', 'ap-inbox-empty', m.complete ? t.none : t.noneYet), 'needs-you-empty'));
   const list = el('ul', 'ap-inbox-list'); list.setAttribute('aria-label', t.listLabel); body.append(list);

@@ -7,7 +7,7 @@ import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY, INBOX_MEMBERSHIP, INBOX_LEGAC
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
 import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, openReading, readingRequest, ReadingFocus, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { checkReading, inboxSummary, openReading, readingRequest, ReadingFocus, revealInboxTask, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import { itemNeedsYou, type InboxWindowView, type PlanDetail, type ItemView } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
@@ -271,6 +271,36 @@ test('continuation on refresh is pinned and cumulative; held, hidden and moved t
   c.adopt(JSON.stringify(['acct', 'store-2|src-local|true']), { state: 'unsupported' });
   stale.more(); stale.expand(true);
   assert.equal(s.calls.length, 4); assert.equal(c.model()!.availability, 'unsupported');
+});
+
+test('review regression: explicit retry recovers a failed first continuation with an unchanged first window', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let fail = true;
+  const s = service(() => fail ? { status: 503, body: JSON.stringify({ error: 'busy' }) }
+    : ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed() {} });
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(c.model()!.moreFailed?.kind, 'busy');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 1, 'ordinary refresh does not retry a failed first append');
+  fail = false;
+  // Optional access also exercises the pre-fix facade, where the retry path is absent.
+  (c.panel() as ReturnType<InboxController['panel']> & { retry?: () => void })?.retry?.();
+  await settle();
+  assert.equal(s.calls.length, 2, 'Try again must directly admit the failed continuation');
+  assert.equal(s.calls[1].query?.cursor, 'cursor-1');
+  assert.equal(c.model()!.moreFailed, null);
+  assert.equal(c.model()!.complete, true);
+});
+
+test('review regression: inbox selection delegates to map reveal without needing a rendered card', () => {
+  const row = parse(wire([['plan-alpha', 'task-a', 'decision']])).rows[0];
+  const plan = inboxRequest({ storeId: STORE, source: row.source, plan: row.plan, task: row.task.id, revision: row.revision, cleanupRev: row.cleanupRev }, row.planTitle, row.coordinatorSessionId);
+  const revealed: string[] = [];
+  revealInboxTask(null, plan, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'a filtered-out card must reach the controller reveal path');
+  revealInboxTask(null, { ...plan, key: 'another/plan' }, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'another plan must not acquire the inbox selection');
 });
 
 test('automatic continuation stops at eight windows and completion never chains another request', async () => {

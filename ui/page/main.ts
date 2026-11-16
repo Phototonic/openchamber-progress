@@ -421,7 +421,7 @@ const trusted = (p: PlanView, env: Env) => env.boundSource !== null && p.sourceI
 
 /** Opening an inbox row is read-only: it leaves board selection, filters and search as they are. */
 function openInbox(vc: ViewContext<Ui>, row: InboxRowView) {
-  revealInboxTask(vc.reading, selectedPlan(vc), row);
+  revealInboxTask(vc.reading, selectedPlan(vc), row, id => boardMap.revealTask(id));
 }
 const compactInbox = new CompactInbox();
 function compactInboxSection(vc: ViewContext<Ui>) {

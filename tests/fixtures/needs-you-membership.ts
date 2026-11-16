@@ -3,7 +3,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { productionFixture } from './production.ts';
 
 /** A pre-upgrade-shaped store served unchanged to old and new guests. No migration seam. */
-export async function needsYouMembershipIntegration(source: string, session: string, childSession: string) {
+export async function needsYouMembershipIntegration(source: string, session: string, childSession: string, grouped = false) {
   const f = productionFixture(), child = { ...f.actor, sourceId: source, sessionId: childSession, parentId: session, ancestry: [session] };
   const main = { ...f.actor, sourceId: source, sessionId: session };
   f.store.registerSource({ id: source, configRoot: '/fixture/membership/config', dataRoot: '/fixture/membership/data', verified: true });
@@ -12,7 +12,8 @@ export async function needsYouMembershipIntegration(source: string, session: str
   const apply = (plan: string, actor: typeof main, request: Record<string, unknown>, linked?: typeof child) =>
     f.store.apply({ plan, rev: f.store.get(source, plan)?.revision ?? 0, oid: `membership-${++oid}`, ...request }, actor, undefined, linked);
   apply('plan-alpha', main, { op: 'start', title: 'Main session plan', items: [
-    { id: 'main', title: 'Choose the format', kind: 'task', status: 'blocked', blocker: { category: 'decision', reason: 'Choose CSV or JSON', nextAction: 'Tell the main session' } },
+    ...(grouped ? [{ id: 'format-group', title: 'Format decisions', kind: 'group', status: 'pending' }] : []),
+    { id: 'main', title: 'Choose the format', kind: 'task', status: 'blocked', ...(grouped ? { parentId: 'format-group' } : {}), blocker: { category: 'decision', reason: 'Choose CSV or JSON', nextAction: 'Tell the main session' } },
     { id: 'direct', title: 'Ask parent for input', kind: 'task', status: 'blocked', dependencies: ['main'] },
     { id: 'relay', title: 'Review the draft', kind: 'task', status: 'blocked', dependencies: ['main'] },
   ] });
