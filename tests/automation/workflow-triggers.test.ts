@@ -83,7 +83,7 @@ test('pull requests that only change documentation or OpenSpec text skip CI and 
             BASE_SHA: base, HEAD_SHA: head, GITHUB_OUTPUT: output },
         });
         assert.equal(result.status, 0, result.stderr);
-        const value = readFileSync(output, 'utf8').trim().match(/^run=(true|false)$/)?.[1];
+        const value = readFileSync(output, 'utf8').match(/^run=(true|false)$/m)?.[1];
         // The secrets scan reads no file list and always scans.
         const want = workflow === 'secrets-scan' ? true : expected;
         assert.equal(value === 'true', want, `${workflow}: ${label}`);
@@ -105,7 +105,7 @@ test('pull requests that only change documentation or OpenSpec text skip CI and 
         BASE_SHA: '0'.repeat(40), HEAD_SHA: '1'.repeat(40), GITHUB_OUTPUT: output },
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(output, 'utf8').trim(), 'run=true');
+    assert.match(readFileSync(output, 'utf8'), /^run=true$/m);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -135,7 +135,10 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
       const block = source.split(`\n  ${job}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
       assert.ok(block, `${workflow}/${job} exists`);
       assert.match(block, /^    needs: gate$/m);
-      assert.match(block, /^    if: needs.gate.outputs.run == 'true'$/m);
+      const output = job === 'windows-native' ? 'windows' : 'run';
+      const events = workflow === 'ci' && job !== 'windows-native'
+        ? " && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'" : '';
+      assert.ok(block.includes(`    if: needs.gate.outputs.${output} == 'true'${events}\n`));
     }
     const root = mkdtempSync(join(tmpdir(), 'workflow-gate-'));
     try {
@@ -168,8 +171,8 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
             HEAD_REPOSITORY: headRepo, REPOSITORY: repository, GITHUB_OUTPUT: output },
         });
         assert.equal(result.status, 0, result.stderr);
-        const value = readFileSync(output, 'utf8').trim().match(/^run=(true|false)$/)?.[1];
-        assert.ok(value, 'Gate emits one boolean output');
+        const value = readFileSync(output, 'utf8').match(/^run=(true|false)$/m)?.[1];
+        assert.ok(value, 'Gate emits the run boolean output');
         assert.equal(actionsStringEquals(value, 'true'), expected,
           `${workflow}: ${eventName}/${headRef}/${headRepo}`);
       }
@@ -181,4 +184,91 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
       assert.match(publish, /^    if: github.event_name == 'push' && github.repository == 'Phototonic\/openchamber-progress' && github.ref == 'refs\/heads\/main' && needs.portable.outputs.eligible == 'true'$/m);
     }
   }
+});
+
+test('Windows selects fast PR/push checks and full release, weekly and manual journeys', () => {
+  const { gate, script } = gateScript('ci');
+  const source = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(source, /schedule:\n    - cron: '17 4 \* \* 2'\n  workflow_dispatch:/);
+  for (const output of ['windows', 'windows_full']) {
+    assert.ok(gate.includes(`${output}: ` + '${{ steps.decide.outputs.' + output + ' }}'));
+  }
+  assert.ok(gate.includes('REF: ${{ github.ref }}'));
+  const windows = source.split('\n  windows-native:\n')[1].split('\n  publish:\n')[0];
+  assert.ok(windows.includes("AP_WINDOWS_FULL: ${{ needs.gate.outputs.windows_full == 'true' && '1' || '0' }}"));
+  assert.match(windows, /name: Fetch released Windows migration fixture\n        if: env.AP_WINDOWS_FULL == '1'\n        run: git fetch --no-tags origin tag v1\.1\.1/);
+  assert.match(windows, /--test-concurrency=1 tests\/backend\/windows-platform\.test\.ts tests\/backend\/windows-service\.test\.ts/);
+
+  const root = mkdtempSync(join(tmpdir(), 'workflow-windows-'));
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+      GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
+    } });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git('init', '-q', '-b', 'dev');
+    writeFileSync(join(root, 'README.md'), 'base\n');
+    git('add', '.'); git('commit', '-q', '-m', 'base');
+    const base = git('rev-parse', 'HEAD');
+    let index = 0;
+    const decide = (event: string, ref: string, baseRef: string, head: string, headRef = 'feature', baseSha = base) => {
+      const output = join(root, `output-${index++}`);
+      const result = spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-c', script], {
+        cwd: root, encoding: 'utf8', timeout: 5_000,
+        env: { PATH: process.env.PATH, EVENT_NAME: event, REF: ref, BASE_REF: baseRef, HEAD_REF: headRef,
+          HEAD_REPOSITORY: 'example/project', REPOSITORY: 'example/project',
+          BASE_SHA: baseSha, HEAD_SHA: head, GITHUB_OUTPUT: output },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => line.split('=')));
+    };
+    for (const [file, expected] of [
+      ['ui/panel/main.ts', false], ['background/main.ts', false], ['tests/browser/setup.test.ts', false],
+      ['docs/setup.md', false], ['openspec/changes/archive/old/tasks.md', false],
+      ['service/main.ts', true], ['setup/lifecycle.ts', true], ['shared/store.ts', true],
+      ['plugin/SKILL.md', true], ['scripts/build.ts', true], ['package.json', true], ['bun.lock', true],
+      ['tsconfig.json', true], ['build/companion/SKILL.md', true], ['build/service/main.js', true],
+      ['build/setup/main.js', true], ['tests/backend/windows-platform.test.ts', true],
+      ['tests/fixtures/windows-service-observer.mjs', true], ['.github/workflows/ci.yml', true],
+      ['unknown-config.json', true],
+    ] as const) {
+      git('checkout', '-q', '-B', `case-${index}`, base);
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), 'changed\n');
+      git('add', file); git('commit', '-q', '-m', 'change');
+      const head = git('rev-parse', 'HEAD');
+      const result = decide('pull_request', '', 'dev', head);
+      assert.equal(result.windows, String(expected), file);
+      assert.equal(result.windows_full, 'false', file);
+      // Promotion PRs always run full Windows, even when the existing docs gate skips Linux.
+      const promotion = decide('pull_request', '', 'main', head);
+      assert.equal(promotion.windows, 'true', `promotion: ${file}`);
+      assert.equal(promotion.windows_full, 'true', `promotion: ${file}`);
+    }
+    for (const [event, ref, full] of [
+      ['push', 'refs/heads/dev', false], ['push', 'refs/heads/main', true],
+      ['schedule', 'refs/heads/dev', true], ['workflow_dispatch', 'refs/heads/dev', true],
+    ] as const) {
+      const result = decide(event, ref, '', base);
+      assert.equal(result.windows, 'true', `${event}/${ref}`);
+      assert.equal(result.windows_full, String(full), `${event}/${ref}`);
+    }
+    assert.equal(decide('pull_request', '', 'dev', base).windows, 'true', 'empty diff fails open');
+    assert.equal(decide('pull_request', '', 'dev', base, 'feature', '0'.repeat(40)).windows, 'true',
+      'failed diff fails open');
+    assert.equal(decide('pull_request', '', 'dev', base, 'dev').windows, 'false', 'duplicate head still skips');
+    // No-renames diff must retain the removed backend path.
+    git('checkout', '-q', '-B', 'rename-base', base);
+    mkdirSync(join(root, 'service'), { recursive: true });
+    writeFileSync(join(root, 'service/moved.ts'), 'source\n');
+    git('add', 'service/moved.ts'); git('commit', '-q', '-m', 'source');
+    const renameBase = git('rev-parse', 'HEAD');
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    git('mv', 'service/moved.ts', 'docs/moved.ts'); git('commit', '-q', '-m', 'move');
+    assert.equal(decide('pull_request', '', 'dev', git('rev-parse', 'HEAD'), 'feature', renameBase).windows, 'true');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -491,10 +491,23 @@ job's assertions, not portable certification. Timeout never undoes changes or
 permits cleanup/permission repair. See
 [Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 
-The `Windows setup, storage and capture` CI job retains the existing native
-platform suite and adds `tests/backend/windows-service.test.ts`, in the same
-provisioned non-admin account. `Fetch released Windows migration fixture` fetches
-`v1.1.1`; the test uses that tag's emitted lifecycle/Store and actual payloads,
+The `Windows setup, storage and capture` CI job runs the native platform suite
+and `tests/backend/windows-service.test.ts` in the same provisioned non-admin
+account. Ordinary PRs run it when backend/build/test inputs change (unknown
+paths conservatively run it); UI, documentation, OpenSpec and browser-test-only
+PRs skip it, as do duplicate same-repository main/dev heads outside promotion.
+Every `dev` push runs the fast set. This retains every native test except three
+full-only journeys: released 1.1.1 migration undelayed, released 1.1.1 migration
+with 2500ms helpers, and fresh setup `empty-delayed`.
+
+Every promotion PR into `main`, every `main` push, the weekly schedule and manual
+dispatch run all journeys, regardless of changed paths. Only these runs set
+`AP_WINDOWS_FULL=1`; without it the three full-only journeys skip with an
+explicit opt-in reason. The same opt-in is required for a local full native run.
+All assertions, budgets and deadlines inside each journey remain unchanged.
+Publication still requires the full Windows job on the exact `main` push.
+`Fetch released Windows migration fixture` fetches `v1.1.1` only for full runs;
+the migration tests use that tag's emitted lifecycle/Store and actual payloads,
 not a reconstruction using current installer code. No host, profile, model,
 administrator product operation or runtime dependency download is used.
 
