@@ -18,15 +18,16 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   let spec: any;
   const nodes: any[] = [];
   const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
-  const components = { el, allDone: () => {}, testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
+  const components = { el, allDone: () => {}, ProgressShell: class { activePanel: string | null = null; paint() { return false; } reset() {} }, testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
     emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
     button: (_p: any, id: string, text: string, click?: () => void) => nodes.push({ text, dataset: { testid: id }, click }), recoveredHeading: (root: any) => root.recovered ?? null, detailsBlock: () => ({ text: '' }), failureFacts: () => [],
     failureBlock: () => ({ text: 'Read failed' }), retryRead: () => () => {}, loadingBlock: () => ({ text: 'Loading' }) };
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
-  const exposed = surface === 'status' ? 'statusProgress, qualifiers, messages' : surface === 'page' ? 'planList, labelsFor, boardTop' : 'picker';
-  runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} }, require: (path: string) => {
+  const exposed = surface === 'status' ? 'statusProgress, qualifiers, messages' : surface === 'page' ? 'planList, labelsFor, boardTop, currentTask' : 'picker';
+  const historyIntent = surface === 'page' ? `exports.historyIntent = (key,stage='detail') => { pendingTask = { key, item:'I1', title:'Fixture task', stage, origin:stage==='detail'?'history':'search' }; }; exports.surfacePanel = kind => { shell.activePanel = kind; }; exports.pendingIntent = () => pendingTask;` : '';
+  runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });\n${historyIntent}`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} }, require: (path: string) => {
     if (overrides[path]) return overrides[path];
     if (path.endsWith('/app.ts')) return { startView: (value: any) => { spec = value; } };
     if (path.endsWith('/i18n.ts')) return { resolveLanguage };
@@ -50,6 +51,28 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   } });
   return { spec, nodes, exports, rendered: () => nodes.map(n => n?.text ?? '').join(' ') };
 }
+
+test('leaving History cancels a delayed current-task reveal before it can read or navigate', () => {
+  const h = surfaceHarness('page');
+  const plan = parsePlansPage(JSON.stringify(plansPage([summary('P-history', [])]))).data[0]!;
+  h.exports.historyIntent(plan.key);
+  h.exports.currentTask({}, {
+    ui: { search: null, filters: scope.NO_FILTERS, selected: plan.key, tab: 'progress' },
+    env: { live: live.EMPTY_LIVE, boundSource: plan.sourceId }, read: { plans: [plan] },
+    detail() { throw Error('A closed History panel must not resume its task reveal'); },
+    setUi() { throw Error('A closed History panel must not navigate'); },
+  });
+  assert.equal(h.exports.pendingIntent(), null);
+});
+test('opening a replacement panel cancels pending search and list reveals', () => {
+  const h = surfaceHarness('page');
+  for (const stage of ['search', 'reveal']) {
+    h.exports.historyIntent('fixture-plan', stage);
+    h.exports.surfacePanel('document');
+    h.exports.currentTask({}, {});
+    assert.equal(h.exports.pendingIntent(), null);
+  }
+});
 
 for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: current source render has no update notice in pending, setup and failed views`, () => {
   const h = surfaceHarness(surface);

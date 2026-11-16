@@ -79,7 +79,6 @@ export interface BoardBarHooks {
 export function boardBar(h: BoardBarHooks, locale = 'en') {
   const language = resolveLanguage('auto', locale), copy = COPY[language];
   const bar = el('div', 'ap-board-bar');
-  bar.append(h.modes);
   const s = h.search;
   const form = testid(el(s ? 'form' : 'div', 'ap-search'), s ? 'search-form' : 'board-filter-bar');
   if (form instanceof HTMLFormElement && s) {
@@ -161,6 +160,7 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
       pick('search-source', copy.source, s.draft.source, [{ id: ALL, label: copy.allSources }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : language === 'zh-CN' ? `${x.id}（${copy.unverified}）` : `${x.id} (${copy.unverified})` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: language === 'zh-CN' ? `${s.draft.source}（${copy.unavailable}）` : `${s.draft.source} (${copy.unavailable})` }])], (v) => s.setDraft({ source: v }));
     }
   }
+  grid.append(h.modes);
   if (h.locations) grid.append(h.locations);
   panel.append(grid);
   if (s) {

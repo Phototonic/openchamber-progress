@@ -1,7 +1,7 @@
 // Synthetic SDK host only: current tracked guests, no backend/profile/model/network dependency.
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { HEALTH, HEALTH_UNCONFIGURED, P1, P1_ITEMS, S, DOCUMENT_TEXT, envelope, planPage, plansPage, setupRead } from './fixtures.ts';
+import { createGuestAssets } from './source-guests.ts';
 
 export const LANGUAGE_KEY = 'interface-language.v1';
 export const USER_TASK_TITLE = 'English task · Привет <script>window.__qaInjected=true</script>';
@@ -84,7 +84,8 @@ addEventListener('message',async e=>{
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>Interface language synthetic QA</title><style>body{margin:0;background:#fafafa;color:#202124;font:14px system-ui}section{margin:12px;width:360px;display:none}iframe{display:block;border:0;width:100%;height:850px}</style></head><body><button id="outside">Synthetic host focus target</button><script>${script}</script>${['panel', 'status', 'page'].map((s) => `<section data-surface="${s}"><iframe data-surface="${s}" title="${s}" src="/ui/${s}/index.html"></iframe></section>`).join('')}</body></html>`;
 
-export async function startLanguageFixture(options: { service?: (request: { method: string; path: string; query?: Record<string, string>; body?: string; mode?: string }) => Promise<{ status: number; body: string }> } = {}) {
+export async function startLanguageFixture(options: { source?: boolean; service?: (request: { method: string; path: string; query?: Record<string, string>; body?: string; mode?: string }) => Promise<{ status: number; body: string }> } = {}) {
+  const assets = createGuestAssets({ source: options.source, surfaces: ['panel', 'status', 'page'] });
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     try {
@@ -92,7 +93,7 @@ export async function startLanguageFixture(options: { service?: (request: { meth
       else if (/^\/ui\/(panel|status|page)\/(index\.html|main\.js)$/.test(path)) {
         const js = path.endsWith('.js');
         res.setHeader('content-type', js ? 'text/javascript' : 'text/html; charset=utf-8');
-        const content = readFileSync(`.${path}`, 'utf8');
+        const content = assets.read(path)!.toString();
         res.end(js ? content : content.replace('<head>', `<head>${clock}`));
       } else if (path === '/service' && req.method === 'POST') {
         let text = ''; for await (const part of req) text += part;
@@ -116,5 +117,5 @@ export async function startLanguageFixture(options: { service?: (request: { meth
     } catch { res.statusCode = 500; res.end('{"error":"fixture-failed"}'); }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { port: (server.address() as { port: number }).port, session: S.M, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); } };
+  return { port: (server.address() as { port: number }).port, session: S.M, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); assets.dispose(); } };
 }
