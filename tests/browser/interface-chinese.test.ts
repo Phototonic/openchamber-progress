@@ -76,7 +76,7 @@ test('dates, durations and counts use Chinese Intl output', () => {
 
 test('cleanup, search, digest and health feedback are Chinese without changing meaning', () => {
   assert.match(cleanupFeedback({ kind: 'archive' }, 'zh-CN'), /已归档/);
-  assert.match(cleanupFeedback({ kind: 'restore' }, 'zh-CN'), /已结束状态/);
+  assert.match(cleanupFeedback({ kind: 'restore' }, 'zh-CN'), /状态和历史记录不变/);
   assert.match(cleanupFeedback({ kind: 'error', code: 'busy' }, 'zh-CN'), /存储正忙/);
   assert.match(searchStatusText({ kind: 'retired' }, 'zh-CN'), /失效/);
   assert.equal(searchStatusText({ kind: 'message', en: 'EN', ru: 'RU', 'zh-CN': '中文消息' }, 'zh-CN'), '中文消息');
