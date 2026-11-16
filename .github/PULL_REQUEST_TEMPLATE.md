@@ -12,6 +12,6 @@ include sanitized screenshots and interaction checks. -->
 
 - [ ] Scope and target branch follow [CONTRIBUTING.md](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md).
 - [ ] Relevant tests and documentation/contracts are updated, or not applicable.
-- [ ] Affected generated runtime files are included, if applicable; unrelated bundles are unchanged.
+- [ ] Source PRs contain no generated runtime outputs; a promotion PR into `main` contains all nine and passes strict rebuild parity.
 - [ ] Diff, examples, and attachments contain no credentials, raw logs, private paths/content, or internal tracker data.
 - [ ] Third-party license notices are preserved, if applicable.

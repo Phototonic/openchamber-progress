@@ -461,9 +461,13 @@ determine committed bytes:
 
 - No fragment follows the remote default branch (`main` for this distribution).
 - `https://github.com/Phototonic/openchamber-progress.git#main` selects main explicitly.
-- `https://github.com/Phototonic/openchamber-progress.git#dev` follows development builds.
 - A published tag, for example `https://github.com/Phototonic/openchamber-progress.git#v1.1.1`,
   stays at that tag; it does not follow later release tags.
+
+`dev` is source only and is not an installable ref. A host refuses a package
+without built entries, preserving an existing installation's files/state.
+An older `#dev` installation can still see a higher-version offer, but that
+update is refused: replace it with a default-branch or fixed-tag installation.
 
 Branches are not immutable commit pins. OpenChamber compares the selected ref's
 package version, not commit IDs or changed bytes. A new same-version commit does
@@ -477,14 +481,25 @@ Git, folder and ZIP packages carry the declared companion folder plus service,
 setup, background and all three guests. No consumer compilation/dependency fetch.
 Standalone release assets remain compatible legacy/recovery transports.
 
-Develop on `dev`, target `dev`, and promote accepted matching built entries only
-with maintainer approval. No routine version bump or automatic release is implied.
+Develop on `dev`, target `dev`, and commit no generated outputs. Build locally with
+`bun run build:all` before standalone tests/drivers. With maintainer approval,
+`bun run promote main dev promote/<version>` creates a local two-parent commit
+whose tree is accepted `dev` plus the nine reproducible outputs. It never pushes,
+tags, publishes or moves either input branch. A failure creates no promotion
+branch; fix the cause and retry. Bring any main-only source change to `dev` in a
+separate source-only PR first, never by merging `main`.
+Run host gates on a checkout of that promotion commit, then propose that branch
+to `main`; do not merge `dev` directly or merge the release back into `dev`.
+Rehearsals use only disposable clones with their remote removed.
+No routine version bump or automatic release is implied.
 Follow [CONTRIBUTING](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md)
 for full-history disposable CI, nine-entry parity, SDK validation and release policy.
 Never clear existing archives to make CI run. Actual host folder/ZIP/Git and native
 runtime gates remain separate from portable checks.
 
 ```sh
+# From the promotion checkout, not source-only dev:
+node --experimental-strip-types scripts/project-git-package.ts <candidate-Git-tree-projection>
 AGENT_PROGRESS_HOST_MODULE=<isolated-host-install.js> \
   node --experimental-strip-types scripts/verify-git-package.ts <candidate-Git-tree-projection>
 ```

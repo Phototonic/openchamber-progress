@@ -36,6 +36,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -43,7 +44,7 @@ jobs:
         # Actions string comparisons ignore case; Bash matches literal branch names.
         run: |
           run=true
-          if [[ "$EVENT_NAME" == pull_request && "$HEAD_REPOSITORY" == "$REPOSITORY" && ( "$HEAD_REF" == main || "$HEAD_REF" == dev ) ]]; then
+          if [[ "$EVENT_NAME" == pull_request && "${BASE_REF:-}" != main && "$HEAD_REPOSITORY" == "$REPOSITORY" && ( "$HEAD_REF" == main || "$HEAD_REF" == dev ) ]]; then
             run=false
           fi
           # A pull request that only changes documentation or OpenSpec text skips

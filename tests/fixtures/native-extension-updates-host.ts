@@ -46,7 +46,9 @@ if(arg('--fallback-server')) {
     const version=spawnSync(binary,['--version'],{env,encoding:'utf8',timeout:15000});assert.equal(version.status,0);assert.equal(requireRuntimeVersion('opencode',version.stdout),'2.2.7');
     for(const dir of ['project/docs/plans','config/opencode/plugins/managed-fixture','data/opencode','work'])fs.mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
     const tracked=spawnSync('/usr/bin/git',['ls-files','-z'],{encoding:'utf8',timeout:10000});assert.equal(tracked.status,0);
-    for(const file of tracked.stdout.split('\0').filter(Boolean)){assert.ok(!path.isAbsolute(file)&&!file.split('/').includes('..'));fs.mkdirSync(path.dirname(`${root}/work/${file}`),{recursive:true});fs.copyFileSync(file,`${root}/work/${file}`);}
+    // Standalone prerequisite: bun run build:all. Source revisions do not track
+    // these entries, but the disposable host fixture must contain their bytes.
+    for(const file of new Set([...tracked.stdout.split('\0').filter(Boolean),...entries])){assert.ok(!path.isAbsolute(file)&&!file.split('/').includes('..'));fs.mkdirSync(path.dirname(`${root}/work/${file}`),{recursive:true});fs.copyFileSync(file,`${root}/work/${file}`);}
     const observer=`${root}/config/opencode/plugins/managed-fixture`;
     const built=spawnSync('bun',['build','tests/fixtures/managed-companion-observer.ts','--target=node','--format=esm',`--outfile=${observer}/index.js`],{encoding:'utf8',timeout:30000});assert.equal(built.status,0);
     fs.writeFileSync(`${observer}/package.json`,JSON.stringify({name:'synthetic-managed-observer',type:'module',exports:{'.':'./index.js'}}));
@@ -77,7 +79,7 @@ if(arg('--fallback-server')) {
   const check=(id:string,pass:boolean)=>{results.checks.push({id,pass});write('results',results);assert.ok(pass,id);};
   const wait=async<T>(fn:()=>Promise<T>,ok:(v:T)=>boolean,label:string,ms=20000)=>{for(const end=Date.now()+ms;;){let v:T|undefined;try{v=await fn();}catch{}if(v!==undefined&&ok(v))return v;assert.ok(Date.now()<end,label);await new Promise(r=>setTimeout(r,50));}};
   const git=(args:string[],cwd=work)=>{assert.ok(cwd===root||cwd.startsWith(root+'/'));const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath=/dev/null',...args],{cwd,env,encoding:'utf8',timeout:30000,maxBuffer:4000000});assert.equal(r.status,0,`${args[0]} failed`);return r.stdout.trim();};
-  const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Package Fixture','-c','user.email=package-fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
+  const commit=(message:string)=>{git(['add','--all']);git(['add','-f','--',...entries.filter(e=>fs.existsSync(`${work}/${e}`))]);git(['-c','user.name=Package Fixture','-c','user.email=package-fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
   let server:any,browser:Awaited<ReturnType<typeof nativeUpdatesBrowser>>|undefined,store:Store|undefined,phase='prepare';const owned:number[]=[];
   const remember=(pid:number)=>{owned.push(pid);fs.writeFileSync(`${root}/owned-pids.json`,JSON.stringify(owned));};
   const source='https://native-updates-fixture.example/fixture/progress.git',commands=`${root}/git-commands.jsonl`;

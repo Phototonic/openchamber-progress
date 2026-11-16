@@ -140,7 +140,10 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
     const root = mkdtempSync(join(tmpdir(), 'workflow-gate-'));
     try {
       let index = 0;
-      for (const [eventName, headRef, headRepo, expected] of [
+      for (const [eventName, headRef, headRepo, expected, baseRef = 'dev'] of [
+        ['pull_request', 'dev', repository, true, 'main'],
+        ['pull_request', 'main', repository, true, 'main'],
+        ['pull_request', 'dev', repository, false, 'feature'],
         ['push', 'dev', repository, true],
         ['push', 'main', repository, true],
         ['schedule', '', '', true],
@@ -161,7 +164,7 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
         const output = join(root, `output-${index++}`);
         const result = spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-c', script], {
           timeout: 5_000, encoding: 'utf8',
-          env: { PATH: process.env.PATH, EVENT_NAME: eventName, HEAD_REF: headRef,
+          env: { PATH: process.env.PATH, EVENT_NAME: eventName, HEAD_REF: headRef, BASE_REF: baseRef,
             HEAD_REPOSITORY: headRepo, REPOSITORY: repository, GITHUB_OUTPUT: output },
         });
         assert.equal(result.status, 0, result.stderr);
