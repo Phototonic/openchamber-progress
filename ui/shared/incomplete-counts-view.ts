@@ -12,11 +12,11 @@ const COPY = {
   'zh-CN': { title: '计数可能不完整。', more: '加载更多', detail: '部分较早的工作尚未检查。', gap: '部分运行未被记录，关闭此提示也会确认你已知晓记录缺口。', dismiss: '关闭提示', failed: '无法关闭此提示，请重试。', conflict: '发现了新的记录缺口，请先查看再关闭。', loadFailed: '无法读取更多工作，请重试。', retry: '重试', loading: '加载中…' },
 };
 export const COUNT_CSS = `
-.ap-count-note>.ap-link{align-self:flex-start;text-align:start;min-height:24px;color:var(--oc-muted)}
+.ap-count-note>.ap-link,.ap-count-reopen{align-self:flex-start;text-align:start;min-height:24px;color:var(--oc-muted)}
 .ap-count-note .ap-row{flex-wrap:wrap;gap:4px 16px}
 .ap-count-note .ap-link{min-height:24px}
 .ap-count-note .ap-link[aria-disabled="true"]{color:var(--oc-muted);cursor:default;text-decoration:none}
-@media(forced-colors:active){.ap-count-note .ap-link:focus-visible{outline:2px solid Highlight;outline-offset:2px;box-shadow:none}}
+@media(forced-colors:active){.ap-count-note .ap-link:focus-visible,.ap-count-reopen:focus-visible{outline:2px solid Highlight;outline-offset:2px;box-shadow:none}}
 `;
 const failedAt = {
   en: (time: string) => `More work couldn’t be read; last updated ${time}.`,
@@ -29,6 +29,7 @@ export class IncompleteCounts {
   facts: CountFacts = emptyCountFacts();
   private identity = '';
   private expanded = false;
+  private reopened = false;
   private pending = false;
   private error = false;
   private announced = '';
@@ -69,7 +70,7 @@ export class IncompleteCounts {
     this.announceOutcome(runs, !!runs?.read?.capture.lossNotice?.attention, options.locale);
     this.facts = facts;
     const identity = countReasonIdentity(store, facts);
-    if (identity !== this.identity) { this.identity = identity; this.expanded = false; this.error = false; }
+    if (identity !== this.identity) { this.identity = identity; this.expanded = false; this.reopened = false; this.error = false; }
     if (runs?.lossDismissal === 'error' || runs?.lossDismissal === 'conflict' || this.error) this.expanded = true;
     const c = COPY[resolveLanguage('auto', options.locale)];
     const failed = !!inbox?.model.moreFailed || !!runs?.pageError || !!runs?.historyRequestFailed
@@ -93,8 +94,20 @@ export class IncompleteCounts {
       const retry = testid(el('button', 'ap-link', c.retry), 'incomplete-counts-retry'); retry.type = 'button';
       retry.addEventListener('click', retryFailed); line.append(' ', retry); root.append(line);
     }
-    if (!facts.reasons.length || device?.dismissed(surface, identity)) {
-      this.announced = ''; if (this.announcer) this.announcer.textContent = ''; return;
+    const canLoad = inbox?.model.canContinue || history || runs?.hasMore && facts.reasons.includes('runs-not-loaded');
+    if (!facts.reasons.length || device?.dismissed(surface, identity) && !this.reopened) {
+      this.announced = ''; if (this.announcer) this.announcer.textContent = '';
+      if (facts.reasons.length && canLoad && !failed) {
+        // Dismissal quiets the note, never the only path to a bounded continuation.
+        const reopen = testid(el('button', 'ap-link ap-count-reopen', c.more), 'incomplete-counts-reopen'); reopen.type = 'button';
+        reopen.setAttribute('aria-expanded', 'false');
+        reopen.addEventListener('click', () => {
+          if (this.identity !== identity) return;
+          this.reopened = true; this.expanded = true; this.changed();
+        });
+        root.append(reopen);
+      }
+      return;
     }
     const box = testid(el('section', 'ap-section ap-count-note'), 'incomplete-counts');
     box.dataset.reasons = facts.reasons.join(' ');
@@ -110,7 +123,6 @@ export class IncompleteCounts {
       if (busy) b.setAttribute('aria-disabled', 'true');
       b.addEventListener('click', () => { if (!busy && this.identity === identity) run(); }); actions.append(b);
     };
-    const canLoad = inbox?.model.canContinue || history || runs?.hasMore && facts.reasons.includes('runs-not-loaded');
     const loading = inbox?.model.loadingMore || runs?.reconciling || runs?.paging;
     if (canLoad && !failed) action('incomplete-counts-more', loading ? c.loading : c.more, load, !!loading);
     action('incomplete-counts-dismiss', c.dismiss, () => {
@@ -120,6 +132,7 @@ export class IncompleteCounts {
         const acknowledged = !attention || await runs?.dismissLoss() === true;
         if (this.identity !== identity) { this.pending = false; this.changed(); return; }
         const saved = acknowledged && !!await device?.dismiss(surface, identity);
+        if (saved) { this.reopened = false; this.expanded = false; }
         this.error = !saved; this.pending = false; this.changed();
       })();
     }, this.pending);

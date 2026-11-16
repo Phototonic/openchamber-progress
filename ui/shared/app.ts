@@ -285,7 +285,7 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
 };
 
 /** Count controls removed by a successful read/dismissal hand focus on within the same scope only. */
-const COVERAGE_CONTROL = '[data-testid="incomplete-counts-toggle"],[data-testid="incomplete-counts-more"],[data-testid="incomplete-counts-dismiss"],[data-testid="incomplete-counts-retry"]';
+const COVERAGE_CONTROL = '[data-testid="incomplete-counts-toggle"],[data-testid="incomplete-counts-more"],[data-testid="incomplete-counts-dismiss"],[data-testid="incomplete-counts-retry"],[data-testid="incomplete-counts-reopen"]';
 const coverageFocus = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
   const scope = active.closest<HTMLElement>('main')?.dataset.countScope;
@@ -293,7 +293,7 @@ const coverageFocus = (root: HTMLElement, active = document.activeElement as HTM
 };
 function coverageLanding(root: HTMLElement, from: NonNullable<ReturnType<typeof coverageFocus>>) {
   if (root.dataset.countScope !== from.scope) return null;
-  return root.querySelector<HTMLElement>('[data-testid="incomplete-counts-toggle"]') ?? root.querySelector<HTMLElement>('[data-testid="more-trigger"]');
+  return root.querySelector<HTMLElement>('[data-testid="incomplete-counts-toggle"]') ?? root.querySelector<HTMLElement>('[data-testid="incomplete-counts-reopen"]') ?? root.querySelector<HTMLElement>('[data-testid="more-trigger"]');
 }
 
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task

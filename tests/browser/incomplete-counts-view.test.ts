@@ -6,6 +6,8 @@ import ts from 'typescript';
 import * as counts from '../../ui/shared/incomplete-counts.ts';
 import * as i18n from '../../ui/shared/i18n.ts';
 import { EARLIER_STEP } from '../../ui/shared/subagents.ts';
+import { DeviceViewState } from '../../ui/shared/device-view-state.ts';
+import type { LanguageStorageValue } from '../../ui/shared/language.ts';
 
 class Node {
   dataset: Record<string, string> = {};
@@ -99,4 +101,32 @@ test('removed count controls capture scope from the painted main, not its mount'
   next.dataset.countScope = 'other-reading';
   assert.equal(coverageLanding(next, from), null);
   assert.equal(coverageFocus(mount, new Node('button')), null, 'external focus is never moved');
+});
+
+test('dismissal survives reload without removing access to the remaining inbox window', async () => {
+  const { IncompleteCounts } = load('incomplete-counts-view');
+  let stored: LanguageStorageValue | undefined, loaded = false;
+  const storage = { get: async () => stored, set: async (_key: string, value: LanguageStorageValue) => { stored = value; } };
+  const device = new DeviceViewState(storage, () => {}); await device.refresh(true);
+  const facts = { ...counts.emptyCountFacts(), reasons: ['plans-not-checked'] };
+  const options = { facts, store: 'example', surface: 'panel', device, runs: null, locale: 'en', lastGoodAt: null, refresh: 1,
+    inbox: { model: { canContinue: true }, more: () => { loaded = true; } } };
+  const view = new IncompleteCounts(() => {}), root = new Node();
+  view.paint(root, options);
+  root.hook('incomplete-counts-dismiss')!.handlers.get('click')!();
+  for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  const reloadedDevice = new DeviceViewState(storage, () => {}); await reloadedDevice.refresh(true);
+  const identity = counts.countReasonIdentity('example', facts as counts.CountFacts);
+  assert(reloadedDevice.dismissed('panel', identity));
+  const reloaded = new IncompleteCounts(() => {}), after = new Node();
+  reloaded.paint(after, { ...options, device: reloadedDevice });
+  assert.equal(after.hook('incomplete-counts'), null, 'the note stays dismissed');
+  assert(after.hook('incomplete-counts-reopen'), 'a quiet keyboard-focusable disclosure still reaches continuation');
+  after.hook('incomplete-counts-reopen')!.handlers.get('click')!();
+  assert.equal(loaded, false, 'reopening the disclosure does not read a window');
+  const expanded = new Node(); reloaded.paint(expanded, { ...options, device: reloadedDevice });
+  assert.equal(expanded.hook('incomplete-counts-toggle')!.attrs['aria-expanded'], 'true');
+  expanded.hook('incomplete-counts-more')!.handlers.get('click')!();
+  assert(loaded);
+  assert(reloadedDevice.dismissed('panel', identity), 'explicit reopening does not erase the saved dismissal');
 });

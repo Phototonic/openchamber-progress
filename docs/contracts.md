@@ -2200,6 +2200,10 @@ sequence. Totals, page cursors, language, read time and attention ageing do not
 change that identity. New reasons or a new detection bring the note back.
 Without device storage it lasts only in the frame. A failed write is not saved.
 Shared profiles share this state; it is not per-person isolation.
+Dismissal does not withdraw continuation access: when another bounded window
+can be loaded, a quiet Load more disclosure reopens the expanded indicator.
+Reopening is frame-local, leaves the remembered dismissal intact and performs
+no read itself; the existing action inside the expansion reads one window.
 
 An attended format-2 gap is named in the expanded note. Dismissal first sends
 the existing revision-fenced store-wide acknowledgement; only success permits
