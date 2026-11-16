@@ -201,11 +201,31 @@ export function revealInboxTask(reading: ReadingView | null, plan: PlanView | nu
   });
 }
 
+interface InboxReplyCopy {
+  text: string;
+  result: 'idle' | 'copied' | 'fallback';
+  pending: boolean;
+  preview: HTMLTextAreaElement | null;
+  selection: { start: number; end: number; direction: 'forward' | 'backward' | 'none'; top: number } | null;
+}
+
 /** Every non-device state stays frame-local and is retired on scope/installation change. */
 export class CompactInbox {
   private identity = '';
+  private openedRow: string | null = null;
+  private copy: InboxReplyCopy | null = null;
   all = false;
-  opened: string | null = null;
+  get opened() { return this.openedRow; }
+  set opened(row: string | null) {
+    if (row !== this.openedRow) this.copy = null;
+    this.openedRow = row;
+  }
+  replyCopy(row: string, text: string): InboxReplyCopy | null {
+    if (row !== this.opened) return null;
+    if (!this.copy || this.copy.text !== text) this.copy = { text, result: 'idle', pending: false, preview: null, selection: null };
+    return this.copy;
+  }
+  currentCopy(copy: InboxReplyCopy) { return this.copy === copy; }
   showHidden = false;
   undo: string | null = null;
   expanded: boolean | null = null;
@@ -447,13 +467,41 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
       button(actions, 'needs-you-open-session', c.open, () => env.openSession!(row.coordinatorSessionId), 'outline');
     } else facts.append(testid(el('p', 'ap-note', c.unavailable), 'needs-you-session-unavailable'));
     const status = testid(el('p', 'ap-note'), 'needs-you-copy-status'); status.setAttribute('role', 'status');
-    const fallback = testid(el('textarea', 'ap-input'), 'needs-you-copy-fallback'); fallback.readOnly = true; fallback.hidden = true; fallback.value = replyFrame(row, env.locale); fallback.setAttribute('aria-label', c.fallback);
+    const text = replyFrame(row, env.locale), copy = state.replyCopy(row.rowKey, text);
+    if (copy?.result === 'fallback' && copy.preview?.isConnected) {
+      const previous = copy.preview;
+      copy.selection = { start: previous.selectionStart, end: previous.selectionEnd, direction: previous.selectionDirection, top: previous.scrollTop };
+    }
+    status.textContent = copy?.result === 'copied' ? c.copied : copy?.result === 'fallback' ? c.fallback : '';
+    const fallback = testid(el('textarea', 'ap-input'), 'needs-you-copy-fallback'); fallback.readOnly = true; fallback.hidden = copy?.result !== 'fallback'; fallback.value = text; fallback.setAttribute('aria-label', c.fallback);
+    if (copy) {
+      copy.preview = fallback;
+      if (copy.selection) {
+        fallback.setSelectionRange(copy.selection.start, copy.selection.end, copy.selection.direction);
+        fallback.scrollTop = copy.selection.top;
+      }
+    }
     button(actions, 'needs-you-copy-reply', c.copy, () => {
+      if (!copy || !state.currentCopy(copy) || copy.pending) return;
+      copy.pending = true;
+      options.changed();
       void (async () => {
-        try { await navigator.clipboard.writeText(replyFrame(row, env.locale)); if (status.isConnected) status.textContent = c.copied; }
-        catch { if (fallback.isConnected) { status.textContent = c.fallback; fallback.hidden = false; fallback.focus(); fallback.select(); } }
+        let copied = false;
+        try { await navigator.clipboard.writeText(text); copied = true; } catch {}
+        // Closing/reopening the item or changing its reply retires the old completion.
+        if (!state.currentCopy(copy)) return;
+        copy.pending = false;
+        copy.result = copied ? 'copied' : 'fallback';
+        if (!copied) {
+          copy.selection = { start: 0, end: text.length, direction: 'none', top: 0 };
+          // A pending request may span several paints; select the latest preview, not
+          // the node captured by the Copy button's original closure.
+          const preview = copy.preview;
+          if (preview?.isConnected) { preview.hidden = false; preview.focus(); preview.select(); }
+        }
+        options.changed();
       })();
-    }, 'outline');
+    }, 'outline', copy?.pending ?? false);
     if (device?.canHide) button(actions, 'needs-you-hide', c.hide, () => {
       const key = hiddenItemKey(panel.storeId ?? '', row);
       options.focus('needs-you-toggle');

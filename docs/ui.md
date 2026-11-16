@@ -792,6 +792,10 @@ absent and one line says the session is unavailable. **Copy reply** copies a sho
 localized frame with literal task and plan titles and an empty line. Confirmation
 follows clipboard acceptance; failure exposes the same selectable text. Neither
 action sends a message, drafts one, resolves a task or changes any progress.
+Copy feedback and fallback selection belong to the opened item and exact reply
+text. They survive background paints, including a refusal that completes after
+a repaint. Closing the item, changing its reply text or leaving its scope clears
+that state and retires pending feedback. Nothing is stored on the device.
 
 **Hide** is offered only with readable host device storage. It excludes the
 item from counts on this device, offers Undo, and is keyed by store, source,

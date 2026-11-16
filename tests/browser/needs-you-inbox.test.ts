@@ -7,7 +7,7 @@ import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY, INBOX_MEMBERSHIP, INBOX_LEGAC
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
 import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, openReading, readingRequest, ReadingFocus, revealInboxTask, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { checkReading, CompactInbox, inboxSummary, openReading, readingRequest, ReadingFocus, revealInboxTask, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import { itemNeedsYou, type InboxWindowView, type PlanDetail, type ItemView } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
@@ -68,6 +68,32 @@ function wire(rows: [string, string, string | null][], extra: Rec = {}): Rec {
   return { ...base, storeId: STORE, sourceBinding: { sourceId: SRC, verified: true }, rows: built, counts, ...extra };
 }
 const partial = (cursor: string) => ({ nextCursor: cursor, coverage: { kind: 'observed-current', complete: false, exhausted: false, gapped: false, skippedRecords: 0, reasons: [] } });
+
+test('reply-copy state belongs only to the opened row and unchanged reply text', () => {
+  const state = new CompactInbox();
+  state.reconcile('scope-example');
+  state.opened = 'row-a';
+  const first = state.replyCopy('row-a', 'Reply A')!;
+  first.pending = true;
+  assert.equal(state.replyCopy('row-a', 'Reply A'), first, 'background paints retain the pending operation');
+  first.result = 'fallback'; first.pending = false;
+  first.selection = { start: 1, end: 4, direction: 'backward', top: 0 };
+  assert.equal(state.replyCopy('row-a', 'Reply A')?.selection?.start, 1);
+  assert.equal(state.replyCopy('row-b', 'Reply B'), null, 'unopened rows do not own copy state');
+  state.opened = null;
+  state.opened = 'row-a';
+  assert.equal(state.currentCopy(first), false, 'closing and reopening retires pending completions');
+  const reopened = state.replyCopy('row-a', 'Reply A')!;
+  assert.equal(reopened.result, 'idle');
+  reopened.pending = true;
+  const changed = state.replyCopy('row-a', 'Changed reply')!;
+  assert.equal(state.currentCopy(reopened), false, 'a text change retires the earlier request');
+  assert.equal(changed.result, 'idle');
+  assert.equal(changed.pending, false);
+  assert.equal(changed.selection, null);
+  state.reconcile('another-scope');
+  assert.equal(state.currentCopy(changed), false);
+});
 const parse = (v: Rec, previous: InboxWindowView['counts'] | null = null, timing = true) => parseNeedsYouWindow(v, PIN, previous, timing, 1000);
 
 test('inbox windows are re-validated: identity, category grouping, counts, coverage and timing anchors', () => {

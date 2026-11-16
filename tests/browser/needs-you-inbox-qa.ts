@@ -129,6 +129,55 @@ try {
   await click('panel', `${row('task-a')} [data-testid="needs-you-copy-reply"] button`);
   await wait('panel', `!d.querySelector('${row('task-a')} [data-testid="needs-you-copy-fallback"]').hidden`);
   check('clipboard-refusal-selectable-fallback', await guest('panel', `const n=d.querySelector('${row('task-a')} [data-testid="needs-you-copy-fallback"]');return n.value.includes('Choose CSV or JSON') && n.selectionEnd===n.value.length && ${count(2)}`));
+  const fallbackSelector = `${row('task-a')} [data-testid="needs-you-copy-fallback"]`;
+  const replyText = await guest<string>('panel', `return d.querySelector(${js(fallbackSelector)}).value`);
+  const repaintCopy = async (tag: string) => {
+    await guest('panel', `w.beforeCopyPaint=d.querySelector(${js(fallbackSelector)});return true`);
+    await evaluate(`(()=>{const saved=structuredClone(qa.storage.get('device:progress-view.v1'));saved.dismissed.page=${js(tag)};qa.storage.set('device:progress-view.v1',saved);return true})()`);
+    await wait('panel', '!w.beforeCopyPaint.isConnected');
+  };
+  // Diagnose both refusal orderings in one run, then fail the group if either regresses.
+  const copyChecks: boolean[] = [];
+  const copyCheck = (id: string, pass: boolean) => { results.push({ id, pass }); copyChecks.push(pass); };
+  await guest('panel', `const n=d.querySelector(${js(fallbackSelector)});n.focus();n.setSelectionRange(3,17,'backward');return true`);
+  await repaintCopy('copy-fallback-visible');
+  copyCheck('clipboard-fallback-survives-background-paint', await guest('panel', `const n=d.querySelector(${js(fallbackSelector)});return !n.hidden && n.value===${js(replyText)} && n.selectionStart===3 && n.selectionEnd===17 && n.selectionDirection==='backward' && d.activeElement===n`));
+  await click('panel', open('task-a'));
+  await wait('panel', `d.querySelector(${js(open('task-a'))}).getAttribute('aria-expanded')==='false'`);
+  await click('panel', open('task-a'));
+  await guest('panel', `w.copySettled=false;Object.defineProperty(w.navigator.clipboard,'writeText',{configurable:true,value:()=>{const promise=new Promise((_resolve,reject)=>{w.refuseCopy=()=>reject(Error('held clipboard refusal'))});promise.catch(()=>{w.copySettled=true});return promise}});return true`);
+  await click('panel', `${row('task-a')} [data-testid="needs-you-copy-reply"] button`);
+  await wait('panel', "typeof w.refuseCopy==='function'");
+  await repaintCopy('copy-fallback-pending');
+  await guest('panel', 'w.refuseCopy();return true');
+  await wait('panel', 'w.copySettled');
+  await guest('panel', 'return new Promise(resolve=>w.requestAnimationFrame(()=>w.requestAnimationFrame(resolve)))');
+  copyCheck('clipboard-pending-refusal-survives-background-paint', await guest('panel', `const n=d.querySelector(${js(fallbackSelector)});return !n.hidden && n.value===${js(replyText)} && n.selectionStart===0 && n.selectionEnd===n.value.length`));
+  if (copyChecks.some(pass => !pass)) throw Error('clipboard fallback repaint regressions');
+  await evaluate(`qa.locale='ru';qa.ready();true`);
+  await wait('panel', `d.querySelector(${js(fallbackSelector)}).value!==${js(replyText)}`);
+  check('clipboard-fallback-cleared-on-reply-change', await guest('panel', `return d.querySelector(${js(fallbackSelector)}).hidden && !d.querySelector('${row('task-a')} [data-testid="needs-you-copy-status"]').textContent`));
+  await evaluate(`qa.locale='en';qa.ready();true`);
+  await wait('panel', `d.querySelector(${js(fallbackSelector)}).value===${js(replyText)}`);
+  for (const invalidation of ['close', 'reply-change']) {
+    await guest('panel', 'w.copySettled=false;w.refuseCopy=null;return true');
+    await click('panel', `${row('task-a')} [data-testid="needs-you-copy-reply"] button`);
+    await wait('panel', "typeof w.refuseCopy==='function'");
+    if (invalidation === 'close') {
+      await click('panel', open('task-a'));
+      await wait('panel', `d.querySelector(${js(open('task-a'))}).getAttribute('aria-expanded')==='false'`);
+      await click('panel', open('task-a'));
+    } else {
+      await evaluate(`qa.locale='ru';qa.ready();true`);
+      await wait('panel', `d.querySelector(${js(fallbackSelector)}).value!==${js(replyText)}`);
+    }
+    await guest('panel', 'w.refuseCopy();return true');
+    await wait('panel', 'w.copySettled');
+    await guest('panel', 'return new Promise(resolve=>w.requestAnimationFrame(()=>w.requestAnimationFrame(resolve)))');
+    check(`clipboard-pending-refusal-retired-on-${invalidation}`, await guest('panel', `return d.querySelector(${js(fallbackSelector)}).hidden && !d.querySelector('${row('task-a')} [data-testid="needs-you-copy-status"]').textContent`));
+  }
+  await evaluate(`qa.locale='en';qa.ready();true`);
+  await wait('panel', `d.querySelector(${js(fallbackSelector)}).value===${js(replyText)}`);
   await tabTo('panel', `${row('task-a')} [data-testid="needs-you-copy-reply"] button`); await key('Escape');
   await wait('panel', `d.activeElement?.matches(${js(open('task-a'))}) && d.activeElement.getAttribute('aria-expanded')==='false'`);
   check('escape-closes-and-restores-focus', true);
