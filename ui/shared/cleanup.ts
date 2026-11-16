@@ -1,6 +1,7 @@
 import type { CleanupAction, CleanupRequest } from './adapter.ts';
 import type { PlanView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
+import { cleanupCall, type ServiceHost } from './source.ts';
 
 const en = {
   changed: 'This plan changed or is no longer available. Progress is being refreshed; review it before trying again.',
@@ -33,17 +34,18 @@ export function cleanupFeedback(message: CleanupMessage, locale = 'en') {
 }
 
 export interface CleanupTarget {
-  key: string; title: string; context: string; request: CleanupRequest;
+  key: string; title: string; lifecycle: PlanView['lifecycle']; context: string; request: CleanupRequest;
 }
 export interface CleanupState {
   target: CleanupTarget | null;
   pending: boolean;
   message: CleanupMessage | null;
   error: boolean;
+  tidy?: TidyState;
 }
 export const initialCleanup = (): CleanupState => ({ target: null, pending: false, message: null, error: false });
 export function cleanupTarget(plan: PlanView, storeId: string, context: string): CleanupTarget {
-  return { key: plan.key, title: plan.title, context, request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
+  return { key: plan.key, title: plan.title, lifecycle: plan.lifecycle, context, request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
 }
 export function cleanupClosed(plan: PlanView) {
   return ['completed', 'cancelled', 'failed'].includes(plan.lifecycle);
@@ -60,4 +62,78 @@ export function cleanupError(code: string, locale = 'en') {
   if (['conflict', 'closed', 'operation-reused', 'not-found'].includes(code)) return text.changed;
   if (code === 'busy') return text.busy;
   return text.uncertain;
+}
+
+export const TIDY_LIMIT = 50;
+export interface TidyConfirmation {
+  context: string;
+  targets: CleanupTarget[];
+  total: number;
+}
+export interface TidyResult {
+  action: 'archive' | 'restore';
+  attempted: number;
+  total: number;
+  succeeded: CleanupTarget[];
+  remaining: CleanupTarget[];
+}
+export interface TidyState {
+  context: string;
+  confirmation?: TidyConfirmation;
+  result?: TidyResult;
+}
+export function tidyEligible(plan: PlanView) {
+  return (plan.lifecycle === 'completed' || plan.lifecycle === 'cancelled') && cleanupEligible('archive', plan);
+}
+/** Only the surface's already listed plans, never a wider library or search. */
+export function tidyConfirmation(plans: PlanView[], storeId: string, context: string): TidyConfirmation {
+  const eligible = plans.filter(tidyEligible);
+  return { context, total: eligible.length, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)) };
+}
+/** No delete path, no blind retries, and a context check before every request. */
+export async function runTidy(host: ServiceHost, action: 'archive' | 'restore', targets: CleanupTarget[], current: () => boolean): Promise<TidyResult> {
+  const succeeded: CleanupTarget[] = [];
+  let attempted = 0;
+  for (const target of targets.slice(0, TIDY_LIMIT)) {
+    if (!current()) break;
+    attempted++;
+    const result = await cleanupCall(host, action, target.request);
+    if (result.ok) succeeded.push({
+      ...target,
+      request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
+    });
+  }
+  const keys = new Set(succeeded.map(t => t.key));
+  return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)) };
+}
+
+const tidyEn = {
+  menu: 'Archive finished and cancelled plans…',
+  heading: 'Archive finished and cancelled plans?',
+  failed: 'Failed plans are kept. You can archive them one at a time.',
+  effect: 'Plans are hidden, not deleted. Their status and history stay unchanged.',
+  cancel: 'Cancel', confirm: 'Archive plans', pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
+  count: (n: number, total: number) => `${n} of ${total} listed finished and cancelled ${total === 1 ? 'plan' : 'plans'} will be archived.`,
+  result: (n: number, total: number, restore: boolean) => `${n} of ${total} ${total === 1 ? 'plan' : 'plans'} ${restore ? 'restored' : 'archived'}.${n < total ? ` ${total - n} could not be confirmed; check the plans before trying again.` : ''}`,
+};
+const tidyRu: typeof tidyEn = {
+  menu: 'Архивировать завершённые и отменённые планы…',
+  heading: 'Архивировать завершённые и отменённые планы?',
+  failed: 'Планы с ошибкой останутся. Их можно архивировать по одному.',
+  effect: 'Планы будут скрыты, но не удалены. Статус и история не изменятся.',
+  cancel: 'Отмена', confirm: 'Архивировать планы', pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
+  count: (n, total) => `Завершённые и отменённые планы в списке: будет архивировано ${n} из ${total}.`,
+  result: (n, total, restore) => `${restore ? 'Восстановлено' : 'Архивировано'} планов: ${n} из ${total}.${n < total ? ` Не удалось подтвердить результат для ${total - n}; проверьте планы перед повторной попыткой.` : ''}`,
+};
+const tidyZh: typeof tidyEn = {
+  menu: '归档已完成和已取消的计划…', heading: '归档已完成和已取消的计划？',
+  failed: '失败的计划会保留，可逐个归档。',
+  effect: '计划只会隐藏，不会删除，状态和历史记录保持不变。',
+  cancel: '取消', confirm: '归档计划', pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
+  count: (n, total) => `将归档列表中 ${total} 个已完成和已取消的计划中的 ${n} 个。`,
+  result: (n, total, restore) => `已${restore ? '恢复' : '归档'} ${total} 个计划中的 ${n} 个。${n < total ? `有 ${total - n} 个计划的操作结果无法确认，请检查后再试。` : ''}`,
+};
+export function tidyCopy(locale = 'en') {
+  const language = resolveLanguage('auto', locale);
+  return language === 'ru' ? tidyRu : language === 'zh-CN' ? tidyZh : tidyEn;
 }

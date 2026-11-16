@@ -44,9 +44,9 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 6. Tidy: bulk archive
 
-- [ ] 6.1 Add the More entry, eligibility (finished and cancelled only), the per-confirmation limit and the inline confirmation with its focus and keyboard rules.
-- [ ] 6.2 Run the bound per-plan archive requests in sequence with context-change stop, one invalidation, the result line, partial-failure reporting and Undo through the restore route.
-- [ ] 6.3 Test against the real cleanup service fixture: failed plans untouched, changed plans skipped, lifecycle and history unchanged after archive and Undo, no delete request possible, capability absent. Add rendered checks at desktop and 390 px in three languages. Update `docs/ui.md` and `docs/contracts.md`; regenerate the rail and board guests.
+- [x] 6.1 Add the More entry, eligibility (finished and cancelled only), the per-confirmation limit and the inline confirmation with its focus and keyboard rules.
+- [x] 6.2 Run the bound per-plan archive requests in sequence with context-change stop, one invalidation, the result line, partial-failure reporting and Undo through the restore route.
+- [x] 6.3 Test against the real cleanup service fixture: failed plans untouched, changed plans skipped, lifecycle and history unchanged after archive and Undo, no delete request possible, capability absent. Add rendered checks at desktop and 390 px in three languages. Update `docs/ui.md` and `docs/contracts.md`; regenerate the rail and board guests.
 
 ## 7. Work Status
 

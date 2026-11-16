@@ -115,6 +115,7 @@ startView<Ui>({
   },
   // No plan cleanup from a source-wide inbox reading.
   actionPlan: (vc) => (vc.ui.inbox ? null : current(vc)),
+  tidyPlans: (vc) => vc.session?.id ? vc.read?.plans ?? [] : [],
   forgetPlans: (keys, ui, vc) => {
     selectionGeneration++;
     recentSelection.deleteWhere((key, session) => {

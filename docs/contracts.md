@@ -1071,6 +1071,27 @@ This additive cleanup contract keeps protocol/base schema **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.
 
+The rail and board's **Archive finished and cancelled plans…** action composes
+these per-plan routes; it adds no bulk service route or capability revision.
+Only already listed, unarchived finished and cancelled plans are eligible, at most
+50 per explicit inline confirmation. Failed plans are kept and may be archived
+one at a time; active plans are never eligible. The confirmation captures every
+target's store/source/plan, progress revision and cleanup generation, lists its
+title and outcome, and gives Cancel initial focus. Opening, Cancel and Escape
+send nothing. Requests run sequentially; a refused/changed plan is not retried
+automatically, and account, store/binding or surface-scope changes stop further
+requests. One final invalidation/re-read reconciles the result, including
+uncertain failures. Only validated archive receipts count as archived.
+
+Undo restores exactly the successful archive receipts of that action through
+the restore route, each bound to the generation returned by its receipt and a
+fresh operation ID. It never widens to other archived plans. Changed or refused
+restores are reported, not treated as success. Archive and Undo preserve lifecycle,
+counts, report history and copied documents. There is no bulk delete path.
+The result and Undo survive the action's reconciliation read and remain until
+the next action or refresh, not a timer. Other surfaces converge through their
+existing refresh cadence; no polling loop or new stored state is introduced.
+
 Authenticated, query-free **POST** `/v1/plan/archive`, `/v1/plan/restore`, and
 `/v1/plan/delete` accept only this JSON body (identifiers use the existing80-character
 identifier rule; revisions are safe nonnegative integers, `rev` strictly positive):

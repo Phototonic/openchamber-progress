@@ -187,11 +187,10 @@ export async function readNeedsYou(host: ServiceHost, request: NeedsYouRequest, 
   }
 }
 
-export async function cleanupCall(host: ServiceHost, action: CleanupAction, request: CleanupRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {
+export async function cleanupCall(host: ServiceHost, action: CleanupAction, request: CleanupRequest): Promise<{ ok: true; cleanup: ReturnType<typeof parseCleanupReceipt> } | { ok: false; failure: ReadFailure }> {
   try {
     const body = await call(host, `${ROUTES.plan}/${action}`, undefined, 'POST', cleanupBody(request, action));
-    parseCleanupReceipt(body, request, action);
-    return { ok: true };
+    return { ok: true, cleanup: parseCleanupReceipt(body, request, action) };
   } catch (error) { return { ok: false, failure: classify(error) }; }
 }
 
