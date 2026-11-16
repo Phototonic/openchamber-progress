@@ -51,7 +51,7 @@ test('archive/restore preserve snapshots and documents; deletion removes only se
 test('preflight rejects unsafe inputs without extension/backup; first backup is private and verified; disabled capture stays disabled',()=>{
   const f=cleanupFixture();try{
     const initial=readdirSync(`${f.root}/store`);
-    for(const plan of ['P-active','P-cancelled','P-failed'])assert.throws(()=>f.store.cleanup('archive',f.body(plan,0,'x',plan==='P-active'?1:2)),code('closed'));
+    assert.throws(()=>f.store.cleanup('archive',f.body('P-active',0,'x',1)),code('closed'));
     for(const value of [{...f.body(),storeId:'wrong'},{...f.body(),rev:1},{...f.body(),cleanupRev:1}])assert.throws(()=>f.store.cleanup('archive',value),code('conflict'));
     for(const value of [{...f.body(),confirmed:false},{...f.body(),extra:true},{...f.body(),plan:['P-done']},{...f.body(),oid:'x'.repeat(81)},{...f.body(),cleanupRev:-1}])assert.throws(()=>f.store.cleanup('delete',value),code('invalid'));
     assert.deepEqual(readdirSync(`${f.root}/store`),initial);assert.equal(f.store.db.prepare("SELECT name FROM sqlite_master WHERE name='cleanup_state'").get(),undefined);

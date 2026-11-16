@@ -61,7 +61,7 @@ function preflight(db:DatabaseSync,action:CleanupAction,r:CleanupRequest,install
   need(row.revision===r.rev,'conflict');
   let p;try{p=JSON.parse(String(row.snapshot));}catch{throw new ProgressError('corrupt');}
   need(p.id===r.plan&&p.sourceId===r.source&&p.revision===r.rev,'corrupt');
-  need(p.lifecycle==='finished','closed');
+  need(['finished','cancelled','failed'].includes(p.lifecycle),'closed');
   need(action==='restore'?state?.state==='archived':action==='delete'||!state||state.state==='visible','closed');
 }
 

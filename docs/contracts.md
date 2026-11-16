@@ -492,8 +492,8 @@ No new polling owner or subscription budget is introduced.
 
 Current attention requires a visible active plan and an explicitly blocked task.
 Finish/cancel/fail stop it without converting leftover task statuses to acceptance.
-Archive/delete cannot supply current attention; restore leaves a finished plan
-finished. Explicit reopening uses existing semantics and current reports only.
+Archive/delete cannot supply current attention; restore preserves the plan's closed
+lifecycle. Explicit reopening uses existing semantics and current reports only.
 One row represents each store/source/plan/task identity, without cross-plan
 text/title deduplication. Complete active empty detail may say “No reported
 blockers”; partial, loading, unavailable, stale and capture-off data cannot make
@@ -1021,7 +1021,7 @@ consumer's live identity/cleanup checks and cannot authorize review by itself.
 No backend checkpoint, mutation, filesystem capture, schema change or cache is
 introduced. List/detail/history routes do not invoke digest comparison.
 
-## Finished-plan cleanup (frozen additive contract)
+## Closed-plan cleanup (additive contract)
 
 This additive cleanup contract keeps protocol/base schema **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
@@ -1041,9 +1041,10 @@ the selected record, not these illustrative values. No paths, arrays, wildcard,
 session changes or unknown fields are accepted. Confirmation must remain bound to
 that captured key/revisions across context changes. Opening/cancelling sends nothing.
 
-Archive is the ordinary action; only lifecycle `finished` is eligible. Restore
-requires archived+finished and leaves it finished; deletion accepts visible or
-archived finished plans. Counts, report age and immutable progress history do not
+Archive is the ordinary action; closed lifecycles `finished`, `cancelled` and `failed`
+are eligible. Restore requires an archived closed plan and preserves its lifecycle;
+deletion accepts visible or archived closed plans. Active plans are ineligible.
+Counts, report age and immutable progress history do not
 change on archive/restore. Cleanup works while capture is disabled without enabling it.
 
 Success200 is a bounded receipt, not a plan or progress revision:
@@ -1066,7 +1067,7 @@ Errors are code-only; no submitted values or exception text is returned:
 | --- | --- |
 |400|`{"error":"invalid"}` malformed, extra fields, missing/false confirmation|
 |409|`{"error":"conflict"}` wrong store, stale progress revision or cleanup generation|
-|409|`{"error":"closed"}` non-finished plan or ineligible state transition|
+|409|`{"error":"closed"}` active plan or ineligible state transition|
 |409|`{"error":"operation-reused"}` latest oid with altered semantic input/action|
 |404|`{"error":"not-found"}` missing/deleted key, unknown route or query|
 |401/405|`{"error":"unauthorized"}` / `{"error":"method-not-allowed"}`|

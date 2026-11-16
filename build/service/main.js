@@ -1224,7 +1224,7 @@ function preflight(db, action, r, installed) {
     throw new ProgressError("corrupt");
   }
   requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
-  requireProgress(p.lifecycle === "finished", "closed");
+  requireProgress(["finished", "cancelled", "failed"].includes(p.lifecycle), "closed");
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {

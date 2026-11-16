@@ -728,7 +728,7 @@ mixed-writer and independent claim/acceptance/task semantics.
 
 ## Storage and document consistency
 
-Finished-plan cleanup is the bounded exception to default history retention;
+Closed-plan cleanup is the bounded exception to default history retention;
 see the frozen API and fixture in `docs/contracts.md`. `shared/cleanup.ts` extends
 the existing Store owner, not a second storage engine. Cleanup format1 is additive
 to schema2 without changing legacy columns/order or stored snapshots. First-use
