@@ -18,10 +18,19 @@ jobs:
     name: Select check execution
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
+      # Pull requests only: the file list decides whether a docs-only change
+      # can skip the check jobs.
+      - name: Get source code
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - id: decide
         shell: bash
         env:
@@ -29,11 +38,31 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # Actions string comparisons ignore case; Bash matches literal branch names.
         run: |
           run=true
           if [[ "$EVENT_NAME" == pull_request && "$HEAD_REPOSITORY" == "$REPOSITORY" && ( "$HEAD_REF" == main || "$HEAD_REF" == dev ) ]]; then
             run=false
+          fi
+          # A pull request that only changes documentation or OpenSpec text skips
+          # the check jobs. Packaged or test-read files, any other path, an empty
+          # list or a failed listing keep every check.
+          if [[ "$run" == true && "$EVENT_NAME" == pull_request && -n "${BASE_SHA:-}" && -n "${HEAD_SHA:-}" ]]; then
+            if files=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" 2>/dev/null) && [[ -n "$files" ]]; then
+              docs_only=true
+              while IFS= read -r file; do
+                case "$file" in
+                  docs/setup.md|docs/tracking.md|openspec/changes/archive/*) docs_only=false ;;
+                  docs/*|openspec/*|README.md|CONTRIBUTING.md|AGENTS.md|.github/PULL_REQUEST_TEMPLATE.md) ;;
+                  *) docs_only=false ;;
+                esac
+              done <<< "$files"
+              if [[ "$docs_only" == true ]]; then
+                run=false
+              fi
+            fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
   analyze:

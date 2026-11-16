@@ -326,7 +326,8 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert.equal((text.match(/cancel-in-progress:/g)??[]).length,4);
   assert.equal((text.match(/cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/g)??[]).length,3);
   assert.match(text,/publish:\n(?:    [^\n]*\n)*?    concurrency:\n      group: publish-v[^\n]+\n      cancel-in-progress: false/);
-  assert.equal((text.match(/persist-credentials: false/g)??[]).length,4);
+  // Every checkout, including the pull-request gate's file listing, drops credentials.
+  assert.equal((text.match(/persist-credentials: false/g)??[]).length,5);
   assert.equal((text.match(/name: tested-release-\$\{\{ github.sha \}\}/g)??[]).length,2);
   assert.match(text,/ref: \$\{\{ github.sha \}\}/);
   assert.match(text,/needs.portable.outputs.eligible == 'true'/);
