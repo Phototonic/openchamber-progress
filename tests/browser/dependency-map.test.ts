@@ -154,7 +154,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
     let railSpec: any, choosePlan: (key: string) => void = () => {}, preferenceReads = 0;
     const preferences: ((value: string) => void)[] = [];
     const node = () => ({ dataset: {}, append() {} });
-    const components = new Proxy({}, { get: (_target, name) => name === 'ProgressShell' ? class { paint() { return false; } reset() {} } : name === 'planPicker' ? (options: { onChange: typeof choosePlan }) => { choosePlan = options.onChange; return node(); } : name === 'testid' ? (n: unknown) => n : name === 'failureFacts' ? () => [] : () => node() });
+    const components = new Proxy({}, { get: (_target, name) => name === 'ProgressShell' ? class { paint() { return false; } reconcile() {} reset() {} } : name === 'planPicker' ? (options: { onChange: typeof choosePlan }) => { choosePlan = options.onChange; return node(); } : name === 'testid' ? (n: unknown) => n : name === 'failureFacts' ? () => [] : () => node() });
     runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/panel/main.ts', import.meta.url), 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText, { exports: {}, require: (name: string) => {

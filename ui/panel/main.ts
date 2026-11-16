@@ -106,8 +106,9 @@ startView<Ui>({
   needsYou: 'rows',
   prepareUi: (vc) => {
     const plan = current(vc), scope = `rail:${vc.session?.id ?? ''}`;
+    const settling = plan ? viewChoice.identify(viewReadingKey(vc, scope, plan)).pending : false;
     let decision = resolveDefaultView(viewChoice, vc, scope, plan);
-    if (plan && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, scope, plan), 'list');
+    if (plan && settling && !decision.pending && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, scope, plan), 'list');
     const presentation = decision.view === 'map' ? 'map' : 'list';
     return vc.ui.presentation === presentation ? null : { presentation };
   },
@@ -174,6 +175,7 @@ startView<Ui>({
     const language = resolveLanguage('auto', env.locale), t = messages[language];
     // Map work belongs to the selected session's reading of its plan, and runs only while Map is shown.
     const shown = vc.ui.inbox ? null : current(vc), session = vc.session?.id;
+    if (!vc.ui.inbox) shell.reconcile(vc, shown);
     const mapShown = vc.ui.presentation === 'map' && !!shown && !!session && !shell.activePanel;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));

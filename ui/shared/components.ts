@@ -576,6 +576,11 @@ export class ProgressShell {
   private review: { key: string; revision: number | null } | null = null;
   reset() { this.key = ''; this.panel = null; this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null; }
   get activePanel() { return this.panel; }
+  /** Reconcile selection before callers decide which view is active, not only during paint. */
+  reconcile<U>(vc: ViewContext<U>, plan: PlanView | null, options: { board?: boolean; scope?: string } = {}) {
+    const key = JSON.stringify([vc.ctx.connection?.account, vc.identity, options.board ? null : vc.session?.id, options.scope, plan?.key]);
+    if (key !== this.key) { this.reset(); this.key = key; }
+  }
   showView<U>(vc: ViewContext<U>) { this.panel = null; vc.setUi({}); }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
@@ -590,8 +595,8 @@ export class ProgressShell {
     menuActions?: PlanAction[];
     openPanel?: (kind: SurfacePanel) => void;
   }) {
-    const key = JSON.stringify([vc.ctx.connection?.account, vc.identity, options.board ? null : vc.session?.id, options.scope, plan?.key]);
-    if (key !== this.key) { this.reset(); this.key = key; }
+    this.reconcile(vc, plan, options);
+    const key = this.key;
     this.menu?.dispose();
     const t = shellCopy(vc.env.locale);
     const detail = plan ? vc.detail(plan) : null;

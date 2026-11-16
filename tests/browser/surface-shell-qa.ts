@@ -65,6 +65,8 @@ try {
     await click(surface, '[data-testid="surface-panel-back"] button');
     await wait(surface, `!d.querySelector('[data-testid="surface-panel-heading"]') && d.activeElement?.dataset.testid==='more-trigger'`);
   };
+  // Focused iteration mode; the ordinary invocation still runs the full shell matrix.
+  if (!process.argv.includes('--review-only')) {
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture.port}/` });
   await wait('panel', `!!d.querySelector('[data-testid="more-trigger"]')`);
   // Only fixture chrome changes here, never guest styles or control state.
@@ -146,6 +148,7 @@ try {
   await click('panel', '[data-testid="more-trigger"]'); await click('panel', '[data-menu-id="language"]');
   check('unsupported-language', await guest('panel', `return [...d.querySelectorAll('[role="menuitemradio"]')].every(n=>n.disabled)`));
   check('no-guest-errors', browser.page.errors.length === 0, browser.page.errors);
+  }
   // Map order uses the real service fixture; no R/N/M behaviour is substituted here.
   maps = await startPhoneShell({ source: process.argv.includes('--source') });
   await c.send('Page.navigate', { url: `http://127.0.0.1:${maps.port}/` });
@@ -156,6 +159,31 @@ try {
     check(`${surface}-${size}-map-order`, await guest(surface, `const h=d.querySelector('[data-testid="surface-header"]'),m=d.querySelector('[data-testid="map-region"]'),n=d.querySelector('[data-testid="needs-you-inbox"]');return !!h && !!m && !!(h.compareDocumentPosition(m)&4) && (!n || !!(m.compareDocumentPosition(n)&4))`));
     await guest(surface, 'w.scrollTo(0,0);return true'); await shot(`${surface}-${size}-map`);
   }
+  // Settled automatic Map choices survive a resize; only a new narrow reading defaults to List.
+  for (const surface of ['panel', 'page']) {
+    await viewport(280);
+    await evaluate(`qa.show(${js(surface)},280,844);qa.ready(${js(surface)});true`);
+    await guest(surface, 'return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
+    check(`${surface}-settled-map-survives-resize`, await guest(surface, `return !!d.querySelector('[data-testid="map-world"]') && d.querySelector('[data-testid="plan-view-map"] button')?.getAttribute('aria-pressed')==='true'`));
+    await shot(`${surface}-resized-map`);
+  }
+  // Both plans are cached Map readings. A panel on B must not pause A's first Map paint.
+  await viewport(390);
+  await evaluate(`qa.show('panel',390,844);true`);
+  await click('panel', '[data-testid="plan-selector"] button');
+  await click('panel', '[role="option"][id$="/P-second"]');
+  await wait('panel', `!!d.querySelector('[data-testid="map-world"]') && d.querySelector('[data-testid="plan-title"]')?.textContent.includes('Второй план')`);
+  await click('panel', '[data-testid="more-trigger"]');
+  await click('panel', '[data-menu-id="document"]');
+  await wait('panel', `!!d.querySelector('[data-testid="surface-panel-document"]')`);
+  await click('panel', '[data-testid="plan-selector"] button');
+  await click('panel', '[role="option"][id$="/P-phone"]');
+  await wait('panel', `d.querySelector('[data-testid="plan-title"]')?.textContent.includes('Phone layout') && d.querySelector('[data-testid="plan-view-map"] button')?.getAttribute('aria-pressed')==='true'`);
+  const switched = await guest('panel', `return {world:!!d.querySelector('[data-testid="map-world"]'),list:!!d.querySelector('.ap-tasks[data-complete]'),panel:!!d.querySelector('[data-testid="surface-panel-document"]'),map:d.querySelector('[data-testid="map-region"]')?.dataset.state??null}`);
+  check('rail-cached-map-first-paint', switched.map !== null && !switched.list && !switched.panel, switched);
+  await wait('panel', `!!d.querySelector('[data-testid="map-world"]') && d.querySelector('[data-testid="map-region"]')?.dataset.state==='ready'`);
+  check('rail-cached-map-after-another-plan-panel', await guest('panel', `return !d.querySelector('.ap-tasks[data-complete]') && !d.querySelector('[data-testid="surface-panel-document"]')`));
+  await shot('panel-cached-map-after-panel');
   for (const surface of ['panel', 'page']) {
     await viewport(390);
     await evaluate(`qa.show(${js(surface)},390,844);true`);
@@ -170,6 +198,36 @@ try {
     await wait(surface, `!!d.querySelector('[data-testid="map-world"]')`);
     check(`${surface}-narrow-map-selectable`, true);
   }
+  // The source-wide inbox is not owned by a selected browse/search plan.
+  await viewport(390);
+  await evaluate(`qa.show('page',390,844);true`);
+  const submitSearch = async (text: string) => {
+    await click('page', '#ap-search-q');
+    await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
+    await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
+    await c.send('Input.insertText', { text }); await key('Enter');
+  };
+  await submitSearch('fixture-no-matching-result');
+  await wait('page', `!!d.querySelector('[data-testid="search-empty"]') && !!d.querySelector('[data-testid="search-pick"]')`);
+  check('board-empty-search-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-inbox"] .ap-inbox-open')`));
+  await shot('page-empty-search-inbox');
+  await click('page', '.ap-inbox-open');
+  await wait('page', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready'`);
+  await click('page', '[data-testid="needs-you-back"]');
+  await wait('page', `!!d.querySelector('[data-testid="search-pick"]')`);
+  await submitSearch('phone');
+  await wait('page', `!!d.querySelector('[data-testid^="search-plan-"][data-testid$="/P-phone"]')`);
+  await click('page', '[data-testid^="search-plan-"][data-testid$="/P-phone"]');
+  await wait('page', `!!d.querySelector('[data-testid="surface-header"]') && !d.querySelector('[data-testid="search-pick"]')`);
+  check('board-search-omits-browse-picker', await guest('page', `return !d.querySelector('[data-testid="plan-selector"]')`));
+  await shot('page-search-plan-no-picker');
+  await click('page', '[data-testid="search-clear"] button');
+  await wait('page', `!d.querySelector('[data-testid="search-results"]')`);
+  await click('page', '[data-testid="board-filters-trigger"]');
+  await click('page', '[data-testid="cleanup-archived"] button');
+  await wait('page', `!!d.querySelector('[data-testid="empty-state"]')`);
+  check('board-empty-archived-keeps-inbox', await guest('page', `return !!d.querySelector('[data-testid="needs-you-inbox"] .ap-inbox-open')`));
+  await shot('page-empty-archived-inbox');
   check('no-final-guest-errors', browser.page.errors.length === 0, browser.page.errors);
 } catch (error) { failure = String(error); }
 finally {

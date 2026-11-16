@@ -101,6 +101,13 @@ test('panel state is frame-local and resets on plan or authority changes', () =>
   f.vc.identity = 'another-store';
   assert.equal(f.paint(f.plan).opened, false);
 });
+test('shell reconciliation retires another plan panel before view visibility is computed', () => {
+  const f = fixture(); f.paint(f.plan); f.menus.at(-1).onSelect('document');
+  f.shell.reconcile(f.vc, f.plan, f.options);
+  assert.equal(f.shell.activePanel, 'document', 'a repaint of the same reading keeps its panel');
+  f.shell.reconcile(f.vc, { ...f.plan, key: 'source/another-plan' }, f.options);
+  assert.equal(f.shell.activePanel, null, 'the new reading is usable before paint');
+});
 test('narrow default uses an allocated viewport, not a hidden frame provisional width', () => {
   const f = fixture();
   f.window.innerWidth = 280;

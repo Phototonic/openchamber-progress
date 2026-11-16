@@ -242,8 +242,9 @@ startView<Ui>({
   needsYou: 'rows',
   prepareUi: (vc) => {
     const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
+    const settling = plan ? viewChoice.identify(viewReadingKey(vc, readingScope(vc), plan)).pending : false;
     let decision = resolveDefaultView(viewChoice, vc, readingScope(vc), plan);
-    if (plan && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, readingScope(vc), plan), 'list');
+    if (plan && settling && !decision.pending && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, readingScope(vc), plan), 'list');
     const tab = decision.view === 'list' ? 'progress' : decision.view;
     return vc.ui.tab === tab ? null : { tab };
   },
@@ -307,6 +308,7 @@ startView<Ui>({
     if (!ui.search && search.active) search.clear();
     // The map belongs to the selected plan's reading; graph work runs only while Map is the shown tab.
     const mapPlan = read && !ui.inbox ? selectedPlan(vc) : null;
+    if (!ui.inbox) shell.reconcile(vc, mapPlan, { board: true, scope: readingScope(vc) });
     boardMap.sync(vc, mapPlan, readingScope(vc), ui.tab === 'map' && !!mapPlan && !shell.activePanel);
     root.append(el('h1', 'ap-sr', t.heading));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
@@ -760,14 +762,18 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
 
 /** Footer zone: collapsed Setup and Details, after the progress story. */
 function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
-  if (!plan) surface(root, vc, null);
+  if (!plan) {
+    surface(root, vc, null);
+    // The held inbox is source-wide, independent of search/browse selection.
+    if (vc.inbox) root.append(inboxSection(vc.inbox, vc.env, { open: row => openInbox(vc, row), stale: vc.failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
+  }
 }
 
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   const t = copy(vc.env.locale);
   const claim = () => reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure });
   const plans = visiblePlans(vc);
-  const picker = plan && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, value: plan.key, locale: vc.env.locale, options: plans.map(p => ({ id: p.key, label: p.title })), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
+  const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, value: plan.key, locale: vc.env.locale, options: plans.map(p => ({ id: p.key, label: p.title })), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
   if (picker) picker.classList.add('ap-board-picker');
   return shell.paint(root, vc, plan, {
     board: true, scope: readingScope(vc), picker,
