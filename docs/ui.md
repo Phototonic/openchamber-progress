@@ -494,7 +494,7 @@ One calm progress story per plan, built from the shared canonical projection (`p
 
 A concise account of completed tasks, reported blockers and scope changes between the revision a person last **marked reviewed** and a pinned target, from the frozen `/v1/change-digest` read (`docs/contracts.md`). Only the board's History tab shows it, above Revisions; the rail and Work Status stay unchanged and never read a digest or review point (a confirmed delete there only removes that plan's markers). Nothing here changes tasks, revisions, documents or service rows.
 - **Explicit review (owner decision).** Only a real keyboard/pointer activation (trusted click/Enter/Space) of **Mark reviewed** on a loaded, visible digest acknowledges, and only its **displayed** target. Mounting, polls, repaints, hidden frames, focus return, dwell, list/detail/history reads and script clicks never do. Before writing, one bounded live read (the first `/v1/plan` page only, no cursors) rechecks store/binding/plan, cleanup state/generation and lifecycle; a moved plan asks for Refresh, a deleted one (404) retires the digest. A newer progress revision does not move the target: the older displayed revision is saved and the rest stays for the next digest. A higher acknowledgement from another window is never rewound ("Already reviewed through revision N"). Pending disables repeats; no automatic retry; repeating the same acknowledgement is safe. Initial and partial digests can be marked; partial ones say that earlier uncompared changes won't be recovered.
-- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. Review points and the independent interface-language preference are persisted exceptions; task filters, focus and disclosures remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
+- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. Review points, interface language and the three bounded view-state fields described under Needs you are persisted exceptions; task filters and focus remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
 - **Integration account and existing points.** SDK `connection.account` describes integration-link state, not a signed-in host user. Its value is retained in the review-point identity as a preference partition, not a security boundary. A changed value selects a different set of markers; an empty or missing value uses the same explicit `null` sentinel. Returning to a previous value makes its saved points available again. The version-1 format is unchanged, so existing points remain readable without migration. Keys are `rv1.<sha256 of the versioned tuple (integration account or absent sentinel, store, binding source + verified, source, plan)>.<revision>` (≤ 86 characters); values are `{v, id, revision}` only, never titles or digest text. Readers enumerate keys once (bounded by the SDK's 2,000) and validate only the highest of their context; an older writer's key cannot overwrite a newer one; after a successful write only lower revisions of the same context are compacted.
 - **Storage failures.** Unsupported feature, denied access, quota, unreadable/malformed highest record or persistent disagreement (one bounded reread) is **checkpoint unavailable**, never an initial view, and disables Mark reviewed; a failed write keeps the previous point and stays retryable.
 - **Pinned visit.** Entering History reads the checkpoint, then one digest for the listed revision (a checkpoint ahead of a lagging list gets one live read first; still ahead is unavailable, never a reversed interval). Unchanged polls and repaints do no digest work; a newer revision shows "Newer changes are available" and **Refresh digest**, never replacing text under the reader. Refresh is one coalesced checkpoint + digest sequence. Visible/focus return rereads only the checkpoint and marks a newer acknowledgement ("Reviewed through revision N in another window or tab") with Refresh. At most the active visit is cached.
@@ -711,9 +711,12 @@ the default mode retains adversarial mock and localized/touch checks.
 
 ## Needs you inbox
 
-The rail starts with a **Needs you** inbox, above the selected session's plans;
-the board places the same inbox before its list/search content. It spans all
-current plans in the verified source, not just the chosen session or board filter.
+The **Needs you** inbox follows Map or List. The rail and Work Status count the
+current session's plans, including plans it helps with; the board counts the
+selected plan. The same source-wide read supplies these partitions, board
+plan-row counts and the explicit **All plans** scope. With nothing in the default
+scope, a quiet “N need you in other plans” control stays reachable, including
+empty search results and empty Archived browsing. Only choosing it widens scope.
 Only current decision/review details reported by the plan's main session enter
 Needs you, and only when its recorded identity positively establishes that it has
 no parent session. A top-level main session's relay counts; direct sub-agent
@@ -722,24 +725,30 @@ status does not count. Membership uses `shared/needs-you.ts`'s pure predicate;
 `model.ts` exposes `itemNeedsYou` for plan-task consumers. The List's neutral
 Blocked group and Map's Explicitly blocked label remain unchanged, including all
 excluded tasks and their literal reason, next step and waiting time.
-**Also blocked**
-is a separate, initially collapsed disclosure of other reported blockers: dependency/external/other waits,
-unknown categories, tasks with no usable details, and excluded sub-agent waits. These are reported waits,
-not inferred obligations or proof that the viewer must act.
+**Also blocked** is only a quiet count, not another inbox list. It includes
+dependency/external/other waits, unknown categories, tasks without usable details
+and excluded sub-agent waits. Their literal details remain on List and Map.
 
-Rows name the plan and task, reported category, reason, next step and reported
-waiting time. Missing facts say Unknown; invalid details never expose rejected
-text. The compact list can expand its loaded rows. Complete observed counts show
-N; partial coverage shows N+ and explains that only some plans were checked. A
-complete empty first group says "Nothing needs you right now." Incomplete empty
-coverage never claims that nothing needs attention. Gaps, stale reads and capture
-off stay qualified; unavailable/older services show an unavailable note, not zero.
+The rail starts collapsed; the board starts expanded. Collapsed, one button
+exposes its state, count and longest known wait. Expanded, each item names its
+task, kind and history-derived wait; All plans adds the plan title. One item opens
+in place at a time, quoting the agent's reason and request without translation.
+Missing facts stay Unknown. Escape closes it and returns focus to its row.
+Where that plan is shown, its task is also selected on Map or revealed in List;
+there is no separate pinned “Opened from Needs you” reading.
+
+Counts show N only after a complete ungapped traversal (and complete session
+plan list); otherwise N+. An unchanged completed traversal retains exactness
+while being rechecked; changed, failed or retired reads withdraw it. Rechecking
+uses a busy mark, not another sentence. Complete empty rail scope with nothing
+else waiting has no visible inbox line. An incomplete zero never claims empty.
+Failed, unverified and unsupported reads keep their own line rather than zero.
 
 The **Work Status line** comes before the featured plan. It says "N tasks need
 you", "At least N tasks need you", or "Nothing needs you", and opens the rail
 without a task payload or automatic host-session navigation. An unreadable,
 unverified or unsupported inbox has no Work Status line. The line's count is
-source-wide; stale and capture-off qualifiers stay on this line even without a
+session-scoped and excludes device-hidden items; stale and capture-off qualifiers stay on this line even without a
 featured plan. The plan card's **Blocked** chip remains plan-local.
 
 Health must advertise exactly `needsYouInbox:1`. The first window rides on the
@@ -748,8 +757,10 @@ frame's existing first list-page read (`needsYou=1`); rail and board add
 summary on an unverified binding: the ordinary list remains readable and the
 inbox reports unavailable. During board search, the first search-freshness batch
 of each existing refresh cycle carries and adopts one inbox window instead.
-There is no extra timer or inbox poll. **Check more plans** explicitly
-requests `/v1/needs-you`, pinned to store/source and timing mode. Person-facing
+There is no extra timer or inbox poll. A successful ordinary refresh can request
+one further `/v1/needs-you` window, up to eight automatic windows per traversal;
+after that **Load more** requests one window per activation. Every window keeps
+the existing store/source, timing and cost bounds. Person-facing
 counts derive from the distinct held rows using the shared membership predicate,
 not the wire's category-only cumulative counts (which remain validated for
 compatibility). Missing `mainSessionKind` on an older service's rows makes Needs
@@ -758,12 +769,8 @@ classifies those rows or claims empty. Explicit `unknown` is a supplied fact and
 keeps the task in Also blocked. An upgrade reclassifies existing stored blockers
 on the first read without changing the stored report. On unchanged first-window refreshes, loaded
 pages are re-traversed from its cursor, replacing at most one continuation page
-per refresh. Rows stay readable under a **Rechecking loaded plans** notice; until
-the traversal finishes, only the first window's counts have authority, shown as
-"at least" with the existing partial wording. No new pages load automatically,
-and explicit continuation waits for rechecking to finish. Failed rechecks show the
-existing failure message and a waiting-for-refresh notice instead of claiming an
-active check. They remain partial and retry only on the existing refresh cadence;
+per refresh. Rows stay readable. Failed rechecks keep a failure line and qualified
+counts and retry only on the existing refresh cadence;
 hiding retires held reads and restarts rechecking from the first cursor. An unchanged
 refresh preserves an unfinished explicit continuation, but its page joins the bounded
 recheck sweep before its counts can become exact. Changed first windows (including cursor-only
@@ -771,31 +778,42 @@ changes), a changed continuation cursor, identity changes or a continuation 409 
 visibly starts again rather than splicing revisions. Waiting labels reuse the
 frame's monotonic label ticker.
 
-Opening a row reads current plan detail in place, labels it **Opened from Needs
-you** (or Also blocked), reveals the canonical task, and focuses it. It does not
-approve, resolve, settle, reassign or open another host session. The reading is
-pinned to observed identity. On the existing successful refresh cadence, its
-current plan head rechecks existence, revision and cleanup independently of
-inbox membership; changed heads re-read detail, unchanged heads retain it. Head
-reads are single-flight per reading identity (including its opening token), with
-one coalesced follow-up; retired or superseded replies never replace current detail.
-An intervening poll does not discard a still-current successful head: it can advance
-detail before the follow-up, even when every head read outlasts the poll interval.
-Older revisions and replies overtaken by a newer detail failure cannot revive it.
-Data-only cache resets retain that reading's reveal-once token, so recovery never
-re-reveals or refocuses its task. Removed or
-no-longer-blocked work is explained. **Back to session progress** returns focus to
-the opener when available, reopening Also blocked before focusing its row,
-otherwise the inbox heading. Board reading occupies
-the detail pane. No report/status write is added.
+**Open session** asks the host to open the plan's main session, only when the
+verified-source and host-listed-session gate holds. Otherwise the action is
+absent and one line says the session is unavailable. **Copy reply** copies a short
+localized frame with literal task and plan titles and an empty line. Confirmation
+follows clipboard acceptance; failure exposes the same selectable text. Neither
+action sends a message, drafts one, resolves a task or changes any progress.
+
+**Hide** is offered only with readable host device storage. It excludes the
+item from counts on this device, offers Undo, and is keyed by store, source,
+plan, task and blocker-details report revision. New details make it return;
+unrelated plan reports do not. The expanded inbox and More show the hidden count
+and a way to show/unhide items.
+
+`device-view-state.ts` stores exactly three versioned view fields in SDK device
+storage: hidden identities (200 maximum, oldest dropped, stale identities pruned
+after a complete traversal), rail/board expansion, and one indicator-dismissal
+identity per surface for the incomplete-count owner. No browser fallback,
+server state, new refresh channel or progress write is used. Malformed reads
+fall back to defaults without repair; failed writes are not confirmed. Hosts
+without device storage keep expansion/dismissal frame-local and offer no Hide.
+Other frames converge on their existing refresh. People sharing a browser
+profile/runtime/installation share these choices; this is not per-person or
+cross-device isolation. All other inbox scope, opened-item and hidden-list
+disclosures remain frame-local.
 
 QA hooks: `needs-you-inbox` (`data-availability`), `needs-you-heading`,
 `needs-you-count` (`data-count`, `data-exact`), `needs-you-row` (`data-task`,
 `data-row`), `needs-you-category`, `needs-you-reason`, `needs-you-next`,
 `needs-you-wait` (`data-timing`), `also-blocked` (`data-count`),
-`needs-you-expand`, `needs-you-more`, `needs-you-partial`, `needs-you-gapped`,
-`needs-you-restarted`, `needs-you-unavailable`, `needs-you-line`,
-`needs-you-reading`, `needs-you-back` and `needs-you-reading-status`.
+`needs-you-toggle`, `needs-you-content`, `needs-you-scope`,
+`needs-you-scope-current`, `needs-you-scope-all`, `needs-you-other-plans`,
+`needs-you-open-session`, `needs-you-copy-reply`, `needs-you-copy-status`,
+`needs-you-copy-fallback`, `needs-you-hide`, `needs-you-undo-hide`,
+`needs-you-hidden-count`, `needs-you-hidden-row`, `needs-you-unhide`,
+`needs-you-device-error`, `needs-you-more`, `needs-you-unavailable`,
+`needs-you-line` and `plan-needs-you-count`. The More entry is `more-needs-you-hidden`.
 Historical per-plan `needs-you-*` hooks remain stable despite the Blocked rename.
 On a phone-sized frame the inbox follows Phone layout: the guests apply the
 host's device hints, and coarse-pointer inbox targets are at least 44 px. The

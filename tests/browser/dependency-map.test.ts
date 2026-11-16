@@ -165,6 +165,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/refresh.ts')) return refresh;
       if (name.endsWith('/default-view.ts')) return defaultView;
       if (name.endsWith('/reporting-health.ts')) return { ReportingHealth: class {} };
+      if (name.endsWith('/inbox-view.ts')) return { CompactInbox: class {}, hiddenInboxAction: () => [] };
       if (name.endsWith('/i18n.ts')) return i18n;
       if (name.endsWith('/components.ts')) return components;
       // S5 wires the shared map into the production rail. This preference-owner test stubs only

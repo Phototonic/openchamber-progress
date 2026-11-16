@@ -1,12 +1,13 @@
 // Needs you inbox controller: one per frame, owned by the shared frame controller (app.ts).
 // - the first window rides on the frame's ordinary list read (no extra request, timer or poll)
-// - new windows load explicitly; loaded windows are rechecked one per ordinary refresh
+// - one continuation per ordinary refresh, up to eight automatic windows per traversal
 // - an unchanged window keeps its timing anchors and object, so a poll repaints nothing
 // - a changed first window, a 409 or an identity change restarts continuation visibly
 // - reported state only: nothing here writes, settles, assigns or navigates the host
 import { isNeedsYou, NEEDS_YOU_LIMITS } from '../../shared/needs-you.ts';
 import type { InboxRowView, InboxTaskTarget, InboxWindowView, PlanView } from './model.ts';
 import { readNeedsYou, type InboxFirst, type ReadFailure, type ServiceHost } from './source.ts';
+import { hiddenItemKey, type DeviceViewState } from './device-view-state.ts';
 
 export type InboxAvailability = 'ready' | 'unsupported' | 'unverified' | 'missing' | 'invalid';
 
@@ -37,6 +38,25 @@ export interface InboxPanel {
   model: InboxModel;
   more: () => void;
   expand: (open: boolean) => void;
+  device?: DeviceViewState;
+  storeId?: string;
+}
+
+/** A held source-wide read is partitioned without another service read. Hidden details are
+ * excluded before scope counts, including counts shown beside individual board plans. */
+export function scopeInbox(model: InboxModel, keys: ReadonlySet<string> | null, complete: boolean, device?: DeviceViewState, store = '') {
+  const hidden = model.needsYou.filter(r => device?.hidden(hiddenItemKey(store, r)));
+  const visible = model.needsYou.filter(r => !hidden.includes(r));
+  const inside = (r: InboxRowView) => keys === null || keys.has(r.planKey);
+  const needsYou = visible.filter(inside), alsoBlocked = model.alsoBlocked.filter(inside);
+  // During a changed/failed recheck the controller's count-authoritative rows are the
+  // prefix from its refreshed first window. Retained later rows stay readable, not countable.
+  const counted = model.needsYou.slice(0, model.counts.needsYou).filter(r => !hidden.includes(r));
+  return { model: { ...model, needsYou, alsoBlocked, counts: {
+    needsYou: counted.filter(inside).length,
+    alsoBlocked: model.alsoBlocked.slice(0, model.counts.alsoBlocked).filter(inside).length,
+  }, complete: model.complete && complete },
+    hidden: hidden.filter(inside), other: counted.filter(r => !inside(r)).length };
 }
 
 const rowSignature = (r: InboxRowView) => [r.rowKey, r.revision, r.structuralRevision, r.cleanupRev, r.planTitle, r.task.title, r.group, r.mainSessionKind, r.coordinatorSessionId, r.blocker, r.ancestors, r.omittedAncestors, r.wait ? [r.wait.kind, r.wait.since] : null];
@@ -54,6 +74,7 @@ interface InboxDeps {
   visible: () => boolean;
   changed: () => void;
   mono?: () => number;
+  device?: DeviceViewState;
 }
 
 export class InboxController {
@@ -70,6 +91,8 @@ export class InboxController {
   private expanded = false;
   /** Next loaded page to re-read; null means the last traversal finished. */
   private recheck: number | null = null;
+  private automatic = 1;
+  private authoritative = false;
 
   private readonly deps: InboxDeps;
   constructor(deps: InboxDeps) { this.deps = deps; }
@@ -82,7 +105,14 @@ export class InboxController {
     if (owner !== this.owner) { this.reset(); this.owner = owner; }
     if (!first) return false;
     const sig = firstSignature(first);
+    if (first.state === 'ready' && first.window.rows.every(row => row.mainSessionKind !== undefined)
+      && first.window.coverage.complete && first.window.coverage.exhausted && !first.window.coverage.gapped && first.window.nextCursor === null) {
+      void this.deps.device?.prune(first.window.storeId, first.window.sourceId, new Set(first.window.rows.filter(row => inboxGroup(row) === 'needs-you').map(row => hiddenItemKey(first.window.storeId, row))));
+    }
     if (sig === this.firstSig) {
+      if (this.recheck === null && this.pending === null && this.automatic < 8 && this.last()?.nextCursor && !this.failed) {
+        this.automatic++; this.readPage(); return true;
+      }
       // Keep an explicit request on this unchanged traversal alive, but include its page
       // in the next bounded sweep before allowing its counts to become authoritative.
       if (!this.pages.length && this.pending === null) return false;
@@ -93,6 +123,8 @@ export class InboxController {
       return true;
     }
     this.first = first; this.firstSig = sig;
+    this.automatic = 1;
+    this.authoritative = false;
     if (this.pages.length || this.pending !== null) {
       // Never splice windows of different traversals: restart visibly from the new first window.
       this.dropPages(true);
@@ -103,6 +135,7 @@ export class InboxController {
   /** `reset`: identity/cache reset or disposal; `hidden`: retire in-flight continuation only. */
   retire(reason: 'reset' | 'hidden' | 'dispose') {
     if (reason === 'hidden') {
+      this.authoritative = false;
       if (this.pending !== null) { this.pending = null; this.generation++; }
       this.recheck = this.pages.length ? 0 : null;
       return;
@@ -114,12 +147,14 @@ export class InboxController {
     this.owner = ''; this.first = null; this.firstSig = ''; this.pages = []; this.pagesBase = '';
     this.pending = null; this.generation++; this.failed = null; this.restarted = false; this.expanded = false;
     this.recheck = null;
+    this.automatic = 1; this.authoritative = false;
   }
 
   private dropPages(restarted: boolean) {
     this.pages = []; this.pagesBase = ''; this.pending = null; this.generation++; this.failed = null;
     this.recheck = null;
     this.restarted = restarted;
+    this.automatic = 1; this.authoritative = false;
   }
 
   private last(): InboxWindowView | null {
@@ -143,13 +178,13 @@ export class InboxController {
       const primary = inboxGroup(r) === 'needs-you';
       (primary ? needsYou : alsoBlocked).push(r);
       // During a bounded recheck only the refreshed first window's rows support the count.
-      if (this.recheck === null || w === this.first.window) counts[primary ? 'needsYou' : 'alsoBlocked']++;
+      if (this.recheck === null || this.authoritative || w === this.first.window) counts[primary ? 'needsYou' : 'alsoBlocked']++;
     }
     // Gaps anywhere in the traversal keep the whole result partial.
     const gapped = windows.some((w) => w.coverage.gapped);
     return {
       availability: 'ready', needsYou, alsoBlocked, counts,
-      complete: this.recheck === null && last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
+      complete: (this.recheck === null || this.authoritative) && !this.failed && last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
       gapped, captureEnabled: last.captureEnabled, timing: this.first.window.timing,
       canContinue: this.recheck === null && last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded, rechecking: this.recheck !== null && this.failed === null,
     };
@@ -161,6 +196,8 @@ export class InboxController {
     const owner = this.owner;
     return {
       model,
+      device: this.deps.device,
+      storeId: this.first?.state === 'ready' ? this.first.window.storeId : '',
       // Controls painted under another store/binding do nothing.
       more: () => { if (this.owner === owner) this.more(); },
       expand: (open) => { if (this.owner === owner && this.expanded !== open) { this.expanded = open; this.deps.changed(); } },
@@ -194,12 +231,19 @@ export class InboxController {
         if (index === undefined) this.pages.push(r.window);
         else if (r.window.nextCursor !== this.pages[index]?.nextCursor) this.dropPages(true);
         else {
+          if (windowSignature(r.window) !== windowSignature(this.pages[index])) this.authoritative = false;
           this.pages[index] = r.window;
           this.recheck = index + 1 < this.pages.length ? index + 1 : null;
+        }
+        if (this.recheck === null && this.model()?.complete) {
+          this.authoritative = true;
+          const windows = [this.first!.state === 'ready' ? this.first!.window : r.window, ...this.pages];
+          void this.deps.device?.prune(r.window.storeId, r.window.sourceId, new Set(windows.flatMap(w => w.rows.filter(row => inboxGroup(row) === 'needs-you').map(row => hiddenItemKey(w.storeId, row)))));
         }
       }
       else if (r.status === 409) this.dropPages(true);
       else {
+        this.authoritative = false;
         this.failed = r.failure;
         // A failed first append leaves no loaded pages to recheck. Normal explicit retry
         // is still available; failures with retained pages wait for the next refresh.

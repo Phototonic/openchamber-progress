@@ -14,6 +14,7 @@ import { StatusSelection } from './selection.ts';
 import { projectStatus, type StatusProjection } from './projection.ts';
 import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
 import { statusInboxLine } from '../shared/inbox-view.ts';
+import { scopeInbox } from '../shared/inbox.ts';
 
 type Ui = { selection: StatusSelection };
 const messages = {
@@ -71,8 +72,8 @@ startView<Ui>({
       else if (vc.session?.id) root.append(loadingBlock(env.locale));
       return;
     }
-    // Source-wide and independent of the featured plan: first, so it is never displaced.
-    const inbox = vc.inbox?.model ? statusInboxLine(vc.inbox.model, env.locale, () => openRail(vc), failure ? vc.lastGoodAt : null) : null;
+    // Session-scoped (including helped plans), independent of the featured plan.
+    const inbox = vc.inbox?.model ? statusInboxLine(scopeInbox(vc.inbox.model, new Set(vc.session ? read.plans.map(p => p.key) : []), !failure && !read.truncated, vc.inbox.device, vc.inbox.storeId).model, env.locale, () => openRail(vc), failure ? vc.lastGoodAt : null) : null;
     if (inbox) root.append(inbox);
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);

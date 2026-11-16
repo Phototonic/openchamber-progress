@@ -14,6 +14,7 @@ import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { chipLabel } from '../../ui/shared/search-view.ts';
 import { criteriaKey } from '../../ui/shared/search.ts';
 import { plansPage, summary } from './fixtures.ts';
+import { CompactInbox } from '../../ui/shared/inbox-view.ts';
 
 function surfaceHarness(surface: string, overrides: Record<string, object> = {}) {
   let spec: any;
@@ -62,7 +63,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/setup.ts')) return { setupBlock: () => ({ text: '' }), reloadNote: () => null };
     if (path.endsWith('/census-view.ts')) return { runClaim: () => null, subagentsBlock: () => null };
     if (path.endsWith('/census.ts')) return { censusFor: () => null, planFacts: () => null };
-    if (path.endsWith('/inbox-view.ts')) return { inboxSection: (inbox: unknown) => ({ dataset: { testid: 'needs-you-inbox' }, inbox }) };
+    if (path.endsWith('/inbox-view.ts')) return { CompactInbox, hiddenInboxAction: () => [], inboxSection: (inbox: unknown, _env: unknown, options: unknown) => ({ dataset: { testid: 'needs-you-inbox' }, inbox, options }) };
     return {};
   } });
   return { spec, nodes, exports, shells, maps, lists, window: frameWindow, rendered: () => nodes.map(n => n?.text ?? '').join(' ') };
@@ -87,7 +88,10 @@ test('board without a selected plan keeps the held source-wide inbox reachable',
   vc.read.plans = []; vc.ui.selected = null; vc.ui.archived = true;
   vc.inbox = { marker: 'source-wide' };
   h.exports.footer({ append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc, null);
-  assert.equal(h.nodes.find(n => n?.dataset?.testid === 'needs-you-inbox')?.inbox, vc.inbox);
+  const inbox = h.nodes.find(n => n?.dataset?.testid === 'needs-you-inbox');
+  assert.equal(inbox?.inbox, vc.inbox);
+  assert.equal(inbox?.options.keys.size, 0, 'no selected plan stays in an empty current scope; the component offers other plans explicitly');
+  assert.equal(inbox?.options.state.all, false);
 });
 
 for (const surface of ['panel', 'page']) test(`${surface}: a settled automatic Map survives resizing below 320px`, () => {

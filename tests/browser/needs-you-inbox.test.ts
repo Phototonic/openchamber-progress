@@ -216,7 +216,7 @@ test('a cursor-only first-window change retires held continuation and uses the n
   assert.equal(s.calls.at(-1)?.query?.cursor, 'new-cursor');
 });
 
-test('continuation is explicit, pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
+test('continuation on refresh is pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
   let held: ReturnType<typeof deferred<GuestRequestResult>> | null = null;
   const s = service((q) => (held = deferred<GuestRequestResult>(), held.promise));
   let visible = true, changes = 0;
@@ -224,12 +224,12 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   const owner = JSON.stringify(['acct', 'store-1|src-local|true']);
   const w1 = wire([['plan-alpha', 'a', 'decision'], ['plan-beta', 'c', 'external']], partial('cursor-1'));
   assert.equal(c.adopt(owner, first(w1)), true);
-  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), false, 'a new read time alone repaints nothing');
+  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), true, 'the ordinary refresh admits one automatic continuation');
   let m = c.model()!;
   assert.equal(m.complete, false); assert.equal(m.canContinue, true);
-  assert.equal(inboxSummary(m, 'en'), 'At least 1 task needs you');
-  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: не менее 1 задачи');
-  assert.equal(s.calls.length, 0, 'nothing loads more on its own');
+  assert.equal(inboxSummary(m, 'en'), '1+ tasks need you');
+  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: 1+');
+  assert.equal(s.calls.length, 1, 'one window on the ordinary refresh');
   c.panel()!.more();
   assert.equal(s.calls.length, 1);
   const q = s.calls[0];
@@ -273,6 +273,33 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   assert.equal(s.calls.length, 4); assert.equal(c.model()!.availability, 'unsupported');
 });
 
+test('automatic continuation stops at eight windows and completion never chains another request', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let visible = true;
+  const s = service(q => {
+    const n = Number(q.query!.cursor!.slice('cursor-'.length));
+    return ok(wire([['p', `t-${n}`, 'review']], { ...partial(`cursor-${n + 1}`), counts: { needsYou: n + 1, alsoBlocked: 0 } }));
+  });
+  const c = new InboxController({ service: () => s.host, visible: () => visible, changed: () => {} });
+  c.adopt('owner', top);
+  for (let n = 1; n <= 7; n++) {
+    c.adopt('owner', top);
+    assert.equal(s.calls.length, n, 'one request on this ordinary refresh');
+    await settle();
+    assert.equal(s.calls.length, n, 'completion never chains another request');
+  }
+  assert.equal(c.model()!.needsYou.length, 8);
+  c.more(); await settle();
+  assert.equal(s.calls.length, 8, 'explicit activation admits the ninth window');
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-8');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-1', 'refresh rechecks instead of automatically extending past the cap');
+  visible = false; c.retire('hidden');
+  const calls = s.calls.length;
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(s.calls.length, calls, 'hidden frames request nothing');
+});
+
 test('unchanged first windows recheck loaded pages one per refresh and remove resolved later tasks', async () => {
   const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
   let resolved = false;
@@ -285,13 +312,13 @@ test('unchanged first windows recheck loaded pages one per refresh and remove re
   assert.equal(c.model()!.complete, true);
   resolved = true; // No first-window row, count or cursor changes.
   c.adopt('owner', first(top));
-  assert.equal(c.model()!.complete, false, 'old later-page counts are not exact during rechecking');
-  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.equal(c.model()!.complete, true, 'a completed traversal retains authority until a reread actually differs');
+  assert.deepEqual(c.model()!.counts, { needsYou: 3, alsoBlocked: 0 });
   assert.equal(c.model()!.rechecking, true);
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b', 'c'], 'rows remain readable under the rechecking notice');
   await settle();
   assert.equal(s.calls.length, 3, 'one continuation reread in the first refresh');
-  assert.equal(c.model()!.complete, false);
+  assert.equal(c.model()!.complete, true, 'the first continuation reread is unchanged');
   c.adopt('owner', first(top)); await settle();
   assert.equal(s.calls.length, 4, 'one continuation reread in the second refresh');
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b']);

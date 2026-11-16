@@ -32,6 +32,7 @@ import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
 import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
+import { DeviceViewState } from './device-view-state.ts';
 import { INBOX_CSS } from './inbox-style.ts';
 import { INTENT_CSS } from './intent.ts';
 import { applyDeviceHooks } from './phone-layout.ts';
@@ -556,7 +557,9 @@ export function startView<U>(spec: ViewSpec<U>) {
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
+  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.ui++; schedule(); }) : null;
   const inbox = spec.needsYou ? new InboxController({
+    device: deviceView ?? undefined,
     service: (current) => guardedHost(current),
     visible: () => document.visibilityState !== 'hidden',
     changed: () => { versions.ui++; schedule(); },
@@ -824,6 +827,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       else { cleanup = initialCleanup(); versions.ui++; schedule(); }
     }
     language.refresh();
+    void deviceView?.refresh(ctx.features?.deviceStorage === true);
     const scope = currentScope();
     const key = scopeKey(scope);
     const fresh = read && identity && readScope === key ? spec.freshness?.(context()) ?? null : null;
@@ -1691,6 +1695,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else applyItem(next.item);
     ctx = next;
     language.ready(next.locale, next.features?.deviceStorage === true);
+    void deviceView?.refresh(next.features?.deviceStorage === true);
     document.documentElement.lang = paintedLanguage ?? language.snapshot().language;
     // Ready is authoritative, not just a theme notification. Adopt both fields before
     // any refresh/onContext callback; later directory/session events repeat this state.
