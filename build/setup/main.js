@@ -4471,7 +4471,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.4.0";
+var RELEASE = "1.4.1";
 
 // setup/cli.ts
 try {

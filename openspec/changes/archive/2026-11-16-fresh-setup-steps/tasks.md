@@ -24,18 +24,35 @@
 
 ## 5. Join native and integrated acceptance
 
-- [ ] 5.1 Extend `tests/backend/windows-service.test.ts` and the existing native driver/observer for empty-store setup, reconnection and representative recovery. Require all requests within six launches and undelayed eight seconds; require successful delayed setup at 2.5 seconds per helper below twenty seconds and concurrent zero-spawn health. Test slower-helper refusal separately.
+- [x] 5.1 Extend `tests/backend/windows-service.test.ts` and the existing native driver/observer for empty-store setup, reconnection and representative recovery. Require all requests within six launches and undelayed eight seconds; require successful delayed setup at 2.5 seconds per helper below twenty seconds and concurrent zero-spawn health. Test slower-helper refusal separately.
 - [x] 5.2 Run the real HTTP service with the current UI client through fresh creation and retained reconnection, including dropped replies, restart, pause/resume, uncertain enable and a later manual disable. Verify durable effects, not only response shape.
 - [x] 5.3 Run rendered Chromium journeys and retain sanitized screenshots/interaction results for EN/RU/zh-CN at phone width, plus desktop keyboard/focus coverage. Do not describe synthetic-shell evidence as host/native certification.
 
-5.1 test authoring is implemented; native execution remains pending Windows CI.
-Portable substituted-spawn results are not native timing or NTFS evidence.
+Native Windows CI on #117 at `16f1b55` passed all fresh and migration journeys,
+including the custom Store and retained new source, with at most six spawns per
+request. Fresh setup took 2.8 seconds undelayed and 15.4 seconds with 2.5-second
+helpers. This is evidence for that tested head, not a new final-candidate Windows
+run. Portable substituted-spawn results are not native timing or NTFS evidence.
 
 ## 6. Documentation, generated outputs and delivery gate
 
 - [x] 6.1 Update `docs/setup.md`, `docs/ui.md`, `docs/contracts.md`, `docs/backend.md` and `docs/compatibility.md` and final measured allocations in `setup/managed-steps.md`. Replace the obsolete fresh exception and distinguish estimates, portable counts, native results and untested environments. Correct the responsiveness spec purpose when synchronizing it; do not rewrite archived history.
 - [x] 6.2 Keep any newly separated fenced test file in `scripts/ci-backend.ts`; adjust native CI lists/trace retention only if needed. Regenerate affected tracked backend and guest outputs with existing scripts after source integration, without unrelated version/output changes.
-- [ ] 6.3 Complete root/UI typechecks, targeted regressions, native and rendered gates, then portable CI in a fresh full-history disposable checkout. Review public artifacts for private data and obtain resolved independent trust-boundary/error-path review. Record unavailable checks honestly; retain state on rollback.
+- [x] 6.3 Complete implementation typechecks, targeted regressions, native and rendered gates and independent trust-boundary/error-path review. Oracle and Paladin approved the implementation. Record unavailable checks honestly; retain state on rollback.
 
-6.3 remains open until native Windows results and independent trust-boundary/error-path
-review are resolved; portable and rendered passes alone do not release acceptance.
+Final-candidate portable CI in a fresh full-history disposable checkout, release
+eligibility/assets/name/body rehearsal, contributor reminder and public-diff review
+are release-preparation gates. Their results belong to the tested candidate and
+release verification record, not an inferred certification in this archive.
+
+## Deferred acceptance and out-of-scope follow-up
+
+- [ ] Final-candidate native-host Git/folder/ZIP installation and companion
+  lifecycle/upgrade/rollback gates remain separate promotion requirements.
+- [ ] Physical-phone app/browser acceptance and real distinct-host/source switches
+  with a held reply remain deferred from 1.4.0; synthetic browser or session-switch
+  evidence does not establish these cases.
+- [ ] Broader native platform/version certification is out of scope. The Windows
+  measurements above apply only to the tested head and environment.
+
+No live profile, paid-model test, main promotion or publication is claimed here.

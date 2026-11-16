@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-16
+
+Short-step fresh Windows setup and clearer visibility for running sub-agents. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Fixed
+
+- Fresh Windows setup uses bounded Setup-driven steps with progress and pause/resume, avoiding one long request that can exceed OpenChamber's 20-second limit on slow PowerShell. The old single-request routes refuse on Windows and remain available on Linux/macOS (#117).
+- A sub-agent recorded as Running shows "not seen in OpenChamber now" only when OpenChamber's session list is complete and does not contain that session; the saved running state is unchanged (#118).
+
+### Changed
+
+- Reusable real-host release journeys provide test-only release verification, with no user-visible behavior change (#116).
+
 ## [1.4.0] - 2026-11-15
 
 Windows startup and stepwise legacy migration, a source-wide Needs you inbox, and phone-ready progress surfaces. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
