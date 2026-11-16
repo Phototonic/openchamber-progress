@@ -46,6 +46,9 @@ try {
   };
   const pickRailPlan = async (title: string) => {
     await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')`);
+    // Viewport changes deliver resize before the next rendering opportunity. The SDK
+    // intentionally closes on resize, so acknowledge that delivery before opening.
+    await guest('panel', `return new Promise(resolve=>w.requestAnimationFrame(()=>resolve(true)))`);
     await guest('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger').click();return true`);
     await wait('panel', `[...d.querySelectorAll('.oc-sdk-option-label')].some(n=>n.textContent===${js(title)})`);
     await guest('panel', `[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent===${js(title)}).closest('[role="option"]').click();return true`);
@@ -114,6 +117,18 @@ try {
     await guest('panel', `[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent==='Opening small').closest('[role="option"]').click();return true`);
     await wait('panel', `d.querySelector('[data-testid="map-title"]')?.textContent==='Opening small'&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`);
     check('picker:choice-after-background-graph', true);
+    // A real automatic inbox continuation/recheck completes while an independent picker is open.
+    await evaluate(`qa.holds.push({tag:'picker-background-inbox',path:'/v1/needs-you',frame:'panel',cursor:true});true`);
+    await wait('panel', `qa.held.some(h=>h.tag==='picker-background-inbox')`);
+    await guest('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger').click();w.__inboxPicker=d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger');w.__inboxPopup=d.querySelector('.oc-sdk-popup');w.__inboxDelivered=false;const receive=e=>{try{const b=JSON.parse(e.data?.payload?.body);if(Array.isArray(b.rows)&&b.coverage){w.removeEventListener('message',receive);w.requestAnimationFrame(()=>w.requestAnimationFrame(()=>w.__inboxDelivered=true))}}catch{}};w.addEventListener('message',receive);return true`);
+    await wait('panel', `w.__inboxPicker?.getAttribute('aria-expanded')==='true'&&w.__inboxPopup`);
+    await evaluate(`qa.release('picker-background-inbox');true`);
+    await wait('panel', `w.__inboxDelivered`);
+    const inboxPicker = await guest('panel', `return {connected:w.__inboxPicker.isConnected,popup:w.__inboxPopup.isConnected,expanded:w.__inboxPicker.getAttribute('aria-expanded')}`);
+    check('picker:survives-background-inbox', inboxPicker.connected&&inboxPicker.popup&&inboxPicker.expanded==='true', inboxPicker);
+    await guest('panel', `[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent==='Opening 100').closest('[role="option"]').click();return true`);
+    await wait('panel', `d.querySelector('[data-testid="map-title"]')?.textContent==='Opening 100'&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`);
+    check('picker:choice-after-background-inbox', true);
   }
   for (const [surface, width] of [['panel', 360], ['panel', 390], ['panel', 600], ['page', 1280], ['page', 1920]] as const) {
     await c.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });

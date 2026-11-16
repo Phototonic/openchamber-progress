@@ -763,8 +763,13 @@ frame's existing first list-page read (`needsYou=1`); rail and board add
 summary on an unverified binding: the ordinary list remains readable and the
 inbox reports unavailable. During board search, the first search-freshness batch
 of each existing refresh cycle carries and adopts one inbox window instead.
-There is no extra timer or inbox poll. A successful ordinary refresh can request
-one further `/v1/needs-you` window, up to eight automatic windows per traversal;
+There is no extra timer or inbox poll. Inbox continuation starts, rechecks and
+completions use the background data paint lane, so they do not replace an open
+plan picker or a pressed control. Direct expand, Load more and Retry actions
+still paint immediately.
+
+An ordinary refresh can request one further `/v1/needs-you` window, up to eight
+automatic windows per traversal;
 after that **Load more** requests one window per activation. Every window keeps
 the existing store/source, timing and cost bounds. Person-facing
 counts derive from the distinct held rows using the shared membership predicate,

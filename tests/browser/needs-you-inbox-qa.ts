@@ -280,10 +280,15 @@ try {
     }
     await wait(surface, `!!d.querySelector('[data-testid="map-card-direct"]') && !!d.querySelector(${js(open('main'))})`);
     await click(surface, '[data-testid="map-card-direct"]');
+    await tabTo(surface, '[data-testid="map-help-trigger"]');
+    await key('Enter');
+    await wait(surface, `d.querySelector('[data-testid="map-help"]')?.open`);
     await tabTo(surface, '[data-testid="map-group"]');
     await key('Home'); await key('ArrowDown');
     await wait(surface, `d.querySelector('[data-testid="map-group"]')?.value==='' && !d.querySelector('[data-testid="map-card-main"]')`);
     check(`${surface}-map-filter-hides-inbox-target`, await guest(surface, `return d.querySelector('[data-testid="map-card-direct"]')?.getAttribute('aria-current')==='true'`));
+    await key('Escape');
+    await wait(surface, `!d.querySelector('[data-testid="map-help"]')?.open && d.activeElement?.dataset.testid==='map-help-trigger'`);
     await click(surface, open('main'));
     await wait(surface, `d.querySelector('[data-testid="map-card-main"]')?.getAttribute('aria-current')==='true' && d.querySelector('[data-testid="map-group"]')?.value==='*'`);
     check(`${surface}-inbox-reveals-filtered-map-target`, await guest(surface, `return d.activeElement?.matches(${js(open('main'))}) && !!d.querySelector('${row('main')} .ap-inbox-facts:not([hidden])')`));

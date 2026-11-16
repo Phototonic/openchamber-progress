@@ -564,7 +564,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     device: deviceView ?? undefined,
     service: (current) => guardedHost(current),
     visible: () => document.visibilityState !== 'hidden',
-    changed: () => { versions.ui++; schedule(); },
+    changed: (action) => { if (action) versions.ui++; else versions.data++; schedule(); },
   }) : null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });

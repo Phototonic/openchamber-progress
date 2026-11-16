@@ -356,6 +356,32 @@ test('automatic continuation stops at eight windows and completion never chains 
   assert.equal(s.calls.length, calls, 'hidden frames request nothing');
 });
 
+test('inbox automatic reads and completions stay background while direct actions remain immediate', async () => {
+  const lanes: string[] = [];
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  const s = service(() => ok(wire([['p', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: action => lanes.push(action ? 'action' : 'background') });
+  c.adopt('owner', top);
+  c.adopt('owner', top);
+  await settle();
+  assert.ok(lanes.length > 0);
+  assert.ok(lanes.every(lane => lane === 'background'), 'automatic continuation and its reply must not bypass popup/press guards');
+  lanes.length = 0;
+  c.adopt('owner', top);
+  await settle();
+  assert.ok(lanes.every(lane => lane === 'background'), 'ordinary rechecks stay on the same data lane');
+  lanes.length = 0;
+  c.panel()!.expand(true);
+  assert.equal(lanes.at(-1), 'action');
+  c.retire('reset');
+  c.adopt('owner', top);
+  lanes.length = 0;
+  c.more();
+  assert.equal(lanes[0], 'action', 'explicit Load more starts immediately');
+  await settle();
+  assert.equal(lanes.at(-1), 'background', 'its asynchronous completion is still background');
+});
+
 test('unchanged first windows recheck loaded pages one per refresh and remove resolved later tasks', async () => {
   const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
   let resolved = false;

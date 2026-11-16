@@ -73,7 +73,8 @@ export function inboxGroup(r: InboxRowView): InboxRowView['group'] {
 interface InboxDeps {
   service: (current: () => boolean) => ServiceHost;
   visible: () => boolean;
-  changed: () => void;
+  /** Only direct user actions may bypass the frame's background-paint guards. */
+  changed: (action?: boolean) => void;
   mono?: () => number;
   device?: DeviceViewState;
 }
@@ -201,19 +202,19 @@ export class InboxController {
       storeId: this.first?.state === 'ready' ? this.first.window.storeId : '',
       // Controls painted under another store/binding do nothing.
       more: () => { if (this.owner === owner) this.more(); },
-      retry: () => { if (this.owner === owner && this.failed) this.readPage(this.recheck ?? undefined); },
-      expand: (open) => { if (this.owner === owner && this.expanded !== open) { this.expanded = open; this.deps.changed(); } },
+      retry: () => { if (this.owner === owner && this.failed) this.readPage(this.recheck ?? undefined, true); },
+      expand: (open) => { if (this.owner === owner && this.expanded !== open) { this.expanded = open; this.deps.changed(true); } },
     };
   }
 
   /** One explicit continuation window; never automatic, never while hidden or already loading. */
   more() {
     if (this.recheck !== null) return;
-    this.readPage();
+    this.readPage(undefined, true);
   }
 
   /** Replace one loaded page, or append one explicitly requested new page. */
-  private readPage(index?: number) {
+  private readPage(index?: number, action = false) {
     const previous = index === undefined ? this.last() : index === 0 ? (this.first?.state === 'ready' ? this.first.window : null) : this.pages[index - 1];
     const last = previous;
     if (!last || !last.nextCursor || this.pending !== null || !this.deps.visible() || this.first?.state !== 'ready') return;
@@ -225,7 +226,7 @@ export class InboxController {
     const base = this.pagesBase;
     const current = () => this.pending === generation && this.generation === generation && this.pagesBase === base;
     const request = { storeId: last.storeId, binding: { sourceId: last.sourceId, verified: true as const }, source: last.sourceId, cursor: last.nextCursor, limit: NEEDS_YOU_LIMITS.rows, timing: last.timing };
-    this.deps.changed();
+    this.deps.changed(action);
     void readNeedsYou(this.deps.service(current), request, last.counts, this.deps.mono).then((r) => {
       if (!current()) return;
       this.pending = null;
