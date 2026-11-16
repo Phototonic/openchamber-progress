@@ -3,6 +3,9 @@ on:
   pull_request:
   push:
     branches: [main, dev]
+  schedule:
+    - cron: '17 4 * * 2'
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -14,6 +17,8 @@ jobs:
       contents: read
     outputs:
       run: ${{ steps.decide.outputs.run }}
+      windows: ${{ steps.decide.outputs.windows }}
+      windows_full: ${{ steps.decide.outputs.windows_full }}
     steps:
       # Pull requests only: the file list decides whether a docs-only change
       # can skip the check jobs.
@@ -27,6 +32,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
@@ -58,11 +64,37 @@ jobs:
             fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
+          # Release validation always includes the slow native journeys, even
+          # for documentation-only promotion PRs. Other pushes use the fast set.
+          windows=true
+          windows_full=false
+          if [[ "$EVENT_NAME" == schedule || "$EVENT_NAME" == workflow_dispatch || ( "$EVENT_NAME" == push && "${REF:-}" == refs/heads/main ) || ( "$EVENT_NAME" == pull_request && "${BASE_REF:-}" == main ) ]]; then
+            windows_full=true
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
+            if [[ "$run" == false ]]; then
+              windows=false
+            elif [[ -n "${BASE_SHA:-}" && -n "${HEAD_SHA:-}" ]]; then
+              if files=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" 2>/dev/null) && [[ -n "$files" ]]; then
+                windows=false
+                while IFS= read -r file; do
+                  case "$file" in
+                    # Native imports and backend build entries/payloads.
+                    service/*|setup/*|shared/*|plugin/*|scripts/*|package.json|bun.lock|tsconfig.json|build/service/*|build/setup/*|build/companion/*|tests/backend/windows-*|tests/fixtures/windows-*|.github/workflows/*) windows=true ;;
+                    # Known independent surfaces; unknown paths fail open.
+                    ui/*|background/*|tests/browser/*|docs/*|openspec/*|README.md|CONTRIBUTING.md|AGENTS.md|.github/PULL_REQUEST_TEMPLATE.md) ;;
+                    *) windows=true ;;
+                  esac
+                done <<< "$files"
+              fi
+            fi
+          fi
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          echo "windows_full=$windows_full" >> "$GITHUB_OUTPUT"
   portable:
     name: Linux tests and packages
     # Same-repository main/dev heads already receive every check on push.
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -115,7 +147,7 @@ jobs:
           retention-days: 7
   node-latest:
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     # The exact pin above is the release gate. This job runs the same checks on
     # the newest Node 24 release, which the documented range also accepts.
     name: Linux tests on latest Node 24
@@ -149,8 +181,10 @@ jobs:
     name: Windows setup, storage and capture
     runs-on: windows-2025
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.windows == 'true'
     timeout-minutes: 25
+    env:
+      AP_WINDOWS_FULL: ${{ needs.gate.outputs.windows_full == 'true' && '1' || '0' }}
     concurrency:
       group: ${{ github.workflow }}-windows-native-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -160,6 +194,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Fetch released Windows migration fixture
+        if: env.AP_WINDOWS_FULL == '1'
         run: git fetch --no-tags origin tag v1.1.1
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

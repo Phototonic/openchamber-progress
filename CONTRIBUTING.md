@@ -91,11 +91,31 @@ is used.
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
-The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on every pull request whatever branch it targets, so a PR stacked on another feature branch gets the same checks as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
+The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, on every pull request whatever branch it targets, weekly on Tuesday at 04:17 UTC, and on manual dispatch. A PR stacked on another feature branch gets the same selection as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the full Windows job on its `main` push. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
 To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's literal `main` or `dev`, **except when the base is `main`**: push checks already validate those heads, but a distribution proposal must be checked as a distribution. A lightweight Bash gate compares branch names case-sensitively, receiving event values through environment variables rather than script interpolation. Feature branches (including `Dev` and `MAIN`) and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. Same-repository `main`/`dev` PRs into another branch deliberately check the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow still runs its gate, but its check jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Existing job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed. The existing docs-only skip below is unchanged.
 
-Pull requests that change only documentation or OpenSpec text also skip the CI and CodeQL check jobs. For pull requests only, the gate checks out the code without credentials and lists the files changed since the merge base, counting renames as a delete plus an add. If every path is under `docs/` or `openspec/`, or is `README.md`, `CONTRIBUTING.md`, `AGENTS.md` or `.github/PULL_REQUEST_TEMPLATE.md`, the checks are skipped. Three exceptions still run them: `docs/setup.md` (packaged), `docs/tracking.md` (excluded from the Git package by name) and `openspec/changes/archive/` (read by tests). Any other path, an empty list or a failed listing keeps every check. The secrets scan always runs, and pushes to `main` and `dev` still run everything, so a merged docs change is checked on its destination push. Release notes and the changelog are not docs-only: they feed the release scripts.
+Pull requests that change only documentation or OpenSpec text also skip the Linux CI and CodeQL check jobs. For pull requests only, the gate checks out the code without credentials and lists the files changed since the merge base, counting renames as a delete plus an add. If every path is under `docs/` or `openspec/`, or is `README.md`, `CONTRIBUTING.md`, `AGENTS.md` or `.github/PULL_REQUEST_TEMPLATE.md`, those checks are skipped. Three exceptions still run them: `docs/setup.md` (packaged), `docs/tracking.md` (excluded from the Git package by name) and `openspec/changes/archive/` (read by tests). Any other path, an empty list or a failed listing keeps those checks. The secrets scan always runs, and pushes to `main` and `dev` still run all jobs, so a merged docs change is checked on its destination push. Release notes and the changelog are not docs-only: they feed the release scripts.
+
+Windows selection is independent of the unchanged Linux/CodeQL docs-only gate.
+Outside promotion PRs into `main`, PRs limited to `ui/`, `background/`,
+`tests/browser/`, `docs/`, `openspec/` and the root documentation paths above
+skip Windows (the duplicate-head skip above still applies). Backend inputs run
+it: `service/`, `setup/`, `shared/`, `plugin/`, `scripts/`, `package.json`,
+`bun.lock`, `tsconfig.json`, `build/{service,setup,companion}/`,
+`tests/backend/windows-*`, `tests/fixtures/windows-*` and `.github/workflows/`.
+These cover the native tests' imports and backend build entries/payloads;
+unknown paths, an empty diff or a failed listing conservatively run Windows.
+
+Ordinary PRs and every `dev` push run the fast Windows set: all native tests
+except the two released 1.1.1 migration journeys and the `empty-delayed` fresh
+journey. Every PR into `main`, every `main` push, the weekly run and manual
+dispatch run the full set, even for UI/docs-only changes. The workflow sets
+`AP_WINDOWS_FULL=1` only for those full runs and fetches `v1.1.1` only then.
+Without that opt-in, the three journeys explicitly skip; no per-request
+assertion, budget or deadline is relaxed. Local full native runs must also set
+`AP_WINDOWS_FULL=1`. Weekly and manual CI runs target Windows only; the Linux
+jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the source on `dev` first, then prepare a promotion commit containing that source and its built outputs. Run the required host gates on the promotion checkout before its PR into `main` merges.
 
