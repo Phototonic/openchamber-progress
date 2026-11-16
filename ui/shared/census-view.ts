@@ -292,13 +292,8 @@ const NOTE: Record<InterfaceLanguage, Record<RosterNote['kind'], string>> = { en
   'host-activity-unavailable': 'OpenChamber 的会话列表正在重新加载或不完整，因此未显示当前活动（等待、再次运行、当前空闲）；运行记录不变。',
 } };
 
-/**
- * Rail and board: routine qualifications go behind the "Partial" cue beside the counts; the others
- * (unavailable or failed reads, capture off, history loading or unavailable, withheld current
- * activity) stay visible lines. Work Status keeps its own one short line (notesNode).
- */
-const ROUTINE: ReadonlySet<RosterNote['kind']> = new Set<RosterNote['kind']>(['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off']);
-export const routineNote = (n: RosterNote) => ROUTINE.has(n.kind);
+/** Only action-changing states keep their own line; qualifications use the surface-wide note. */
+export const separateNote = (n: RosterNote) => n.kind === 'runs-error' || n.kind === 'capture-off';
 
 function summaryNode(r: Roster, compact: boolean, language: InterfaceLanguage) {
   const c = COPY[language];
@@ -312,24 +307,7 @@ function summaryNode(r: Roster, compact: boolean, language: InterfaceLanguage) {
     part.append(mark, s.text);
     p.append(part);
   }
-  if (r.soFar) p.append(el('span', 'ap-sub-part ap-muted', c.soFar));
-  // Counts from host-listed children stop at the census limit: never shown as complete. Rail and
-  // board say so through the "Partial" cue instead.
-  if (r.hostTruncated && compact) p.append(testid(el('span', 'ap-sub-part ap-muted', c.unchecked), 'subagent-truncated'));
-  return p;
-}
-
-/**
- * Work Status: one short line for genuine unavailability only; detail lives in the rail. A recording
- * gap counts only while it needs attention (recent and not dismissed); its order among the others
- * is unchanged.
- */
-function notesNode(r: Roster, language: InterfaceLanguage) {
-  const c = COPY[language];
-  const n = r.notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' && x.attention || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
-  if (!n) return null;
-  const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? NOTE[language]['capture-loss'] : n.kind === 'host-activity-unavailable' ? c.activityUnavailable : n.kind === 'host-truncated' ? c.notEvery : c.unavailable), 'subagent-coverage');
-  p.dataset.notes = n.kind;
+  // The model supplies whole translated count strings, including any lower-bound mark.
   return p;
 }
 
@@ -357,13 +335,15 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   const total = rest.length + r.earlierTotal;
   const runs = v.runs;
   const label = earlierPager(r, runs, visible, step, language);
-  if (!total && !label) return null;
+  if (!total && !label && !(v.surface === 'status' && runs?.pageError)) return null;
   const more = testid(el('details', 'ap-obs-more'), 'observed-more');
-  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}`));
+  const partial = !r.recorded || r.notes.some(n => !['capture-off', 'host-truncated', 'host-gaps', 'host-activity-unavailable'].includes(n.kind));
+  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}${partial ? '+' : ''}`));
   const list = el('ul', 'ap-obs-list');
   list.setAttribute('aria-label', c.otherLabel);
   for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
   if (list.childElementCount) more.append(list);
+  if (v.surface === 'status' && runs?.pageError) more.append(testid(el('p', 'ap-note', c.pageError), 'subagent-page-error'));
   if (runs && label) {
     const b = testid(el('button', 'ap-link ap-sub-page', label), 'subagent-more');
     b.type = 'button';
@@ -373,31 +353,23 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
     b.addEventListener('click', () => { if (!runs.paging) runs.showMore(Math.min(visible, loaded), loaded, step); });
     more.append(b);
   }
-  if (runs?.pageError) more.append(el('p', 'ap-note', c.pageError));
   return more;
 }
 
-/**
- * One coverage line, with Load more / Retry history where the read offers it. A started request
- * replaces the line and its button with the visible "Loading older sub-agent history…"; the frame's
- * focus restoration then hands focus to the cue or the heading (app.ts, coverage fallback).
- */
+/** Failed reads and recording off stay separate from the dismissible count note. */
 function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null, language: InterfaceLanguage) {
   const c = COPY[language];
   const li = el('li');
   li.append(warningLine(NOTE[language][n.kind], tone, 'span'));
-  if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
-    const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? c.loadMore : c.retry), 'subagent-retry-history');
-    b.type = 'button';
-    // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
-    if (runs.reconciling) b.setAttribute('aria-disabled', 'true');
-    b.addEventListener('click', () => { if (!runs.reconciling) runs.retryHistory(); });
-    li.append(b);
+  if (n.kind === 'runs-error' && runs) {
+    if (runs.read) li.append(el('time', '', absoluteTime(new Date(runs.read.readAt).toISOString(), language)));
+    const retry = testid(el('button', 'ap-link', c.retry), 'subagent-retry-read');
+    retry.type = 'button'; retry.addEventListener('click', () => runs.retryRead?.()); li.append(retry);
   }
   return li;
 }
 
-/** Rail and board: the notes that stay visible compact lines (the routine ones are behind the cue). */
+/** Non-dismissible action-changing lines on every surface. */
 function coverageNode(notes: RosterNote[], runs: RunsPanel | null, language: InterfaceLanguage) {
   if (!notes.length) return null;
   const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
@@ -406,143 +378,18 @@ function coverageNode(notes: RosterNote[], runs: RunsPanel | null, language: Int
   return list;
 }
 
-/** Visible lines keep their tones: information for loading and capture off, a warning otherwise. */
-const visibleTone = (n: RosterNote): WarningTone => n.kind === 'history-loading' || n.kind === 'capture-off' ? 'info' : 'warning';
-/**
- * Notes behind the cue are routine, so they carry a muted mark. Orange is kept for one case: a
- * recording gap that needs attention (recent and not dismissed, as the service says).
- */
-export const cueTone = (n: RosterNote): WarningTone => n.kind === 'capture-loss' && n.attention ? 'warning' : 'neutral';
-type LossNote = Extract<RosterNote, { kind: 'capture-loss' }>;
-const lossOf = (notes: RosterNote[]) => notes.find((n): n is LossNote => n.kind === 'capture-loss') ?? null;
-
-/**
- * The recording-gap note inside the disclosure: the approved sentence with the stored detection
- * date (never a migration, dismissal or read time), and, while the gap needs attention and the
- * service supports it, Dismiss warning with its explanation and any failure or conflict message.
- * The note stays listed after dismissal or ageing; only its tone and the control change.
- */
-function lossItem(n: LossNote, runs: RunsPanel | null, env: Env) {
-  const language = resolveLanguage('auto', env.locale), LOSS = COPY[language].lossText;
-  const li = testid(noteItem(n, cueTone(n), null, language), 'subagent-loss-note');
-  li.dataset.attention = String(n.attention);
-  li.dataset.date = n.dateKind;
-  const text = li.querySelector('.ap-warn-text')!;
-  if (n.dateKind === 'known' && n.lastLossAt !== null) {
-    const iso = new Date(n.lastLossAt).toISOString();
-    const t = testid(el('time', '', absoluteTime(iso, env.locale)), 'subagent-loss-date');
-    t.dateTime = iso;
-    text.append(LOSS.detected, t, '.');
-  } else text.append(' ', n.dateKind === 'migrated-unknown' ? LOSS.migrated : LOSS.legacy);
-  if (!runs || !n.canDismiss) return li;
-  const box = el('div', 'ap-sub-dismiss');
-  const help = el('span', 'ap-sub-dismiss-help', LOSS.explain);
-  help.id = `ap-sub-dismiss-${cueCount}`;
-  const b = testid(el('button', 'ap-link', LOSS.dismiss), 'subagent-dismiss-loss');
-  b.type = 'button';
-  b.setAttribute('aria-describedby', help.id);
-  // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
-  const pending = runs.lossDismissal === 'pending';
-  if (pending) b.setAttribute('aria-disabled', 'true');
-  b.addEventListener('click', () => { if (!pending) runs.dismissLoss(); });
-  box.append(b, help);
-  // Visible next to the control; spoken once through the frame's announcer (announceLoss).
-  if (runs.lossDismissal === 'error' || runs.lossDismissal === 'conflict') {
-    const status = testid(warningLine(LOSS[runs.lossDismissal], runs.lossDismissal === 'error' ? 'error' : 'warning', 'p'), 'subagent-dismiss-status');
-    status.dataset.state = runs.lossDismissal;
-    box.append(status);
-  }
-  li.append(box);
-  return li;
-}
-
-let lossAnnouncer: HTMLElement | null = null;
-let lossOutcome: unknown = 'idle';
-let lossText = '';
-let lossGeneration = 0;
-/**
- * Dismissal outcomes, spoken once each through one persistent polite live region outside the
- * repainted root (as the digest and search announcers do). Each failure has its own token, so a
- * repeated failure is spoken again; success is never spoken while the gap still needs attention.
- */
-function announceLoss(runs: RunsPanel, attention: boolean, language: InterfaceLanguage) {
-  const LOSS = COPY[language].lossText;
-  const s = runs.lossDismissal;
-  const token = s === 'error' || s === 'conflict' ? runs.lossDismissalFailure ?? s : s;
-  const text = s === 'success' ? attention ? '' : LOSS.success : s === 'error' || s === 'conflict' ? LOSS[s] : '';
-  if (token === lossOutcome && text === lossText) return;
-  lossOutcome = token;
-  lossText = text;
-  const generation = ++lossGeneration;
-  if (!text) return;
-  if (!lossAnnouncer?.isConnected) {
-    lossAnnouncer = testid(el('p', 'ap-sr'), 'subagent-announcer');
-    lossAnnouncer.setAttribute('role', 'status'); lossAnnouncer.setAttribute('aria-live', 'polite'); lossAnnouncer.setAttribute('aria-atomic', 'true');
-    document.body.append(lossAnnouncer);
-  }
-  const node = lossAnnouncer;
-  node.textContent = '';
-  // Next frame, so an identical repeated outcome is still a change for assistive technology.
-  requestAnimationFrame(() => { if (lossGeneration === generation) node.textContent = text; });
-}
-
-const CUE = 'subagent-coverage-cue';
-let cueCount = 0;
-
-/**
- * Rail and board: the muted "Partial" cue after the counts, a native button that expands the
- * routine notes inline below the header (`aria-expanded`/`aria-controls`; closed by default, no
- * hover or popover). The button sits in the counts' wrapping row and the notes below the header,
- * so they cannot share one `details`. Like a `details[data-testid]` across a repaint (app.ts), the open
- * state carries over from the painted cue of the same scope; focus returns through its test ID.
- */
-function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string, env: Env) {
-  const language = resolveLanguage('auto', env.locale), c = COPY[language];
-  const id = `ap-sub-cue-${cueCount += 1}`;
-  const button = testid(el('button', 'ap-sub-cue'), CUE);
-  button.type = 'button';
-  button.dataset.scope = scope;
-  // Not the counts' tooltip: the cue's words and its notes say what it means.
-  button.title = '';
-  button.setAttribute('aria-controls', id);
-  // Warning tone only while a recording gap needs attention: a triangle (shape, not just colour)
-  // and the description "Recent recording gap."; otherwise muted. The name stays the same.
-  const attention = !!lossOf(notes)?.attention;
-  button.dataset.tone = attention ? 'warning' : 'neutral';
-  // The description is a hidden sibling: it is spoken as the button's description, not its name.
-  const recent = attention ? testid(el('span', '', c.lossText.recent), 'subagent-coverage-cue-recent') : null;
-  if (recent) {
-    recent.id = `${id}-recent`;
-    recent.hidden = true;
-    button.setAttribute('aria-describedby', recent.id);
-    button.append(icon('warning'));
-  }
-  // Named "Partial sub-agent coverage"; its expanded state says whether the notes are shown.
-  button.append(el('span', '', c.partial), el('span', 'ap-sr', c.coverage), icon('chevron-down'));
-  const region = testid(el('div', 'ap-sub-cue-notes'), 'subagent-coverage-notes');
-  region.id = id;
-  region.dataset.notes = notes.map((n) => n.kind).join(' ');
-  const list = el('ul', 'ap-sub-notes ap-warn-list');
-  for (const n of notes) list.append(n.kind === 'capture-loss' ? lossItem(n, runs, env) : noteItem(n, cueTone(n), runs, language));
-  region.append(list);
-  const set = (open: boolean) => { button.setAttribute('aria-expanded', String(open)); region.hidden = !open; };
-  const painted = document.querySelector<HTMLElement>(`[data-testid="${CUE}"]`);
-  set(painted?.dataset.scope === scope && painted.getAttribute('aria-expanded') === 'true');
-  button.addEventListener('click', () => set(button.getAttribute('aria-expanded') !== 'true'));
-  return { button, recent, region };
-}
-
+const visibleTone = (n: RosterNote): WarningTone => n.kind === 'capture-off' ? 'info' : 'warning';
 /** The section, or null: no plan in scope, an unverified setup, or nothing useful to show. */
 export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const language = resolveLanguage('auto', v.env.locale), c = COPY[language];
   const r = rosterFor(v, language);
   if (!r) return null;
   const compact = v.surface === 'status';
-  // Every surface: running rows on one line each, every other record folded. Work Status keeps its
-  // one short coverage line and no ⓘ (an explanation popover would be clipped by its auto height).
+  // Running rows on one line each, every other record folded. Work Status has no indicator.
   const section = testid(el('section', 'ap-section ap-census ap-census-calm'), 'subagent-activity');
   section.dataset.state = r.recorded ? 'ready' : 'host-only';
-  section.dataset.complete = String(r.recorded && !r.soFar && !r.notes.some((n) => n.kind !== 'capture-off' && n.kind !== 'history-off'));
+  if (v.runs?.read) section.dataset.revision = String(v.runs.read.revision);
+  section.dataset.complete = String(r.recorded && !r.soFar && !r.summary.some(s => s.partial) && !r.notes.some((n) => n.kind !== 'capture-off' && n.kind !== 'history-off'));
   section.setAttribute('aria-label', c.subagents);
   const head = el('div', 'ap-census-head');
   const title = el('div', 'ap-census-title');
@@ -561,15 +408,6 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const counts = r.summary.length ? summaryNode(r, compact, language) : null;
   if (counts) head.append(counts);
   section.append(head);
-  const routine = compact ? [] : r.notes.filter(routineNote);
-  if (routine.length) {
-    const cue = coverageCue(routine, v.runs, scope, v.env);
-    // The last item of the counts' wrapping row, so it stays beside them at any width.
-    (counts ?? head).append(cue.button);
-    if (cue.recent) (counts ?? head).append(cue.recent);
-    section.append(cue.region);
-  }
-  if (!compact && v.runs) announceLoss(v.runs, !!lossOf(r.notes)?.attention, language);
   const now = r.featured.filter(running);
   if (now.length) {
     const list = el('ul', 'ap-obs-list');
@@ -579,7 +417,7 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
-  const notes = compact ? notesNode(r, language) : coverageNode(r.notes.filter((n) => !routineNote(n)), v.runs, language);
+  const notes = coverageNode(r.notes.filter(separateNote), v.runs, language);
   if (notes) section.append(notes);
   return section;
 }

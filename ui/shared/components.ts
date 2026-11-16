@@ -739,14 +739,15 @@ export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | '
  * The rail's title-picker: the SDK select, shown as "⌄ 1 of 3" beside the plan title. Its name
  * says which plan of how many is shown; every option keeps its full title in the popup.
  */
-export function planPicker(o: { title: string; index: number; count: number; value: string; options: SelectOption[]; onChange: (key: string) => void; standalone?: boolean; locale?: string }) {
+export function planPicker(o: { title: string; index: number; count: number; incomplete?: boolean; value: string; options: SelectOption[]; onChange: (key: string) => void; standalone?: boolean; locale?: string }) {
+  const count = o.incomplete ? `${displayCount(o.count, resolveLanguage('auto', o.locale ?? 'en'))}+` : o.count;
   const holder = testid(el('div', 'ap-picker ap-title-picker'), 'plan-selector');
-  mountSelect(holder, { label: say('{n} plans', o.locale, { n: o.count }), value: o.value, options: o.options, onChange: o.onChange });
+  mountSelect(holder, { label: say('{n} plans', o.locale, { n: count }), value: o.value, options: o.options, onChange: o.onChange });
   const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
   if (trigger) {
     trigger.removeAttribute('aria-labelledby');
-    trigger.setAttribute('aria-label', say('Plan {index} of {count}: {title}. Choose another plan', o.locale, { index: o.index, count: o.count, title: o.title }));
-    trigger.prepend(el('span', 'ap-title-picker-hint', `${o.standalone ? say('Plan ', o.locale) : ''}${say('{index} of {count}', o.locale, { index: o.index, count: o.count })}`));
+    trigger.setAttribute('aria-label', say('Plan {index} of {count}: {title}. Choose another plan', o.locale, { index: o.index, count, title: o.title }));
+    trigger.prepend(el('span', 'ap-title-picker-hint', `${o.standalone ? say('Plan ', o.locale) : ''}${say('{index} of {count}', o.locale, { index: o.index, count })}`));
   }
   return holder;
 }

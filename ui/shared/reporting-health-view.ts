@@ -1,5 +1,6 @@
 import { button, el, shellCopy, testid } from './components.ts';
-import { reportingCopyText, supportSummary, type ReportingHealth } from './reporting-health.ts';
+import { countSupportLines, reportingCopyText, supportSummary, type ReportingHealth } from './reporting-health.ts';
+import { emptyCountFacts } from './incomplete-counts.ts';
 import { resolveLanguage } from './i18n.ts';
 import { managedCopy } from './managed-copy.ts';
 const en = {
@@ -118,6 +119,10 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
   const advanced=testid(el('details','ap-health-details'),'advanced-details');
   advanced.append(el('summary','',shellCopy(locale).advanced));
   if (facts) advanced.append(facts);
+  const counts = testid(el('pre', 'ap-note'), 'incomplete-counts-details');
+  counts.style.whiteSpace = 'pre-wrap'; counts.style.overflowWrap = 'anywhere';
+  counts.textContent = countSupportLines(p.counts ?? emptyCountFacts()).join('\n');
+  advanced.append(counts);
   advanced.append(el('p','ap-note',text.checked));
   box.setAttribute('aria-busy',String(p.busy));
   if(p.busy)box.append(el('p','ap-note',text.checking));
@@ -136,7 +141,7 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
     for(const [key,label] of labels)explanations.append(el('dt','',label),el('dd','',key==='service'&&p.facts[key]==='unavailable'?text.serviceUnavailable:explain[p.facts[key]]??explain.unknown));
     details.append(explanations,el('p','ap-note',text.limits),el('p','ap-note',managed.lifecycle),el('p','ap-note',managed.reach));advanced.append(details);
     const support=testid(el('details','ap-health-details'),'reporting-support');support.append(el('summary','',text.support));
-    const preview=testid(el('textarea'),'reporting-support-preview');preview.dataset.observation=p.observation;preview.readOnly=true;preview.value=supportSummary(p.facts);preview.rows=8;preview.className='ap-summary-text';preview.setAttribute('aria-label',text.preview);support.append(preview);
+    const preview=testid(el('textarea'),'reporting-support-preview');preview.dataset.observation=p.observation;preview.readOnly=true;preview.value=supportSummary(p.facts,p.counts);preview.rows=8;preview.className='ap-summary-text';preview.setAttribute('aria-label',text.preview);support.append(preview);
     advanced.append(support);
     if(p.copyState==='failed') { const fallback=preview.cloneNode(true) as HTMLTextAreaElement; fallback.value=preview.value; fallback.dataset.testid='reporting-copy-fallback'; box.append(fallback); }
   }

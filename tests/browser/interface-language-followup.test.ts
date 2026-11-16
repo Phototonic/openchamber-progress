@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as i18n from '../../ui/shared/i18n.ts';
 import * as format from '../../ui/shared/format.ts';
 import * as model from '../../ui/shared/model.ts';
+import * as counts from '../../ui/shared/incomplete-counts.ts';
 
 class Element {
   dataset: Record<string, string> = {};
@@ -36,13 +37,14 @@ function fixture() {
     return exports;
   };
   const components = load('components', { './i18n.ts': i18n, './format.ts': format, './model.ts': model });
-  const census = load('census-view', { './components.ts': components, './i18n.ts': i18n }, '\nexports.announceLoss = announceLoss;');
-  return { body, frames, components, announce: census.announceLoss,
+  const indicator = load('incomplete-counts-view', { './components.ts': components, './i18n.ts': i18n, './incomplete-counts.ts': counts });
+  const view = new indicator.IncompleteCounts(() => {});
+  return { body, frames, components, announce: view.announceOutcome.bind(view),
     flush: () => { for (const run of frames.splice(0)) run(); } };
 }
 
-const englishError = 'Couldn’t dismiss the warning. Try again.';
-const russianError = 'Не удалось скрыть предупреждение. Попробуйте снова.';
+const englishError = 'Couldn’t dismiss this note; try again.';
+const russianError = 'Не удалось скрыть заметку; попробуйте снова.';
 
 test('same dismissal token translates the existing live region without repeating identical paints', () => {
   const f = fixture();
@@ -100,7 +102,7 @@ test('renewed attention retires queued success and a later quiet outcome uses th
   const node = f.body.children[0] as Element;
   assert.equal(node.textContent, '');
   f.announce(runs, false, 'ru'); f.flush();
-  assert.equal(node.textContent, 'Предупреждение скрыто.');
+  assert.equal(node.textContent, 'Заметка скрыта.');
   const writes = node.writes.length;
   f.announce(runs, false, 'ru');
   assert.equal(f.frames.length, 0);

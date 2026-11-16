@@ -3,11 +3,12 @@
 // revision-1 read (same wire shape as shared/subagent-runs.ts, run format 2 with recording-gap
 // notices and the dismissal route by default). Every session, plan and title here is synthetic. node --experimental-strip-types tests/browser/subagent-activity-fixture.ts [port]
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { HEALTH, envelope, summary, docRef, setupRead, at } from './fixtures.ts';
 import type { Item } from '../../shared/progress.ts';
+import { createGuestAssets } from './source-guests.ts';
 
 const port = Number(process.argv[2] ?? 47873);
+const assets = createGuestAssets({ source: process.argv.includes('--source') });
 const ago = (minutes: number) => at(minutes, Date.now());
 // Root A coordinates "Release preparation": C1 (running, two tasks), N1 under C1 (waiting for an
 // answer), C2 (finished, claims done, but its task is blocked), E1 (idle, no task, no run record).
@@ -70,7 +71,7 @@ const alphaHistory=()=>[history('A','OLD1',{description:'Earlier planning helper
 const manyRuns=()=>{const r=[run('M','M-live','running',{ago:6,plan:'plan-many',description:'Table batch 214',agent:'migrator'})];
   for(let i=0;i<212;i++){const st=i<4?'failed':i<6?'interrupted':i<7?'unknown':'succeeded';const x=run('M','Y'+(n+1),st,{ago:20+i*13,took:2+i%5,plan:'plan-many',description:'Table batch '+(213-i),agent:'migrator',errorType:st==='failed'?'SyntheticTimeout':null,reason:st==='interrupted'?'superseded':null});if(st==='unknown'){x.ran.endedAt=null;x.ran.dispatchState='unconfirmed';}r.push(x);}
   return r;};
-window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,connected:false,hold:false,held:[],requests:[],opened:[],subs:new Map(),resizes:[],dropResize:0,
+window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,connected:false,hold:false,held:[],requests:[],opened:[],subs:new Map(),resizes:[],dropResize:0,locale:'en',storageSupported:true,storageError:false,partialPlans:false,
   runs:{A:{useful:alphaRuns(),history:alphaHistory(),recovery:{state:'complete',reason:null,token:null},loss:false},M:{useful:manyRuns(),history:[],recovery:{state:'complete',reason:null,token:null},loss:false}},
   ws:{projectsState:'ready',projects:[{id:'proj-alpha',name:'Alpha',directory:'/fixture/Alpha'},{id:'proj-beta',name:'Beta',directory:'/fixture/Beta'}],
   sessions:${JSON.stringify(sessions)},state:{'proj-alpha':'ready','proj-beta':'ready'},coverage:{'proj-alpha':[{directory:'/fixture/Alpha',state:'ready'}],'proj-beta':[{directory:'/fixture/Beta',state:'ready'}]}}};
@@ -110,7 +111,7 @@ const runRead=(q)=>{const binding=JSON.parse(q.binding),root=qa.runs[q.root];if(
 // Realistic ready context: no integration account is linked (connection is integration link state,
 // not host transport), while the workspace streams are ready.
 const conn=()=>({account:qa.connected?'fixture-link':'',connected:qa.connected});
-const ready=s=>send(s,{type:'ready',payload:{theme,locale:'en',surface:s,session:qa.session?{id:qa.session}:null,directory:qa.directory,connection:conn(),settings:{},item:null}});
+const ready=s=>send(s,{type:'ready',payload:{theme,locale:qa.locale,features:{deviceStorage:qa.storageSupported},surface:s,session:qa.session?{id:qa.session}:null,directory:qa.directory,connection:conn(),settings:{},item:null}});
 const snapshot=q=>q.kind==='projects'?{kind:'projects',state:qa.ws.projectsState,projects:qa.ws.projectsState==='ready'?qa.ws.projects:[]}
   :q.kind==='worktrees'?{kind:'worktrees',projectId:q.projectId,state:'ready',worktrees:[]}
   :{kind:'sessions',projectId:q.projectId,state:qa.ws.state[q.projectId]||'ready',coverage:qa.ws.coverage[q.projectId]||[],sessions:(qa.ws.state[q.projectId]||'ready')==='ready'?(qa.ws.sessions[q.projectId]||[]):[]};
@@ -126,11 +127,12 @@ qa.release=()=>{const h=qa.held.splice(0);h.forEach(f=>f());return h.length};
 qa.show=(s,width=360)=>{for(const n of document.querySelectorAll('section'))n.style.display=n.dataset.surface===s?'block':'none';document.querySelector('section[data-surface="'+s+'"]').style.width=width+'px';};
 qa.dark=()=>{theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',info:'#83aff7',warning:'#d9a13b',error:'#e06c6c',success:'#5cbf7f'});document.body.style.background='#191b20';document.body.style.color='#e6e8ee';surfaces.forEach(ready)};
 const storage=new Map();
+qa.storage=storage;
 const participants={A:['plan-alpha'],C1:['plan-alpha'],N1:['plan-alpha'],C2:['plan-alpha'],M:['plan-many']};
 addEventListener('message',e=>{const f=[...document.querySelectorAll('iframe')].find(x=>x.contentWindow===e.source),m=e.data;if(!f||m.channel!=='openchamber.sdk')return;const s=f.dataset.surface;
  const result=payload=>send(s,{type:'result',id:m.id,ok:true,payload});
  if(m.type==='hello')ready(s);
- else if(m.type==='storage'){const q=m.payload;if(q.op==='set')storage.set(q.key,q.value);if(q.op==='delete')storage.delete(q.key);result({storage:true,op:q.op,found:storage.has(q.key),value:storage.get(q.key)});}
+ else if(m.type==='storage'){const q=m.payload;if(qa.storageError&&q.op==='set'){send(s,{type:'result',id:m.id,ok:false,code:'HOST_UNAVAILABLE',error:'Synthetic write failure'});return;}if(q.op==='set')storage.set(q.key,q.value);if(q.op==='delete')storage.delete(q.key);result({storage:true,op:q.op,found:storage.has(q.key),value:storage.get(q.key)});}
  else if(m.type==='workspace-subscribe'){qa.subs.set(s+'|'+m.payload.subscriptionId,{surface:s,id:m.payload.subscriptionId,query:m.payload.query});result();send(s,{type:'workspace',payload:{subscriptionId:m.payload.subscriptionId,snapshot:snapshot(m.payload.query)}});}
  else if(m.type==='workspace-unsubscribe'){qa.subs.delete(s+'|'+m.payload.subscriptionId);if(m.id)result();}
  else if(m.type==='open-session'){qa.opened.push({surface:s,id:m.payload.sessionId});result();}
@@ -139,7 +141,7 @@ addEventListener('message',e=>{const f=[...document.querySelectorAll('iframe')].
   const local=plans.filter(p=>p.sourceId==='src-local');
   if(q.path==='/health')body={...${JSON.stringify({ ...HEALTH, planCleanup: 1 })},...(qa.capable?{subagentRuns:1}:{})};
   else if(q.path==='/v1/setup')body={...${JSON.stringify(setupRead())},captureEnabled:qa.capture};
-  else if(q.path==='/v1/plans'){const sid=q.query?.session;body={...env,data:q.query?.archived==='only'?[]:sid?local.filter(p=>(participants[sid]||[]).includes(p.id)):plans,nextCursor:null};}
+  else if(q.path==='/v1/plans'){const sid=q.query?.session;body={...env,data:q.query?.archived==='only'?[]:sid?local.filter(p=>(participants[sid]||[]).includes(p.id)):plans,nextCursor:qa.partialPlans?'older':null};}
   else if(q.path==='/v1/plan'){const p=plans.find(p=>p.id===q.query?.plan&&p.sourceId===q.query?.source);if(p)body=p.sourceId!=='src-local'?{...env,plan:p,items:{data:[{id:'task-1',title:'Lookalike task',kind:'task',status:'working'}],nextCursor:null},contributions:{data:[],nextCursor:null},links:[]}:p.id==='plan-alpha'?{...env,plan:p,items:{data:items,nextCursor:null},contributions:{data:contributions,nextCursor:null},links}:{...env,plan:p,items:{data:[{id:'m-1',title:'Migrate every table',kind:'task',status:'working',assigneeSessionId:'M'}],nextCursor:null},contributions:{data:[],nextCursor:null},links:[]};}
   else if(q.path==='/v1/document')body={...env,document:${JSON.stringify(docRef())},text:'# Release preparation\\n\\nSynthetic example.',nextCursor:null};
   else if(q.path==='/v1/history')body={...env,data:[1,2,3,4].map(r=>({revision:r,structuralRevision:1,lifecycle:'active',reportedAt:plans[0].reportedAt})),nextCursor:null};
@@ -160,8 +162,8 @@ const server = createServer((req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Sub-agent activity fixture</title><style>body{margin:0;background:#fafafa;color:#202124;font:14px system-ui}section{margin:16px;width:360px}h1{font-size:14px;margin:0 0 10px}iframe{width:100%;height:900px;border:0;display:block}section[data-surface=status] iframe{height:240px}section:not([data-surface=panel]){display:none}</style></head><body><script>${script}</script>${['panel', 'status', 'page'].map(x => `<section data-surface="${x}"><h1>Agent progress · ${x}</h1><iframe data-surface="${x}" title="${x}" src="/ui/${x}/index.html"></iframe></section>`).join('')}</body></html>`);
   } else if (/^\/ui\/(panel|status|page)\/(index\.html|main\.js)$/.test(pathname)) {
-    res.setHeader('content-type', pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(`.${pathname}`));
+    res.setHeader('content-type', pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(assets.read(pathname));
   } else { res.statusCode = pathname === '/favicon.ico' ? 204 : 404; res.end(); }
 });
-server.listen(port, '127.0.0.1', () => console.log(`Synthetic sub-agent activity fixture ready on loopback port ${port}`));
-process.on('SIGTERM', () => { server.close(); server.closeAllConnections(); });
+server.listen(port, '127.0.0.1', () => console.log(`Synthetic sub-agent activity fixture ready on loopback port ${(server.address() as { port: number }).port}`));
+process.on('SIGTERM', () => { server.close(); server.closeAllConnections(); assets.dispose(); });

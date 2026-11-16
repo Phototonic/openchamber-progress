@@ -2184,6 +2184,41 @@ unknown-date/non-attention without a control; malformed format-2 notice metadata
 is invalid, not legacy. Old run-aware binaries reject upgraded storage, including
 potential `503 schema` health. Do not down-migrate to restore them.
 
+### Count qualification and device dismissal
+
+Rail and board combine incomplete-count reasons into one neutral, expandable
+“Counts may be incomplete.” note, last in the ordinary content. The reason set
+is derived from held list, inbox, run-history and host-census facts; it adds no
+request, timer, protocol revision or stored progress. Possibly low counts carry
+`+` directly after the number even when the note is dismissed. A complete
+recorded completed-run count is not qualified merely because the host census
+or a row page is incomplete; complete map/task counts remain exact.
+
+Dismissal uses only the existing bounded device view record, separately for rail
+and board, keyed by store, the canonical reason set and recording-gap detection
+sequence. Totals, page cursors, language, read time and attention ageing do not
+change that identity. New reasons or a new detection bring the note back.
+Without device storage it lasts only in the frame. A failed write is not saved.
+Shared profiles share this state; it is not per-person isolation.
+Dismissal does not withdraw continuation access: when another bounded window
+can be loaded, a quiet Load more disclosure reopens the expanded indicator.
+Reopening is frame-local, leaves the remembered dismissal intact and performs
+no read itself; the existing action inside the expansion reads one window.
+
+An attended format-2 gap is named in the expanded note. Dismissal first sends
+the existing revision-fenced store-wide acknowledgement; only success permits
+device dismissal. Failure, conflict or a retired run visit cannot hide it.
+Legacy, migrated, old and acknowledged gaps still qualify counts. Reasons,
+limits and held record totals remain in Troubleshooting → Advanced details.
+The support summary preserves its earlier lines and appends fixed-vocabulary
+`count-reasons`, `count-limits`, `count-gap` and `count-records` lines; no agent text, identity
+or path is serialized. Failed/stale reads, recording off and another-install
+restrictions stay separate and are never dismissed with the note.
+Retry dispatches to the failed source, independently of the normal continuation
+priority. The indicator-free Work Status retains page-failure feedback. Diagnostic
+count facts derive from current held data even while a surface panel replaces
+ordinary content; copied support output uses those same facts.
+
 ### Optional authored child handoff
 
 The existing report tool accepts `op:"handoff"`, `oid`, `summary` and

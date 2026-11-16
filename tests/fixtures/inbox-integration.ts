@@ -54,10 +54,12 @@ export async function inboxIntegration(source: string, plans: { id: string; titl
         return { ...item, status: 'done' };
       }) : plan.items });
     },
-    partial() {
-      // 51 blocked rows in one plan leave a revision-pinned mid-plan cursor at the real 50-row bound.
-      const items = [...alpha.items, ...Array.from({ length: 49 }, (_, n): BlockerItemInput => ({ id: `filler-${n}`, title: 'Additional reported wait', kind: 'task', status: 'blocked' }))];
-      const upload = 'inbox-partial';
+    partial(windows = 1) {
+      // Leave one row beyond the requested number of 50-row windows.
+      const items = [...alpha.items, ...Array.from({ length: windows * 50 - 1 }, (_, n): BlockerItemInput => windows > 1 && n === windows * 50 - 2
+        ? { id: 'continuation-target', title: 'Review the last window', kind: 'task', status: 'blocked', blocker: { category: 'review', reason: 'This item is beyond the automatic windows.' } }
+        : { id: `filler-${n}`, title: 'Additional reported wait', kind: 'task', status: 'blocked' })];
+      const upload = `inbox-partial-${++oid}`;
       for (let n = 0; n < items.length; n += 50) apply(alpha, { op: 'stage', upload, chunk: n / 50, items: items.slice(n, n + 50) });
       apply(alpha, { op: 'commit', upload, chunks: Math.ceil(items.length / 50) });
     },

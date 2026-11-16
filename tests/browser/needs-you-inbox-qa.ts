@@ -49,7 +49,7 @@ addEventListener('message',async e=>{const node=[...document.querySelectorAll('i
 if(m.type==='hello')ready(f);
 else if(m.type==='workspace-subscribe'){result();send(f,{type:'workspace',payload:{subscriptionId:m.payload.subscriptionId,snapshot:snapshot(m.payload.query)}})}
 else if(m.type==='storage'){const q=m.payload,k=(q.scope==='device'?'device':f)+':'+q.key;if(q.op==='set')qa.storage.set(k,q.value);if(q.op==='delete')qa.storage.delete(k);const reply=()=>result({storage:true,op:q.op,found:qa.storage.has(k),value:qa.storage.get(k),...(q.op==='keys'?{keys:[]}:{})});if(f==='panel'&&q.op==='get'&&q.key==='progress-view.v1'&&qa.holdStorage)qa.pendingStorage.push(reply);else reply()}
-else if(m.type==='service-request'){qa.requests.push({frame:f,method:m.payload.method,path:m.payload.path,cursor:!!m.payload.query?.cursor});const r=await fetch('/service?frame='+f,{method:'POST',body:JSON.stringify(m.payload)});result(await r.json())}else if(m.id)result()});
+else if(m.type==='service-request'){qa.requests.push({frame:f,method:m.payload.method,path:m.payload.path,cursor:!!m.payload.query?.cursor,cursorToken:m.payload.query?.cursor});const r=await fetch('/service?frame='+f,{method:'POST',body:JSON.stringify(m.payload)});result(await r.json())}else if(m.id)result()});
 </script>${['panel','page','status'].map(f => `<section data-frame="${f}"><iframe data-frame="${f}" src="/ui/${f}/index.html"></iframe></section>`).join('')}</html>`;
 const server = createServer(async (req, res) => {
   try {
@@ -79,7 +79,7 @@ const wait = async (f: string, condition: string, ms = 20000) => {
   const ok = await evaluate<boolean>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame(${js(f)}).contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
   if (!ok) throw Error(`Timeout ${f}: ${condition}`);
 };
-const key = async (k: string) => { for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: k === 'Tab' ? 9 : k === 'Escape' ? 27 : k === 'Home' ? 36 : k === 'ArrowDown' ? 40 : 13, ...(k === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) }); };
+const key = async (k: string, shift = false) => { for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code: k, modifiers: shift ? 8 : 0, windowsVirtualKeyCode: k === 'Tab' ? 9 : k === 'Escape' ? 27 : k === 'Home' ? 36 : k === 'ArrowDown' ? 40 : 13, ...(k === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) }); };
 const click = async (f: string, selector: string, touch = false, duringPress?: () => Promise<void>) => {
    const p = await evaluate<number[]>(`(async()=>{const fr=frame(${js(f)}),selector=${js(selector)};fr.contentDocument.querySelector(selector)?.scrollIntoView({block:'center'});fr.scrollIntoView();await new Promise(r=>requestAnimationFrame(r));const n=fr.contentDocument.querySelector(selector);if(!n)throw Error('Missing '+selector);const a=n.getBoundingClientRect(),b=fr.getBoundingClientRect();if(!a.width||!a.height)throw Error('Hidden '+selector);const x=a.x+b.x+Math.min(12,a.width/2),y=a.y+b.y+Math.min(12,a.height/2);if(!n.contains(fr.contentDocument.elementFromPoint(x-b.x,y-b.y)))throw Error('Obscured '+selector);return [x,y]})()`);
   if (touch) { await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p[0], y: p[1] }] }); await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); }
@@ -88,7 +88,7 @@ const click = async (f: string, selector: string, touch = false, duringPress?: (
     if (type === 'mousePressed') await duringPress?.();
   }
 };
-const tabTo = async (f: string, selector: string) => { await guest(f, 'w.focus();return true'); for (let i = 0; i < 100; i++) { if (await guest<boolean>(f, `return !!d.activeElement?.matches(${js(selector)})`)) return; await key('Tab'); } throw Error(`Tab never reached ${selector}`); };
+const tabTo = async (f: string, selector: string, backwards = false) => { await guest(f, 'w.focus();return true'); for (let i = 0; i < 100; i++) { if (await guest<boolean>(f, `return !!d.activeElement?.matches(${js(selector)})`)) return; await key('Tab', backwards); } throw Error(`Tab never reached ${selector}`); };
 const shot = async (name: string) => { const r = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); };
 const count = (n: number) => `d.querySelector('[data-testid="needs-you-count"]')?.dataset.count==='${n}'`;
 const row = (id: string) => `[data-testid="needs-you-row"][data-task="${id}"]`;
@@ -252,14 +252,33 @@ try {
   real.partial(); await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`);
   for (const surface of ['panel', 'page']) {
     await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
-    await wait(surface, `!!d.querySelector('[data-testid="needs-you-more-retry"] button')`);
+    await wait(surface, `!!d.querySelector('[data-testid="incomplete-counts-retry"]')`);
     const retryAt = await evaluate<number>('qa.requests.length');
-    await click(surface, '[data-testid="needs-you-more-retry"] button');
-    await wait(surface, `!d.querySelector('[data-testid="needs-you-more-failed"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
+    await click(surface, '[data-testid="incomplete-counts-retry"]');
+    await wait(surface, `!d.querySelector('[data-testid="incomplete-counts-load-error"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
     check(`${surface}-retry-recovers-first-continuation`, await evaluate<boolean>(`qa.requests.slice(${retryAt}).some(q=>q.frame===${js(surface)}&&q.path==='/v1/needs-you')`));
   }
   await evaluate(`qa.show('panel',600);true`);
   check('automatic-continuation-on-refresh', await evaluate<boolean>(`qa.requests.some(q=>q.frame==='panel'&&q.path==='/v1/needs-you')`));
+  // The ninth window must remain keyboard-reachable after a remembered dismissal.
+  const traversalAt = await evaluate<number>('qa.requests.length');
+  const eightWindows = (start: number) => `new Set(qa.requests.slice(${start}).filter(q=>q.frame==='panel'&&q.path==='/v1/needs-you'&&q.cursor).map(q=>q.cursorToken)).size>=7`;
+  real.partial(8);
+  await wait('panel', `${eightWindows(traversalAt)} && !!d.querySelector('[data-testid="incomplete-counts-more"]') && !d.querySelector(${js(row('continuation-target'))})`, 40000);
+  await tabTo('panel', '[data-testid="incomplete-counts-toggle"]', true);
+  if (await guest('panel', `return d.activeElement.getAttribute('aria-expanded')==='false'`)) await key('Enter');
+  await tabTo('panel', '[data-testid="incomplete-counts-dismiss"]'); await key('Enter');
+  await wait('panel', `!d.querySelector('[data-testid="incomplete-counts"]')`);
+  const reloadAt = await evaluate<number>('qa.requests.length');
+  const continuationReload = await evaluate<number>(`qa.reload('panel')`);
+  await wait('panel', `w.location.search==='?reload=${continuationReload}' && ${eightWindows(reloadAt)}`, 40000);
+  await wait('panel', `!!d.querySelector('[data-testid="incomplete-counts-reopen"]')`);
+  check('dismissed-note-reload-keeps-plus-and-quiet-continuation', await guest('panel', `return !d.querySelector('[data-testid="incomplete-counts"]') && d.querySelector('[data-testid="needs-you-count"]')?.textContent.includes('+')`));
+  await tabTo('panel', '[data-testid="incomplete-counts-reopen"]', true); await key('Enter');
+  await wait('panel', `d.querySelector('[data-testid="incomplete-counts-toggle"]')?.getAttribute('aria-expanded')==='true'`);
+  await tabTo('panel', '[data-testid="incomplete-counts-more"]'); await key('Enter');
+  await wait('panel', `!!d.querySelector(${js(row('continuation-target'))})`);
+  check('dismiss-reload-keyboard-reaches-remaining-inbox-item', true);
   real.empty();
   await wait('panel', `d.querySelector('[data-testid="needs-you-inbox"]')?.hidden && d.querySelector('[data-testid="needs-you-inbox"]').getBoundingClientRect().height===0`);
   check('complete-empty-rail-has-no-visible-line', true);

@@ -405,7 +405,10 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
     if (m.loadingMore || m.rechecking) count.setAttribute('aria-busy', 'true');
     toggle.append(count);
     const oldest = m.needsYou.filter(row => row.wait).sort((a, b) => elapsedAt(b.wait!, env.mono) - elapsedAt(a.wait!, env.mono))[0];
-    if (oldest) { const wait = waitLabel(oldest, m, env); wait.classList.add('ap-inbox-oldest'); toggle.append(wait); }
+    if (oldest) {
+      const minimum = !m.complete && oldest.wait ? { ...oldest, wait: { ...oldest.wait, kind: 'lower-bound' as const } } : oldest;
+      const wait = waitLabel(minimum, m, env); wait.classList.add('ap-inbox-oldest'); toggle.append(wait);
+    }
   }
   toggle.addEventListener('click', () => {
     if (device && device.error !== 'read') void device.setExpanded(surface, !expanded).then(ok => { if (ok && state.matches(options.identity)) { state.expanded = null; options.changed(); } }); else state.expanded = !expanded;
@@ -434,10 +437,6 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
   if (device?.error) {
     box.append(testid(warningLine(device.error === 'read' ? c.readFailed : c.savedFailed, 'warning', 'p'), 'needs-you-device-error'));
     button(box, 'needs-you-device-retry', t.retry, () => { void device.refresh(true); }, 'ghost');
-  }
-  if (m.moreFailed) {
-    body.append(testid(warningLine(t.moreFailed, 'warning', 'p'), 'needs-you-more-failed'));
-    button(body, 'needs-you-more-retry', t.retry, panel.retry, 'ghost');
   }
   if (!m.needsYou.length) body.append(testid(el('p', 'ap-inbox-empty', m.complete ? t.none : t.noneYet), 'needs-you-empty'));
   const list = el('ul', 'ap-inbox-list'); list.setAttribute('aria-label', t.listLabel); body.append(list);
@@ -530,7 +529,6 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
     else { also.dataset.testid = ATTENTION_HOOKS.alsoBlocked; also.textContent = t.also(m.counts.alsoBlocked, m.complete); }
     body.append(also);
   }
-  if (m.canContinue) button(body, 'needs-you-more', m.loadingMore ? t.moreLoading : t.more, panel.more, 'outline', m.loadingMore);
   return box;
 }
 

@@ -40,14 +40,14 @@ const messages = {
     otherSource: (n: number) => `${plural(n, 'plan comes', 'plans come')} from another OpenCode setup, so ${n === 1 ? 'it' : 'they'} can be read but not opened from here.`,
     capped: (n: number) => `Live status is limited to the first projects; ${plural(n, 'project is', 'projects are')} not watched.`,
     regrouped: 'The plan moved to Finished, so focus moved to this project’s Finished toggle.', emptyQuery: 'Enter words to search, or choose a plan or task status.', removed: 'Filter removed', ended: 'Search ended. The board shows plans with the remaining filters.', cleared: 'Search cleared', clearedAll: (archived: boolean) => `Search and filters cleared. Showing all ${archived ? 'archived' : 'current'} plans.`, search: 'Search', filter: 'Filter plans', updated: 'Results updated', resumed: 'Search resumed', pick: 'Open a result to read it here', pickHelp: 'Opening a plan or task shows its current plan. It never starts, assigns or completes work.', progress: 'Progress', document: 'Document', history: 'History', map: 'Map', project: 'Project', worktree: 'Worktree', session: 'Session', setup: 'Setup', loaded: 'Plans loaded', watched: 'Live sessions watched', inProgress: 'In progress', active: 'Active', unverified: 'Unverified setup', other: 'Other setup', fromOther: 'from another OpenCode setup', plans: 'Plans', listEmpty: 'No plans match.',
-    plansIn: (name: string) => `Plans in ${name}`, finishedIn: (name: string) => `Finished and cancelled plans in ${name}`, finished: (n: number) => `Finished · ${n}`, finishedHelp: (n: number) => `${plural(n, 'finished or cancelled plan', 'finished or cancelled plans')} loaded here. Search finds them too.`,
+    plansIn: (name: string) => `Plans in ${name}`, finishedIn: (name: string) => `Finished and cancelled plans in ${name}`, finished: (n: number, incomplete = false) => `Finished · ${n}${incomplete ? '+' : ''}`, finishedHelp: (n: number) => `${plural(n, 'finished or cancelled plan', 'finished or cancelled plans')} loaded here. Search finds them too.`,
     searchTask: (title: string) => `Search result: ${title}`, historyTask: (title: string) => `Current task from History: ${title}`, opening: (title: string) => `Opening the current task “${title}”…`, taskFailed: 'The current task list couldn’t be loaded, so the task can’t be shown. Nothing was changed.', taskHistoryFailed: 'The current task list couldn’t be loaded, so the task can’t be shown. Its recorded changes stay here.', taskMoved: (title: string, archived: boolean) => `“${title}” can’t be shown here: its plan moved ${archived ? 'out of Archived plans' : 'to Archived plans'}.`, taskGone: (title: string) => `“${title}” is no longer in the current plan, so it can’t be shown. The plan stays open to read.`, historyGone: (title: string) => `“${title}” is no longer in the current plan, so it can’t be shown there. Its recorded changes stay here.`,
   },
   ru: {
     heading: 'Прогресс агента', current: 'Текущие планы', archived: 'Архивные планы', cleanupOff: 'Очистка планов недоступна в этой версии сервиса.', noArchived: 'Архивных планов нет', noPlans: 'Здесь пока нет записанных планов', archivedHelp: 'Здесь появятся завершённые планы, которые вы архивируете. Их история останется доступной.', plansHelp: 'Здесь появляются новые отчёты. Завершённая работа может находиться в архивных планах.', clear: 'Очистить поиск и фильтры', detail: 'Подробности плана', noMatch: 'Нет планов по этим фильтрам', chooseLocation: 'Выберите другой проект, рабочую копию или сессию.', truncated: 'Некоторые старые планы не загружены.', truncatedSearch: 'Некоторые старые планы не загружены здесь. Поиск проверяет все записанные планы.',
     missing: (n: number) => `Планов без живого статуса: ${n}. Их сессии не входят в охват текущего рабочего пространства, поэтому открыть их отсюда нельзя.`, otherSource: (n: number) => `Планов из другой установки OpenCode: ${n}. Их можно читать, но нельзя открыть отсюда.`, capped: (n: number) => `Живой статус ограничен первыми проектами; не отслеживается проектов: ${n}.`,
     regrouped: 'План перемещён в завершённые, поэтому фокус перенесён на переключатель завершённых планов этого проекта.', emptyQuery: 'Введите слова для поиска или выберите статус плана или задачи.', removed: 'Фильтр удалён', ended: 'Поиск завершён. Показаны планы с оставшимися фильтрами.', cleared: 'Поиск очищен', clearedAll: (archived: boolean) => `Поиск и фильтры очищены. Показаны все ${archived ? 'архивные' : 'текущие'} планы.`, search: 'Поиск', filter: 'Фильтрация планов', updated: 'Результаты обновлены', resumed: 'Поиск возобновлён', pick: 'Откройте результат, чтобы прочитать его здесь', pickHelp: 'Открытие плана или задачи показывает текущий план. Это не запускает, не назначает и не завершает работу.', progress: 'Прогресс', document: 'Документ', history: 'История', map: 'Карта', project: 'Проект', worktree: 'Рабочая копия', session: 'Сессия', setup: 'Настройка', loaded: 'Загружено планов', watched: 'Отслеживаемые живые сессии', inProgress: 'В работе', active: 'Активен', unverified: 'Непроверенная установка', other: 'Другая установка', fromOther: 'из другой установки OpenCode', plans: 'Планы', listEmpty: 'Подходящих планов нет.',
-    plansIn: (name: string) => `Планы проекта ${name}`, finishedIn: (name: string) => `Завершённые и отменённые планы проекта ${name}`, finished: (n: number) => `Завершённые · ${n}`, finishedHelp: (n: number) => `Загружено завершённых или отменённых планов: ${n}. Поиск также находит их.`,
+    plansIn: (name: string) => `Планы проекта ${name}`, finishedIn: (name: string) => `Завершённые и отменённые планы проекта ${name}`, finished: (n: number, incomplete = false) => `Завершённые · ${n}${incomplete ? '+' : ''}`, finishedHelp: (n: number) => `Загружено завершённых или отменённых планов: ${n}. Поиск также находит их.`,
     searchTask: (title: string) => `Результат поиска: ${title}`, historyTask: (title: string) => `Текущая задача из истории: ${title}`, opening: (title: string) => `Открываем текущую задачу «${title}»…`, taskFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Ничего не изменено.', taskHistoryFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Её записанные изменения остаются здесь.', taskMoved: (title: string, archived: boolean) => `Нельзя показать «${title}»: её план ${archived ? 'восстановлен из архива' : 'перемещён в архив'}.`, taskGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её нельзя. План остаётся открытым для чтения.`, historyGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её там нельзя. Её записанные изменения остаются здесь.`,
   },
   'zh-CN': {
@@ -56,7 +56,7 @@ const messages = {
     otherSource: (n: number) => `${n} 个计划来自其他 OpenCode 配置，可以阅读，但无法从此处打开。`,
     capped: (n: number) => `实时状态仅覆盖最前面的部分项目；有 ${n} 个项目未被观察。`,
     regrouped: '计划已移到已结束分组，焦点已移到该项目的已结束折叠按钮。', emptyQuery: '请输入搜索词，或选择计划状态、任务状态。', removed: '已移除筛选条件', ended: '搜索已结束，看板显示符合剩余筛选条件的计划。', cleared: '已清除搜索', clearedAll: (archived: boolean) => `已清除搜索和筛选，正在显示所有${archived ? '已归档' : '当前'}计划。`, search: '搜索', filter: '筛选计划', updated: '已更新结果', resumed: '已恢复搜索', pick: '打开一条结果，在此查看', pickHelp: '打开计划或任务只会显示其当前计划，不会启动、分配或完成工作。', progress: '进度', document: '文档', history: '历史', map: '依赖图', project: '项目', worktree: '工作树', session: '会话', setup: '设置', loaded: '已加载计划', watched: '正在观察的实时会话', inProgress: '进行中', active: '活跃', unverified: '配置未经验证', other: '其他配置', fromOther: '来自其他 OpenCode 配置', plans: '计划', listEmpty: '没有匹配的计划。',
-    plansIn: (name: string) => `${name} 中的计划`, finishedIn: (name: string) => `${name} 中已结束和已取消的计划`, finished: (n: number) => `已结束 · ${n}`, finishedHelp: (n: number) => `此处已加载 ${n} 个已结束或已取消的计划，也可通过搜索找到。`,
+    plansIn: (name: string) => `${name} 中的计划`, finishedIn: (name: string) => `${name} 中已结束和已取消的计划`, finished: (n: number, incomplete = false) => `已结束 · ${n}${incomplete ? '+' : ''}`, finishedHelp: (n: number) => `此处已加载 ${n} 个已结束或已取消的计划，也可通过搜索找到。`,
     searchTask: (title: string) => `搜索结果：${title}`, historyTask: (title: string) => `来自历史记录的当前任务：${title}`, opening: (title: string) => `正在打开当前任务“${title}”…`, taskFailed: '无法加载当前任务列表，因此无法显示任务，未进行任何更改。', taskHistoryFailed: '无法加载当前任务列表，因此无法显示任务；已记录的变更仍保留在此处。', taskMoved: (title: string, archived: boolean) => `无法在此显示“${title}”：其计划已${archived ? '移出已归档计划' : '移入已归档计划'}。`, taskGone: (title: string) => `“${title}”已不在当前计划中，无法显示；计划保持打开，仍可阅读。`, historyGone: (title: string) => `“${title}”已不在当前计划中，无法在那里显示；已记录的变更仍保留在此处。`,
   },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
@@ -113,7 +113,7 @@ let opened: string[] = [];
 
 const ownerOf = (vc: ViewContext<Ui>) => JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]);
 const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}) });
-const reporting = new ReportingHealth({service:current=>frame!.service(current),visible:()=>document.visibilityState!=='hidden',changed:()=>frame?.setUi({}),copy:async text=>{if(!navigator.clipboard?.writeText)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(text);}});
+const reporting = new ReportingHealth({service:current=>frame!.service(current),visible:()=>document.visibilityState!=='hidden',changed:()=>frame?.invalidate(),copy:async text=>{if(!navigator.clipboard?.writeText)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(text);}});
 const shell = new ProgressShell();
 function draftText(vc: ViewContext<Ui>) {
   if (text.owner !== ownerOf(vc)) text = { owner: ownerOf(vc), q: '' };
@@ -626,6 +626,10 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   const t = copy(env.locale);
   // Layout hook only: the Map tab uses the full detail column, the text tabs a reading width.
   detail.dataset.tab = ui.tab;
+  // Keep count observations current even when a surface panel replaces the ordinary DOM.
+  const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
+  const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
+  const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest, census ?? undefined) : null;
   if (surface(detail, vc, plan)) { detail.append(cleanupBlock(vc, plan)); return; }
   const viewSwitch = surfaceViewSwitch(ui.tab === 'map' ? 'map' : 'list', mode => {
     if (mode === 'list' && ui.tab === 'map') { boardMap.leave(true); return; }
@@ -635,9 +639,6 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   if (ui.tab !== 'map') detail.append(viewSwitch);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.
-  const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
-  const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest) : null;
-  const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
   const roster = () => (census && vc.read ? subagentsBlock({
     surface: 'page', plan, census, facts: planFacts(plan, vc.detail(plan), env.boundSource),
     runs, verified: true, currentSession: null, liveSeq: vc.live.seq, env,
@@ -752,9 +753,9 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
 
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   const t = copy(vc.env.locale);
-  const claim = () => reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure });
+  const claim = () => reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
   const plans = visiblePlans(vc);
-  const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, value: plan.key, locale: vc.env.locale, options: plans.map(p => ({ id: p.key, label: p.title })), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
+  const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, incomplete: vc.read?.truncated, value: plan.key, locale: vc.env.locale, options: plans.map(p => ({ id: p.key, label: p.title })), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
   if (picker) picker.classList.add('ap-board-picker');
   return shell.paint(root, vc, plan, {
     board: true, scope: readingScope(vc), picker,
@@ -911,7 +912,7 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
       toggle.dataset.project = key;
       toggle.setAttribute('aria-expanded', String(open));
       toggle.setAttribute('aria-controls', id);
-      toggle.append(icon('chevron-down'), el('span', '', t.finished(finished.length)));
+      toggle.append(icon('chevron-down'), el('span', '', t.finished(finished.length, !!frame?.read?.truncated)));
       const note = el('span', 'ap-sr', t.finishedHelp(finished.length));
       note.id = `${id}-note`;
       toggle.setAttribute('aria-describedby', note.id);
