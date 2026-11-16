@@ -789,6 +789,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!cleanupBusy && cleanup.tidy?.result && Object.keys(patch).length) cleanup = initialCleanup();
     const next = { ...ui, ...patch }; spec.beforeUiChange?.(ui, next);
     ui = next; versions.ui++; schedule();
+    // Retire synchronously, including while busy: away → back before a paint or
+    // receipt must never revive the captured state object used by current().
+    if (cleanup.tidy && cleanup.tidy.context !== tidyContext()) cleanup = { ...initialCleanup(), pending: cleanupBusy };
     if (scopeMoved()) retry();
     reconcilePreview();
     reconcileParts();
@@ -1354,7 +1357,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
-    if (cleanup.tidy && !cleanupBusy && cleanup.tidy.context !== tidyContext()) cleanup = initialCleanup();
+    if (cleanup.tidy && cleanup.tidy.context !== tidyContext()) cleanup = { ...initialCleanup(), pending: cleanupBusy };
     preparePreview();
     let vc = context();
     languagePaint = paintedLanguage !== null && paintedLanguageSignature !== languageSignature;
@@ -1590,7 +1593,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     deferredFocus = null;
     contextGeneration++;
     versions.ctx++;
-    cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
+    // Board Tidy belongs to its filtered scope, not the host's current session.
+    // A genuine scope/authority transition still drops the captured state forever.
+    const tidy = cleanup.tidy?.context === tidyContext() ? cleanup.tidy : undefined;
+    cleanup = { ...initialCleanup(), pending: cleanupBusy, tidy }; cleanupFocus = null; handoff = null; handoffNote = null;
     live.restart();
     // A full snapshot or incremental event can move context. Duplicate follow-up events
     // are idempotent; directory-only enrichment does not change a session list scope.
