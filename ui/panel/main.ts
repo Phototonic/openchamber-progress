@@ -8,7 +8,7 @@ import type { InboxRowView } from '../shared/model.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
-import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
+import { initialSetupUi, reloadNote, retireSetupSteps, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
@@ -65,6 +65,7 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, 
   return shell.paint(root, vc, plan, {
     picker: pick,
     openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
+    closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
       if (kind === 'setup') return setupBlock(vc);
       if (kind === 'troubleshooting') {
@@ -142,7 +143,7 @@ startView<Ui>({
   },
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return railMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(); inboxFocus?.reset(reason); } reporting.retire(); railMap.retire(reason); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); shell.reset(reason === 'reset'); inboxFocus?.reset(reason); } reporting.retire(); railMap.retire(reason); },
   afterPaint: (root, vc) => {
     shell.afterPaint(root);
     railMap.afterPaint(root, vc, vc.ui.inbox ? null : current(vc), listSwitch);

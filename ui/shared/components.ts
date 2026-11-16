@@ -571,17 +571,29 @@ export function narrowSurface() {
 export class ProgressShell {
   private key = '';
   private panel: SurfacePanel | null = null;
+  private closePanel: ((kind: SurfacePanel) => void) | undefined;
+  private setPanel(panel: SurfacePanel | null) {
+    const previous = this.panel;
+    this.panel = panel;
+    if (previous && previous !== panel) this.closePanel?.(previous);
+  }
   private menu: ReturnType<typeof moreMenu> | null = null;
   private focus: 'heading' | 'more' | null = null;
   private review: { key: string; revision: number | null } | null = null;
-  reset() { this.key = ''; this.panel = null; this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null; }
+  reset(keepSetup = false) {
+    // Same-reading data refreshes (including capture changes) keep Setup usable.
+    // Reconcile still closes it when the account, authority or selection changes.
+    if (keepSetup && this.panel === 'setup') this.closePanel?.('setup');
+    else { this.key = ''; this.setPanel(null); this.closePanel = undefined; }
+    this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null;
+  }
   get activePanel() { return this.panel; }
   /** Reconcile selection before callers decide which view is active, not only during paint. */
   reconcile<U>(vc: ViewContext<U>, plan: PlanView | null, options: { board?: boolean; scope?: string } = {}) {
     const key = JSON.stringify([vc.ctx.connection?.account, vc.identity, options.board ? null : vc.session?.id, options.scope, plan?.key]);
     if (key !== this.key) { this.reset(); this.key = key; }
   }
-  showView<U>(vc: ViewContext<U>) { this.panel = null; vc.setUi({}); }
+  showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
@@ -594,8 +606,10 @@ export class ProgressShell {
     renderPanel: (kind: SurfacePanel) => HTMLElement;
     menuActions?: PlanAction[];
     openPanel?: (kind: SurfacePanel) => void;
+    closePanel?: (kind: SurfacePanel) => void;
   }) {
     this.reconcile(vc, plan, options);
+    this.closePanel = options.closePanel;
     const key = this.key;
     this.menu?.dispose();
     const t = shellCopy(vc.env.locale);
@@ -605,7 +619,7 @@ export class ProgressShell {
     const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
     const open = (kind: SurfacePanel) => {
       if (this.key !== key) return;
-      this.panel = kind; this.focus = 'heading'; options.openPanel?.(kind);
+      this.setPanel(kind); this.focus = 'heading'; options.openPanel?.(kind);
       vc.setUi({});
     };
     const summary = plan ? vc.summary(plan) : null;
@@ -683,7 +697,7 @@ export class ProgressShell {
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
     box.setAttribute('aria-label', t[kind]);
-    const back = () => { if (this.key !== key) return; this.panel = null; this.focus = 'more'; vc.setUi({}); };
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = 'more'; vc.setUi({}); };
     button(box, 'surface-panel-back', t.back, back, 'ghost');
     const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
     box.append(h, options.renderPanel(kind));
