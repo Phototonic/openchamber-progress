@@ -76,10 +76,14 @@ export class IncompleteCounts {
       || runs?.read?.recovery.state === 'failed' && runs.read.recovery.reason !== 'capture-disabled';
     const history = !!runs && (runs.read?.recovery.state === 'partial' || runs.read?.recovery.state === 'failed' && runs.read.recovery.reason !== 'capture-disabled' || runs.historyRequestFailed);
     const load = () => {
-      if (inbox?.model.moreFailed) inbox.retry();
-      else if (inbox?.model.canContinue) inbox.more();
+      if (inbox?.model.canContinue) inbox.more();
       else if (history) runs!.retryHistory();
       else runs?.loadMore?.();
+    };
+    const retryFailed = () => {
+      if (inbox?.model.moreFailed) inbox.retry();
+      else if (runs?.pageError) runs.loadMore?.();
+      else runs?.retryHistory();
     };
     if (failed) {
       // A failed read is never hidden inside, or dismissed with, the indicator.
@@ -87,7 +91,7 @@ export class IncompleteCounts {
       const message = at === null ? c.loadFailed : failedAt[resolveLanguage('auto', options.locale)](absoluteTime(new Date(at).toISOString(), options.locale));
       const line = testid(el('p', 'ap-note', message), 'incomplete-counts-load-error');
       const retry = testid(el('button', 'ap-link', c.retry), 'incomplete-counts-retry'); retry.type = 'button';
-      retry.addEventListener('click', load); line.append(' ', retry); root.append(line);
+      retry.addEventListener('click', retryFailed); line.append(' ', retry); root.append(line);
     }
     if (!facts.reasons.length || device?.dismissed(surface, identity)) {
       this.announced = ''; if (this.announcer) this.announcer.textContent = ''; return;

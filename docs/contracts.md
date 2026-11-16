@@ -2210,6 +2210,10 @@ The support summary preserves its earlier lines and appends fixed-vocabulary
 `count-reasons`, `count-limits`, `count-gap` and `count-records` lines; no agent text, identity
 or path is serialized. Failed/stale reads, recording off and another-install
 restrictions stay separate and are never dismissed with the note.
+Retry dispatches to the failed source, independently of the normal continuation
+priority. The indicator-free Work Status retains page-failure feedback. Diagnostic
+count facts derive from current held data even while a surface panel replaces
+ordinary content; copied support output uses those same facts.
 
 ### Optional authored child handoff
 

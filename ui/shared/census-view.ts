@@ -335,7 +335,7 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   const total = rest.length + r.earlierTotal;
   const runs = v.runs;
   const label = earlierPager(r, runs, visible, step, language);
-  if (!total && !label) return null;
+  if (!total && !label && !(v.surface === 'status' && runs?.pageError)) return null;
   const more = testid(el('details', 'ap-obs-more'), 'observed-more');
   const partial = !r.recorded || r.notes.some(n => !['capture-off', 'host-truncated', 'host-gaps', 'host-activity-unavailable'].includes(n.kind));
   more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}${partial ? '+' : ''}`));
@@ -343,6 +343,7 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   list.setAttribute('aria-label', c.otherLabel);
   for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
   if (list.childElementCount) more.append(list);
+  if (v.surface === 'status' && runs?.pageError) more.append(testid(el('p', 'ap-note', c.pageError), 'subagent-page-error'));
   if (runs && label) {
     const b = testid(el('button', 'ap-link ap-sub-page', label), 'subagent-more');
     b.type = 'button';

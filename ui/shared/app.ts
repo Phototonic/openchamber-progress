@@ -288,7 +288,7 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
 const COVERAGE_CONTROL = '[data-testid="incomplete-counts-toggle"],[data-testid="incomplete-counts-more"],[data-testid="incomplete-counts-dismiss"],[data-testid="incomplete-counts-retry"]';
 const coverageFocus = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
-  const scope = root.dataset.countScope;
+  const scope = active.closest<HTMLElement>('main')?.dataset.countScope;
   return scope ? { scope } : null;
 };
 function coverageLanding(root: HTMLElement, from: NonNullable<ReturnType<typeof coverageFocus>>) {
@@ -1220,7 +1220,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, countFacts: incomplete.facts, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,
+      get countFacts() { return countFacts(this.read, this.inbox, paintedRuns, paintedCensus); },
+      failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1418,7 +1420,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!sameReading) {
       if (reading || readingKey) retireReadingUi();
       reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
-      vc = { ...vc, reading: readingView() };
+      vc.reading = readingView();
     }
 
     const root = el('main', 'ap');
@@ -1431,7 +1433,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     spec.paint(root, vc);
     if (spec.surface !== 'status' && !root.querySelector('.ap-surface-panel')) {
       incomplete.paint(root, {
-        facts: countFacts(vc.read, vc.inbox, paintedRuns, paintedCensus), store: vc.read?.storeId ?? '',
+        facts: vc.countFacts, store: vc.read?.storeId ?? '',
         surface: spec.surface, device: deviceView, runs: paintedRuns, inbox: vc.inbox, locale: vc.env.locale,
         lastGoodAt: vc.lastGoodAt,
         refresh: vc.refreshSerial,

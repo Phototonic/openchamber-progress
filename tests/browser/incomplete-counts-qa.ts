@@ -35,6 +35,7 @@ export async function verifyIncompleteCounts(h: Harness) {
   await click('panel', '[data-testid="incomplete-counts-more"]');
   check('native Load more activation reaches its control', await guest('panel', `return w.__countLoadClicked===true`));
   await wait('panel', `!d.querySelector('${note}')`);
+  check('completed Load more hands keyboard focus to More', await guest('panel', `return d.activeElement?.dataset.testid==='more-trigger'`));
   check('complete counts have no indicator', await guest('panel', `return d.querySelector('[data-kind="finished"]')?.textContent==='4 finished'`));
 
   await changed(`qa.partialPlans=true;qa.runs.A.recovery={state:'partial',reason:null,token:'example-next'};qa.lose()`);
@@ -71,6 +72,7 @@ export async function verifyIncompleteCounts(h: Harness) {
   await wait('panel', `d.querySelector('${dismiss}')?.getAttribute('aria-disabled')!=='true'`);
   await open(); await guest('panel', `w.focus();d.querySelector('${dismiss}').focus();return true`); await key('Enter');
   await wait('panel', `!d.querySelector('${note}')`);
+  check('dismissed indicator hands keyboard focus to More', await guest('panel', `return d.activeElement?.dataset.testid==='more-trigger'`));
   check('successful dismissal acknowledges store-wide but keeps plus counts', await evaluate(`qa.stores['store-1'].sequence===qa.stores['store-1'].dismissed`) && await guest('panel', `return d.querySelector('[data-kind="finished"]').textContent==='4+ finished'`));
   check('failed read remains visible after indicator dismissal', await guest('panel', `return !!d.querySelector('[data-testid="incomplete-counts-retry"]')`));
   // Reload only the guest frame: the fixture's device store survives.
@@ -129,4 +131,24 @@ export async function verifyIncompleteCounts(h: Harness) {
   check('forced colours retain a visible keyboard focus outline', await guest('page', `return d.activeElement?.dataset.testid==='incomplete-counts-toggle'&&w.getComputedStyle(d.activeElement).outlineStyle==='solid'`));
   await send('Emulation.setEmulatedMedia', { features: [] });
   await evaluate(`qa.locale='en';qa.clock=0;qa.capture=true;qa.partialPlans=false;qa.clean();qa.context('A');true`);
+
+  // Diagnostics follow the current held data, even though panels suppress the indicator DOM.
+  for (const surface of ['panel', 'page']) {
+    await show(surface, 1100);
+    await wait(surface, `d.querySelector('[data-testid="subagent-activity"]')`);
+    await click(surface, '[data-testid="more-trigger"]');
+    await guest(surface, `const n=[...d.querySelectorAll('[role="menuitem"]')].find(n=>n.textContent.includes('Troubleshooting'));n.dataset.testid='qa-troubleshooting';return true`);
+    await click(surface, '[data-testid="qa-troubleshooting"]');
+    await wait(surface, `d.querySelector('[data-testid="reporting-support-preview"]')`);
+    await click(surface, '[data-testid="advanced-details"] summary');
+    const total = await evaluate<number>(`qa.runs.A.history.push({...qa.runs.A.history[0],id:'review-${surface}',childSessionId:'review-${surface}'});qa.lose();qa.bump();qa.runs.A.history.length`);
+    await wait(surface, `d.querySelector('[data-testid="incomplete-counts-details"]')?.textContent.includes('historical-sessions=${total}')&&d.querySelector('[data-testid="incomplete-counts-details"]')?.textContent.includes('recording-gap')`, 'live troubleshooting count facts');
+    check(`${surface}: Advanced details refresh without painting an indicator`, await guest(surface, `return !d.querySelector('${note}')&&d.querySelector('[data-testid="advanced-details"]').open`));
+    await guest(surface, `Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:async text=>{w.reviewSupport=text}}});return true`);
+    await click(surface, '[data-testid="reporting-support-copy"] button');
+    await wait(surface, `d.defaultView.reviewSupport?.includes('historical-sessions=${total}')`);
+    check(`${surface}: copied support uses the updated reason and totals`, await guest(surface, `return w.reviewSupport.includes('recording-gap')`));
+    await click(surface, '[data-testid="surface-panel-back"] button');
+  }
+  await evaluate(`qa.clean();qa.context('A');true`);
 }

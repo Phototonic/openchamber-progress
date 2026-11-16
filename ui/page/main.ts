@@ -626,6 +626,10 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   const t = copy(env.locale);
   // Layout hook only: the Map tab uses the full detail column, the text tabs a reading width.
   detail.dataset.tab = ui.tab;
+  // Keep count observations current even when a surface panel replaces the ordinary DOM.
+  const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
+  const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
+  const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest, census ?? undefined) : null;
   if (surface(detail, vc, plan)) { detail.append(cleanupBlock(vc, plan)); return; }
   const viewSwitch = surfaceViewSwitch(ui.tab === 'map' ? 'map' : 'list', mode => {
     if (mode === 'list' && ui.tab === 'map') { boardMap.leave(true); return; }
@@ -635,9 +639,6 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   if (ui.tab !== 'map') detail.append(viewSwitch);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.
-  const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
-  const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
-  const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest, census ?? undefined) : null;
   const roster = () => (census && vc.read ? subagentsBlock({
     surface: 'page', plan, census, facts: planFacts(plan, vc.detail(plan), env.boundSource),
     runs, verified: true, currentSession: null, liveSeq: vc.live.seq, env,
