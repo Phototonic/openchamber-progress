@@ -8,13 +8,16 @@ import type { DelegationRefusals } from '../shared/subagent-runs.ts';
 import { PARALLEL_DELEGATION_HINT } from './delegation.ts';
 
 const REPORT_TOOL = 'agent_progress_report';
+export const REPORT_CHECKLIST = `1. Start the mirror when a plan is ready for execution: op=start with its real tasks and prerequisites.
+2. Declare or link sub-agent tasks before dispatch: op=delegate before a supported dispatch, or op=link for verified returned children.
+3. Mark actual work start: op=change with status=working.
+4. Finish, cancel or fail explicitly: op=finish with outcome=finished, cancelled or failed.`;
 export const ACTIVATION_GUIDANCE = `# Agent progress (companion)
-Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
-Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
-For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
-For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. Optional finish changes atomically commit final task statuses with the outcome at the expected revision; refusal applies neither. Read after conflict; retry only identical full input with the same oid. Older tools reject finish changes: inspect state before deliberately reporting separately, never silently strip changes. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
-For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. ${PARALLEL_DELEGATION_HINT} IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
+${REPORT_CHECKLIST}
+Use agent_progress_report alongside your canonical planner. Read an existing plan first; mirror only meaningful unreported canonical state, using stable IDs, fresh oid and expected rev. Batch changes; retry only identical input with the same oid. Load the agent-progress skill for examples, staging, delegation, handoff and blocker rules.
+At PLAN_READY handoff mirror the actionable structure, not completion or approval. Review approval and owner approval are separate: reflect existing canonical gates only. Tracker updates are not Agent Progress reports. Repeated guidance and already-current state need no report.
+${PARALLEL_DELEGATION_HINT} Include plan/task IDs and reporting expectations in assignments; IDs alone grant no authority. Assigned children report only their verified scope on naturally occurring contexts, after binding. Restricted children stay restricted; a permitted parent may explicitly relay without impersonating them. A first-turn-only child may have no reports.
+Structured plans need no source; never manufacture a file. Document capture still requires read permission. Needs-input keeps work pending/blocked. A write is not readiness, dispatch is not work start, Ready is not approval and worker completion is not accepted handoff. Hints never report, assign or infer progress. Never invent review work, report automatically per turn or repeat state already current.`;
 const PLAN_OBSERVATION = 'A possible plan document was written or revised, possibly by a delegated child.';
 export const DISPATCH_OBSERVATION = 'A dispatch ran.';
 const DISPATCH_HINT = `If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. ${PARALLEL_DELEGATION_HINT} Do not repeat reports or declarations that are already current.`;
@@ -22,6 +25,23 @@ export const TRACKER_OBSERVATION = 'A tracker update was observed.';
 const HINT_CONDITION = 'If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.';
 export const ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
 const PLAN = 1, DISPATCH = 2, TRACKER = 4;
+const NOTE_TOOLS = ['write', 'edit', 'subagent', 'linear_save_issue', 'linear_save_comment'];
+function noteText(reasons: number) {
+  return reasons & PLAN
+    ? 'Agent Progress note (agent_progress_report): If this canonical plan is ready and not mirrored, start its real tasks and prerequisites with op=start; otherwise mirror only meaningful unreported state you own. This observation is not readiness, approval or a report.'
+    : reasons & DISPATCH
+      ? 'Agent Progress note (agent_progress_report): If you coordinate planned work without a mirror, start one with op=start; declare op=delegate before the next dispatch, or op=link for verified returned children. Already-current state needs no report; dispatch is not work start or assignment.'
+      : 'Agent Progress note (agent_progress_report): If this is tracked plan work with meaningful unreported canonical state, mirror only work you own or are authorized to coordinate. A tracker update is not a progress report or evidence of work start, approval or completion.';
+}
+function notedResult(result: Extract<ToolHooks['execute.after'], { status: 'completed' }>['result'], text: string) {
+  // Only native-proven content carriers. Structured-only and unknown shapes
+  // stay untouched: content can otherwise replace the host's output projection.
+  const content = result.content;
+  if (typeof content === 'string') return { ...result, content: `${content}\n\n${text}` };
+  if (Array.isArray(content) && content.every(part => record(part) && (part.type === 'text' && typeof part.text === 'string' || part.type === 'file' && typeof part.uri === 'string' && typeof part.mime === 'string'))) {
+    return { ...result, content: [...content, { type: 'text' as const, text }] };
+  }
+}
 function hintText(reasons: number) {
   return [reasons & PLAN ? PLAN_OBSERVATION : '', reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : '', reasons & TRACKER ? TRACKER_OBSERVATION : '', HINT_CONDITION].filter(Boolean).join(' ');
 }
@@ -72,13 +92,22 @@ function possiblePath(value: unknown): value is string {
   if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) return false;
   const name = path.basename(value).toLowerCase();
   if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name)) return false;
-  return /^plan\.(md|markdown)$/.test(name) || path.normalize(value).split(path.sep).slice(0, -1).some(part => part === 'plans' || part === '.plans');
+  return shapedPath(path.normalize(value).split(path.sep));
+}
+function shapedPath(parts: string[]) {
+  // Spec paths have a deliberately narrower shape than ordinary plan folders.
+  const spec = parts.lastIndexOf('openspec');
+  if (spec !== -1 && parts[spec + 1] === 'changes') {
+    return parts.length === spec + 4 && parts[spec + 2] !== 'archive'
+      && /^(tasks|proposal)\.md$/i.test(parts.at(-1)!);
+  }
+  return /^plan\.(md|markdown)$/i.test(parts.at(-1)!) || parts.slice(0, -1).some(part => part === 'plans' || part === '.plans');
 }
 function planPath(value: string, directory: string) {
   const relative = path.relative(directory, path.resolve(directory, value));
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
   const parts = relative.split(path.sep);
-  return /^plan\.(md|markdown)$/i.test(parts.at(-1)!) || parts.slice(0, -1).some(part => part === 'plans' || part === '.plans');
+  return shapedPath(parts);
 }
 function successfulPath(event: ToolHooks['execute.after']): string | undefined {
   if (event.tool !== 'write' && event.tool !== 'edit') return;
@@ -87,7 +116,7 @@ function successfulPath(event: ToolHooks['execute.after']): string | undefined {
   const output = result.output;
   // No successful-partial variant exists for the pinned single-file tools. Also
   // fail closed on an explicit partial marker from an unknown/extended shape.
-  if (!record(output) || output.partial === true || result.metadata?.partial === true) return;
+  if (!record(output) || [event, result, result.metadata, output].some(failureMarker)) return;
   if (event.tool === 'write') {
     if (output.operation === 'write' && typeof output.existed === 'boolean' && typeof output.target === 'string' && typeof output.resource === 'string') return event.input.path;
   } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === 'string') return event.input.path;
@@ -165,8 +194,10 @@ function resumeText(selection: ResumeSelection, assignedOnly = false): string {
 
 /** Advisory only; optional bounded read projection, never executor/receipt/capture/mutation access. */
 export async function registerActivation(ctx: Plugin.Context, source: { id: string; verified: boolean }, enabled: () => boolean, recovery?: ResumeActivation, onContext?: (handler:(event:SessionHooks['context'])=>Promise<void>)=>void) {
-  const pending = new Map<string, number>(); // max128 source/session reason bitsets
+  const pending = new Map<string, number>(); // max128; low bits=context, high bits=result
   const recent = new Set<string>(); // max256 qualifying source/session/message/call IDs
+  const eligibility = new Map<string, Set<string>>(); // latest context, max128 sessions
+  const noted = new Set<string>(); // max256 source/session/model-message IDs
   const owned = Symbol('agent-progress-section');
   function section(hint: number, capsule = '', refusal = '') {
     const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${hintText(hint)}` : '') + (capsule ? `\n\n${capsule}` : '') + (refusal ? `\n\n${refusal}` : '') };
@@ -196,16 +227,16 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   }
   function control() {
     const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
-    if (current !== binding) { binding = current; retireRecovery(); pending.clear(); disableEpoch++; }
+    if (current !== binding) { binding = current; retireRecovery(); pending.clear(); eligibility.clear(); noted.clear(); disableEpoch++; }
     try { if (enabled() === true) return true; } catch { /* unavailable control is not enabled */ }
-    pending.clear(); retireRecovery(); disableEpoch++; return false;
+    pending.clear(); eligibility.clear(); noted.clear(); retireRecovery(); disableEpoch++; return false;
   }
   function remember(set: Set<string>, key: string, cap: number) {
     set.add(key);
     if (set.size > cap) set.delete(set.values().next().value!);
   }
   function flag(recipient: string, reason: number) {
-    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason | reason << 3);
     if (pending.size > 128) pending.delete(pending.keys().next().value!);
   }
   const key = (sessionID: string) => JSON.stringify([source.id, sessionID]);
@@ -227,8 +258,17 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     // its unchanged authoritative ancestry/assignment checks at the executor.
     return value.id === sessionID && path.isAbsolute(value.location.directory) ? value : undefined;
   }
+  async function projectDirectories(projectID: NonNullable<Awaited<ReturnType<typeof session>>>['projectID']) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const list = await Promise.race([ctx.worktree.list({ projectID }), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 1000); })]);
+      return Array.isArray(list) && list.every(entry => record(entry) && typeof entry.directory === 'string' && path.isAbsolute(entry.directory))
+        ? list.map(entry => path.resolve(entry.directory)) : [];
+    } catch { return []; }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  }
   async function dispose() {
-    disposed = true; pending.clear(); recent.clear(); retireRecovery(); replay.clear();
+    disposed = true; pending.clear(); recent.clear(); eligibility.clear(); noted.clear(); retireRecovery(); replay.clear();
     await stopRecovery?.();
     for (const registration of registrations.splice(0)) {
       try { await registration.dispose(); } catch { /* host scope also owns cleanup */ }
@@ -245,13 +285,18 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (recent.has(call) || !control()) return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate && !planPath(candidate, caller.location.directory) || recent.has(call)) return;
+        if (disposed || epoch !== disableEpoch || !control() || !caller || recent.has(call)) return;
+        let directories: string[] | undefined;
+        const listedDirectories = async () => directories ??= boundedID(caller.projectID) ? await projectDirectories(caller.projectID) : [];
+        if (candidate && !planPath(candidate, caller.location.directory)
+          && !(await listedDirectories()).some(directory => planPath(path.resolve(caller.location.directory, candidate), directory))) return;
         let parentID: string | undefined;
         if (candidate && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
             if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID
-              && path.resolve(parent.location.directory) === path.resolve(caller.location.directory)
+              && (path.resolve(parent.location.directory) === path.resolve(caller.location.directory)
+                || (await listedDirectories()).includes(path.resolve(parent.location.directory)))
               && parent.parentID !== parent.id && parent.parentID !== caller.id) parentID = parent.id;
           } catch { /* an unverifiable parent cannot remove the independent writer hint */ }
         }
@@ -261,6 +306,15 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         remember(recent, call, 256);
         flag(key(event.sessionID), candidate ? PLAN : proxy);
         if (parentID) flag(key(parentID), PLAN);
+        const sessionKey = key(event.sessionID), step = JSON.stringify([source.id, event.sessionID, event.messageID]);
+        if (event.status === 'completed' && eligibility.get(sessionKey)?.has(event.tool) && !noted.has(step)) {
+          const replacement = notedResult(event.result, noteText((pending.get(sessionKey) ?? 0) >> 3));
+          if (replacement) {
+            event.result = replacement;
+            remember(noted, step, 256);
+            pending.set(sessionKey, (pending.get(sessionKey) ?? 0) & 7);
+          }
+        }
       } catch { /* observation must never fail or change the original tool */ }
     }));
     const context = async (event:SessionHooks['context']) => {
@@ -275,6 +329,10 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed) { removeOwned(); return; }
         if (!boundedID(event.sessionID)) return;
         const sessionKey = key(event.sessionID);
+        // Do not reuse permission evidence across an unverified/failed context.
+        const effective = new Set<string>();
+        eligibility.set(sessionKey, effective);
+        if (eligibility.size > 128) eligibility.delete(eligibility.keys().next().value!);
         const active = control();
         const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
         const armed = attempt?.pending === true;
@@ -328,12 +386,16 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
           if(selection?.sourceId===source.id&&selection.sessionId===event.sessionID)refusal=delegationRefusalText(selection);
         } catch { /* Optional bounded receipt read never enables a report or blocks guidance. */ }
         if(disposed||!control()||epoch!==disableEpoch||!source.verified||!Object.prototype.hasOwnProperty.call(event.tools,REPORT_TOOL)){removeOwned();return;}
+        if (eligibility.get(sessionKey) === effective) for (const tool of NOTE_TOOLS) {
+          if (Object.prototype.hasOwnProperty.call(event.tools, tool)) effective.add(tool);
+        }
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
         if (existing !== -1) { event.system[existing] = section((event.system[existing] as any)[owned].hint, capsule, refusal); return; }
-        const hint = pending.get(sessionKey) ?? 0;
+        const hint = (pending.get(sessionKey) ?? 0) & 7;
         event.system.push(section(hint, capsule, refusal));
-        pending.delete(sessionKey); // consume on delivery, not on a report receipt
-      } catch { pending.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
+        const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+        if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
+      } catch { pending.delete(key(event.sessionID)); eligibility.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
     };
     registrations.push(await ctx.session.hook('context',context));
     onContext?.(context);

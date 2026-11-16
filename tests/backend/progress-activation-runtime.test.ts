@@ -125,7 +125,7 @@ test('A2 production guidance/hints reach native outgoing requests and real tools
     const buildObserver = spawnSync('bun', ['build', 'tests/fixtures/activation-observer.ts', '--target=node', '--format=esm', `--outfile=${observer}/index.js`], {encoding:'utf8'});
     assert.equal(buildObserver.status, 0, buildObserver.stderr);
     fs.writeFileSync(`${observer}/package.json`, JSON.stringify({name:'activation-observer-fixture',type:'module',exports:{'.':'./index.js'}}));
-    const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, TMPDIR: `${root}/tmp` };
+    const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, TMPDIR: `${root}/tmp`, RESULT_NOTE_PROBE: process.env.RESULT_NOTE_PROBE ?? '0', RESULT_NOTE_EVIDENCE: process.env.RESULT_NOTE_EVIDENCE ?? '' };
     const child = spawn('/usr/bin/unshare', ['-Urn', '/bin/sh', '-ec', '/usr/sbin/ip link set lo up; test -z "$(/usr/sbin/ip route show default)"; exec "$@"', 'activation-fixture', process.execPath, '--experimental-strip-types', path.resolve('tests/fixtures/activation-native-driver.ts'), root, fs.readlinkSync('/proc/self/ns/net')], { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });

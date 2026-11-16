@@ -615,7 +615,8 @@ observation into authority and performs no migration effect.
   are required for guidance. Generic guidance/file hints need only the current
   authoritative session for delivery. A qualifying plan write can also flag its
   exact verified direct parent in the same project and lexically normalized
-  absolute directory, excluding immediately visible cycles. This relay performs
+  absolute directory, or another host-listed directory of that project,
+  excluding immediately visible cycles. This relay performs
   no session listing, grandparent traversal, plan scan or tool/authority change.
   The first primary attempt after an observed successful
   compaction may additionally resolve bounded ancestry and read `Store.resumePlans`.
@@ -975,7 +976,13 @@ tuning estimates only; see evidence/backend/token-budget.md. No extra LLM calls.
 Activation keeps at most128 pending source/session flags and256 recent qualifying
 source/session/message/call IDs per loaded instance; host IDs are bounded512
 characters and lexical path metadata4096. Only native2.1.4 successful single-file
-`write`/`edit` operations on conventional plan paths qualify. No document paths,
+`write`/`edit` operations on conventional plan paths or one spec change's
+`tasks.md`/`proposal.md` qualify (not archives, spec deltas or design notes).
+Paths outside the writer's directory require a host-listed root/worktree of
+the writer's project. The host list is requested only for a plan-shaped candidate,
+at most once per observation, with a one-second deadline; failures stay silent.
+Cross-directory parent relay uses the same list and same-project check.
+No document paths,
 bodies/diffs, plan/receipt state or inferred progress are retained. A hint is
 conditional and consumed on its next eligible delivery, independent of receipts.
 Each event flags the writer and at most its verified direct parent (two keys),
@@ -1026,6 +1033,22 @@ Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
 closing Store; setup failures roll back partial registrations and close Store.
 No persistent reminder, new RPC or automatic progress/capture write exists.
+
+The same reason bitset keeps independent context/result consumption bits.
+A latest-context inventory (128 sessions) gates result notes; 256 model-message
+identities bound step deduplication. Disable, source rebinding and disposal clear
+that evidence. Completed directly exposed calls with native-proven string or
+content-array results append fixed advisory text after original content; structured
+output/metadata are never changed. Structured-only/unknown results stay untouched.
+Code Mode inner calls are not directly exposed and get no note: native proof
+shows their modified content does not reach the model. Parent plan reasons wait
+for the parent's next observed qualifying call, not an inserted message or turn.
+No hook performs a missing-plan query, document read or progress mutation.
+Both system-forwarding and system-dropping providers get the checklist via the
+short report description; result notes do not depend on plugin system text.
+The context section and inline/packaged skill share that checklist. The listing
+line names the plan/dispatch load boundary; detailed operation help stays in the
+skill. Description budgets are 4,096 overall and 2,048 through the first example.
 
 Progress resume separately retains at most128 session compaction records and256
 event identities, never plan titles/revisions/assignments between requests. It

@@ -1,5 +1,10 @@
 # Agent progress
 
+1. Start the mirror when a plan is ready for execution: op=start with its real tasks and prerequisites.
+2. Declare or link sub-agent tasks before dispatch: op=delegate before a supported dispatch, or op=link for verified returned children.
+3. Mark actual work start: op=change with status=working.
+4. Finish, cancel or fail explicitly: op=finish with outcome=finished, cancelled or failed.
+
 Keep your canonical planner and task tools. Mirror a complete plan once, using
 stable IDs. Report only meaningful changes and delegation/finish boundaries;
 batch changes, never timer heartbeats. Read current state after compaction or
@@ -15,7 +20,7 @@ and owner approval are separate; reflect existing canonical gate/work items only
 never invent review tasks to report. Work start means actual work, not a dispatch
 having run. Never manufacture a file or report automatically on each turn.
 
-Native dispatch/tracker hints are conditional observations, not report receipts,
+Native context hints and result notes are conditional observations, not report receipts,
 assignments or evidence of work start, review, approval or completion. Already-current
 canonical state needs no mutation.
 

@@ -1,6 +1,7 @@
 /** C0 diagnostic only: deterministic native transport and hook shape observation. */
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import fs from 'node:fs';
+import { probeResult } from './result-note-probe.ts';
 
 export default Plugin.define({ id: 'proxy-shape-observer', async setup(ctx: any) {
   const root = process.env.PROXY_SHAPE_ROOT!;
@@ -18,6 +19,7 @@ export default Plugin.define({ id: 'proxy-shape-observer', async setup(ctx: any)
   for (const hook of ['execute.before', 'execute.after'] as const) await ctx.tool.hook(hook, (event: any) => {
     // Only fixture-authored synthetic data; never production telemetry.
     record({ type: hook, ...event, ...(event.error ? { error: { name: event.error.name, message: event.error.message, keys: Object.keys(event.error) } } : {}) });
+    if (hook === 'execute.after') probeResult(event, record);
   });
   const seen = new Set<string>();
   await ctx.aisdk.hook('sdk', async (event: any) => {
@@ -38,7 +40,7 @@ export default Plugin.define({ id: 'proxy-shape-observer', async setup(ctx: any)
         const id = options.prompt.filter((m: any) => m.role === 'system' && typeof m.content === 'string').map((m: any) => m.content.match(/(?:^|\n)PROXY_FIXTURE_ID:(\S+)/)?.[1]).find(Boolean);
         if (!id) throw new Error('Missing fixture identity');
         const session = await ctx.session.get({ sessionID: id });
-        record({ type: 'outgoing', sessionID: id, system: options.prompt.filter((m: any) => m.role === 'system').map((m: any) => m.content) });
+        record({ type: 'outgoing', sessionID: id, prompt: options.prompt, system: options.prompt.filter((m: any) => m.role === 'system').map((m: any) => m.content) });
         const job = JSON.parse(fs.readFileSync(`${root}/jobs.json`, 'utf8'))[id];
         const key = `${id}:${job?.generation ?? 0}`;
         const call = seen.has(key) ? undefined : job?.call; seen.add(key);
