@@ -738,6 +738,8 @@ Where that plan is shown, its task is also selected on Map or revealed in List;
 there is no separate pinned “Opened from Needs you” reading.
 Map selection uses the interaction controller's explicit reveal path, clearing
 only filters that hide the task while keeping keyboard focus in the inbox.
+List reveals restore inbox focus after the canonical task reveal finishes,
+including a deferred repaint needed to clear task filters.
 Device-preference notifications are background updates: they wait until an
 in-progress pointer activation finishes before replacing its controls.
 

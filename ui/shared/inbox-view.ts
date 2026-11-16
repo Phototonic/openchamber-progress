@@ -190,11 +190,14 @@ const hiddenNotice = (locale: string) => ({
 export function revealInboxTask(reading: ReadingView | null, plan: PlanView | null, row: InboxRowView, revealMap?: (id: string) => boolean) {
   if (!plan || plan.key !== row.planKey) return;
   if (revealMap?.(row.task.id)) return;
+  const restoreFocus = (root: ParentNode) => {
+    // Use the final paint: a filtered List reveal may schedule another reading.set.
+    [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find(n => n.dataset.row === row.rowKey)?.querySelector<HTMLElement>('.ap-inbox-open')?.focus({ preventScroll: true });
+  };
   reading?.set({}, root => {
     const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find(n => n.dataset.testid === `plan-${row.plan}`);
-    if (article) revealCurrentTask(article, plan, row.task.id, '');
-    // Reading details must not pull the keyboard away from the inbox itself.
-    [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find(n => n.dataset.row === row.rowKey)?.querySelector<HTMLElement>('.ap-inbox-open')?.focus({ preventScroll: true });
+    if (article) revealCurrentTask(article, plan, row.task.id, '', revealed => restoreFocus(revealed.ownerDocument));
+    else restoreFocus(root);
   });
 }
 

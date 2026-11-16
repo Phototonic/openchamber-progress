@@ -252,6 +252,22 @@ try {
   await wait('panel', `d.querySelector('[data-testid="item-direct"]').textContent.includes('Parent must supply the sample')`);
   check('excluded-list-retains-blocker', await guest('panel', `return d.querySelector('[data-testid="item-direct"]').dataset.status==='blocked'`));
   await shot('rule-list');
+  for (const surface of ['panel', 'page']) {
+    await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
+    if (surface === 'page') await click(surface, '[data-testid="plan-view-list"] button');
+    await wait(surface, `!!d.querySelector('[data-testid="item-main"]')`);
+    await click(surface, open('main'));
+    await wait(surface, `d.querySelector(${js(open('main'))})?.getAttribute('aria-expanded')==='false'`);
+    await click(surface, open('main'));
+    await wait(surface, `d.activeElement?.matches(${js(open('main'))}) && !!d.querySelector('${row('main')} .ap-inbox-facts:not([hidden])')`);
+    check(`${surface}-list-reveal-keeps-inbox-focus`, true);
+    await tabTo(surface, `${row('main')} [data-testid="needs-you-copy-reply"] button`);
+    check(`${surface}-list-reveal-actions-reachable`, await guest(surface, `return !!d.activeElement?.closest(${js(row('main'))})`));
+    await key('Escape');
+    await wait(surface, `d.activeElement?.matches(${js(open('main'))}) && d.activeElement.getAttribute('aria-expanded')==='false'`);
+    check(`${surface}-list-reveal-escape-restores-focus`, true);
+    await shot(`${surface}-inbox-list-reveal`);
+  }
   check('membership-read-does-not-rewrite-store', membership.unchanged());
   check('no-browser-errors', c.errors.length === 0, c.errors);
 } catch (error) { failure = String(error); await shot('failure'); }

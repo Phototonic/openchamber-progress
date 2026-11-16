@@ -974,7 +974,7 @@ function showTask(control: HTMLElement, plan: PlanView, itemId: string) {
  * that repaint, announced as such. Opens its fold and ancestors, focuses the row and scrolls it
  * into view once, instantly.
  */
-function revealTask(article: HTMLElement, plan: PlanView, itemId: string, message: string | ((locale: InterfaceLanguage) => string)) {
+function revealTask(article: HTMLElement, plan: PlanView, itemId: string, message: string | ((locale: InterfaceLanguage) => string), afterReveal?: (article: HTMLElement) => void) {
   const locale = resolveLanguage('auto', article.dataset.locale ?? 'en');
   const target = [...article.querySelectorAll<HTMLElement>('[data-testid^="item-"]')].find((n) => n.tagName === 'LI' && n.dataset.testid === `item-${itemId}`);
   const notice = article.querySelector<HTMLElement>('[data-testid="focus-notice"]');
@@ -986,7 +986,7 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, messag
     if (!reading) return;
     reading.set(CLEARED, (root) => {
       const next = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find((a) => a.dataset.testid === article.dataset.testid && a.dataset.source === article.dataset.source && a.dataset.revision === article.dataset.revision);
-      if (next) revealTask(next, plan, itemId, locale => `${say('Showing all tasks so this task is visible.', locale)}${message ? ` ${typeof message === 'function' ? message(locale) : message}` : ''}`);
+      if (next) revealTask(next, plan, itemId, locale => `${say('Showing all tasks so this task is visible.', locale)}${message ? ` ${typeof message === 'function' ? message(locale) : message}` : ''}`, afterReveal);
     });
     return;
   }
@@ -998,14 +998,16 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, messag
   target.focus({ preventScroll: true });
   target.scrollIntoView({ block: 'center', behavior: 'instant' });
   if (notice && message) notice.textContent = typeof message === 'function' ? message(locale) : message;
+  afterReveal?.(article);
 }
 
 /**
  * History's "View current task": the same canonical reveal path, inside this plan's painted reading
  * article (same plan ID, source and revision), never a same-ID task elsewhere.
+ * The optional completion runs after task focus, including a filter-clearing repaint.
  */
-export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string) {
-  if (articleOf(article, plan)) revealTask(article, plan, itemId, message);
+export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string, afterReveal?: (article: HTMLElement) => void) {
+  if (articleOf(article, plan)) revealTask(article, plan, itemId, message, afterReveal);
 }
 
 function navLink(plan: PlanView, itemId: string, text: string, name: string) {
