@@ -117,6 +117,8 @@ export interface ViewContext<U> {
   language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
   ui: U;
   setUi: (patch: Partial<U>) => void;
+  /** Background data/presentation changed; preserves open pickers and active presses. */
+  invalidate: () => void;
   /** Functional update against the latest UI state (safe after an await). */
   updateUi: (fn: (ui: U) => Partial<U>) => void;
   retry: () => void;
@@ -1225,6 +1227,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         localLanguageAction = false;
       } },
       setUi: (patch) => applyUi(patch),
+      invalidate: bump,
       updateUi: (fn) => applyUi(fn(ui)),
       retry, sessionSubscriptions: live.sessionSubscriptionCount,
       handoff: (h) => { const from = focusKey(mount!); handoff = from ? { ...h, from } : null; },

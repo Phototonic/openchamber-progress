@@ -627,7 +627,12 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   // Layout hook only: the Map tab uses the full detail column, the text tabs a reading width.
   detail.dataset.tab = ui.tab;
   if (surface(detail, vc, plan)) { detail.append(cleanupBlock(vc, plan)); return; }
-  detail.append(surfaceViewSwitch(ui.tab === 'map' ? 'map' : 'list', mode => { if (mode === 'map') boardMap.enter(); else boardMap.leave(); chooseTab(vc, mode === 'list' ? 'progress' : 'map'); }, env.locale));
+  const viewSwitch = surfaceViewSwitch(ui.tab === 'map' ? 'map' : 'list', mode => {
+    if (mode === 'list' && ui.tab === 'map') { boardMap.leave(true); return; }
+    if (mode === 'map') boardMap.enter(); else boardMap.leave();
+    chooseTab(vc, mode === 'list' ? 'progress' : 'map');
+  }, env.locale);
+  if (ui.tab !== 'map') detail.append(viewSwitch);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.
   const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
@@ -640,7 +645,7 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   if (ui.tab === 'map') {
     const host = testid(el('div', 'ap-map-host'), 'map-host');
     detail.append(host);
-    boardMap.paint(host, vc, { plan, scope: readingScope(vc), runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(plan.ownerSessionId, plan.directory, vc.live) });
+    boardMap.paint(host, vc, { plan, viewSwitch, scope: readingScope(vc), runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(plan.ownerSessionId, plan.directory, vc.live) });
   } else if (ui.tab === 'document') {
     const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
     article.dataset.source = plan.sourceId;

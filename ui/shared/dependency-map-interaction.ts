@@ -5,7 +5,7 @@ import type { InterfaceLanguage } from './i18n.ts';
 import { formatCount } from './format.ts';
 
 export type MapAnnouncement =
-  | { kind: 'selection'; title: string; status: ItemView['status']; guidance: boolean; ready: boolean; skipped: boolean; up: number; down: number; hidden: number }
+  | { kind: 'selection'; title: string; status: ItemView['status']; needsYou?: boolean; guidance: boolean; ready: boolean; skipped: boolean; up: number; down: number; hidden: number }
   | { kind: 'selected-removed' | 'focused-removed' | 'list-removed' | 'current' | 'cleared' }
   | { kind: 'filters' | 'fit'; count: number };
 const ANNOUNCEMENTS = {
@@ -17,7 +17,7 @@ const ANNOUNCEMENTS = {
     cleared: 'Selection cleared.',
     filters: (n: number, tasks: string) => `${n} ${tasks} shown. Layout unchanged.`,
     fit: (n: number, tasks: string) => `Fit all: ${n} visible ${tasks}; active filters unchanged.`,
-    working: 'Reported working', blocked: 'Explicitly blocked', ready: 'Ready, recorded prerequisites only',
+    needsYou: 'Needs you', working: 'In progress', blocked: 'Blocked', ready: 'Ready, recorded prerequisites only',
     skipped: 'Waiting on a skipped recorded prerequisite', waiting: 'Waiting on recorded prerequisites',
     reported: { pending: 'Reported pending', working: 'Reported working', blocked: 'Reported blocked', done: 'Reported done', skipped: 'Reported skipped' },
     selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}. ${state}. ${m.up} direct ${up}; ${m.down} direct ${down}.${m.hidden ? ` ${m.hidden} ${hidden} hidden by filters.` : ''}`,
@@ -31,7 +31,7 @@ const ANNOUNCEMENTS = {
     cleared: 'Выбор снят.',
     filters: (n: number, tasks: string) => `Показано: ${formatCount(n, 'ru')} ${tasks}. Расположение не изменено.`,
     fit: (n: number, tasks: string) => `Вся карта: ${formatCount(n, 'ru')} ${tasks} в поле зрения; действующие фильтры не изменены.`,
-    working: 'Сообщено: в работе', blocked: 'Явно заблокирована', ready: 'Готова, только по записанным зависимостям',
+    needsYou: 'Нужно ваше участие', working: 'В работе', blocked: 'Заблокирована', ready: 'Готова, только по записанным зависимостям',
     skipped: 'Ожидает пропущенную записанную зависимость', waiting: 'Ожидает записанные зависимости',
     reported: { pending: 'Сообщено: ожидает', working: 'Сообщено: в работе', blocked: 'Сообщено: заблокирована', done: 'Сообщено: выполнена', skipped: 'Сообщено: пропущена' },
     selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}. ${state}. Прямые записанные зависимости: ${m.up} ${up}; прямые зависимые задачи: ${m.down} ${down}.${m.hidden ? ` Фильтрами скрыто: ${m.hidden} ${hidden}.` : ''}`,
@@ -45,7 +45,7 @@ const ANNOUNCEMENTS = {
     cleared: '已清除选择。',
     filters: (n: number, tasks: string) => `显示 ${formatCount(n, 'zh-CN')} ${tasks}。布局不变。`,
     fit: (n: number, tasks: string) => `全部适配：${formatCount(n, 'zh-CN')} ${tasks}可见；当前筛选条件不变。`,
-    working: '报告为进行中', blocked: '明确报告为受阻', ready: '已就绪，仅依据已记录的前置任务',
+    needsYou: '需要你处理', working: '进行中', blocked: '受阻', ready: '已就绪，仅依据已记录的前置任务',
     skipped: '等待已跳过的已记录前置任务', waiting: '等待已记录的前置任务',
     reported: { pending: '报告为未开始', working: '报告为进行中', blocked: '报告为受阻', done: '报告为已完成', skipped: '报告为已跳过' },
     selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}。${state}。${m.up} 个直接${up}；${m.down} 个直接${down}。${m.hidden ? ` ${m.hidden} 个${hidden}被筛选条件隐藏。` : ''}`,
@@ -56,7 +56,7 @@ const ANNOUNCEMENTS = {
 type AnnouncementCatalog = {
   'selected-removed': string; 'focused-removed': string; 'list-removed': string; current: string; cleared: string;
   filters: (n: number, tasks: string) => string; fit: (n: number, tasks: string) => string;
-  working: string; blocked: string; ready: string; skipped: string; waiting: string;
+  needsYou: string; working: string; blocked: string; ready: string; skipped: string; waiting: string;
   reported: Record<ItemView['status'], string>;
   selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => string;
   tasks: string[]; prerequisites: string[]; dependents: string[]; relationships: string[];
@@ -66,7 +66,7 @@ export function mapAnnouncementText(m: MapAnnouncement, language: InterfaceLangu
   const word = (n: number, forms: string[]) => forms[({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[new Intl.PluralRules(language).select(n)] ?? 3];
   if (m.kind === 'filters' || m.kind === 'fit') return c[m.kind](m.count, word(m.count, c.tasks));
   if (m.kind !== 'selection') return c[m.kind];
-  const state = m.status === 'working' ? c.working : m.status === 'blocked' ? c.blocked : m.status === 'pending' && m.guidance ? m.ready ? c.ready : m.skipped ? c.skipped : c.waiting : c.reported[m.status];
+  const state = m.status === 'working' ? c.working : m.status === 'blocked' ? m.needsYou ? c.needsYou : c.blocked : m.status === 'pending' && m.guidance ? m.ready ? c.ready : m.skipped ? c.skipped : c.waiting : c.reported[m.status];
   return c.selection(m, state, word(m.up, c.prerequisites), word(m.down, c.dependents), word(m.hidden, c.relationships));
 }
 
@@ -74,7 +74,7 @@ export function mapAnnouncementText(m: MapAnnouncement, language: InterfaceLangu
 // separate from this intentionally tiny overview limit; it falls back to a current-work card.
 // `fit` (100%) is the board's framing limit: there Fit all, Focus current work and initial entry never
 // magnify past it (the input's `framingMax`); only the zoom controls go above it, up to `max`.
-export const MAP_ZOOM = Object.freeze({ min: 0.0001, max: 2, readable: 0.75, step: 1.2, fit: 1 });
+export const MAP_ZOOM = Object.freeze({ min: 0.0001, max: 2, threshold: 0.7, readable: 0.8, step: 1.2, fit: 1 });
 /**
  * Touch gestures (pointerType touch only; mouse and pen keep the desktop rules). `slop`: CSS px a
  * finger may wander before a press becomes a pan (a tap stays a tap). `pinchMin`: the lowest zoom a
@@ -106,6 +106,8 @@ export interface MapInteractionInput {
   items: readonly ItemView[];
   /** Current active-picture working and ready tasks, in stored order. Empty for historical pictures. */
   working: readonly string[];
+  /** Shared main-session blocker predicate; never category-only or host activity inference. */
+  needsYou?: readonly string[];
   ready: readonly string[];
   /** False for superseded pictures: pending handoffs wait for the matched current picture. */
   current?: boolean;
@@ -342,7 +344,7 @@ export class DependencyMapInteraction {
       const skipped = task.dependencies?.some(id => i.items.find(n => n.id === id)?.status === 'skipped');
       const up = relations(i.layout, id, 'upstream').length, down = relations(i.layout, id, 'downstream').length;
       const hidden = this.hiddenRelations(id, 'upstream').length + this.hiddenRelations(id, 'downstream').length;
-      this.announce({ kind: 'selection', title: task.title, status: task.status, guidance: i.guidance !== false, ready: i.ready.includes(id), skipped: !!skipped, up, down, hidden });
+      this.announce({ kind: 'selection', title: task.title, status: task.status, needsYou: i.needsYou?.includes(id), guidance: i.guidance !== false, ready: i.ready.includes(id), skipped: !!skipped, up, down, hidden });
     }
     if (focus) this.focus(id);
   }
@@ -356,12 +358,27 @@ export class DependencyMapInteraction {
   }
   private current() {
     const i = this.input; if (!i) return;
-    const visible = new Set(this.visible), work = [...i.working, ...i.ready].filter(id => visible.has(id));
     const room = mapRoom(i.viewport, this.state.selected);
-    let t = fitProjection(i.layout, work.length ? work : this.visible, room, 16, i.framingMax);
+    const visible = new Set(this.visible);
+    const ordered = (ids: readonly string[]) => i.layout.order.filter(id => ids.includes(id) && visible.has(id));
+    const working = i.guidance === false ? [] : ordered(i.working);
+    const needsYou = i.guidance === false ? [] : ordered(i.needsYou ?? []);
+    const ready = i.guidance === false ? [] : ordered(i.ready);
+    const work = [...new Set([...working, ...needsYou])], workSet = new Set(work);
+    const first = work[0] ?? ready[0];
     const readable = i.readable ?? MAP_ZOOM.readable;
-    if (work.length && t.zoom < readable) {
-      const p = i.layout.positions.get(work[0])!;
+    const all = fitProjection(i.layout, this.visible, room, 16, i.framingMax);
+    // Coarse pointers retain full-size text. No current work (including closed plans) is an overview.
+    if (!first || all.zoom >= (readable >= 1 ? 1 : MAP_ZOOM.threshold)) { this.viewport(all); return; }
+    const neighbours = new Set(work.length ? work : [first]);
+    for (const [a, b] of i.layout.edges) {
+      if (workSet.has(a) && visible.has(b)) neighbours.add(b);
+      if (workSet.has(b) && visible.has(a)) neighbours.add(a);
+    }
+    const group = fitProjection(i.layout, [...neighbours], room, 16, readable);
+    let t = group;
+    if (group.zoom < readable) {
+      const p = i.layout.positions.get(first)!;
       // A narrow viewport may require less than the usual readable zoom for a whole card.
       const zoom = Math.min(readable, Math.max(MAP_ZOOM.min, (room.width - 16) / i.layout.metrics.width));
       t = { zoom, x: room.width / 2 - (p.x + i.layout.metrics.width / 2) * zoom, y: room.height / 2 - (p.y + i.layout.metrics.height / 2) * zoom };

@@ -16,6 +16,9 @@ export const mapItems: ItemInput[] = [
   { id: 'I', title: 'Isolated task', kind: 'task' },
 ];
 export function seedMapFixture(f: ReturnType<typeof searchFixture>) {
+  // The standalone HTTP service snapshots capabilities at startup. Later run writes must use
+  // storage installed before that snapshot, just as an installed companion does.
+  f.store.installDelegationControl(); f.store.installSubagentRuns();
   f.seedPlan('P-map', 'Dependency map fixture', mapItems);
   f.seedPlan('P-map-none', 'No recorded prerequisites', [{ id: 'A', title: 'First task', kind: 'task' }, { id: 'B', title: 'Second task', kind: 'task' }]);
   f.seedPlan('P-map-groups', 'Group metadata', [{ id: 'G', title: 'Group-owned prerequisite', kind: 'group', dependencies: ['A'] }, { id: 'A', title: 'Independent task', kind: 'task', parentId: 'G' }]);

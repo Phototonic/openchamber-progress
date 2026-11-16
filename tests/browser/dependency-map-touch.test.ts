@@ -119,13 +119,13 @@ test('mouse and pen keep the desktop rules: background-only, primary button, 5 p
   assert.equal(c.value.selected, 'B');
 });
 
-test('coarse pointers frame current work at full size; fine pointers accept 75%', () => {
+test('coarse pointers frame current work at full size; fine pointers accept a readable whole-plan fit', () => {
   const wide = [task('W1', [], 'working'), task('W2', [], 'working'), task('W3', [], 'working'), task('X', ['W1', 'W2', 'W3'])];
   const layout = new DependencyMapLayout().compute(graphItems(wide), metrics, 358);
   const base = { items: wide, layout, working: ['W1', 'W2', 'W3'], ready: [], viewport: { width: 358, height: 300 } };
   const fine = setup(base).c.value.transform.zoom, coarse = setup({ ...base, readable: MAP_TOUCH.readable }).c.value.transform.zoom;
   // Three stacked working cards fit at about 77%: readable enough for a fine pointer, so it frames them all.
-  assert.ok(fine >= MAP_ZOOM.readable && fine < MAP_TOUCH.readable, `fine ${fine}`);
+  assert.ok(fine >= MAP_ZOOM.threshold && fine < MAP_TOUCH.readable, `fine ${fine}`);
   // A coarse pointer centres the first working card at full size instead.
   assert.equal(coarse, MAP_TOUCH.readable);
 });

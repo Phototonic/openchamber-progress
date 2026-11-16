@@ -20,11 +20,11 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 3. Map as the main component
 
-- [ ] 3.1 Before changing behaviour, render the reference plans (small, 100-task, 980-task) at standard rail widths and at 1280 px and 1920 px boards; record fit-all scale and rendered title size against the analytic table in the design. Keep 70% and 80% unless the check finds 70% illegible, in which case use the shipped 75% and record it.
-- [ ] 3.2 Implement the opening view, the deterministic current-work target, the coarse-pointer opening zoom and the content-height frame.
-- [ ] 3.3 Fold help, arrow key, filters and counts into one help-and-filters control with its active-filter mark and Clear line; reduce the toolbar to zoom out, zoom in and Fit with the brief zoom hint; remove pan and focus-current-work buttons without changing drag, wheel, pinch or keys.
-- [ ] 3.4 Simplify cards and the selected-task summary, including the Needs you and blocked wording from the shared predicate and the region and card accessible names; move report authorship to Advanced details.
-- [ ] 3.5 Update map tests and rendered drivers: opening view per branch, keyboard and touch navigation, arrow-state and motion gates unchanged, large-plan budgets, 200%/400% reflow and 390 px. Update `docs/ui.md`; regenerate the rail and board guests.
+- [x] 3.1 Before changing behaviour, render the reference plans (small, 100-task, 980-task) at standard rail widths and at 1280 px and 1920 px boards; record fit-all scale and rendered title size against the analytic table in the design. Keep 70% and 80% unless the check finds 70% illegible, in which case use the shipped 75% and record it.
+- [x] 3.2 Implement the opening view, the deterministic current-work target, the coarse-pointer opening zoom and the content-height frame.
+- [x] 3.3 Fold help, arrow key, filters and counts into one help-and-filters control with its active-filter mark and Clear line; reduce the toolbar to zoom out, zoom in and Fit with the brief zoom hint; remove pan and focus-current-work buttons without changing drag, wheel, pinch or keys.
+- [x] 3.4 Simplify cards and the selected-task summary, including the Needs you and blocked wording from the shared predicate and the region and card accessible names; move report authorship to Advanced details.
+- [x] 3.5 Update map tests and rendered drivers: opening view per branch, keyboard and touch navigation, arrow-state and motion gates unchanged, large-plan budgets, 200%/400% reflow and 390 px. Update `docs/ui.md`; regenerate the rail and board guests.
 
 ## 4. Needs you: compact, scoped, actions and hide
 

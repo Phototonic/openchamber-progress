@@ -16,7 +16,7 @@ function harness() {
       append(...children: any[]) { this.childNodes.push(...children); },
       replaceChildren(...children: any[]) { this.childNodes = children; },
       insertBefore(child: any, before: any) { this.childNodes.splice(this.childNodes.indexOf(before), 0, child); },
-      setAttribute() {}, addEventListener() {}, querySelector: () => null,
+      attributes: {} as Record<string, string>, setAttribute(key: string, value: string) { this.attributes[key] = value; }, removeAttribute(key: string) { delete this.attributes[key]; }, addEventListener() {}, querySelector: () => null, prepend(...children: any[]) { this.childNodes.unshift(...children); },
       isConnected: true,
     };
     nodes.push(node);
@@ -52,7 +52,7 @@ for (const language of ['ru', 'en'] as const)
     });
 
 for (const language of ['ru', 'en'] as const) for (const status of ['working', 'pending', 'blocked'] as const)
-  test(`${language}: rendered ${status} stat localizes 1000 while data-count and revision stay raw`, () => {
+  test(`${language}: map region localizes 1000 without a redundant visible stat row; revision stays raw`, () => {
     const { exports, nodes, host } = harness();
     const items = Array.from({ length: 1000 }, (_, n) => ({ id: `task-${n}`, title: `Task ${n}`, kind: 'task', status, dependencies: [] }));
     const tasks = new Map(items.map(item => [item.id, { group: status === 'pending' ? 'ready' : status, unlocksNext: [] }]));
@@ -62,10 +62,8 @@ for (const language of ['ru', 'en'] as const) for (const status of ['working', '
       picture: { detail: { plan, detail: { items } }, graph: { revision: 11000 } },
       status: 'all', group: null, selected: null,
     });
-    const stat = nodes.find(node => node.dataset.kind === (status === 'pending' ? 'ready' : status));
-    assert.equal(stat.dataset.count, '1000');
-    assert.equal(stat.childNodes.find((node: any) => node?.tag === 'strong').textContent,
-      language === 'ru' ? '1\u00a0000' : '1000');
+    assert.equal(nodes.some(node => node.dataset.testid === 'map-summary'), false);
+    assert.ok(nodes.find(node => node.dataset.testid === 'map-region').attributes['aria-label'].includes(language === 'ru' ? '1\u00a0000' : '1000'));
     assert.equal(nodes.find(node => node.dataset.testid === 'map-region').dataset.revision, '11000');
     const hidden = nodes.find(node => node.dataset.testid === 'map-hidden');
     assert.equal(hidden.textContent, language === 'ru' ? 'Показаны все: 1\u00a0000 задач' : 'Showing all 1000 tasks');
