@@ -10,7 +10,7 @@
 // Usage: node --experimental-strip-types tests/browser/needs-you-inbox-qa.ts [--source] [--real-service] [--chromium <path>] --artifacts <dir>
 //   writes results.json (checks), requests.json (bounded request metadata) and screenshots.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -21,6 +21,7 @@ import { createGuestAssets } from './source-guests.ts';
 import { HEALTH, S, SRC, envelope, planPage, plansPage, summary } from './fixtures.ts';
 import { PANEL_SURFACE_ID } from '../../ui/shared/config.ts';
 import { inboxIntegration } from '../fixtures/inbox-integration.ts';
+import { needsYouMembershipIntegration } from '../fixtures/needs-you-membership.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -71,6 +72,11 @@ const real = process.argv.includes('--real-service') ? await inboxIntegration(SR
     ...(b.absent ? {} : { blocker: { ...(b.category && b.category !== 'unclassified' ? { category: b.category as 'decision' } : {}), ...(b.reason ? { reason: b.reason } : {}), ...(b.next ? { nextAction: b.next } : {}) } }),
   }))],
 }))) : null;
+const membership = real ? await needsYouMembershipIntegration(SRC, S.M, S.C1) : null;
+let rulePhase = !!membership;
+let legacyGuest = !!membership;
+// The last development guest before this additive read rule; immutable public history fixture.
+const legacyPanel = membership ? execFileSync('git', ['show', 'e03b9e5:ui/panel/main.js'], { maxBuffer: 4 * 1024 * 1024 }) : null;
 let conflictNext = false;
 let failLists = false;
 // Labelled transport seam to inspect rechecking while the actual service read is held.
@@ -90,7 +96,7 @@ function inboxRows(timing: boolean) {
   const readAt = new Date().toISOString();
   const rows = PLANS.flatMap((p) => visibleBlocked(p).map((b) => ({
     source: SRC, plan: p.id, revision: p.revision, structuralRevision: 1, cleanup: { state: 'visible', revision: 0 },
-    planTitle: p.title, coordinatorSessionId: p.session, task: { id: b.id, title: b.title, kind: 'task', status: 'blocked' }, ancestors: [], omittedAncestors: 0,
+    planTitle: p.title, coordinatorSessionId: p.session, mainSessionKind: 'top-level', task: { id: b.id, title: b.title, kind: 'task', status: 'blocked' }, ancestors: [], omittedAncestors: 0,
     group: personFacing(b) ? 'needs-you' : 'also-blocked',
     blocker: b.absent ? { state: 'absent' } : { state: 'reported', annotation: annotation(p.revision, b.category, b.reason, b.next) },
     ...(timing && b.since ? { timing: { readAt, since: minutes(b.since[0]), kind: b.since[1] } } : {}),
@@ -140,7 +146,7 @@ const LIGHT = { background: '#fafafa', elevated: '#ffffff', foreground: '#202124
 const DARK = { ...LIGHT, background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
 const FRAMES = ['page', 'panel', 'status'] as const;
 const PROJECT = { id: 'alpha', name: 'Alpha', directory: '/fixture/Alpha' };
-const SESSIONS = [S.M, S.U].map((id, i) => ({ id, title: i ? 'Rollout session' : 'Export session', parentId: null, projectId: PROJECT.id, directory: PROJECT.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }));
+const SESSIONS = [S.M, S.U, S.C1].map((id, i) => ({ id, title: i === 2 ? 'Assigned sub-agent' : i ? 'Rollout session' : 'Export session', parentId: i === 2 ? S.M : null, projectId: PROJECT.id, directory: PROJECT.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }));
 const shellScript = `
 const light=${JSON.stringify(LIGHT)},dark=${JSON.stringify(DARK)};
 const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
@@ -177,7 +183,7 @@ const server: Server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   try {
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(shell); return; }
-    const asset = assets.read(url.pathname);
+    const asset = legacyGuest && url.pathname === '/ui/panel/main.js' ? legacyPanel : assets.read(url.pathname);
     if (asset) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(asset); return; }
     if (url.pathname === '/service' && req.method === 'POST') {
       let body = ''; for await (const part of req) body += part;
@@ -186,7 +192,7 @@ const server: Server = createServer(async (req, res) => {
       if (real && conflictNext && q.path === '/v1/needs-you') { conflictNext = false; real.conflict(); }
       // Unsupported mode is an explicit older-service seam; all supported reads use the real service.
       if (real && mode === 'unsupported' && q.path !== '/health') { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
-      const r = (failLists && q.path === '/v1/plans') || (failContinuations && q.path === '/v1/needs-you') ? { status: 503, body: { error: 'busy' } } : real ? await real.request(q) : serve(q);
+      const r = (failLists && q.path === '/v1/plans') || (failContinuations && q.path === '/v1/needs-you') ? { status: 503, body: { error: 'busy' } } : rulePhase ? await membership!.request(q) : real ? await real.request(q) : serve(q);
       if (real && mode === 'unsupported' && q.path === '/health') delete (r.body as Record<string, unknown>).needsYouInbox;
       if (real) { const b = r.body as any, w = q.path === '/v1/needs-you' ? b : b.needsYou; realReplies.push({ path: q.path, status: r.status, ...(w?.rows ? { rows: w.rows.length, counts: w.counts, complete: w.coverage.complete } : {}) }); }
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
@@ -309,6 +315,67 @@ try {
   await waitTop(`window.qa&&frame('page').contentDocument?.querySelector('[data-testid="progress-root"]')`, 'shell ready', 30_000);
   await evaluate(`qa.theme('light');true`);
   await evaluate(`qa.context(${javascriptLiteral(S.M)});true`);
+
+  if (membership) {
+    await show(['panel'], 600);
+    await wait('panel', `d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.count==='4'`, 'old guest sees four category-only blockers');
+    check('rule:old-guest-ignores-additive-fact', same(await rowIds('panel'), ['main','direct','relay']), await rowIds('panel'));
+    // Three compact rows plus Show more is still a count of four, including the sub-agent plan.
+    await shot('panel', 'rule-before-upgrade', INBOX);
+    legacyGuest = false;
+    await evaluate(`frame('panel').src='/ui/panel/index.html?upgraded';true`);
+    await wait('panel', `d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.count==='2'`, 'new guest reclassifies the same stored reports');
+    check('rule:two-main-session-items', same(await rowIds('panel'), ['main','relay']), await rowIds('panel'));
+    check('rule:excluded-counted-as-other-blocked', await guest<boolean>('panel', `return d.querySelector('[data-testid="also-blocked"]').dataset.count==='2'`));
+    await shot('panel', 'rule-rail', '[data-testid="progress-root"]');
+    await click('panel', '[data-testid="also-blocked"] > summary');
+    check('rule:excluded-rows-labelled-other-blocked', await guest<boolean>('panel', `return [...d.querySelectorAll('[data-testid="also-blocked"] [data-testid="needs-you-row"]')].every(n=>n.dataset.group==='also-blocked')`));
+    await click('panel', '[data-testid="also-blocked"] [data-task="direct"] .ap-inbox-open');
+    await wait('panel', `d.querySelector('[data-testid="focus-notice"]')?.textContent==='Also blocked: Ask parent for input'`, 'excluded navigation never says Needs you');
+    await wait('panel', `d.activeElement?.dataset.testid==='item-direct'`, 'excluded reading finishes its focus handoff');
+    await tabTo('panel', '[data-testid="needs-you-back"]');
+    await key('Enter');
+    await wait('panel', `d.activeElement?.closest('[data-testid="needs-you-row"]')?.dataset.task==='direct'`, 'Back finishes returning focus to the excluded row');
+    // Select List and expand the excluded task with real keyboard input after focus returns.
+    await tabTo('panel', '[data-testid="plan-view-list"] button');
+    await key('Enter');
+    await wait('panel', `d.querySelector('[data-testid="item-direct"]')`, 'excluded assigned task in List');
+    await tabTo('panel', '[data-testid="item-toggle-direct"] > summary');
+    await key('Enter');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reason-direct"]')`, 'literal blocker details');
+    check('rule:list-retains-literal-details', await guest<boolean>('panel', `return d.querySelector('[data-testid="item-direct"]').textContent.includes('Parent must supply the sample')`));
+    await shot('panel', 'rule-list', '[data-testid="progress-root"]');
+    await click('panel', '[data-testid="plan-view-map"] button');
+    await wait('panel', `d.querySelector('[data-testid="map-card-direct"][data-status="blocked"]')`, 'excluded assigned task on Map');
+    await click('panel', '[data-testid="map-card-direct"]');
+    check('rule:map-retains-literal-details', await guest<boolean>('panel', `return d.querySelector('[data-testid="progress-root"]').textContent.includes('Parent must supply the sample')`));
+    await shot('panel', 'rule-map', '[data-testid="progress-root"]');
+    await show(['panel'], 390);
+    await evaluate(`qa.phone(true);true`);
+    await shot('panel', 'rule-map-phone', '[data-testid="progress-root"]');
+    check('rule:phone-map-retains-literal-details', await guest<boolean>('panel', `return d.querySelector('[data-testid="map-inspector"]').textContent.includes('Parent must supply the sample')`));
+    await shot('panel', 'rule-map-phone-details', '[data-testid="map-inspector"]');
+    await click('panel', '[data-testid="plan-view-list"] button');
+    check('rule:phone-list-still-blocked', await guest<boolean>('panel', `return !!d.querySelector('[data-testid="item-direct"][data-status="blocked"]')`));
+    await shot('panel', 'rule-list-phone', '[data-testid="progress-root"]');
+    // The child-owned plan is independently visible and blocked, never a person-facing row.
+    await evaluate(`qa.context(${javascriptLiteral(S.C1)});true`);
+    await wait('panel', `d.querySelector('[data-testid="map-card-owned"][data-status="blocked"]')`, 'child-owned plan stays visible');
+    await shot('panel', 'rule-child-plan-map', '[data-testid="progress-root"]');
+    await click('panel', '[data-testid="plan-view-list"] button');
+    await wait('panel', `d.querySelector('[data-testid="item-owned"]')`, 'child-owned blocked task');
+    await click('panel', '[data-testid="item-toggle-owned"] > summary');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reason-owned"]')`, 'child-owned literal blocker details');
+    check('rule:child-owned-list-retains-details', await guest<boolean>('panel', `return d.querySelector('[data-testid="item-owned"]').textContent.includes('Parent must choose a direction')`));
+    await click('panel', '[data-testid="plan-view-map"] button');
+    await wait('panel', `d.querySelector('[data-testid="map-card-owned"][data-status="blocked"]')`, 'child-owned map card');
+    await click('panel', '[data-testid="map-card-owned"]');
+    check('rule:child-owned-map-retains-details', await guest<boolean>('panel', `return d.querySelector('[data-testid="progress-root"]').textContent.includes('Parent must choose a direction')`));
+    await shot('panel', 'rule-child-plan-phone', '[data-testid="progress-root"]');
+    check('rule:upgrade-never-rewrites-store', membership.unchanged());
+    rulePhase = false;
+    await evaluate(`qa.phone(false);qa.context(${javascriptLiteral(S.M)});for(const f of ['panel','status','page'])frame(f).src='/ui/'+f+'/index.html?normal';true`);
+  }
 
   // ---------------------------------------------------------------- Work Status line (Q1)
   await show(['status'], 320);
@@ -601,9 +668,16 @@ try {
   await waitTop(`['panel','status'].every(f=>qa.requests.slice(${uMark}).some(q=>q.frame===f&&q.path==='/v1/plans'))`, 'next older-service list cycle');
   const uReqs = (await requests()).slice(uMark).filter((q) => q.path === '/v1/plans');
   const unsupported = await guest<string>('panel', `return d.querySelector('[data-testid="needs-you-unavailable"]').textContent`);
-  check('I1:unsupported-not-an-empty-inbox', unsupported === 'Needs you isn’t available with this progress service version.' && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="needs-you-count"],[data-testid="needs-you-empty"]')`)), unsupported);
+  check('I1:unsupported-not-an-empty-inbox', unsupported === 'Needs you isn’t available; update the extension and service together.' && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="needs-you-count"],[data-testid="needs-you-empty"]')`)), unsupported);
   check('I1:older-service-never-sent-extension', uReqs.length > 0 && uReqs.slice(-3).every((q) => q.needsYou === null), uReqs.slice(-3));
   await shot('panel', 'unsupported', INBOX);
+  for (const [locale, text] of [['ru', 'обновите расширение и сервис вместе'], ['zh-CN', '请同时更新扩展和服务']] as const) {
+    await evaluate(`qa.lang(${javascriptLiteral(locale)});true`);
+    await wait('panel', `d.querySelector('[data-testid="needs-you-unavailable"]')?.textContent.includes(${javascriptLiteral(text)})`, 'translated update-together guidance');
+    check(`rule:unsupported-${locale}-not-empty`, await guest<boolean>('panel', `return !d.querySelector('[data-testid="needs-you-empty"],[data-testid="needs-you-count"]')`));
+    await show(['panel'], 390);
+    await shot('panel', `unsupported-${locale}`, INBOX);
+  }
   check('I1:no-console-errors', c.errors.length === 0, c.errors);
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
@@ -615,6 +689,7 @@ try {
   server.close(); server.closeAllConnections();
   assets.dispose();
   await real?.close();
+  await membership?.close();
   rmSync(profile, { recursive: true, force: true });
   writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability and held-transport seams' : 'synthetic contract fixture', realReplies, device: 'synthetic ready.device applied by the guests\' own host-ready path (root hooks checked) and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
   writeFileSync(join(artifacts, 'requests.json'), JSON.stringify(requestLog.slice(-400), null, 1));

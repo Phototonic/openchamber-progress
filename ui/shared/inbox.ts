@@ -4,7 +4,7 @@
 // - an unchanged window keeps its timing anchors and object, so a poll repaints nothing
 // - a changed first window, a 409 or an identity change restarts continuation visibly
 // - reported state only: nothing here writes, settles, assigns or navigates the host
-import { NEEDS_YOU_LIMITS } from '../../shared/needs-you.ts';
+import { isNeedsYou, NEEDS_YOU_LIMITS } from '../../shared/needs-you.ts';
 import type { InboxRowView, InboxTaskTarget, InboxWindowView, PlanView } from './model.ts';
 import { readNeedsYou, type InboxFirst, type ReadFailure, type ServiceHost } from './source.ts';
 
@@ -15,7 +15,7 @@ export interface InboxModel {
   availability: InboxAvailability;
   needsYou: InboxRowView[];
   alsoBlocked: InboxRowView[];
-  /** Cumulative counts through the last loaded window; exact only with `complete`. */
+  /** Membership counts from distinct held rows (first-window-only during recheck); exact only with `complete`. */
   counts: { needsYou: number; alsoBlocked: number };
   complete: boolean;
   gapped: boolean;
@@ -39,10 +39,15 @@ export interface InboxPanel {
   expand: (open: boolean) => void;
 }
 
-const rowSignature = (r: InboxRowView) => [r.rowKey, r.revision, r.structuralRevision, r.cleanupRev, r.planTitle, r.task.title, r.group, r.blocker, r.ancestors, r.omittedAncestors, r.wait ? [r.wait.kind, r.wait.since] : null];
+const rowSignature = (r: InboxRowView) => [r.rowKey, r.revision, r.structuralRevision, r.cleanupRev, r.planTitle, r.task.title, r.group, r.mainSessionKind, r.coordinatorSessionId, r.blocker, r.ancestors, r.omittedAncestors, r.wait ? [r.wait.kind, r.wait.since] : null];
 /** Presentation identity of a window: read time and receipt anchors are excluded on purpose. */
 const windowSignature = (w: InboxWindowView) => JSON.stringify([w.storeId, w.sourceId, w.captureEnabled, w.timing, w.rows.map(rowSignature), w.counts, w.nextCursor, w.coverage]);
 const firstSignature = (f: InboxFirst) => (f.state === 'ready' ? `ready:${windowSignature(f.window)}` : f.state);
+/** Presentation group only; never changes the validated category-only wire group/counts. */
+export function inboxGroup(r: InboxRowView): InboxRowView['group'] {
+  const b = r.blocker;
+  return b.state === 'reported' && isNeedsYou(b.category, b.reporterSessionId, r.coordinatorSessionId, r.mainSessionKind) ? 'needs-you' : 'also-blocked';
+}
 
 interface InboxDeps {
   service: (current: () => boolean) => ServiceHost;
@@ -126,18 +131,24 @@ export class InboxController {
     const empty = { needsYou: [], alsoBlocked: [], counts: { needsYou: 0, alsoBlocked: 0 }, complete: false, gapped: false, captureEnabled: true, timing: false, canContinue: false, loadingMore: false, moreFailed: null, restarted: false, expanded: false, rechecking: false };
     if (this.first.state !== 'ready') return { ...empty, availability: this.first.state };
     const windows = [this.first.window, ...this.pages];
+    // Old revision-1 services have category groups but no main-session evidence. Never guess.
+    if (windows.some(w => w.rows.some(r => r.mainSessionKind === undefined))) return { ...empty, availability: 'unsupported' };
     const last = windows.at(-1)!;
     const seen = new Set<string>();
+    const counts = { needsYou: 0, alsoBlocked: 0 };
     const needsYou: InboxRowView[] = [], alsoBlocked: InboxRowView[] = [];
     for (const w of windows) for (const r of w.rows) {
       if (seen.has(r.rowKey)) continue; // a task is shown once across windows
       seen.add(r.rowKey);
-      (r.group === 'needs-you' ? needsYou : alsoBlocked).push(r);
+      const primary = inboxGroup(r) === 'needs-you';
+      (primary ? needsYou : alsoBlocked).push(r);
+      // During a bounded recheck only the refreshed first window's rows support the count.
+      if (this.recheck === null || w === this.first.window) counts[primary ? 'needsYou' : 'alsoBlocked']++;
     }
     // Gaps anywhere in the traversal keep the whole result partial.
     const gapped = windows.some((w) => w.coverage.gapped);
     return {
-      availability: 'ready', needsYou, alsoBlocked, counts: this.recheck !== null ? this.first.window.counts : last.counts,
+      availability: 'ready', needsYou, alsoBlocked, counts,
       complete: this.recheck === null && last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
       gapped, captureEnabled: last.captureEnabled, timing: this.first.window.timing,
       canContinue: this.recheck === null && last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded, rechecking: this.recheck !== null && this.failed === null,

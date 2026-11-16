@@ -11,6 +11,12 @@ export const NEEDS_YOU_LIMITS = Object.freeze({
 
 /** Health capability: absent, malformed and unknown revisions mean unavailable, not empty. */
 export function supportsNeedsYou(value: unknown): value is 1 { return value === 1; }
+/** Response-only recorded identity, never inferred from a live host session list. */
+export type MainSessionKind = 'top-level' | 'subagent' | 'unknown';
+/** One person-facing membership rule. Category-only wire groups deliberately remain unchanged. */
+export function isNeedsYou(category: string | null | undefined, reporterSessionId: string | null | undefined, mainSessionId: string, mainSessionKind: MainSessionKind | undefined): boolean {
+  return (category === 'decision' || category === 'review') && reporterSessionId === mainSessionId && mainSessionKind === 'top-level';
+}
 export interface NeedsYouIdentity {
   protocolVersion: 2; schemaVersion: 2; needsYouInbox: 1; storeId: string;
   sourceBinding: { sourceId: string; verified: true };
@@ -30,6 +36,8 @@ export type InboxBlocker =
   | { state: 'absent' | 'invalid' };
 export interface NeedsYouRow extends AttentionPlanIdentity {
   planTitle: string; coordinatorSessionId: string;
+  /** Absent on older services; explicit unknown is supplied but not positive top-level evidence. */
+  mainSessionKind?: MainSessionKind;
   task: { id: string; title: string; kind: 'task'; status: 'blocked' };
   ancestors: { id: string; title: string }[]; omittedAncestors: number;
   group: NeedsYouGroup;

@@ -4,11 +4,12 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 1. Needs you membership: main session only
 
-- [ ] 1.1 Add the shared membership predicate and the additive main-session fact to the inbox row and plan summary types, with frozen fixtures for top-level, sub-agent and unknown main sessions, direct, handoff and relay reports, and a 1.4.x-shaped reply.
-- [ ] 1.2 Supply the fact from the recorded session identity in the inbox projection and the plan list/detail reads. Cover it with real authenticated requests: unchanged row grouping and counts, read-only store invariance, missing session record, and unchanged ordinary list scope.
-- [ ] 1.3 Keep the reporting session and details revision in the guest inbox model; derive Needs you membership and counts from held rows through the predicate; report Needs you unavailable when the fact is absent. Use the same predicate for the blocked wording on list rows and map cards.
-- [ ] 1.4 Add the one-sentence rule to the companion guidance and check it with a semantic read for coordinator, assigned sub-agent and plan-owning sub-agent cases.
-- [ ] 1.5 Update `docs/contracts.md`, `docs/ui.md` and `docs/backend.md`; regenerate the backend entries and the three guests. Verify in a rendered browser that a sub-agent's decision blocker is absent from Needs you, present on its task and map card with its text, and counted as other blocked work, before and after an upgrade of a store that already holds one.
+- [x] 1.1 Add the shared membership predicate and the additive main-session fact to the inbox row and plan summary types, with frozen fixtures for top-level, sub-agent and unknown main sessions, direct, handoff and relay reports, and a 1.4.x-shaped reply.
+- [x] 1.2 Supply the fact from the recorded session identity in the inbox projection and the plan list/detail reads. Cover it with real authenticated requests: unchanged row grouping and counts, read-only store invariance, missing session record, and unchanged ordinary list scope.
+- [x] 1.3 Keep the reporting session and details revision in the guest inbox model; derive Needs you membership and counts from held rows through the predicate; report Needs you unavailable when the fact is absent. Use the same predicate for the blocked wording on list rows and map cards.
+  - Approved implementation adjustment: List and Map retain their neutral blocked labels and literal details; `itemNeedsYou` exposes the shared predicate for later presentation changes.
+- [x] 1.4 Add the one-sentence rule to the companion guidance and check it with a semantic read for coordinator, assigned sub-agent and plan-owning sub-agent cases.
+- [x] 1.5 Update `docs/contracts.md`, `docs/ui.md` and `docs/backend.md`; regenerate the backend entries and the three guests. Verify in a rendered browser that a sub-agent's decision blocker is absent from Needs you, present on its task and map card with its text, and counted as other blocked work, before and after an upgrade of a store that already holds one.
 
 ## 2. Surface shell and More menu
 

@@ -4,8 +4,8 @@
 import { ATTENTION_HOOKS, button, el, testid, type Env } from './components.ts';
 import { absoluteTime, clockTime, elapsedText, formatCount } from './format.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
-import { inboxRequest, inboxTarget, type InboxModel, type InboxPanel } from './inbox.ts';
-import { elapsedAt, type BlockerCategory, type InboxRowView, type InboxTaskTarget, type ItemView, type PlanDetail, type PlanView } from './model.ts';
+import { inboxGroup, inboxRequest, inboxTarget, type InboxModel, type InboxPanel } from './inbox.ts';
+import { elapsedAt, itemNeedsYou, type BlockerCategory, type InboxRowView, type InboxTaskTarget, type ItemView, type PlanDetail, type PlanView } from './model.ts';
 import type { Loadable } from './app.ts';
 import { icon, warningLine } from './primitives.ts';
 
@@ -34,7 +34,7 @@ export const INBOX_COPY = {
     gapped: 'Some plans couldn’t be read, so this list may be incomplete.',
     capture: 'Capture is off, so newer reports aren’t recorded.',
     stale: (time: string) => `Last checked ${time}. This may be out of date.`,
-    unsupported: 'Needs you isn’t available with this progress service version.',
+    unsupported: 'Needs you isn’t available; update the extension and service together.',
     unverified: 'Needs you is unavailable: this service isn’t linked to a verified OpenCode setup.',
     invalid: 'Needs you couldn’t be read from the progress service.',
     listLabel: 'Tasks that need you',
@@ -45,7 +45,7 @@ export const INBOX_COPY = {
     recheckWaiting: 'Waiting for the next refresh to recheck loaded plans. Later rows may be out of date; counts include only the first checked window.',
     showMore: (n: number) => `Show ${n} more`, showFewer: 'Show fewer',
     also: (n: number, exact: boolean) => `Also blocked · ${exact ? n : `${n}+`}`,
-    alsoNote: 'Other reported blockers, including dependencies, outside parties and unspecified reasons.',
+    alsoNote: 'Other blocked work, including sub-agent requests to their parent.',
     open: (task: string, plan: string) => `Open ${task} in ${plan}`,
     plan: 'Plan: ', reason: 'Reason', next: 'Next step', unknown: 'Unknown',
     waiting: 'Waiting', waitUnknown: 'Waiting time unknown', waitUnavailable: 'Waiting time unavailable',
@@ -87,7 +87,7 @@ export const INBOX_COPY = {
     gapped: 'Некоторые планы не удалось прочитать, поэтому список может быть неполным.',
     capture: 'Сбор отключён, поэтому новые отчёты не записываются.',
     stale: (time: string) => `Последняя проверка: ${time}. Данные могут быть устаревшими.`,
-    unsupported: 'Раздел «Нужно ваше участие» недоступен в этой версии сервиса прогресса.',
+    unsupported: 'Раздел «Нужно ваше участие» недоступен; обновите расширение и сервис вместе.',
     unverified: 'Раздел «Нужно ваше участие» недоступен: сервис не привязан к проверенной установке OpenCode.',
     invalid: 'Не удалось прочитать раздел «Нужно ваше участие» из сервиса прогресса.',
     listLabel: 'Задачи, где нужно ваше участие',
@@ -98,7 +98,7 @@ export const INBOX_COPY = {
     recheckWaiting: 'Ждём следующего обновления, чтобы повторно проверить загруженные планы. Дальние строки могут быть устаревшими; счётчики учитывают только первое проверенное окно.',
     showMore: (n: number) => `Показать ещё ${num(n, 'ru')}`, showFewer: 'Свернуть',
     also: (n: number, exact: boolean) => `Также заблокировано · ${exact ? num(n, 'ru') : `${num(n, 'ru')}+`}`,
-    alsoNote: 'Другие указанные блокировки: зависимости, внешние стороны и неуказанные причины.',
+    alsoNote: 'Другие заблокированные задачи, включая запросы субагентов к родительской сессии.',
     open: (task: string, plan: string) => `Открыть «${task}» в плане «${plan}»`,
     plan: 'План: ', reason: 'Причина', next: 'Следующий шаг', unknown: 'Неизвестно',
     waiting: 'Ожидает', waitUnknown: 'Время ожидания неизвестно', waitUnavailable: 'Время ожидания недоступно',
@@ -138,7 +138,7 @@ export const INBOX_COPY = {
     gapped: '部分计划无法读取，此列表可能不完整。',
     capture: '采集已关闭，不会记录较新的报告。',
     stale: (time: string) => `上次检查于 ${time}，信息可能已过期。`,
-    unsupported: '此进度服务版本不支持“需要你处理”。',
+    unsupported: '“需要你处理”不可用；请同时更新扩展和服务。',
     unverified: '“需要你处理”不可用：此服务未关联到经过验证的 OpenCode 配置。',
     invalid: '无法从进度服务读取“需要你处理”。',
     listLabel: '需要你处理的任务', alsoListLabel: '其他受阻任务',
@@ -148,7 +148,7 @@ export const INBOX_COPY = {
     recheckWaiting: '等待下次刷新以重新检查已加载的计划。后续行可能已过期；计数仅涵盖首个已检查窗口。',
     showMore: (n: number) => `再显示 ${num(n, 'zh-CN')} 项`, showFewer: '收起',
     also: (n: number, exact: boolean) => `其他受阻任务 · ${num(n, 'zh-CN')}${exact ? '' : '+'}`,
-    alsoNote: '其他已报告的阻塞，包括前置任务、外部人员或机构，以及未说明的原因。',
+    alsoNote: '其他已报告的受阻任务，包括子智能体向父会话提出的请求。',
     open: (task: string, plan: string) => `打开“${plan}”中的“${task}”`,
     plan: '计划：', reason: '原因', next: '下一步', unknown: '未知',
     waiting: '等待中', waitUnknown: '等待时长未知', waitUnavailable: '等待时长不可用',
@@ -193,7 +193,7 @@ export interface InboxReading {
 }
 let readings = 0;
 export function openReading(row: InboxRowView, storeId: string): InboxReading {
-  return { token: ++readings, target: inboxTarget(row, storeId), task: row.task.title, planTitle: row.planTitle, coordinator: row.coordinatorSessionId, group: row.group, rowKey: row.rowKey };
+  return { token: ++readings, target: inboxTarget(row, storeId), task: row.task.title, planTitle: row.planTitle, coordinator: row.coordinatorSessionId, group: inboxGroup(row), rowKey: row.rowKey };
 }
 /**
  * Detail request of a reading (see inboxRequest). Keep current detail metadata even after the
@@ -253,7 +253,7 @@ function rowItem(row: InboxRowView, index: number, prefix: string, m: InboxModel
   const li = testid(el('li', 'ap-inbox-row'), 'needs-you-row');
   // Stable identity for focus continuity across polls (the frame matches data-state with the hook).
   li.dataset.state = row.rowKey;
-  Object.assign(li.dataset, { row: row.rowKey, source: row.source, plan: row.plan, task: row.task.id, group: row.group, revision: String(row.revision) });
+  Object.assign(li.dataset, { row: row.rowKey, source: row.source, plan: row.plan, task: row.task.id, group: inboxGroup(row), revision: String(row.revision) });
   const id = `ap-inbox-${prefix}${index}`;
   const b = el('button', 'ap-inbox-open');
   b.type = 'button';
@@ -419,7 +419,7 @@ export function checkReading(r: InboxReading, detail: Loadable<PlanDetail> | nul
   if (!plan || plan.key !== `${r.target.source}/${r.target.plan}` || detail.value.revision !== plan.revision) return { kind: 'loading' };
   if (plan.sourceId !== r.target.source) return { kind: 'other-setup' };
   const task = detail.value.items.find((i) => i.kind === 'task' && i.id === r.target.task);
-  const message = r.group === 'needs-you' ? t.revealNeeds(r.task) : t.revealAlso(r.task);
+  const message = task && itemNeedsYou(plan, task) ? t.revealNeeds(r.task) : t.revealAlso(r.task);
   const planNote = plan.cleanup?.state === 'archived' ? t.archived : plan.lifecycle !== 'active' ? t.inactive : null;
   if (!task) return { kind: 'ready', plan, reveal: false, notice: [t.taskGone(r.task), planNote].filter(Boolean).join(' '), message };
   const statusNote = task.status !== 'blocked' ? t.notBlocked(task.title, t.statuses[task.status]) : null;
