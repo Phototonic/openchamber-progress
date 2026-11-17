@@ -109,7 +109,7 @@ test('renewed attention retires queued success and a later quiet outcome uses th
   assert.equal(node.writes.length, writes);
 });
 
-test('truncated oldest-first History warns about newer updates in every language while IDs stay raw', () => {
+test('bounded newest-first History warns about older updates in every language while IDs stay raw', () => {
   const { components: c } = fixture();
   const plan = { id: 'plan', revision: 3000, structuralRevision: 11000, reportedAt: '2026-01-01T00:00:00Z',
     ownerSessionId: 'session', sourceId: 'source', document: { state: 'missing' } };
@@ -122,8 +122,8 @@ test('truncated oldest-first History warns about newer updates in every language
     assert.equal(rows[0].children[0].textContent, locale === 'ru' ? 'Обновление 1999' : locale === 'zh-CN' ? '更新 1999' : 'Update 1999');
     assert.equal(rows.at(-1).children[0].textContent, locale === 'ru' ? 'Обновление 1000' : locale === 'zh-CN' ? '更新 1000' : 'Update 1000');
     assert.equal(history.children[2].textContent, {
-      en: 'Newer updates are not shown.', ru: 'Более новые обновления не показаны.', 'zh-CN': '未显示较新的更新。',
-    }[locale], 'truncating oldest-first pages omits newer updates');
+      en: 'Older updates are not shown.', ru: 'Более ранние обновления не показаны.', 'zh-CN': '未显示较早的更新。',
+    }[locale], 'the bounded suffix omits older updates');
     const details = c.detailsBlock(null, plan, [], env);
     assert.equal(details.children[1].children[3].textContent, locale === 'ru'
       ? '3000 (структура 11000)' : locale === 'zh-CN' ? '3000（结构 11000）' : '3000 (structure 11000)');
@@ -131,4 +131,14 @@ test('truncated oldest-first History warns about newer updates in every language
   assert.equal(plan.revision, 3000);
   assert.equal(plan.structuralRevision, 11000);
   assert.equal(entries[0].revision, 1000);
+});
+
+test('short History renders every revision newest first without an omission note', () => {
+  const { components: c } = fixture();
+  const entries = [1, 2, 3].map(revision => ({ revision, structuralRevision: 1,
+    lifecycle: 'active', reportedAt: '2026-01-01T00:00:00Z' }));
+  const history = c.historyBlock({ id: 'short' }, { state: 'ready', value: { entries, truncated: false } },
+    { locale: 'en', now: Date.parse(entries[0].reportedAt) });
+  assert.deepEqual(Array.from(history.children[1].children, (row: any) => row.dataset.testid), ['revision-3', 'revision-2', 'revision-1']);
+  assert.equal(history.children.length, 2);
 });

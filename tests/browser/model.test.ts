@@ -257,9 +257,9 @@ test('document read pins the first capture ID on continuation pages; retained ca
   assert.deepEqual(raced.ok && [raced.body.historical, raced.body.text === text, raced.body.captureId], [true, true, 7]);
 });
 
-test('history read pages oldest-first', async () => {
+test('history reads the complete short history in wire order for newest-first rendering', async () => {
   const host = fakeHost((r) => ({ status: 200, body: { ...envelope(), data: r.query?.cursor ? [{ revision: 3, structuralRevision: 2, lifecycle: 'finished', reportedAt: P1.reportedAt }] : [{ revision: 1, structuralRevision: 1, lifecycle: 'active', reportedAt: P1.reportedAt }, { revision: 2, structuralRevision: 2, lifecycle: 'active', reportedAt: P1.reportedAt }], nextCursor: r.query?.cursor ? null : '2' } }));
-  const res = await readHistory(host, plan('P1'));
+  const res = await readHistory(host, { ...plan('P1'), revision: 3 });
   assert.deepEqual(res.ok && res.entries.map((e) => [e.revision, e.lifecycle]), [[1, 'active'], [2, 'active'], [3, 'completed']]);
 });
 
