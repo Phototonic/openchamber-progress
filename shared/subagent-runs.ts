@@ -322,10 +322,26 @@ function intentDisposition(db:DatabaseSync,i:DurableIntent,state:'pending'|'rese
   db.prepare('UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?').run(JSON.stringify(reply),i.caller.sourceId,i.request.plan,i.request.oid!);return reply;
 }
 export class PendingDelegationError extends ProgressError { constructor(){super('conflict');} }
+/** Cleanup owns the transaction. Retire authority without touching guarded receipts
+ * or session-owned runs; restoring a plan must not resurrect an earlier intent. */
+export function retireCleanupIntent(db:DatabaseSync,source:string,plan:string) {
+  if(runStorageCompatibility(db)!=='absent')db.prepare('DELETE FROM runs_intents WHERE source=? AND plan=?').run(source,plan);
+}
 export function declareIntent(db:DatabaseSync,r:Request,actor:Actor,validate:()=>void) {
   const c=runControl(db);need(c.enabled,'disabled');const payloadHash=hash([r,actor.sourceId,actor.sessionId]);
+  const cleanup=cleanupInstalled(db)?cleanupState(db,actor.sourceId,r.plan):undefined;
+  need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
   const old=db.prepare('SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?').get(actor.sourceId,r.plan,r.oid!);
-  if(old){need(old.payload_hash===payloadHash,'operation-reused');return JSON.parse(String(old.receipt));}
+  if(old){
+    need(old.payload_hash===payloadHash,'operation-reused');
+    const receipt=JSON.parse(String(old.receipt));
+    if(cleanup?.state==='visible'&&['pending','reserved'].includes(receipt.delegation?.state)){
+      const intent=activeIntent(db,actor.sourceId,actor.sessionId);
+      if(intent?.request.plan!==r.plan||intent.request.oid!==r.oid)
+        return {...receipt,delegation:{...receipt.delegation,state:'retired',reason:'closed',recovery:'redeclare-or-link'}};
+    }
+    return receipt;
+  }
   validate();const current=activeIntent(db,actor.sourceId,actor.sessionId);
   if(r.assign!.length&&current)throw new PendingDelegationError();
   else if(current){intentDisposition(db,current,'retired','cancelled',current.dispatch??undefined);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=?').run(actor.sourceId,actor.sessionId);}

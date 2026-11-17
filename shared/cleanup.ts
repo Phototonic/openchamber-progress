@@ -6,7 +6,7 @@ import { identifier, ProgressError, requireProgress as need } from './progress.t
 import { windows, windowsPaths, sameWindowsObject, sameWindowsDirectory, privatePaths, platformSecurityScope } from './platform.ts';
 
 export type CleanupAction = 'archive' | 'restore' | 'delete';
-export interface CleanupRequest { storeId:string; source:string; plan:string; rev:number; cleanupRev:number; oid:string; confirmed?:true }
+export interface CleanupRequest { storeId:string; source:string; plan:string; rev:number; cleanupRev:number; oid:string; confirmed?:true; active?:true }
 export interface CleanupReceipt { storeId:string; source:string; plan:string; cleanup:{state:'visible'|'archived'|'deleted';revision:number}; oid:string }
 const definitions: Record<string,string> = {
   cleanup_format: 'CREATE TABLE cleanup_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1))',
@@ -40,15 +40,17 @@ export function parseCleanup(action:CleanupAction,value:unknown):CleanupRequest 
   need(['archive','restore','delete'].includes(action));
   need(value&&typeof value==='object'&&!Array.isArray(value));
   const r=value as CleanupRequest;
-  const fields=['storeId','source','plan','rev','cleanupRev','oid',...(action==='delete'?['confirmed']:[])];
+  const fields=['storeId','source','plan','rev','cleanupRev','oid',...(action==='delete'?['confirmed']:[]),...(action!=='restore'?['active']:[])];
   need(Object.keys(r).every(k=>fields.includes(k)));
   need(identifier(r.storeId)&&identifier(r.source)&&identifier(r.plan)&&identifier(r.oid));
   need(Number.isSafeInteger(r.rev)&&r.rev>0&&Number.isSafeInteger(r.cleanupRev)&&r.cleanupRev>=0&&r.cleanupRev<Number.MAX_SAFE_INTEGER);
   need(action!=='delete'||r.confirmed===true);
+  need(!Object.hasOwn(r,'active')||r.active===true);
   return r;
 }
 function requestHash(action:CleanupAction,r:CleanupRequest) {
-  return createHash('sha256').update(JSON.stringify([action,r.storeId,r.source,r.plan,r.rev,r.cleanupRev,r.oid,r.confirmed??false])).digest('hex');
+  // Preserve the identity of earlier requests/receipts that omitted the field.
+  return createHash('sha256').update(JSON.stringify([action,r.storeId,r.source,r.plan,r.rev,r.cleanupRev,r.oid,r.confirmed??false,...(r.active===true?[true]:[])])).digest('hex');
 }
 /** Called in a read snapshot first, then again under BEGIN IMMEDIATE. */
 function preflight(db:DatabaseSync,action:CleanupAction,r:CleanupRequest,installed:boolean):CleanupReceipt|undefined {
@@ -61,7 +63,8 @@ function preflight(db:DatabaseSync,action:CleanupAction,r:CleanupRequest,install
   need(row.revision===r.rev,'conflict');
   let p;try{p=JSON.parse(String(row.snapshot));}catch{throw new ProgressError('corrupt');}
   need(p.id===r.plan&&p.sourceId===r.source&&p.revision===r.rev,'corrupt');
-  need(['finished','cancelled','failed'].includes(p.lifecycle),'closed');
+  const closed=['finished','cancelled','failed'].includes(p.lifecycle);
+  need(action==='restore'?p.lifecycle==='active'||closed:r.active===true?p.lifecycle==='active':closed,'closed');
   need(action==='restore'?state?.state==='archived':action==='delete'||!state||state.state==='visible','closed');
 }
 

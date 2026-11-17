@@ -11,7 +11,7 @@ import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync, fstatSync, fsyncSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
-import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
+import { cleanupInstalled, cleanupState, mutateCleanup, parseCleanup, type CleanupAction } from './cleanup.ts';
 import { searchWindow, searchState } from './plan-task-search.ts';
 import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
@@ -365,7 +365,12 @@ export class Store {
   }
   cleanup(action:CleanupAction,value:unknown) {
     need(!this.readOnly,'storage');
-    try{return mutateCleanup(this.db,this.file,action,value,(write,fn)=>this.transaction(write,fn));}catch(e){throw storageError(e);}
+    const request=parseCleanup(action,value);
+    try{return mutateCleanup(this.db,this.file,action,request,(write,fn)=>this.transaction(write,()=>{
+      const result=fn();
+      if(write&&action==='archive'&&request.active===true)runs.retireCleanupIntent(this.db,request.source,request.plan);
+      return result;
+    }));}catch(e){throw storageError(e);}
   }
   /** One bounded keyed read per plan. Missing/malformed parent identity is never top-level. */
   mainSessionKind(source: string, session: string): import('./needs-you.ts').MainSessionKind {

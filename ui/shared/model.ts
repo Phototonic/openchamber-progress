@@ -193,7 +193,7 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planCleanupActive?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
 /** Canonical revision-1 graph DTO, with no presentation or detail semantics. */
 export type { PlanGraphRead, PlanGraphRequest, PlanGraphItem } from '../../shared/progress.ts';
 

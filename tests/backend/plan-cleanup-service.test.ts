@@ -9,6 +9,102 @@ import { LIMITS } from '../../shared/progress.ts';
 import { launchCleanupService } from '../fixtures/cleanup-service.ts';
 import { cleanupFixture } from '../fixtures/cleanup.ts';
 
+test('active acknowledgement is literal, lifecycle-specific, revision-fenced and part of replay identity',async()=>{
+  const f=await launchCleanupService(false,false);
+  try{
+    assert.equal((await(await f.request('/health')).json()).planCleanupActive,1);
+    const snapshot=()=>['plans','revisions','contributions','captures','chunks','receipts'].map(t=>f.store.db.prepare(`SELECT * FROM ${t} ORDER BY source,${t==='plans'?'id':'plan'}`).all());
+    async function refused(action:string,body:unknown,error:string,status=409){
+      const before=snapshot();
+      const response=await f.request(`/v1/plan/${action}`,body);
+      assert.equal(response.status,status);assert.deepEqual(await response.json(),{error});
+      assert.deepEqual(snapshot(),before);
+    }
+    const active={...f.body('P-active',0,'active-archive',1),active:true};
+    for(const action of ['archive','delete']){
+      const body={...active,...(action==='delete'?{confirmed:true}:{})};
+      const {active:_ack,...oldBody}=body;
+      await refused(action,oldBody,'closed');
+      for(const value of [false,1,'true',null])await refused(action,{...body,active:value},'invalid',400);
+      for(const plan of ['P-done','P-cancelled','P-failed'])await refused(action,{...body,plan,rev:2},'closed');
+      for(const patch of [{rev:2},{cleanupRev:1}])await refused(action,{...body,...patch},'conflict');
+    }
+    await refused('delete',active,'invalid',400);
+    await refused('restore',active,'invalid',400);
+    const before=f.store.get(f.source.id,'P-active'),history=f.store.history(f.source.id,'P-active');
+    const response=await f.request('/v1/plan/archive',active);assert.equal(response.status,200);
+    const receipt=await response.json();
+    assert.deepEqual(await(await f.request('/v1/plan/archive',active)).json(),receipt);
+    const {active:_ack,...without}=active;await refused('archive',without,'operation-reused');
+    assert.deepEqual(f.store.get(f.source.id,'P-active'),before);assert.deepEqual(f.store.history(f.source.id,'P-active'),history);
+    await refused('restore',{...f.body('P-active',1,'restore-active',1),active:true},'invalid',400);
+    assert.equal((await f.request('/v1/plan/restore',f.body('P-active',1,'restore-active',1))).status,200);
+    assert.deepEqual(f.store.get(f.source.id,'P-active'),before);
+    f.store.apply({op:'finish',plan:'P-active',rev:1,oid:'finish-active',outcome:'cancelled'},f.actor,f.capture());
+    await refused('archive',{...active,oid:'stale-after-finish',cleanupRev:2},'conflict');
+    await refused('delete',{...active,oid:'stale-delete',cleanupRev:2,confirmed:true},'conflict');
+    assert.equal((await f.request('/v1/plan/archive',f.body('P-active',2,'closed-archive',2))).status,200);
+    await refused('archive',{...f.body('P-active',2,'closed-archive',2),active:true},'operation-reused');
+  }finally{await f.stop();}
+});
+
+test('archived active work fences every production report before replay; restore resumes it and delete removes staged work permanently',async()=>{
+  const f=await launchCleanupService(false,false);
+  const plan='P-active';
+  try{
+    f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.store.apply({op:'link',plan,rev:1,oid:'link-child',child:f.child.sessionId,assign:['A']},f.actor,f.capture(),f.child);
+    const earlier={op:'change',plan,rev:2,oid:'earlier-report',changes:[{id:'A',status:'working'}]};
+    f.store.apply(earlier,f.child,f.capture());
+    const handoff={op:'handoff',oid:'earlier-handoff',summary:'Work continues',outcome:'partial',taskUpdate:{plan,rev:3,changes:[{id:'A',status:'working'}]}};
+    f.store.handoff(handoff,f.child,Date.now(),undefined,f.capture());
+    const declaration={op:'delegate',plan,rev:4,oid:'waiting',assign:['B']};
+    f.store.declareDelegation(declaration,f.actor);
+    f.store.apply({op:'stage',plan,rev:4,oid:'inflight-stage',upload:'inflight',chunk:0,items:[{id:'A',title:'Staged work',kind:'task'}]},f.actor,f.capture());
+    const before=f.store.get(f.source.id,plan),history=f.store.history(f.source.id,plan);
+    const reportInputs=[
+      f.starts.get(`${f.source.id}/${plan}`),
+      earlier,
+      {op:'change',changes:[{id:'A',status:'done'}]},
+      {op:'revise',title:'Continue',reopen:true},
+      {op:'stage',upload:'late',chunk:0,items:[]},
+      {op:'commit',upload:'inflight',chunks:1,title:'Continue',reopen:true},
+      {op:'link',child:f.child.sessionId,assign:['B']},
+      {op:'bind',source:f.documentPath,confirm:true},
+      {op:'finish',outcome:'cancelled'},
+    ].map((r:any,i)=>({plan,rev:4,oid:`late-${i}`,...r}));
+    function payloads(){return ['plans','chunks','captures','revisions','contributions','receipts'].map(t=>f.store.db.prepare(`SELECT * FROM ${t} WHERE source=? AND ${t==='plans'?'id':'plan'}=?`).all(f.source.id,plan));}
+    function fenced(error:string){
+      const original=payloads();
+      for(const r of reportInputs){
+        assert.throws(()=>f.store.apply(r,r.oid===earlier.oid?f.child:f.actor,f.capture(),f.child),(e:any)=>e.code===error,r.op);
+        assert.deepEqual(payloads(),original,r.op);
+      }
+      for(const request of [declaration,{...declaration,oid:'late-delegate'}]){
+        assert.throws(()=>f.store.declareDelegation(request,f.actor),(e:any)=>e.code===error);
+        assert.deepEqual(payloads(),original);
+      }
+      for(const request of [handoff,{...handoff,oid:'late-handoff',taskUpdate:{...handoff.taskUpdate,rev:4}}]){
+        assert.throws(()=>f.store.handoff(request,f.child),(e:any)=>e.code===error);
+        assert.deepEqual(payloads(),original);
+      }
+    }
+    assert.equal((await f.request('/v1/plan/archive',{...f.body(plan,0,'archive-active',4),active:true})).status,200);
+    fenced('closed');
+    assert.deepEqual(f.store.get(f.source.id,plan),before);assert.deepEqual(f.store.history(f.source.id,plan),history);
+    assert.equal((await f.request('/v1/plan/restore',f.body(plan,1,'restore-active',4))).status,200);
+    const resumed=f.store.apply({op:'change',plan,rev:4,oid:'resumed',changes:[{id:'A',status:'working'}]},f.child,f.capture());
+    assert.equal(resumed.rev,5);
+    const deletion={...f.body(plan,2,'delete-active',5),active:true,confirmed:true};
+    const response=await f.request('/v1/plan/delete',deletion);assert.equal(response.status,200);
+    assert.deepEqual(await(await f.request('/v1/plan/delete',deletion)).json(),await response.json());
+    fenced('not-found');
+    for(const rows of payloads())assert.equal(rows.length,0);
+    const newStart={...(f.starts.get(`${f.source.id}/${plan}`) as any),plan:'P-independent',oid:'independent'};
+    assert.equal(f.store.apply(newStart,f.actor,f.capture()).rev,1);
+  }finally{await f.stop();}
+});
+
 test('authenticated real HTTP cleanup validates intent and identity without side effects; archive/restore/delete API and SQL agree',async()=>{
   const f=await launchCleanupService();
   const second=cleanupFixture();
