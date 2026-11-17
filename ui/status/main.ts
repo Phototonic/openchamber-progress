@@ -23,6 +23,11 @@ const messages = {
   'zh-CN': { openFailed: '无法在此处打开进度详情。', noSession: '未选择会话', openSession: '打开一个会话，查看其已报告的进度。', setup: '尚未设置智能体进度', setupHelp: '完成设置后即可在此查看计划。', setUp: '开始设置', noPlan: '此会话尚未报告计划', appears: '智能体报告计划后，进度将显示在这里。', featured: '重点计划', automatic: '自动选择', prefer: '优先显示已报告进行中的任务', chosen: '已选择', chosenLabel: '已选择', automaticLabel: '自动选择', working: (n: number) => `${n} 个进行中`, picker: (title: string, chosen: boolean, n: number) => `重点计划：${title}，${chosen ? '手动选择' : '自动选择'}。共 ${n} 个计划；选择其他计划`, updated: '更新于 ', more: (n: number) => `${n} 个其他计划`, moreAria: (n: number) => `此会话另有 ${n} 个计划：选择重点计划`, open: '打开进度', progress: '进行中', needs: '需要你处理', ready: '已就绪', waiting: '等待中', blocked: '受阻', pending: '未开始', skipped: '已跳过', counts: (n: number, skipped: number) => ` 已完成，剩余 ${n}${skipped ? `，已跳过 ${skipped}` : ''}`, stale: (time: string) => `自 ${time} 起尚未刷新，计数可能已过期。`, capture: '采集已关闭：这些是上次报告的计数。', unavailable: '无法加载任务详情。', invalid: '此报告的就绪和等待状态不可用。', incomplete: '部分已记录的前置任务不在此计划中。', focus: '受阻和进行中的任务' },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 let heights: HeightSync | null = null;
+let reportAgeShown = false;
+
+const wantsReportAge = (vc: ViewContext<Ui>, plan: PlanView | null) => !!plan
+  && plan.lifecycle === 'active' && !!vc.read?.captureEnabled && !vc.failure
+  && vc.env.now - Date.parse(plan.reportedAt) > 3_600_000;
 
 const enter = (vc: ViewContext<Ui>) => vc.ui.selection.enter(
   JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]), vc.session?.id ?? null, vc.directory,
@@ -50,6 +55,11 @@ startView<Ui>({
   // The source-wide Needs you count only (no waiting times): its line opens the rail's inbox.
   needsYou: 'count',
   onContext: (vc) => { enter(vc); },
+  refreshed: (vc) => {
+    // Successful unchanged polls still cross wall-clock boundaries. Invalidate
+    // only when visibility differs from the last paint, through the data guard.
+    if (wantsReportAge(vc, primary(vc)) !== reportAgeShown) vc.invalidate();
+  },
   wantProjects: (vc) => {
     const p = primary(vc);
     // The selected session's own project (its sub-agents), then the featured plan first, even if it
@@ -63,6 +73,7 @@ startView<Ui>({
   },
   wantDetails: (vc) => { const p = primary(vc); return p ? [p] : []; },
   paint(root, vc) {
+    reportAgeShown = false;
     const { read, failure, env } = vc;
     const t = messages[resolveLanguage('auto', env.locale)];
     if (!read) {
@@ -160,9 +171,11 @@ startView<Ui>({
     }
     if (activity.childNodes.length) box.append(activity);
     // Report age is not host activity. Only old active reports need an age line.
-    const old = plan.lifecycle === 'active' && env.now - Date.parse(plan.reportedAt) > 3_600_000;
     if (!read.captureEnabled) box.append(testid(el('div', 'ap-note', compact.off), 'capture-off'));
-    else if (old && !failure) box.append(testid(age(plan.reportedAt, env, t.updated), 'status-stale-time'));
+    else if (wantsReportAge(vc, plan)) {
+      reportAgeShown = true;
+      box.append(testid(age(plan.reportedAt, env, t.updated), 'status-stale-time'));
+    }
     if (failure) {
       const failed = testid(el('div', 'ap-note', t.stale(clockTime(vc.lastGoodAt ?? env.now, env.locale))), 'stale-banner');
       failed.setAttribute('role', 'status');

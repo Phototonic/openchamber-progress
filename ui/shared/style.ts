@@ -621,7 +621,8 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"] .ap-status-progress>.ap-seg{flex:1;min-width:0}
 /* Text ink can overhang its advance box: reserve an end inset inside the
    iframe rather than clipping the last digit against its viewport edge. */
-.ap[data-surface="status"] .ap-status-counts{flex:none;padding-inline-end:4px;white-space:nowrap}
+.ap[data-surface="status"] .ap-status-counts{flex:0 1 auto;padding-inline-end:4px}
+.ap[data-surface="status"] .ap-status-fraction:not([data-total="0"]){white-space:nowrap}
 .ap[data-surface="status"] .ap-status-activity{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
 .ap[data-surface="status"] .ap-status-activity button{font:inherit;min-height:24px}
 .ap[data-surface="status"] .ap-note{margin:0}

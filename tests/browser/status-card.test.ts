@@ -70,16 +70,37 @@ function harness() {
     return {};
   } });
   const opens: string[] = [];
+  let invalidations = 0;
   const vc: any = {
     ui: spec.initialUi(), ctx: {}, identity: 'test', session: { id: S.M }, directory: '/fixture/Alpha',
     read: { plans: [plan], binding: { verified: true }, captureEnabled: true, truncated: false },
     detail: () => null, runs: () => null, live: EMPTY_LIVE,
     env: { locale: 'en', now: Date.parse(at(0)), live: EMPTY_LIVE, boundSource: plan.sourceId, view: { fresh: true, captureEnabled: true } },
     host: { openSurface: async (surface: string) => { opens.push(surface); } },
+    invalidate: () => { invalidations++; },
   };
   const paint = () => { const root = el('main'); spec.paint(root, vc); return root; };
-  return { vc, paint, opens, options: () => options };
+  return { vc, paint, opens, options: () => options, refresh: () => spec.refreshed?.(vc), invalidations: () => invalidations };
 }
+
+test('unchanged successful refresh reevaluates the one-hour age boundary once', () => {
+  const h = harness(), unchanged = h.vc.read;
+  h.vc.env.now = Date.parse(plan.reportedAt) + 3_600_000;
+  assert.equal(hook(h.paint(), 'status-stale-time'), undefined);
+  h.refresh();
+  assert.equal(h.invalidations(), 0, 'the exact one-hour boundary is not old');
+  h.vc.env.now++;
+  h.refresh();
+  assert.equal(h.invalidations(), 1, 'unchanged progress must invalidate when age visibility changes');
+  assert.ok(hook(h.paint(), 'status-stale-time'));
+  h.refresh();
+  assert.equal(h.invalidations(), 1, 'later unchanged polls do not keep repainting');
+  assert.equal(h.vc.read, unchanged, 'the transition requires no changed progress data');
+  h.vc.env.now--;
+  h.refresh();
+  assert.equal(h.invalidations(), 2, 'a clock correction also removes obsolete age visibility');
+  assert.equal(hook(h.paint(), 'status-stale-time'), undefined);
+});
 
 test('five compact rows retain whole-plan summary without old rows or fresh timestamps', () => {
   const h = harness(), root = h.paint();
