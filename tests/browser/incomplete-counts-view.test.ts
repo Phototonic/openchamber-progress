@@ -5,8 +5,10 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import * as counts from '../../ui/shared/incomplete-counts.ts';
 import * as i18n from '../../ui/shared/i18n.ts';
+import * as format from '../../ui/shared/format.ts';
 import { EARLIER_STEP } from '../../ui/shared/subagents.ts';
 import { DeviceViewState } from '../../ui/shared/device-view-state.ts';
+import { scopeInbox } from '../../ui/shared/inbox.ts';
 import type { LanguageStorageValue } from '../../ui/shared/language.ts';
 
 class Node {
@@ -25,7 +27,7 @@ class Node {
   set textContent(text: string) { this.children = [text]; }
   get childElementCount() { return this.children.filter(n => n instanceof Node).length; }
   contains(n: Node): boolean { return this === n || this.children.some(c => c instanceof Node && c.contains(n)); }
-  matches(selector: string): boolean { return selector.split(',').some(s => s === 'main' ? this.tag === 'main' : s === '[data-count-scope]' ? this.dataset.countScope !== undefined : s === `[data-testid="${this.dataset.testid}"]`); }
+  matches(selector: string): boolean { return selector.split(',').some(s => s === this.tag || (s === '[data-count-scope]' ? this.dataset.countScope !== undefined : s === `[data-testid="${this.dataset.testid}"]`)); }
   closest(selector: string): Node | null { return this.matches(selector) ? this : this.parent?.closest(selector) ?? null; }
   querySelector(selector: string): Node | null {
     for (const child of this.children) if (child instanceof Node) {
@@ -37,14 +39,20 @@ class Node {
   hook(id: string) { return this.querySelector(`[data-testid="${id}"]`); }
 }
 const components = {
+  ATTENTION_HOOKS: { inbox: 'needs-you-inbox', count: 'needs-you-count', alsoBlocked: 'also-blocked' },
   el: (tag: string, cls = '', text = '') => new Node(tag, cls, text),
   testid: (node: Node, id: string) => { node.dataset.testid = id; return node; },
+  button: (parent: Node, id: string, text: string) => {
+    const wrapper = new Node(), button = new Node('button', '', text);
+    wrapper.dataset.testid = id; wrapper.append(button); parent.append(wrapper); return wrapper;
+  },
 };
 function load(file: string, extra = '') {
   const exports: any = {};
   const imports: Record<string, unknown> = {
     './components.ts': components, './i18n.ts': i18n, './incomplete-counts.ts': counts,
-    './subagents.ts': { EARLIER_STEP }, './format.ts': { absoluteTime: () => 'a known time' },
+    './subagents.ts': { EARLIER_STEP }, './format.ts': { ...format, absoluteTime: () => 'a known time' },
+    './inbox.ts': { scopeInbox },
   };
   const code = ts.transpileModule(readFileSync(new URL(`../../ui/shared/${file}.ts`, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -86,6 +94,31 @@ test('Work Status keeps a failed-page explanation beside its working pagination 
   assert.equal(retries, 1);
   const panel = recordsNode(roster, { surface: 'panel', env: { locale: 'en' }, runs }, []);
   assert.doesNotMatch(panel.textContent, /Couldn’t load more sub-agents; try again/, 'rail uses its separate indicator retry line');
+});
+
+test('an empty records disclosure with a continuation never labels zero with a plus', () => {
+  const { recordsNode } = load('census-view', '\nexports.recordsNode = recordsNode;');
+  for (const locale of ['en', 'ru', 'zh-CN']) {
+    const roster = { earlier: [], earlierTotal: 0, canPage: true, recorded: true, notes: [{ kind: 'history-partial' }], featured: [] };
+    const runs = { continuation: true, showMore() {} };
+    const node = recordsNode(roster, { surface: 'panel', env: { locale }, runs }, []);
+    assert.ok(node);
+    assert.doesNotMatch(node.textContent, /\b0\+/);
+  }
+});
+
+test('retained other-blocked rows with no count-authoritative rows keep access, not a zero count', () => {
+  const { inboxSection, CompactInbox } = load('inbox-view');
+  for (const locale of ['en', 'ru', 'zh-CN']) {
+    const state = new CompactInbox(); state.expanded = true;
+    const panel = { model: { availability: 'ready', needsYou: [], alsoBlocked: [{ planKey: 'other' }],
+      counts: { needsYou: 0, alsoBlocked: 0 }, complete: false }, storeId: 'example' };
+    const node = inboxSection(panel, { locale }, { state, surface: 'panel', keys: new Set(['other']), scopeComplete: true,
+      identity: 'example', stale: null, changed() {}, plans: [] });
+    assert.equal(node.hook('needs-you-count'), null);
+    assert.ok(node.hook('also-blocked'), 'retained blocked work stays reachable');
+    assert.doesNotMatch(node.textContent, /\b0\+/);
+  }
 });
 
 test('removed count controls capture scope from the painted main, not its mount', () => {

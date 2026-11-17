@@ -137,7 +137,7 @@ test('running/waiting are roster facts, not task-working counts; partial wording
   assert.equal(hook(h.paint(), 'status-activity')!.textContent, '2+ running · 1 waiting on you');
 });
 
-test('Needs you is scoped across session plans and hidden before counting; partial zero has plus', () => {
+test('Needs you is scoped across session plans and hidden before counting; zero has no badge', () => {
   const h = harness();
   const row = (id: string, planKey = plan.key) => ({
     planKey, source: plan.sourceId, plan: plan.id, task: { id }, blocker: { state: 'reported', reportedRevision: 1 },
@@ -153,7 +153,15 @@ test('Needs you is scoped across session plans and hidden before counting; parti
   h.vc.inbox.model.needsYou = [];
   h.vc.inbox.model.counts.needsYou = 0; h.vc.inbox.model.complete = false;
   root = h.paint();
-  assert.equal(hook(root, 'needs-you-count')!.textContent, '0+ needs you');
+  for (const locale of ['en', 'ru', 'zh-CN']) {
+    h.vc.env.locale = locale;
+    for (const complete of [false, true]) {
+      h.vc.inbox.model.complete = complete;
+      root = h.paint();
+      assert.equal(hook(root, 'needs-you-count'), undefined);
+      assert.doesNotMatch(root.textContent, /\b0\+/);
+    }
+  }
 });
 
 test('every removed-pager error has a visible non-dismissible home, including closed plans', () => {
