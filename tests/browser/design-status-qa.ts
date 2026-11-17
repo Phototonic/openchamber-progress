@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { GUEST_STATUS_SECTION_HEIGHT_MAX } from '@openchamber/sdk';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import type { designRefactorQa } from './design-refactor-qa.ts';
 
 /** Retains the established design-refactor driver's Status entry. */
@@ -123,7 +124,7 @@ async function main() {
     for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: code, ...(type === 'keyDown' && key === 'Enter' ? { text: '\r' } : {}) });
   };
   const click = async (selector: string, touch = false) => {
-    const point = await evaluate(`(()=>{const f=frame('status'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});n.scrollIntoView({block:'nearest'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return {x:b.x+a.x+a.width/2,y:b.y+a.y+a.height/2}})()`);
+    const point = await evaluate(`(()=>{const f=frame('status'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});n.scrollIntoView({block:'nearest'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return {x:b.x+a.x+a.width/2,y:b.y+a.y+a.height/2}})()`);
     if (touch) {
       await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
       await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
@@ -136,8 +137,8 @@ async function main() {
   };
   const narrowStates = async (name: string) => {
     for (const locale of ['en', 'ru', 'zh-CN']) {
-      await evaluate(`qa.show('status',190);qa.ready('status',{locale:${JSON.stringify(locale)}})`);
-      await wait(`d.documentElement.lang===${JSON.stringify(locale)}`);
+      await evaluate(`qa.show('status',190);qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
       const m = await guest(`const r=d.querySelector('[data-testid="progress-root"]');return {height:r.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1}`);
       check(`${name}:${locale}:host-height-and-wrap`, !m.overflow && m.height <= GUEST_STATUS_SECTION_HEIGHT_MAX, m);
       await shot(`${name}-${locale}-190`);
@@ -157,12 +158,13 @@ async function main() {
     // The same device record used by the rail: hide exactly one main-session wait.
     // Reopen with the persisted device record. This shell freezes ordinary refresh timers;
     // a ready delivered while the initial storage read is busy is not a completed refresh.
-    await evaluate(`qa.maps.get('primary').set('progress-view.v1',{v:1,hidden:[${JSON.stringify(JSON.stringify([storeId, f.source.id, 'main', 'decision', 1]))}],expanded:{},dismissed:{}})`);
+    // The hidden-item key is JSON data; encode that complete string as a JS literal.
+    await evaluate(`qa.maps.get('primary').set('progress-view.v1',${javascriptLiteral({ v: 1, hidden: [JSON.stringify([storeId, f.source.id, 'main', 'decision', 1])], expanded: {}, dismissed: {} })})`);
     await reload();
     await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.count==='1'`);
     for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [190, 280, 390]) for (const mode of ['light', 'dark']) {
-      await evaluate(`${mode === 'light' ? 'delete qa.ctx.theme;' : ''}qa.show('status',${width});qa.ready('status',{locale:${JSON.stringify(locale)},${mode === 'dark' ? `theme:{mode:'dark',tokens:${JSON.stringify(dark)}}` : ''}})`);
-      await wait(`d.documentElement.lang===${JSON.stringify(locale)}&&d.documentElement.dataset.ocTheme===${JSON.stringify(mode)}`);
+      await evaluate(`${mode === 'light' ? 'delete qa.ctx.theme;' : ''}qa.show('status',${javascriptLiteral(width)});qa.ready('status',${javascriptLiteral({ locale, ...(mode === 'dark' ? { theme: { mode: 'dark', tokens: dark } } : {}) })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}&&d.documentElement.dataset.ocTheme===${javascriptLiteral(mode)}`);
       const m = await guest(`const r=d.querySelector('[data-testid="progress-root"]');return {height:r.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1,text:r.innerText,bar:d.querySelector('[data-testid="progress-bar"]')?.getAttribute('aria-label')}`);
       measurements.push({ locale, width, mode, ...m });
       await fractionFits(`${locale}:${width}:${mode}`);
@@ -172,7 +174,7 @@ async function main() {
       check(`${locale}:${width}:${mode}:summary`, !!m.bar && await guest(`return d.querySelector('[data-testid="counts"]').dataset.total==='3'`), m.bar);
       await shot(`status-${locale}-${width}-${mode}`);
     }
-    await evaluate(`qa.show('status',390);qa.ready('status',{locale:'en',theme:{mode:'dark',tokens:${JSON.stringify(dark)}}})`);
+    await evaluate(`qa.show('status',390);qa.ready('status',${javascriptLiteral({ locale: 'en', theme: { mode: 'dark', tokens: dark } })})`);
     await wait(`d.documentElement.lang==='en'`);
     await evaluate(`qa.show('status',322)`); await shot('status-readme-dark');
     await evaluate(`qa.show('status',390)`);
@@ -181,8 +183,8 @@ async function main() {
     await click('[role="option"][id$="/multi"]');
     await wait(`d.querySelector('[data-testid="counts"]')?.dataset.done==='12'&&d.querySelector('[data-testid="counts"]')?.dataset.total==='148'`);
     for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [190, 280, 390]) {
-      await evaluate(`qa.show('status',${width});qa.ready('status',{locale:${JSON.stringify(locale)}})`);
-      await wait(`d.documentElement.lang===${JSON.stringify(locale)}`);
+      await evaluate(`qa.show('status',${javascriptLiteral(width)});qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
       await fractionFits(`multi:${locale}:${width}`);
       await shot(`status-multi-${locale}-${width}`);
     }
@@ -231,15 +233,15 @@ async function main() {
     for (const lifecycle of ['finished', 'cancelled', 'failed', 'group', 'long']) {
       await click('[data-testid="status-plan-selector"] button'); await wait(`d.querySelector('[role="listbox"]')`);
       await click(`[role="option"][id$="/${lifecycle}"]`);
-      await wait(`d.querySelector('[data-testid="plan-${lifecycle}"]')`);
-      check(`lifecycle:${lifecycle}`, await guest(`return d.querySelector('[data-testid="status-activity"]').textContent.includes(${JSON.stringify(lifecycle === 'finished' ? 'Finished' : lifecycle === 'group' || lifecycle === 'long' ? 'running' : lifecycle === 'cancelled' ? 'Cancelled' : 'Failed')})`));
+      await wait(`d.querySelector(${javascriptLiteral(`[data-testid="plan-${lifecycle}"]`)})`);
+      check(`lifecycle:${lifecycle}`, await guest(`return d.querySelector('[data-testid="status-activity"]').textContent.includes(${javascriptLiteral(lifecycle === 'finished' ? 'Finished' : lifecycle === 'group' || lifecycle === 'long' ? 'running' : lifecycle === 'cancelled' ? 'Cancelled' : 'Failed')})`));
       await shot(`status-${lifecycle}`);
       await narrowStates(`status-${lifecycle}`);
     }
     for (const path of ['/v1/plan', '/v1/subagent-runs']) {
-      await evaluate(`qa.faults=[{kind:'service',surface:'status',path:${JSON.stringify(path)}}]`);
+      await evaluate(`qa.faults=${javascriptLiteral([{ kind: 'service', surface: 'status', path }])}`);
       await reload();
-      await wait(`d.querySelector('[data-testid="${path === '/v1/plan' ? 'status-detail-unavailable' : 'status-runs-error'}"]')`);
+      await wait(`d.querySelector(${javascriptLiteral(path === '/v1/plan' ? '[data-testid="status-detail-unavailable"]' : '[data-testid="status-runs-error"]')})`);
       await shot(path === '/v1/plan' ? 'status-detail-error' : 'status-runs-error');
       await narrowStates(path === '/v1/plan' ? 'status-detail-error' : 'status-runs-error');
     }
