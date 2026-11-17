@@ -174,8 +174,8 @@ test('schema diagnostics and 503 replies render incompatible copy; host failure 
     assert.equal(block.dataset.testid,`state-${kind}`);
     assert.equal(banner!.title,components.FAILURE_COPY[kind].title);
     assert.equal(banner!.body,components.FAILURE_COPY[kind].body);
-    assert.equal(banner!.title,kind==='incompatible'?'Progress data needs an update':'Progress service is not responding');
-    assert.equal(banner!.body,kind==='incompatible'?'The progress store uses a format this view does not support. Update the extension and its companion.':'It may still be starting. Try again in a moment.');
+    assert.equal(banner!.title,kind==='incompatible'?'Progress data needs an update':'Progress is not responding');
+    assert.equal(banner!.body,kind==='incompatible'?'Update Agent Progress in OpenChamber.':'Try again in a moment.');
   }
 });
 

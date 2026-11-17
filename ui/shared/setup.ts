@@ -946,7 +946,10 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     card.addEventListener('keydown',event=>{if(event.key==='Escape'&&!s.busy){event.preventDefault();cancel();}});
     wrap.append(card);return wrap;
   }
-  const setupFacts = family === 'fresh' ? wrap.querySelector('[data-testid="setup-changes"]') ?? wrap : wrap;
+  const initialFresh = d.configuration === 'unconfigured' && freshSteps && !unfinished && !freshShown && d.migration === 'none';
+  const initialFacts = initialFresh ? testid(el('details', 'ap-setup-changes'), 'setup-changes') : null;
+  if (initialFacts) initialFacts.append(el('summary', '', freshText.disclosure));
+  const setupFacts = initialFacts ?? (family === 'fresh' ? wrap.querySelector('[data-testid="setup-changes"]') ?? wrap : wrap);
   setupFacts.append(el('p','ap-note',d.configuration === 'invalid' ? freshShown ? freshText.invalid : text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
   if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
   if (d.migration === 'pending' && !unfinished && !freshShown) wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
@@ -962,7 +965,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   }
   // While a switch is unfinished its card carries the actual capture observation; an older stored
   // reading here could contradict it mid-run.
-  if (!unfinished) setupFacts.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
+  if (!unfinished) (initialFresh ? wrap : setupFacts).append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
   for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale,family)));
   // The store choice belongs to a fresh review that can actually run: not while one is unfinished or
   // when the service cannot negotiate fresh steps.
@@ -1012,7 +1015,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   wrap.append(row);
   const disclosure=testid(el('div','ap-setup-disclose'),'setup-disclosure');
   for (const body of [text.privilege,text.lifecycle,text.reach]) disclosure.append(el('p','ap-note',body));
-  setupFacts.append(disclosure);return wrap;
+  setupFacts.append(disclosure);
+  if (initialFacts) wrap.append(initialFacts);
+  return wrap;
 }
 
 // ---- Step-by-step switch (shared/managed-steps.ts, setup/managed-steps.md) ----

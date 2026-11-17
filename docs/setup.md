@@ -81,6 +81,19 @@ conspicuous warning and the applicable recovery action. Retained recording stays
 unchanged. This is presentation only: step requests, journal, deadlines, budgets
 and platform checks are unchanged.
 
+Fresh Setup uses **recording** and **progress folder**. Before its first review,
+installation/load facts and the account-access, delivery and lifecycle explanations
+are in one keyboard-operable **What Setup changes on this computer** disclosure;
+recording state stays visible outside it. Review still shows the same bound facts
+and visible consent line, whether or not the disclosure was opened.
+**More → Setup** opens it without leaving the current session;
+**Back** returns to the plan and the More button. Language follows **More →
+Language**, including before setup is complete; changing it never confirms a
+Setup action. Troubleshooting's Advanced details and copied support summary
+retain the diagnostic vocabulary needed for support.
+
+![Fresh Setup with the recording state, optional progress folder and collapsed technical disclosure (synthetic example)](images/setup-fresh.png)
+
 Each request has at most six security launches, a 17-second work deadline and an
 18-second response deadline below the host's 20-second limit. Health remains cheap
 while workers run. Portable counters measure six launches for prepare, folder and

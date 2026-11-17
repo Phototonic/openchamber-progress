@@ -6,6 +6,7 @@
 // Usage: node --experimental-strip-types tests/browser/plan-task-search-qa.ts --artifacts <dir> [--built-service] [--measure] [--chromium <path>]
 //   writes results.json, races.json, requests.json (hard work/request gates) and, with --measure,
 //   performance.json (three samples after a warm-up; diagnostic, no latency SLA) plus screenshots.
+// `--only search` runs search cases 1–7 and their races/budgets, without unrelated capture/retirement journeys.
 // Keyboard/focus verification (opt-in, no measurement): `--only keyboard-focus` (rail, board and Work Status
 //   paths over the search fixture plus the synthetic `KF` session) and `--only keyboard-focus-replay` (the
 //   large-plan S0–S8 replay with each surface owning focus at removal). Both add neutral shell sentinels and the
@@ -40,6 +41,7 @@ if (onlyDesign && (!['primitives', 'rail', 'board', 'status'].includes(designSli
 /** `--only j1`: just the J1 review cases (detail retirement and retention), for iteration. */
 const onlyJ1 = arg('--only') === 'j1';
 const onlyCapture = arg('--only') === 'capture';
+const onlySearch = arg('--only') === 'search';
 const onlyLarge = arg('--only') === 'large-plan';
 /** `--only keyboard-focus` / `keyboard-focus-replay`: keyboard and focus verification (no measurement). */
 const onlyKeyboard = arg('--only') === 'keyboard-focus';
@@ -53,7 +55,7 @@ const onlyRailChoice = arg('--only') === 'rail-plan-choice';
 const onlyMapAccessibility = arg('--only') === 'dependency-map-accessibility';
 const onlyMapOwner = arg('--only') === 'dependency-map-screen-reader';
 const productionMap = onlyMapFinal || onlyRailChoice || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
-if (arg('--only') && !['design-refactor', 'j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
+if (arg('--only') && !['design-refactor', 'j1', 'capture', 'search', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
 if (onlyMapOwner && !process.argv.includes('--headed')) throw Error('Screen-reader fixture requires --headed');
 if (process.argv.includes('--orca-automated')) {
   const root=process.env.ORCA_PRIVATE_ROOT, display=Number(process.env.DISPLAY?.slice(1));
@@ -2460,7 +2462,7 @@ try {
   const storageMark = await now();
 
   // Capture metadata uses the existing freshness poll, including when a preview stays open.
-  if (!onlyJ1) {
+  if (!onlyJ1 && !onlySearch) {
     await searchFor('Ship export bundle', true);
     await click('page', H('P-0005-ship'));
     await progressUi.list('page');
@@ -2505,7 +2507,7 @@ try {
   }
 
   // ======================================================= J1 review: detail reads of search-opened plans
-  {
+  if (!onlySearch) {
     const planReads = (plan: string) => reqs(`r.frame==='page'&&r.path==='/v1/plan'&&r.query?.plan==='${plan}'`);
     // B1: in one search run, a held multi-page detail read of a plan outside the loaded list, then
     // another result: the new selection must load without waiting behind the old read, and the
@@ -2552,6 +2554,17 @@ try {
   }
 
   // ======================================================= 1. Keyboard entry, mixed hits, canonical reveal
+  const searchPlanAction = async (id: string) => {
+    await click('page', '[data-testid="more-trigger"]');
+    await wait('page', `d.querySelector('[data-testid="more-${id}"]')`, `More: ${id}`);
+    await click('page', `[data-testid="more-${id}"]`);
+  };
+  const searchMode = async (mode: 'archived' | 'visible') => {
+    await boardUi.openFilters();
+    await click('page', `[data-testid="cleanup-${mode}"] button`);
+    await wait('page', `d.querySelector('[data-testid="cleanup-${mode}"] button')?.getAttribute('aria-pressed')==='true'`, `Search ${mode} mode`);
+    await boardUi.closeFilters();
+  };
   // Labelled setup: a neutral entry at the top of the frame. Blurring alone keeps Chromium's sequential
   // focus starting point where focus last was (Clear all now hands focus to the list heading).
   await guest('page', `const top=d.querySelector('h1');top.tabIndex=-1;top.focus();top.blur();top.removeAttribute('tabindex');w.focus();return true`);
@@ -2587,9 +2600,9 @@ try {
   check('A1:first-action-pauses', firstStop === 'paused' && (await counts())?.final === 'false', ['A work pause is not completion'], firstStop);
   const coverageText = () => guest<string>('page', `return d.querySelector('[data-testid="search-coverage"]').textContent`);
   const partial = await coverageText();
-  check('A7:partial-narrowed-not-searched-all', !/Searched all/.test(partial) && /membership is limited to locations this window knows/.test(partial), ['A paused narrowed search never says it searched all recorded plans'], partial);
+  check('A7:partial-narrowed-not-searched-all', partial === 'Some search results may be missing.', ['A paused search keeps a short incomplete-results qualification'], partial);
   await exhaust();
-  check('A7:exhausted-narrowed-searched-all', /Searched all recorded plans; project membership is limited/.test(await coverageText()));
+  check('A7:exhausted-narrowed-no-completion-notice', await coverageText() === '');
   n = await counts();
   check('A1:matches-past-500-in-project', JSON.stringify(await planHits()) === '["P-0501","P-1001"]' && n?.matchedPlans === '2' && n?.final === 'true', ['P-0051 (other project) never took a slot or a count'], { hits: await planHits(), n });
   await shot('search-progressive-dark');
@@ -2666,7 +2679,7 @@ try {
   race('F3:retry-after-partial-failure-not-double-counted', JSON.stringify(await counts()) === JSON.stringify({ ...clean, }), ['Only accepted windows count; the failed window is re-read once'], { clean, after: await counts() });
 
   // ======================================================= 4. Archived mode; freshness beyond the list
-  await click('page', '[data-testid="cleanup-archived"] button');
+  await searchMode('archived');
   await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'`, 'archived mode');
   await boardUi.openFilters();
   await wait('page', `d.querySelector('[data-testid="search-scope"]')`, 'archived scope reachable in Filters');
@@ -2677,17 +2690,17 @@ try {
   await click('page', T('P-archive', 'A1'));
   await wait('page', `d.activeElement?.dataset.testid==='item-A1'`, 'archived task revealed');
   await shot('search-archived');
-  await progressUi.action('page','cleanup-restore');
+  await searchPlanAction('cleanup-restore');
   await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'restore retires the search');
   check('A8:local-cleanup-retires-search', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-refresh"]')`) && !fx.archived('P-archive'));
   await click('page', '[data-testid="search-refresh"] button'); await idle(); await exhaust();
   check('A8:restored-plan-leaves-archived-results', !(await guest<boolean>('page', `return !!d.querySelector('${H('P-archive')}')`)));
-  await click('page', '[data-testid="cleanup-visible"] button');
+  await searchMode('visible');
   await wait('page', `d.querySelector('[data-testid="plan-list"]')`, 'current mode');
   await searchFor('Needle-at-1001', true);
   check('A1:found-past-1000', await guest<boolean>('page', `return !!d.querySelector('${H('P-1001')}')`));
   await fx.deleteElsewhere('P-1001');
-  await wait('page', `!d.querySelector('${H('P-1001')}')&&/removed/.test(d.querySelector('[data-testid="search-coverage"]').textContent)`, 'freshness removes the deleted hit', 20_000);
+  await wait('page', `!d.querySelector('${H('P-1001')}')&&/Some results changed/.test(d.querySelector('[data-testid="search-coverage"]').textContent)`, 'freshness removes the deleted hit', 20_000);
   race('F3:delete-beyond-500-removed-by-freshness', !fx.exists('P-1001'), ['Removed after an authoritative search-state read, not list absence']);
 
   // ======================================================= F3 held-reply races (labelled seams)
@@ -2713,12 +2726,12 @@ try {
     // R3: held window, then the Archived mode switch.
     await evaluate(`qa.holds.push({tag:'r3',path:'/v1/search'});true`);
     await clearField(); await type('Dense match'); await key('Enter'); await sleep(150);
-    await click('page', '[data-testid="cleanup-archived"] button');
+    await searchMode('archived');
     await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'&&!d.querySelector('[data-testid="search-results"]')`, 'archived browse');
     mark = await count('/v1/search');
     await evaluate(`qa.release('r3')`); await sleep(600);
     race('F3:held-reply-after-mode-switch', !(await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-results"]')`)) && await count('/v1/search') === mark);
-    await click('page', '[data-testid="cleanup-visible"] button');
+    await searchMode('visible');
     await wait('page', `d.querySelector('[data-testid="plan-list"]')`, 'current');
     // R4: held window, then hidden: no paint, no continuation, no freshness while hidden.
     await evaluate(`qa.holds.push({tag:'r4',path:'/v1/search'});true`);
@@ -2735,11 +2748,12 @@ try {
     // R5: held window during a local Archive: the pre-action reply cannot restore the plan.
     await searchFor('ship export');
     await click('page', H('P-0005-ship'));
-    await progressUi.list('page');
+    await wait('page', `d.querySelector('[data-testid="plan-view-list"] button')`, 'List entry');
+    await click('page', '[data-testid="plan-view-list"] button');
     await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
     await evaluate(`qa.holds.push({tag:'r5',path:'/v1/search'});true`);
     await click('page', '[data-testid="search-more"] button'); await sleep(150);
-    await progressUi.action('page','cleanup-archive');
+    await searchPlanAction('cleanup-archive');
     await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'archive retires search');
     mark = await count('/v1/search');
     await evaluate(`qa.release('r5')`); await sleep(600);
@@ -2761,11 +2775,11 @@ try {
     await fx.cleanupElsewhere('archive', 'P-0051'); await fx.cleanupElsewhere('restore', 'P-0051');
     await wait('page', `d.querySelector('[data-testid="search-group-source-alpha/P-0051"]')?.dataset.changed==='true'`, 'cleanup generation marks changed', 20_000);
     race('F3:cleanup-generation-invalidates-same-revision', await stop() === 'changed' && (await counts())?.current === 'false');
-    // R8: insert behind the cursor: honest as-searched qualification, no frozen census claim.
+    // R8: inserting behind the cursor does not alter this explicit search's found results.
     await searchFor('Dense match');
     fx.insert('P-0000-late', 'Dense match late insert');
     await exhaust();
-    race('F3:insert-behind-cursor-honest', /as searched; reports may change/.test(await guest<string>('page', `return d.querySelector('[data-testid="search-coverage"]').textContent`)) && !(await guest<boolean>('page', `return !!d.querySelector('${H('P-0000-late')}')`)), ['A plan inserted behind the cursor is not claimed; copy says as searched'], undefined);
+    race('F3:insert-behind-cursor-honest', await coverageText() === '' && !(await guest<boolean>('page', `return !!d.querySelector('${H('P-0000-late')}')`)), ['A plan inserted behind the cursor is not included in the found results'], undefined);
     // R9: host session A/B/null keeps the board search; zero new windows.
     await searchFor('export csv');
     const keep = await run(); mark = await count('/v1/search');
@@ -2803,10 +2817,19 @@ try {
   const shortcuts = await guest<boolean[]>('page', `return ['f','k'].flatMap(k=>[true,false].map(ctrl=>{const e=new KeyboardEvent('keydown',{key:k,ctrlKey:ctrl,metaKey:!ctrl,bubbles:true,cancelable:true});d.getElementById('ap-search-q').dispatchEvent(e);return e.defaultPrevented}))`);
   check('A11:host-shortcuts-not-intercepted', shortcuts.every((x) => !x), ['Ctrl/Cmd+F and Ctrl/Cmd+K are not prevented by the guest (synthetic events, labelled)'], shortcuts);
   await searchFor('café export', true);
-  // Shift+Tab from the field reaches the mode buttons; Tab reaches results in order.
+  // Modes now live inside Filters, after the field, rather than before it.
+  // Reach them with native keys and verify reverse traversal within the pair.
   await guest('page', `d.getElementById('ap-search-q').focus();return true`);
+  await key('Tab');
+  check('A11:field-tabs-to-filters', await guest<boolean>('page', `return d.activeElement?.dataset.testid==='board-filters-trigger'`));
+  await key('Enter');
+  await wait('page', `d.querySelector('[data-testid="board-filters-trigger"]')?.getAttribute('aria-expanded')==='true'`, 'Filters opened with keyboard');
+  let modeTabs = 0;
+  for (; modeTabs < 16 && !await guest<boolean>('page', `return !!d.activeElement?.closest('[data-testid="cleanup-archived"]')`); modeTabs++) await key('Tab');
+  check('A11:keyboard-reaches-archived-mode', modeTabs < 16);
   await key('Tab', 1, 8);
-  check('A11:shift-tab-reverse-order', await guest<boolean>('page', `return !!d.activeElement?.closest('[data-testid="cleanup-modes"]')`));
+  check('A11:shift-tab-reverse-order', await guest<boolean>('page', `return !!d.activeElement?.closest('[data-testid="cleanup-visible"]')`));
+  await key('Escape');
   await shot('search-narrow-keyboard', '[data-testid="progress-root"]', 12, 2200);
   await c.send('Emulation.setDeviceMetricsOverride', { width: 640, height: 1100, deviceScaleFactor: 2, mobile: false });
   await show(['page'], 320);
@@ -2864,17 +2887,21 @@ try {
     const oldest = await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-prev"]')`);
     gates.push({ id: 'page-retention', pass: dom.hits <= 50 && !oldest, observed: { ...dom, previousOfPreviousAvailable: oldest }, limit: 'one shown page of ≤50 hits; at most two pages retained' });
     if (measure) perf.dom = { ...dom, heap: await c.send('Runtime.getHeapUsage') };
-    // Unchanged polls: only bounded freshness reads, no repaint.
+    // Unchanged Search polls: bounded freshness reads, stable results and no repeat announcement.
+    // The source-wide inbox separately rechecks loaded continuation pages (inbox.ts adopt/readPage);
+    // those authority transitions can repaint the shell without changing Search.
     await click('page', '[data-testid="search-next"] button'); await idle();
     // A reused page repaints once when its freshness check lands; the idle window starts after it.
-    await wait('page', `!/Checking that these earlier results/.test(d.querySelector('[data-testid="search-coverage"]').textContent)`, 'reused page checked');
+    await wait('page', `!/Checking whether these results/.test(d.querySelector('[data-testid="search-coverage"]').textContent)`, 'reused page checked');
     await sleep(300); await paints();
+    const searchBeforeIdle = await guest<string>('page', `w.__idleSearchAnnouncements=[];new w.MutationObserver(records=>{const n=d.querySelector('[data-testid="search-announcer"]');if(n?.textContent&&records.some(r=>r.target===n||n.contains(r.target)))w.__idleSearchAnnouncements.push(n.textContent)}).observe(d.body,{subtree:true,childList:true,characterData:true});return d.querySelector('[data-testid="search-results"]').innerText`);
     let mark = (await reqs(`r.frame==='page'`)).length;
     await sleep(6500);
     const idleReqs = (await reqs(`r.frame==='page'`)).slice(mark);
     const idlePaints = await paints();
+    const stableSearch = await guest<boolean>('page', `return d.querySelector('[data-testid="search-results"]').innerText===${javascriptLiteral(searchBeforeIdle)}&&w.__idleSearchAnnouncements.length===0`);
     const byPath = idleReqs.reduce((o: Record<string, number>, r: any) => { o[r.path] = (o[r.path] ?? 0) + 1; return o; }, {});
-    gates.push({ id: 'unchanged-polls', pass: Object.keys(byPath).every((p) => p === '/v1/search-state') && (byPath['/v1/search-state'] ?? 0) <= 6 && idlePaints.length === 0, observed: { requests: byPath, paints: idlePaints.length }, limit: 'only /v1/search-state (≤2 per 3 s poll), zero repaints' });
+    gates.push({ id: 'unchanged-polls', pass: Object.keys(byPath).every((p) => p === '/v1/search-state' || p === '/v1/needs-you') && (byPath['/v1/search-state'] ?? 0) <= 6 && stableSearch, observed: { requests: byPath, shellPaints: idlePaints.length, stableSearch }, limit: 'only bounded search freshness (≤2 per 3 s poll) and existing inbox rechecks; unchanged Search text and zero repeat announcements' });
     // Hidden frame and disposal.
     await setHidden(true); mark = (await reqs(`r.frame==='page'`)).length; await sleep(7000);
     const hidden = (await reqs(`r.frame==='page'`)).length - mark;
@@ -2894,7 +2921,7 @@ try {
 
   // ======================================================= 7. Saved views blocked: zero preference storage
   const storage = await evaluate<any[]>(`qa.storage.filter(s=>s.frame==='page'&&s.at>=${storageMark})`);
-  check('S1:blocked-zero-preference-storage', storage.every((s: any) => !/search|view/i.test(String(s.key))) && storage.filter((s: any) => s.op === 'set' || s.op === 'delete').length === 0, ['Named views are blocked (no proven host-account isolation): search reads and writes no preference storage; no saved-view controls exist'], storage);
+  check('S1:blocked-zero-preference-storage', storage.every((s: any) => s.op === 'keys' || (s.op === 'get' && ['interface-language.v1', 'progress-view.v1'].includes(s.key))), ['Only the shell’s language and Needs you device-state reads are allowed; Search reads no saved-view preference and writes no storage'], storage);
   check('S1:no-saved-view-controls', !(await guest<boolean>('page', `return !!d.querySelector('[data-testid^="view-"],[data-testid="views-status"]')`)));
   facts.pageStorageOpsDuringRun = storage.map((s: any) => `${s.op}:${s.scope}`);
 

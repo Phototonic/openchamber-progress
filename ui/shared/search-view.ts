@@ -5,7 +5,7 @@ import { mountLiveSelect } from './live-select.ts';
 import { button, el, emptyBlock, failureCopy, glyph, planLocation, testid, type Env } from './components.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { icon } from './primitives.ts';
-import { formatCount, plural } from './format.ts';
+import { formatCount } from './format.ts';
 import { lifecycleLabel, statusLabel, type ItemStatus, type Lifecycle, type SearchHitView, type SearchPlanView, type SourceView } from './model.ts';
 import { ALL } from './scope.ts';
 import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
@@ -286,40 +286,37 @@ export function announceSearch(id: number, text: string) {
   requestAnimationFrame(() => { if (announcement === version) node.textContent = announcedText; });
 }
 
-const plansText = (n: number) => plural(n, 'plan', 'plans');
-const tasksText = (n: number) => plural(n, 'matching task', 'matching tasks');
+export const resultText = (v: SearchViewState, language: InterfaceLanguage) =>
+  searchStatusText({ kind: 'outcome', ...v.counts, exhausted: true, shown: v.page.hits.length }, language);
 
 /** Matched plans / matching tasks (accumulated) apart from this page's shown results and context rows. */
 export function countsBlock(v: SearchViewState, language: InterfaceLanguage = 'en') {
   const box = testid(el('div', 'ap-search-counts'), 'search-counts');
   const final = v.exhausted && v.countsCurrent && !v.coverage.gapped && !v.stop;
   Object.assign(box.dataset, { matchedPlans: String(v.counts.matchedPlans), matchingTasks: String(v.counts.matchingTasks), shown: String(v.page.hits.length), context: String(v.page.contextRows), final: String(final), current: String(v.countsCurrent) });
-  const found = language === 'ru' ? `Планов: ${formatCount(v.counts.matchedPlans, language)} · подходящих задач: ${formatCount(v.counts.matchingTasks, language)}` : language === 'zh-CN' ? `计划：${formatCount(v.counts.matchedPlans, language)} · 匹配任务：${formatCount(v.counts.matchingTasks, language)}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
-  const lead = language === 'ru' ? `${!v.countsCurrent ? 'Подсчитано до изменения результатов' : final ? 'Найдено' : v.exhausted ? 'Найдено в проверенных планах' : 'Пока найдено'}: ${found}` : language === 'zh-CN' ? `${!v.countsCurrent ? '结果更改前统计' : final ? '已找到' : v.exhausted ? '在可检查的计划中找到' : '目前找到'}：${found}` : !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
-  box.append(el('p', 'ap-search-found', lead));
-  const shown = v.page.hits.length;
-  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${formatCount(shown, language)}, страница ${formatCount(v.page.number, language)}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${formatCount(v.page.contextRows, language)}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : language === 'zh-CN' ? `第 ${formatCount(v.page.number, language)} 页显示 ${formatCount(shown, language)} 条结果${v.page.contextRows ? ` · ${formatCount(v.page.contextRows, language)} 个分组或父级行用于提供上下文` : ''}。下方计划的完成数/总数始终涵盖整个计划。` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
+  box.append(el('p', 'ap-search-found', resultText(v, language)));
   return box;
 }
 
-/** Record-scan completeness, skipped records, location interpretation and change qualifiers, kept apart. */
+export function qualificationText(v: SearchViewState, language: InterfaceLanguage): string {
+  const text = {
+    en: { checking: 'Checking whether these results are still current…', partial: 'Some search results may be missing.', changed: 'Some results changed; refresh the search.' },
+    ru: { checking: 'Проверяем, актуальны ли результаты…', partial: 'Поиск может быть неполным.', changed: 'Некоторые результаты изменились; обновите поиск.' },
+    'zh-CN': { checking: '正在检查结果是否仍然有效…', partial: '部分搜索结果可能缺失。', changed: '部分结果已更改，请刷新搜索。' },
+  }[language];
+  return !v.page.checked ? text.checking
+    : !v.exhausted || v.coverage.gapped || (narrowed(v.criteria) && v.discoveryIncomplete) ? text.partial
+    : !v.countsCurrent || v.removed || v.changedKeys ? text.changed : '';
+}
+
+/** One qualification, without diagnostic limits or skipped-record counts. */
 export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 'en') {
-  const copy = COPY[language], ru = language === 'ru', zh = language === 'zh-CN';
   const box = testid(el('div', 'ap-note ap-search-coverage'), 'search-coverage');
   box.dataset.state = v.exhausted ? (v.coverage.gapped ? 'gapped' : 'exhausted') : 'partial';
   if (v.coverage.gapped) box.dataset.gapped = 'true';
-  const lines: string[] = [];
-  lines.push(v.exhausted ? copy.exhausted : copy.partial);
-  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${formatCount(v.coverage.skippedRecords, language)})` : ''}, поэтому поиск неполон.` : zh ? `部分记录的计划无法读取（不可读或过大）而被跳过${v.coverage.skippedRecords ? `（目前 ${formatCount(v.coverage.skippedRecords, language)} 个）` : ''}，因此搜索不完整。` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
-  if (narrowed(v.criteria)) {
-    // "Searched all" only once the scan is exhausted; a partial scan qualifies locations alone.
-    const lead = v.exhausted ? 'Searched all recorded plans; project' : 'Project';
-    lines.push(ru ? `${v.exhausted ? 'Проверены все записанные планы; принадлежность' : 'Принадлежность'} к проекту определяется только известными этому окну расположениями${v.discoveryIncomplete ? ', а некоторые здесь ещё неизвестны' : ''}.` : zh ? `${v.exhausted ? '已搜索所有记录的计划；' : ''}项目归属仅限此窗口已知的位置${v.discoveryIncomplete ? '，且此处仍有部分位置未知' : ''}。` : `${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
-  }
-  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(v.removed, language)}.` : zh ? `${formatCount(v.removed, language)} 条结果因所属计划已归档、恢复或删除而移除。` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
-  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${formatCount(v.changedKeys, language)}.` : zh ? `${formatCount(v.changedKeys, language)} 个计划在找到后发生了变化。` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
-  if (!v.page.checked) lines.push(copy.checking);
-  for (const line of lines) box.append(el('p', '', line));
+  const text = qualificationText(v, language);
+  box.hidden = !text;
+  if (text) box.append(el('p', '', text));
   return box;
 }
 
@@ -470,8 +467,13 @@ export function statusLine(v: SearchViewState, locale = 'en') {
   const language = resolveLanguage('auto', locale);
   const p = testid(el('p', 'ap-note ap-search-status'), 'search-status');
   p.dataset.stop = v.stop ?? 'none';
-  const text = v.status.message ? searchStatusText(v.status.message, language) : v.status.text;
-  p.textContent = text;
+  const outcome = v.status.message?.kind === 'outcome';
+  const text = outcome ? [resultText(v, language), qualificationText(v, language)].filter(Boolean).join(' ')
+    : v.status.message ? searchStatusText(v.status.message, language) : v.status.text;
+  // The result count already appears beside the results; only the persistent live region
+  // repeats it for an explicit search outcome, never as another visible notice.
+  p.hidden = outcome || !text;
+  p.textContent = outcome ? '' : text;
   announceSearch(v.status.id, text);
   return p;
 }

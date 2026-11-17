@@ -119,10 +119,10 @@ test('actual History and Details keep revision IDs raw while real counts retain 
     const env = { locale, now: Date.parse(plan.reportedAt) };
     const history = c.historyBlock(plan, { state: 'ready', value: { entries, truncated: true } }, env);
     const rows = history.children[1].children;
-    assert.equal(rows[0].children[0].textContent, locale === 'ru' ? 'Ревизия 1999' : 'Revision 1999');
-    assert.equal(rows.at(-1).children[0].textContent, locale === 'ru' ? 'Ревизия 1000' : 'Revision 1000');
+    assert.equal(rows[0].children[0].textContent, locale === 'ru' ? 'Обновление 1999' : 'Update 1999');
+    assert.equal(rows.at(-1).children[0].textContent, locale === 'ru' ? 'Обновление 1000' : 'Update 1000');
     assert.equal(history.children[2].textContent, locale === 'ru'
-      ? 'Показаны только первые 1\u00a0000 ревизий.' : 'Only the first 1000 revisions are shown.');
+      ? 'Прежние обновления не показаны.' : 'Earlier updates are not shown.');
     const details = c.detailsBlock(null, plan, [], env);
     assert.equal(details.children[1].children[3].textContent, locale === 'ru'
       ? '1000 (структура 11000)' : '1000 (structure 11000)');

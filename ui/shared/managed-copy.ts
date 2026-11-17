@@ -1,9 +1,9 @@
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const en = {
-  title: 'Setup', unsupported: 'Managed setup is unsupported by this service. Update the extension and service together; no global plugin will be installed here.',
-  choose: 'Review the managed OpenCode source and a private progress store. Opening Setup changes nothing. A custom store is optional; retained history is never reset.',
-  store: 'Progress store folder', helper: 'Optional absolute path to a private store; leave blank to review the default',
+  title: 'Set up Agent Progress', unsupported: 'Managed setup is unsupported by this service. Update the extension and service together; no global plugin will be installed here.',
+  choose: 'Review how Agent Progress connects to OpenCode without changing your saved history.',
+  store: 'Progress folder', helper: 'Optional full folder path; leave blank to review the default',
   review: 'Review configuration', configure: 'Configure recording', migrate: 'Move to the new setup', resume: 'Review interrupted move', enable: 'Turn on recording', disable: 'Turn off recording',
   confirm: 'Confirm', cancel: 'Cancel', ack: 'I reviewed this source, store and the effects below',
   privilege: 'Plugin code and the progress service run with your full account access. Approval in OpenChamber is separate from this store confirmation. Reports are explicit; tool access still depends on host policy.',
@@ -19,7 +19,7 @@ const en = {
   unknown: 'Loaded companion observation unknown', missing: 'No managed companion load observed', matching: 'Matching managed companion load observed',
   different: 'Loaded companion bytes differ', warning: 'The loaded version or bytes differ from the expected package. This warning alone does not block reporting. Fingerprints are observations, not publisher signatures or proof of exactly what the importer executed; matching bytes do not prove current activity or tool availability.',
   observation: 'A load observation is not a heartbeat, host approval, every session’s tool inventory, a recent report or task completion. Companion bytes ship with the extension; updates are managed in OpenChamber Settings → Extensions. Delivery mode is unknown here: a watched managed file can reload. With caller-owned OPENCODE_CONFIG, adding, removing or toggling the extension’s plugin requires an explicit OpenCode restart. An update to an installed extension may be picked up without a restart; check the load observation in Setup/Reporting health. An extension update alone does not prove that every running session loaded new bytes. Nothing is restarted here.',
-  control: 'Capture control', on: 'Stored control: on', off: 'Stored control: off', controlUnknown: 'Stored control: unknown',
+  control: 'Recording', on: 'Recording is on.', off: 'Recording is off.', controlUnknown: 'Recording is not confirmed yet.',
   controlEffect: 'This changes the verified store’s capture control, not task status or recorded history. It does not revoke independently installed copies or prove that a session has loaded the managed plugin.',
   configRoot: 'Reviewed OpenCode config', dataRoot: 'Reviewed OpenCode data', done: 'Configuration response received. Review the current control and load observations separately.',
   failed: 'The request did not finish successfully. Its effects may be partial; inspect the same target before retrying.',
@@ -29,9 +29,9 @@ const en = {
   stale: 'The reviewed setup changed. Inspect again before confirming.', path: 'Use an absolute private store path, or leave it blank to review the default.',
 };
 const ru: typeof en = {
-  title: 'Настройка', unsupported: 'Этот сервис не поддерживает управляемую настройку. Обновите расширение и сервис вместе; глобальный плагин здесь не устанавливается.',
-  choose: 'Проверьте источник управляемого OpenCode и приватное хранилище прогресса. Открытие настройки ничего не меняет. Можно указать своё хранилище; история не сбрасывается.',
-  store: 'Папка хранилища прогресса', helper: 'Необязательный абсолютный путь к приватному хранилищу; пустое поле — проверка стандартного пути',
+  title: 'Настроить Agent Progress', unsupported: 'Этот сервис не поддерживает управляемую настройку. Обновите расширение и сервис вместе; глобальный плагин здесь не устанавливается.',
+  choose: 'Проверьте подключение Agent Progress к OpenCode без изменения сохранённой истории.',
+  store: 'Папка прогресса', helper: 'Необязательный полный путь к папке; оставьте пустым для проверки стандартного пути',
   review: 'Проверить настройку', configure: 'Настроить запись', migrate: 'Перейти на новую настройку', resume: 'Проверить прерванный переход', enable: 'Включить запись', disable: 'Выключить запись',
   confirm: 'Подтвердить', cancel: 'Отмена', ack: 'Я проверил источник, хранилище и последствия ниже',
   privilege: 'Код плагина и сервис прогресса работают с полными правами вашей учётной записи. Разрешение OpenChamber не заменяет подтверждения хранилища. Отчёты явные; доступ к инструменту зависит от политики хоста.',
@@ -47,7 +47,7 @@ const ru: typeof en = {
   unknown: 'Наблюдение загрузки компаньона неизвестно', missing: 'Управляемая загрузка компаньона не наблюдалась', matching: 'Записана соответствующая управляемая загрузка компаньона',
   different: 'Загруженные байты компаньона отличаются', warning: 'Загруженная версия или байты отличаются от ожидаемого комплекта. Само предупреждение не блокирует отчёты. Отпечатки — наблюдения, не подпись издателя и не доказательство точного исполнения импортёром; совпадение не доказывает текущую активность или доступность инструмента.',
   observation: 'Наблюдение загрузки — не сигнал активности, не разрешение хоста, не наличие инструмента во всех сессиях, не недавний отчёт и не выполнение задач. Байты компаньона входят в расширение; обновлениями управляет OpenChamber в настройках → Расширения. Режим доставки здесь неизвестен: отслеживаемый управляемый файл может перезагрузиться. При пользовательском OPENCODE_CONFIG добавление, удаление, включение или отключение плагина расширения требует явного перезапуска OpenCode. Обновление уже установленного расширения может подхватиться без перезапуска; проверьте наблюдение загрузки в настройке или диагностике отчётов. Само обновление расширения не доказывает загрузку новых байтов всеми работающими сессиями. Здесь ничего не перезапускается.',
-  control: 'Управление записью', on: 'Сохранённое управление: включено', off: 'Сохранённое управление: выключено', controlUnknown: 'Сохранённое управление: неизвестно',
+  control: 'Запись', on: 'Запись включена.', off: 'Запись выключена.', controlUnknown: 'Запись пока не подтверждена.',
   controlEffect: 'Меняется управление записью проверенного хранилища, не статусы задач и не история. Это не отзывает независимые копии и не доказывает загрузку управляемого плагина сессией.',
   configRoot: 'Проверенная конфигурация OpenCode', dataRoot: 'Проверенные данные OpenCode', done: 'Получен ответ настройки. Проверьте управление записью и наблюдение загрузки отдельно.',
   failed: 'Запрос не завершился успешно. Изменения могут быть частичными; проверьте ту же цель перед повтором.',
@@ -57,9 +57,9 @@ const ru: typeof en = {
   stale: 'Проверенная настройка изменилась. Проверьте снова перед подтверждением.', path: 'Укажите абсолютный путь к приватному хранилищу или оставьте поле пустым для проверки стандартного пути.',
 };
 const zh: typeof en = {
-  title: '设置', unsupported: '此服务不支持受管设置。请同时更新扩展和服务；此处不会安装全局插件。',
-  choose: '审阅受管的 OpenCode 来源和私有进度存储。打开设置不会更改任何内容。自定义存储是可选项；保留的历史永远不会被重置。',
-  store: '进度存储文件夹', helper: '可选：私有存储的绝对路径；留空以审阅默认位置',
+  title: '设置 Agent Progress', unsupported: '此服务不支持受管设置。请同时更新扩展和服务；此处不会安装全局插件。',
+  choose: '查看 Agent Progress 如何连接到 OpenCode，不会更改已保存的历史。',
+  store: '进度文件夹', helper: '可选的完整文件夹路径，留空以查看默认位置',
   review: '审阅配置', configure: '配置记录', migrate: '迁移到新设置', resume: '审阅中断的迁移', enable: '开启记录', disable: '关闭记录',
   confirm: '确认', cancel: '取消', ack: '我已审阅此来源、存储及以下影响',
   privilege: '插件代码和进度服务以你的完整账户权限运行。在 OpenChamber 中的批准与此存储确认相互独立。报告需显式发出；工具访问仍取决于宿主策略。',
@@ -75,7 +75,7 @@ const zh: typeof en = {
   unknown: 'companion 加载观察未知', missing: '未观察到受管 companion 加载', matching: '观察到匹配的受管 companion 加载',
   different: '已加载的 companion 字节不同', warning: '已加载的版本或字节与预期包不同。此警告本身不会阻止报告。指纹是观察结果，不是发布者签名，也不能证明导入器实际执行了什么；字节匹配不能证明当前活动或工具可用性。',
   observation: '加载观察不是心跳、宿主批准、每个会话的工具清单、最近的报告或任务完成。companion 字节随扩展一起提供；更新在 OpenChamber 的设置 → 扩展中管理。此处的交付模式未知：被监视的受管文件可能重新加载。使用调用方自有的 OPENCODE_CONFIG 时，添加、移除或切换扩展插件需要显式重启 OpenCode。已安装扩展的更新可能无需重启即可被采用；请在设置/报告健康状态中查看加载观察。仅更新扩展不能证明每个运行中的会话都加载了新字节。此处不会重启任何内容。',
-  control: '采集控制', on: '已存储的控制：开启', off: '已存储的控制：关闭', controlUnknown: '已存储的控制：未知',
+  control: '记录', on: '记录已开启。', off: '记录已关闭。', controlUnknown: '记录尚未确认。',
   controlEffect: '这会更改已验证存储的采集控制，而不会更改任务状态或已记录历史。它不会撤销独立安装的副本，也不能证明某个会话已加载受管插件。',
   configRoot: '已审阅的 OpenCode 配置', dataRoot: '已审阅的 OpenCode 数据', done: '已收到配置响应。请分别查看当前控制与加载观察。',
   failed: '请求未成功完成。其影响可能是部分的；重试前请检查同一目标。',

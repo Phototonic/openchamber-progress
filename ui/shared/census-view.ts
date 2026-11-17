@@ -5,7 +5,7 @@
 // reinforces it. No label here expires: the frame ticker only moves time text.
 import { age, el, info, testid, type Env } from './components.ts';
 import { icon, warningLine, type WarningTone } from './primitives.ts';
-import { absoluteTime, elapsedText, plural } from './format.ts';
+import { absoluteTime, elapsedText, formatCount, plural } from './format.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
 import type { RunsPanel } from './runs.ts';
@@ -21,28 +21,28 @@ export const runClaim = (read: { storeId: string; binding: { sourceId: string | 
 const STATE: Record<Ran['kind'], string> = { active: 'active', waiting: 'waiting', idle: 'idle', finished: 'ended', failed: 'failed', interrupted: 'interrupted', unknown: 'unknown' };
 const EN = {
   source: {
-  event: 'From the host’s run events.',
-  dispatch: 'From the dispatch record; the host has not reported this run’s outcome yet.',
+  event: 'Run status from OpenChamber.',
+  dispatch: 'OpenChamber hasn’t confirmed the outcome yet.',
   history: 'From the host’s session history: the session’s last completed run, not a specific dispatch.',
   host: 'What OpenChamber lists for this session now.',
   },
   claim: { done: 'done', partial: 'partly done', blocked: 'blocked' },
-  status: { pending: 'pending', working: 'working', blocked: 'blocked', done: 'done', skipped: 'skipped' },
-  waiting: 'Waiting on you', after: (d: string) => ` · ${d} after dispatch`, took: (d: string) => ` · took ${d}`,
+  status: { pending: 'not started', working: 'in progress', blocked: 'blocked', done: 'done', skipped: 'skipped' },
+  waiting: 'Waiting for you', after: (d: string) => ` · ${d} after launch`, took: (d: string) => ` · took ${d}`,
   nowTip: 'What OpenChamber lists for this session now. Its recorded run above is unchanged.',
   notSeen: 'not seen in OpenChamber now',
   again: (label: string, compact: boolean) => `${label} again${compact ? '' : ' now'}`,
-  accepted: (word: string, title: string | null, compact: boolean) => compact ? `task ${word}` : `Task reported ${word}${title ? `: ${title}` : ''}`,
-  acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => compact ? `${n} tasks: ${parts}` : `${plural(n, 'task', 'tasks')} reported: ${parts}${omitted ? `, ${omitted} more` : ''}`,
-  claimed: (word: string, compact: boolean) => compact ? `claims ${word}` : `Reported ${word}`,
+  accepted: (word: string, title: string | null, compact: boolean) => compact ? `task ${word}` : `Task ${word}${title ? `: ${title}` : ''}`,
+  acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => `${plural(n, 'task', 'tasks')}: ${parts}${!compact && omitted ? `, ${omitted} more` : ''}`,
+  claimed: (word: string, _compact: boolean) => `says ${word}`,
   unmatched: ' · not matched to one run', open: 'Open', openSession: (title: string) => `Open session ${title}`, startedBy: (title: string) => `started by ${title}`,
-  history: 'from session history', during: 'dispatched during this plan', ran: 'Ran', claimedLabel: 'Claimed', acceptedLabel: 'Accepted',
+  history: 'from session history', during: 'requested during this plan', ran: 'Run', claimedLabel: 'Sub-agent says', acceptedLabel: 'Task state',
   recordedTip: 'Runs recorded for this session and its sub-agents. A finished run is not a finished task.',
   hostTip: 'Sub-agents OpenChamber lists now; no run records were available.', soFar: 'so far', unchecked: 'more not checked',
   loss: 'Some runs weren’t recorded.', activityUnavailable: 'Current activity unavailable.', notEvery: 'Not every sub-agent is checked.', unavailable: 'Run records unavailable.',
   loadingHistory: 'Loading older history…', about: 'About these records', loadMore: 'Load more history', retry: 'Retry history',
   loading: 'Loading…', showMore: (n: number | null) => n === null ? 'Show more' : `Show ${n} more`,
-  other: 'Other records', records: 'Sub-agent records', otherLabel: 'Other sub-agent records', pageError: 'More rows couldn’t be read. Try again in a moment.',
+  other: 'Show more', records: 'Sub-agents', otherLabel: 'Show more sub-agents', pageError: 'Couldn’t load more sub-agents; try again.',
   subagents: 'Sub-agents', aboutLabel: 'About sub-agent records', running: 'Running sub-agents',
   partial: 'Partial', coverage: ' sub-agent coverage',
   lossText: {
@@ -52,30 +52,30 @@ const EN = {
     conflict: 'A newer recording gap was detected. Review it before dismissing.', recent: 'Recent recording gap.', detected: ' Last detected: ',
   },
   aboutLines: [
-    'Ran is what OpenChamber recorded about each run: from the host’s run events, the dispatch record, or the session’s history. A finished run is not a finished task.',
-    'Claimed is the sub-agent’s own optional report, shown as it reported it. Accepted is the task status this plan records.',
-    'Running is observed by the host for sessions and sub-agents only; tasks are reported working, not running.',
+    'OpenChamber tracks runs, not task completion.',
+    'A sub-agent’s “says done” is its own account; the task’s state is separate.',
+    'Running describes sessions, while In progress describes tasks.',
   ],
 };
 const RU: typeof EN = {
-  source: { event: 'По событиям запусков хоста.', dispatch: 'По записи отправки; хост ещё не сообщил результат запуска.', history: 'По истории сессии хоста: последний завершённый запуск сессии, а не конкретная отправка.', host: 'Что OpenChamber сейчас показывает для этой сессии.' },
+  source: { event: 'Состояние запуска из OpenChamber.', dispatch: 'OpenChamber ещё не подтвердил результат.', history: 'Последний завершённый запуск сессии, не обязательно для этой задачи.', host: 'Что OpenChamber сейчас показывает для этой сессии.' },
   claim: { done: 'выполнено', partial: 'частично выполнено', blocked: 'заблокировано' },
   status: { pending: 'ожидает', working: 'в работе', blocked: 'заблокирована', done: 'выполнена', skipped: 'пропущена' },
   waiting: 'Ждёт вас', after: d => ` · ${d} после отправки`, took: d => ` · длительность ${d}`,
   nowTip: 'Что OpenChamber сейчас показывает для этой сессии. Записанный запуск выше не изменён.',
   notSeen: 'сейчас не виден в OpenChamber',
   again: (label, compact) => `${label} снова${compact ? '' : ' сейчас'}`,
-  accepted: (word, title, compact) => compact ? `задача: ${word}` : `По отчёту задача ${word}${title ? `: ${title}` : ''}`,
-  acceptedMany: (n, parts, omitted, compact) => compact ? `Задачи (${n}): ${parts}` : `По отчётам задачи (${n}): ${parts}${omitted ? `, ещё ${omitted}` : ''}`,
-  claimed: (word, compact) => compact ? `заявляет: ${word}` : `Сообщено: ${word}`,
+  accepted: (word, title, compact) => compact ? `задача: ${word}` : `Задача ${word}${title ? `: ${title}` : ''}`,
+  acceptedMany: (n, parts, omitted, compact) => `Задачи (${formatCount(n, 'ru')}): ${parts}${!compact && omitted ? `, ещё ${formatCount(omitted, 'ru')}` : ''}`,
+  claimed: (word, _compact) => `говорит: ${word}`,
   unmatched: ' · не сопоставлено с отдельным запуском', open: 'Открыть', openSession: title => `Открыть сессию ${title}`, startedBy: title => `запущен из ${title}`,
-  history: 'из истории сессии', during: 'отправлен во время этого плана', ran: 'Запуск', claimedLabel: 'Заявлено', acceptedLabel: 'Принято',
+  history: 'из истории сессии', during: 'запрошен во время этого плана', ran: 'Запуск', claimedLabel: 'Слова субагента', acceptedLabel: 'Состояние задачи',
   recordedTip: 'Запуски этой сессии и её субагентов. Завершённый запуск не означает выполненную задачу.',
   hostTip: 'Субагенты, которых сейчас показывает OpenChamber; записи запусков недоступны.', soFar: 'на данный момент', unchecked: 'остальные не проверены',
   loss: 'Некоторые запуски не записаны.', activityUnavailable: 'Текущая активность недоступна.', notEvery: 'Проверены не все субагенты.', unavailable: 'Записи запусков недоступны.',
   loadingHistory: 'Загрузка прошлой истории…', about: 'Об этих записях', loadMore: 'Загрузить ещё историю', retry: 'Повторить загрузку истории',
   loading: 'Загрузка…', showMore: n => n === null ? 'Показать ещё' : `Показать ещё ${n}`,
-  other: 'Другие записи', records: 'Записи субагентов', otherLabel: 'Другие записи субагентов', pageError: 'Не удалось прочитать следующие строки. Попробуйте чуть позже.',
+  other: 'Показать ещё', records: 'Субагенты', otherLabel: 'Показать ещё субагентов', pageError: 'Не удалось загрузить ещё субагентов; попробуйте снова.',
   subagents: 'Субагенты', aboutLabel: 'О записях субагентов', running: 'Выполняющиеся субагенты',
   partial: 'Неполный', coverage: ' охват субагентов',
   lossText: {
@@ -85,30 +85,30 @@ const RU: typeof EN = {
     conflict: 'Обнаружен новый пробел в записи. Просмотрите его перед скрытием.', recent: 'Недавний пробел в записи.', detected: ' Последнее обнаружение: ',
   },
   aboutLines: [
-    'Запуск — то, что OpenChamber записал о запуске: по событиям хоста, записи отправки или истории сессии. Завершённый запуск не означает выполненную задачу.',
-    'Заявлено — необязательный собственный отчёт субагента, показанный как сообщено. Принято — статус задачи, записанный в этом плане.',
-    'Хост наблюдает выполнение только сессий и субагентов; для задач статус «в работе» сообщается в отчёте, а не наблюдается хостом.',
+    'OpenChamber показывает запуски, а не выполнение задач.',
+    'Слова субагента «выполнено» и состояние задачи показаны отдельно.',
+    '«Выполняется» относится к сессиям, «В работе» — к задачам.',
   ],
 };
 const ZH: typeof EN = {
-  source: { event: '来自主机的运行事件。', dispatch: '来自派发记录；主机尚未报告此次运行的结果。', history: '来自主机的会话历史：该会话最后一次完成的运行，而非某次具体派发。', host: 'OpenChamber 当前为此会话列出的状态。' },
+  source: { event: 'OpenChamber 提供的运行状态。', dispatch: 'OpenChamber 尚未确认结果。', history: '该会话最后一次完成的运行，不一定属于此任务。', host: 'OpenChamber 当前为此会话列出的状态。' },
   claim: { done: '已完成', partial: '部分完成', blocked: '受阻' },
   status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
   waiting: '等待你处理', after: d => ` · 派发后 ${d}`, took: d => ` · 耗时 ${d}`,
   nowTip: 'OpenChamber 当前为此会话列出的状态。上方的运行记录不变。',
   notSeen: 'OpenChamber 当前未看到此会话',
   again: (label, compact) => `${label}（再次${compact ? '' : '，当前'}）`,
-  accepted: (word, title, compact) => compact ? `任务${word}` : `任务已报告为${word}${title ? `：${title}` : ''}`,
-  acceptedMany: (n, parts, omitted, compact) => compact ? `${n} 个任务：${parts}` : `${n} 个任务已报告：${parts}${omitted ? `，另有 ${omitted} 个` : ''}`,
-  claimed: (word, compact) => compact ? `自报：${word}` : `自报${word}`,
+  accepted: (word, title, compact) => compact ? `任务${word}` : `任务${word}${title ? `：${title}` : ''}`,
+  acceptedMany: (n, parts, omitted, compact) => `${formatCount(n, 'zh-CN')} 个任务：${parts}${!compact && omitted ? `，另有 ${formatCount(omitted, 'zh-CN')} 个` : ''}`,
+  claimed: (word, _compact) => `自述${word}`,
   unmatched: ' · 未匹配到单次运行', open: '打开', openSession: title => `打开会话 ${title}`, startedBy: title => `由 ${title} 启动`,
-  history: '来自会话历史', during: '在此计划期间派发', ran: '运行', claimedLabel: '自报', acceptedLabel: '已接收',
+  history: '来自会话历史', during: '在此计划期间请求启动', ran: '运行', claimedLabel: '子智能体自述', acceptedLabel: '任务状态',
   recordedTip: '此会话及其子智能体的运行记录。运行结束不等于任务完成。',
   hostTip: 'OpenChamber 当前列出的子智能体；没有可用的运行记录。', soFar: '截至目前', unchecked: '更多未检查',
   loss: '部分运行未被记录。', activityUnavailable: '当前活动不可用。', notEvery: '并非所有子智能体都已检查。', unavailable: '运行记录不可用。',
   loadingHistory: '正在加载更早的历史…', about: '关于这些记录', loadMore: '加载更多历史', retry: '重试加载历史',
   loading: '加载中…', showMore: n => n === null ? '显示更多' : `再显示 ${n} 条`,
-  other: '其他记录', records: '子智能体记录', otherLabel: '其他子智能体记录', pageError: '无法读取更多记录，请稍后重试。',
+  other: '显示更多', records: '子智能体', otherLabel: '显示更多子智能体', pageError: '无法加载更多子智能体，请重试。',
   subagents: '子智能体', aboutLabel: '关于子智能体记录', running: '运行中的子智能体',
   partial: '覆盖不完整', coverage: '：子智能体覆盖',
   lossText: {
@@ -118,9 +118,9 @@ const ZH: typeof EN = {
     conflict: '检测到更新的记录缺口，请先查看再忽略。', recent: '最近的记录缺口。', detected: ' 最后检测于：',
   },
   aboutLines: [
-    '“运行”是 OpenChamber 对每次运行的记录：来自主机的运行事件、派发记录或会话历史。运行结束不等于任务完成。',
-    '“自报”是子智能体可选的自身报告，按其所报告的内容显示。“已接收”是此计划记录的任务状态。',
-    '主机仅观察会话和子智能体的运行；任务的“进行中”来自报告，而非主机观察。',
+    'OpenChamber 跟踪运行，不代表任务已完成。',
+    '子智能体自述的完成情况与任务状态分开显示。',
+    '“运行中”描述会话，“进行中”描述任务。',
   ],
 };
 const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU, 'zh-CN': ZH };

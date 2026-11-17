@@ -41,6 +41,7 @@ const RUSSIAN = {
   '{n} in progress': '{n} в работе', '{n} blocked': '{n} заблокировано',
   ' done, {n} remaining': ' выполнено, осталось: {n}',
   'from another OpenCode setup': 'из другой установки OpenCode', 'Open session': 'Открыть сессию',
+  'OpenCode install not connected': 'Установка OpenCode не подключена',
   'Updated ': 'Обновлено ', 'From another OpenCode setup': 'Из другой установки OpenCode', 'Unverified OpenCode setup': 'Непроверенная установка OpenCode',
   '{n} plans': 'Планов: {n}', 'Plan {index} of {count}: {title}. Choose another plan': 'План {index} из {count}: {title}. Выбрать другой план',
   '{index} of {count}': '{index} из {count}', 'Plan ': 'План ',
@@ -154,7 +155,8 @@ const CHINESE: Record<CopyKey, string> = {
   'Observed in progress by {at}; start unknown': '截至 {at} 观察到进行中；开始时间未知',
   '{n} in progress': '{n} 项进行中', '{n} blocked': '{n} 项受阻',
   ' done, {n} remaining': ' 已完成，剩余 {n}',
-  'from another OpenCode setup': '来自其他 OpenCode 配置', 'Open session': '打开会话',
+  'from another OpenCode setup': '来自其他 OpenCode 安装', 'Open session': '打开会话',
+  'OpenCode install not connected': 'OpenCode 安装未连接',
   'Updated ': '更新于 ', 'From another OpenCode setup': '来自其他 OpenCode 配置', 'Unverified OpenCode setup': '未经验证的 OpenCode 配置',
   '{n} plans': '{n} 个计划', 'Plan {index} of {count}: {title}. Choose another plan': '第 {index} 个计划，共 {count} 个：{title}。选择其他计划',
   '{index} of {count}': '{index} / {count}', 'Plan ': '计划 ',
@@ -260,12 +262,44 @@ const CHINESE: Record<CopyKey, string> = {
   'Not applied: the progress service refused it.': '未生效：进度服务拒绝了交接。',
   'The coordinator can plan the handoff again for the current plan, or link the task to a session.': '协调者可以按当前计划重新安排交接，或将任务关联到会话。',
 };
+// English phrases are stable message keys, not necessarily the displayed English wording.
+// Keep changed messages together so all three languages carry the same meaning.
+type MessageTranslations = Record<InterfaceLanguage, string>;
+const PLAIN_COPY: Partial<Record<CopyKey, MessageTranslations>> = {
+  'From another OpenCode setup': { en: 'From another OpenCode install; its sessions can’t be opened here.', ru: 'Из другой установки OpenCode; её сессии нельзя открыть здесь.', 'zh-CN': '来自其他 OpenCode 安装，无法在此打开其会话。' },
+  'Reported in progress at {at}': { en: 'In progress since {at}', ru: 'В работе с {at}', 'zh-CN': '自 {at} 起进行中' },
+  'Observed in progress by {at}; start unknown': { en: 'In progress by {at}; start unknown', ru: 'В работе к {at}; начало неизвестно', 'zh-CN': '{at} 时已在进行中，开始时间未知' },
+  'The progress service could not tell when this task was reported in progress.': { en: 'Start time unknown.', ru: 'Время начала неизвестно.', 'zh-CN': '开始时间未知。' },
+  'The progress service couldn’t tell when this task was reported blocked.': { en: 'Wait time unknown.', ru: 'Время ожидания неизвестно.', 'zh-CN': '等待时间未知。' },
+  'This progress service doesn’t report waiting times.': { en: 'Wait time unavailable.', ru: 'Время ожидания недоступно.', 'zh-CN': '等待时间不可用。' },
+  'Reported blocked at {at}. Counts reported status, not activity.': { en: 'Blocked since {at}', ru: 'Заблокирована с {at}', 'zh-CN': '自 {at} 起受阻' },
+  'Already reported blocked at {at}; the start is earlier and unknown.': { en: 'Already blocked at {at}; start unknown.', ru: 'Уже заблокирована к {at}; начало неизвестно.', 'zh-CN': '{at} 时已受阻，开始时间未知。' },
+  'Reported working': { en: 'In progress', ru: 'В работе', 'zh-CN': '进行中' },
+  'Reported in progress': { en: 'In progress', ru: 'В работе', 'zh-CN': '进行中' },
+  'Reported blocked': { en: 'Blocked', ru: 'Заблокировано', 'zh-CN': '受阻' },
+  'Jump to reported in progress': { en: 'Jump to in progress', ru: 'К задачам в работе', 'zh-CN': '跳转到进行中的任务' },
+  'No tasks reported in progress': { en: 'No tasks in progress', ru: 'Нет задач в работе', 'zh-CN': '没有进行中的任务' },
+  'Jump to reported blocked': { en: 'Jump to blocked', ru: 'К заблокированным', 'zh-CN': '跳转到受阻任务' },
+  'No tasks reported blocked': { en: 'No blocked tasks', ru: 'Нет заблокированных задач', 'zh-CN': '没有受阻任务' },
+  'Reported details couldn’t be read': { en: 'Couldn’t load task details; try again.', ru: 'Не удалось загрузить сведения о задаче; попробуйте снова.', 'zh-CN': '无法加载任务详情，请重试。' },
+  'Last reported: ': { en: 'Last update: ', ru: 'Последнее обновление: ', 'zh-CN': '上次更新：' },
+  'Reported wait': { en: 'Waiting', ru: 'Ожидание', 'zh-CN': '等待中' },
+  'Reason': { en: 'Why', ru: 'Почему', 'zh-CN': '原因' },
+  'Capture is turned off; no new reports are recorded.': { en: 'Recording is off; new progress isn’t saved.', ru: 'Запись выключена; новый прогресс не сохраняется.', 'zh-CN': '记录已关闭，新进度不会保存。' },
+  'No participant recorded': { en: 'No participant listed', ru: 'Участник не указан', 'zh-CN': '未列出参与者' },
+  'No task rows are recorded in this plan, only groups.': { en: 'This plan has groups, but no tasks yet.', ru: 'В плане есть группы, но пока нет задач.', 'zh-CN': '此计划有分组，但还没有任务。' },
+  'Revisions': { en: 'Updates', ru: 'Обновления', 'zh-CN': '更新' },
+  'Revision {n}': { en: 'Update {n}', ru: 'Обновление {n}', 'zh-CN': '更新 {n}' },
+  'Only the first {n} revisions are shown.': { en: 'Earlier updates are not shown.', ru: 'Прежние обновления не показаны.', 'zh-CN': '未显示较早的更新。' },
+  'plan reported': { en: 'plan shared', ru: 'план добавлен', 'zh-CN': '已分享计划' },
+  'outcome reported': { en: 'plan closed', ru: 'план закрыт', 'zh-CN': '计划已关闭' },
+};
 const COPY: Record<InterfaceLanguage, Record<CopyKey, string>> = {
   en: Object.fromEntries(Object.keys(RUSSIAN).map(key => [key, key])) as Record<CopyKey, string>, ru: RUSSIAN, 'zh-CN': CHINESE,
 };
 function say(key: CopyKey, locale = 'en', values: Record<string, string | number> = {}) {
   const language = resolveLanguage('auto', locale);
-  return COPY[language][key].replace(/\{(\w+)\}/g, (_, name: string) => typeof values[name] === 'number' ? displayCount(values[name], language) : String(values[name]));
+  return (PLAIN_COPY[key]?.[language] ?? COPY[language][key]).replace(/\{(\w+)\}/g, (_, name: string) => typeof values[name] === 'number' ? displayCount(values[name], language) : String(values[name]));
 }
 const displayCount = (n: number, locale: InterfaceLanguage) => locale === 'en' ? String(n) : formatCount(n, locale);
 const COUNT_WORDS: Record<InterfaceLanguage, Record<'task' | 'blocked' | 'more', [string, string, string]>> = {
@@ -687,7 +721,7 @@ export class ProgressShell {
       }
       if (plan.lifecycle === 'active' && Date.now() - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
       if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
-      if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('Unverified OpenCode setup', vc.env.locale)));
+      if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
       root.append(head);
       const s = summarize(plan, ready);
       root.append(progressBlock(s, false, vc.env.locale));
@@ -1991,13 +2025,13 @@ export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: st
   'not-approved': { title: 'Progress needs permission', body: 'Allow this extension in Settings → Extensions to show agent progress.' },
   paused: { title: 'Progress is paused', body: 'This extension is paused in Settings → Extensions.' },
   disconnected: { title: 'Lost connection to OpenChamber', body: 'Progress will update again when the connection returns.' },
-  unavailable: { title: 'Progress service is not responding', body: 'It may still be starting. Try again in a moment.' },
-  busy: { title: 'Progress store is busy', body: 'Another program is writing to it. This view retries shortly.' },
-  damaged: { title: 'Progress store is damaged', body: 'It was left untouched. See the setup guide for recovery; nothing was reset.' },
-  incompatible: { title: 'Progress data needs an update', body: 'The progress store uses a format this view does not support. Update the extension and its companion.' },
+  unavailable: { title: 'Progress is not responding', body: 'Try again in a moment.' },
+  busy: { title: 'Progress is busy', body: 'Try again shortly.' },
+  damaged: { title: 'Progress data is damaged', body: 'Nothing was reset; follow the setup guide to recover it.' },
+  incompatible: { title: 'Progress data needs an update', body: 'Update Agent Progress in OpenChamber.' },
   invalid: { title: 'Progress could not be read', body: 'The progress service sent a reply this view could not use.' },
-  'not-found': { title: 'That plan is no longer available', body: 'It may belong to a different store.' },
-  'setup-lost': { title: 'Progress setup can’t be read right now', body: 'The extension can no longer open its progress store. Check Setup; nothing was changed or deleted.' },
+  'not-found': { title: 'That plan is no longer available', body: 'Choose another plan.' },
+  'setup-lost': { title: 'Progress setup can’t be read right now', body: 'Check Setup; nothing was changed or deleted.' },
 };
 const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
   en: FAILURE_COPY,
@@ -2005,25 +2039,25 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     'not-approved': { title: 'Прогрессу нужно разрешение', body: 'Разрешите это расширение в Settings → Extensions, чтобы показать прогресс агентов.' },
     paused: { title: 'Прогресс приостановлен', body: 'Это расширение приостановлено в Settings → Extensions.' },
     disconnected: { title: 'Соединение с OpenChamber потеряно', body: 'Прогресс снова начнёт обновляться после восстановления соединения.' },
-    unavailable: { title: 'Сервис прогресса не отвечает', body: 'Возможно, он ещё запускается. Повторите попытку чуть позже.' },
-    busy: { title: 'Хранилище прогресса занято', body: 'Другая программа записывает данные. Представление скоро повторит попытку.' },
-    damaged: { title: 'Хранилище прогресса повреждено', body: 'Оно оставлено без изменений. См. руководство по восстановлению; ничего не сброшено.' },
-    incompatible: { title: 'Данные прогресса требуют обновления', body: 'Формат хранилища не поддерживается этим представлением. Обновите расширение и companion.' },
+    unavailable: { title: 'Прогресс не отвечает', body: 'Повторите попытку чуть позже.' },
+    busy: { title: 'Прогресс занят', body: 'Повторите попытку чуть позже.' },
+    damaged: { title: 'Данные прогресса повреждены', body: 'Ничего не сброшено; следуйте руководству по восстановлению.' },
+    incompatible: { title: 'Данные прогресса требуют обновления', body: 'Обновите Agent Progress в OpenChamber.' },
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
-    'not-found': { title: 'Этот план больше недоступен', body: 'Возможно, он относится к другому хранилищу.' },
-    'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Расширение больше не может открыть хранилище прогресса. Проверьте настройку; ничего не изменено и не удалено.' },
+    'not-found': { title: 'Этот план больше недоступен', body: 'Выберите другой план.' },
+    'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Проверьте настройку; ничего не изменено и не удалено.' },
   },
   'zh-CN': {
     'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
     paused: { title: '进度已暂停', body: '此扩展已在设置 → 扩展中暂停。' },
     disconnected: { title: '与 OpenChamber 的连接已断开', body: '连接恢复后进度会再次更新。' },
-    unavailable: { title: '进度服务未响应', body: '服务可能仍在启动，请稍后重试。' },
-    busy: { title: '进度存储忙碌', body: '另一个程序正在写入进度存储，此视图稍后会重试。' },
-    damaged: { title: '进度存储已损坏', body: '已保持原样。请参阅设置指南进行恢复；没有重置任何内容。' },
-    incompatible: { title: '进度数据需要更新', body: '进度存储使用的格式不受此视图支持，请更新扩展及其 companion。' },
+    unavailable: { title: '进度未响应', body: '请稍后重试。' },
+    busy: { title: '进度正忙', body: '请稍后重试。' },
+    damaged: { title: '进度数据已损坏', body: '未重置任何内容，请按照设置指南恢复。' },
+    incompatible: { title: '进度数据需要更新', body: '请在 OpenChamber 中更新 Agent Progress。' },
     invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
-    'not-found': { title: '该计划已不再可用', body: '该计划可能属于其他存储。' },
-    'setup-lost': { title: '暂时无法读取进度设置', body: '扩展无法再打开进度存储。请检查设置；没有更改或删除任何内容。' },
+    'not-found': { title: '该计划已不再可用', body: '请选择其他计划。' },
+    'setup-lost': { title: '暂时无法读取进度设置', body: '请检查设置，未更改或删除任何内容。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];

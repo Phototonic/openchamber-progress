@@ -68,7 +68,7 @@ function fixture() {
 
 test('actual DOM helpers localize status, failures and elapsed ticker without exposing raw errors', () => {
   const { components: c, primitives: p } = fixture();
-  assert.equal(p.statusMark('working', { locale: 'ru' }).getAttribute('aria-label'), 'По отчёту в работе');
+  assert.equal(p.statusMark('working', { locale: 'ru' }).getAttribute('aria-label'), 'В работе');
   assert.equal(c.lifecycleBadge({ lifecycle: 'completed' }, 'ru').textContent, model.lifecycleLabel('completed', 'ru'));
   assert.equal(c.loadingBlock('ru').textContent, 'Загрузка прогресса');
   const failure = { kind: 'invalid', code: 'INVALID', message: '<private raw error>' };
@@ -77,7 +77,7 @@ test('actual DOM helpers localize status, failures and elapsed ticker without ex
   const env = { locale: 'ru', mono: 0 };
   const unknown = c.elapsedLabel({ lifecycle: 'active' }, { id: 'a', kind: 'task', status: 'working' }, { timing: {} }, env);
   assert.equal(unknown.textContent, 'время неизвестно');
-  assert.match(unknown.title, /Сервис прогресса/);
+  assert.equal(unknown.title, 'Время начала неизвестно.');
 });
 
 test('session details show bounded host context as literal localized text only for the bound source', () => {
@@ -137,7 +137,7 @@ test('actual progress and picker preserve counts and literal titles while transl
   assert.equal(picker.getAttribute('aria-label'), 'План 2 из 5: <b>Original plan</b>. Выбрать другой план');
   assert.equal(picker.textContent, '2 из 5');
   assert.equal(c.planLocation({ directory: '', ownerSessionId: 'a' }, live.EMPTY_LIVE, undefined, 'ru'), 'Неизвестное расположение');
-  assert.equal(p.statusMark('working').getAttribute('aria-label'), 'Reported working', 'default English API is unchanged');
+  assert.equal(p.statusMark('working').getAttribute('aria-label'), 'In progress');
   assert.equal(p.stateChip({ state: 'blocked', count: 0, label: 'Заблокировано', locale: 'ru' }), null);
 });
 
@@ -202,9 +202,11 @@ test('actual expanded task facts keep mixed-language values and recorded provena
   const en = c.rowFacts(p, { item, state: 'blocked', visibility: 'match' });
   p.env.locale = 'ru';
   const ru = c.rowFacts(p, { item, state: 'blocked', visibility: 'match' });
-  assert.equal(en.text.find(([k]: string[]) => k === 'Reason')[1], item.reportedBlocker.reason);
-  assert.equal(ru.text.find(([k]: string[]) => k === 'Причина')[1], item.reportedBlocker.reason);
+  assert.equal(en.text.find(([k]: string[]) => k === 'Why')[1], item.reportedBlocker.reason);
+  assert.equal(ru.text.find(([k]: string[]) => k === 'Почему')[1], item.reportedBlocker.reason);
   assert.equal(ru.text.find(([k]: string[]) => k === 'Следующий шаг')[1], item.reportedBlocker.nextAction);
+  assert.equal(en.text.find(([k]: string[]) => k === 'Next step')[1], item.reportedBlocker.nextAction);
+  assert.doesNotMatch(en.dl.textContent, /Asks you to/, 'a generic blocked task does not imply it needs the user');
   assert.equal(ru.text.find(([k]: string[]) => k === 'Сначала нужны')[1], `Original prerequisite (${model.statusLabel('done', 'ru')})`);
   assert.match(ru.dl.textContent, /Сведения: передан сессией Original main за Original session-a/);
   assert.equal(en.text.length, ru.text.length, 'same set of facts, no extra export data');
@@ -221,7 +223,7 @@ test('restored document fills cached error without I/O; explicit reopen and retr
   doc.listeners.toggle(); // synthetic restoration
   doc.listeners.toggle(); // queued native toggle of the same restored-open paint
   assert.equal(requests, 0);
-  assert.match(doc.textContent, /Хранилище прогресса занято/);
+  assert.match(doc.textContent, /Прогресс занят/);
   const body = doc.children[1];
   body.children[0].children[1].listeners.click();
   assert.equal(requests, 1, 'Retry is always explicit authority');
@@ -243,8 +245,8 @@ test('inline document repaint retains a read error without automatic retry, but 
   const english = c.documentBlock(plan, { locale: 'en' }, 'inline', source);
   const russian = c.documentBlock(plan, { locale: 'ru' }, 'inline', source);
   assert.equal(requests, 1, 'data and language repaints keep the cached failure');
-  assert.match(english.textContent, /progress store is busy/i);
-  assert.match(russian.textContent, /Хранилище прогресса занято/);
+  assert.match(english.textContent, /progress is busy/i);
+  assert.match(russian.textContent, /Прогресс занят/);
   russian.children[1].children[0].children[1].listeners.click();
   assert.equal(requests, 2, 'explicit Retry starts exactly one additional read');
 });

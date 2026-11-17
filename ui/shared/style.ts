@@ -97,7 +97,7 @@ button{font:inherit}
 .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted)}
 
 /* Section heading */
-.ap-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
+.ap-h{font-size:11px;font-weight:600;color:var(--oc-muted)}
 .ap-section{display:flex;flex-direction:column;gap:8px;min-width:0}
 
 /* Item hierarchy */
@@ -402,7 +402,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;margin-top:8px}
 .ap-facts dt{color:var(--oc-muted)}
 .ap-facts dd{color:var(--oc-fg);min-width:0;overflow-wrap:anywhere}
-.ap-facts .ap-mono{font-family:var(--oc-mono);font-size:11px}
+.ap-facts .ap-mono{font-family:inherit;font-size:11px}
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
 
 /* Calm progress (rail and board Progress): one header, one bar, state chips, one grouped list.
@@ -446,7 +446,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Task list */
 .ap-tasks{position:relative;gap:4px}
 /* Tasks heading: a programmatic focus fallback only; it shows itself while it has focus */
-.ap-tasks-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);width:fit-content;padding:0 4px}
+.ap-tasks-h{font-size:11px;font-weight:600;color:var(--oc-muted);width:fit-content;padding:0 4px}
 .ap-tasks-h:not(:focus){position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .ap-tasks-h:focus{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 .ap-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--oc-muted-surface);font-size:12px}
@@ -456,7 +456,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-filter-line .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-pgroup+.ap-pgroup{margin-top:8px}
 .ap-pgroup-box{display:flex;flex-direction:column;min-width:0}
-.ap-pgroup-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);padding:2px 0}
+.ap-pgroup-h{font-size:11px;font-weight:600;color:var(--oc-muted);padding:2px 0}
 .ap-pgroup-rows{display:flex;flex-direction:column}
 .ap-fold>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:28px;padding:0 6px;margin-left:-6px;border-radius:6px;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none}
 .ap-fold>summary::-webkit-details-marker{display:none}

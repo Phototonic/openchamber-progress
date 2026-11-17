@@ -4,7 +4,7 @@ import { HEALTH, HEALTH_UNCONFIGURED, P1, P1_ITEMS, S, DOCUMENT_TEXT, envelope, 
 import { createGuestAssets } from './source-guests.ts';
 
 export const LANGUAGE_KEY = 'interface-language.v1';
-export const USER_TASK_TITLE = 'English task · Привет <script>window.__qaInjected=true</script>';
+export const USER_TASK_TITLE = 'Review source bindings · Привет <script>window.__qaInjected=true</script>';
 const languageItems = P1_ITEMS.map((item) => item.id === 'I3' ? { ...item, title: USER_TASK_TITLE } : item);
 
 // Intercept only long refresh timers, not SDK promises, popup input or rendering. Tests explicitly
@@ -31,11 +31,13 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  */
 const script = `
 const surfaces=['panel','status','page'];
+const theme=${JSON.stringify(theme)};
 window.frame=s=>document.querySelector('iframe[data-surface="'+s+'"]');
 const send=(s,m)=>frame(s).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},location.origin);
 window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],
  ctx:{locale:'en',features:{deviceStorage:true},directory:'/fixture/Alpha',session:null,connection:{connected:true,account:'fixture'}},
- ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme:${JSON.stringify(theme)},...this.ctx,surface:n,settings:{},item:null}})},
+ ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme,...this.ctx,surface:n,settings:{},item:null}})},
+ dark(){theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});this.ready()},
  context(id){this.ctx.session=id?{id,title:'Example session',busy:false}:null;for(const s of surfaces)send(s,{type:'session',payload:{session:this.ctx.session}})},
  namespace(name){this.space=name;this.ready()},
  seed(value,space=this.space){const m=this.maps.get(space)||new Map();this.maps.set(space,m);if(value===undefined)m.delete('${LANGUAGE_KEY}');else m.set('${LANGUAGE_KEY}',structuredClone(value))},
@@ -102,16 +104,17 @@ export async function startLanguageFixture(options: { source?: boolean; service?
         let status = 200, body: unknown;
         if (q.mode === 'failure') { status = 503; body = { error: 'busy' }; }
         else if (q.path === '/health') body = q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
-        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [P1]);
+        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [P1], null, { captureEnabled: q.mode !== 'recording-off' });
         else if (q.path === '/v1/plan') body = planPage(P1, languageItems, []);
         else if (q.path === '/v1/document') body = envelope({ document: P1.document, text: DOCUMENT_TEXT, nextCursor: null });
         else if (q.path === '/v1/history') body = envelope({ data: [], nextCursor: null });
         else if (q.path === '/v1/setup') body = setupRead({
           separateLifecycle: false,
-          ...(q.mode === 'setup' ? { configured: false, verified: false, installed: false } : {}),
-          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1 },
+          ...(q.mode === 'setup' ? { configured: false, verified: false, installed: false, captureEnabled: false } : {}),
+          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1, managedFreshSteps: 1 },
         });
         else { status = 404; body = { error: 'not-found' }; }
+        if (q.mode === 'recording-off' && body && typeof body === 'object' && 'captureEnabled' in body) body.captureEnabled = false;
         res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(body) }));
       } else { res.statusCode = path === '/favicon.ico' ? 204 : 404; res.end(); }
     } catch { res.statusCode = 500; res.end('{"error":"fixture-failed"}'); }
