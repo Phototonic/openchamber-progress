@@ -42,6 +42,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   let hold = false;
   let refused: string | null = null;
   const markers = new Map<string, unknown>();
+  let effectiveScope = 'initial';
   let vc!: ViewContext<{ filter: string }>;
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
@@ -82,6 +83,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     surface, maxSessionSubscriptions: 0, initialUi: () => ({ filter: 'all' }),
     scope: c => surface === 'page' ? {} : { session: c.session?.id },
      tidyScope: c => c.ui.filter, tidyPlans: c => c.read?.plans ?? [],
+    selectionScope: () => effectiveScope,
      tidyScan: scan ? (c, key) => new cleanup.CleanupScan(key, c.read!.storeId, false, async cursor => {
        const offset = Number(cursor ?? 0);
        return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
@@ -94,6 +96,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   return {
     get vc() { return vc; }, posts, markers, bodies,
     refuse(plan: string) { refused = plan; },
+    normalizeScope(value: string) { effectiveScope = value; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
     session(id: string) { listeners.session({ id }); },
     account() { listeners.ready({ ...vc.ctx, connection: { connected: true, account: 'other-account' } }); },
@@ -141,6 +144,24 @@ test('selection controller shares confirmation binding, active acknowledgements 
     await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
     assert.equal(f.bodies.length, 4);
     assert(f.bodies.slice(2).every(b => !('active' in b)));
+  } finally { f.stop(); }
+});
+
+test('a pre-paint selection action cannot broaden when the effective scope normalizes', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    const opener = f.vc;
+    const request = { all: true, plans: opener.read!.plans, includes: () => true, scope: 'initial' };
+    f.normalizeScope('all');
+    opener.requestSelection('delete', request);
+    await drain();
+    const retired = f.vc.cleanup.tidy;
+    assert.equal(retired, undefined, 'a retired rule must not open a broader confirmation');
+    assert.equal(f.posts.length, 0);
+    f.vc.requestSelection('delete', { ...request, scope: 'all' });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.targets.length, 2, 'a fresh gesture can select the new scope');
   } finally { f.stop(); }
 });
 

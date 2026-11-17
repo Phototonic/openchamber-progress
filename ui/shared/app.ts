@@ -242,7 +242,8 @@ export interface ViewSpec<U> {
   actionPlan?: (vc: ViewContext<U>) => PlanView | null;
   /** Complete loaded scope; a separate panel reader covers incomplete lists/search. */
   tidyPlans?: (vc: ViewContext<U>) => PlanView[];
-  tidyScan?: (vc: ViewContext<U>, context: string, includes?: (plan: CleanupPlan) => boolean) => CleanupScan | null;
+  tidyScan?: (vc: ViewContext<U>, context: string, includes?: (plan: CleanupPlan) => boolean, allowActive?: boolean) => CleanupScan | null;
+  selectionScope?: (vc: ViewContext<U>) => string;
   tidyArchived?: (vc: ViewContext<U>) => boolean;
   tidyMatching?: (vc: ViewContext<U>) => boolean;
   tidyScope?: (vc: ViewContext<U>) => string;
@@ -988,9 +989,11 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
   function requestSelection(action: 'archive' | 'restore' | 'delete', selection: SelectionRequest) {
     if (spec.surface !== 'page' || cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
+    const vc = context();
+    if (selection.scope !== undefined && spec.selectionScope?.(vc) !== selection.scope) return;
     cleanup.tidy?.scan?.cancel();
-    const vc = context(), key = tidyContext();
-    const scan = spec.tidyScan?.(vc, key, selection.includes) ?? undefined;
+    const key = tidyContext();
+    const scan = spec.tidyScan?.(vc, key, selection.includes, action === 'restore' || health.planCleanupActive === 1) ?? undefined;
     const latest = new Map(read.plans.map(p => [p.key, p]));
     const confirmation = scan ? undefined : selectionConfirmation(selection.plans.filter(p => latest.has(p.key)).map(p => latest.get(p.key)!), read.storeId, key,
       !!spec.tidyArchived?.(vc), action, health.planCleanupActive === 1);
@@ -1372,6 +1375,7 @@ export function startView<U>(spec: ViewSpec<U>) {
           const remaining = tidyState.result?.remaining;
           const keys = new Set(remaining?.map(t => t.key));
           const selection = remaining ? {
+            scope: tidyState.selectionRequest.scope,
             all: false, includes: (p: CleanupPlan) => keys.has(p.key),
             plans: remaining.map(t => ({ key: t.key, title: t.title, lifecycle: t.lifecycle,
               sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,

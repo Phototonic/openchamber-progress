@@ -1128,6 +1128,13 @@ Archive/Delete requests carry `active:true`, and only with
 `planCleanupActive:1`; without it those targets are left out and counted in the
 line. Restore and receipt-bound Undo never carry it.
 
+Selection ownership includes effective normalized location filters, not only the
+stored filter choices. Falling back to all locations clears the selection rule;
+a stale opener cannot widen it. Unsupported in-progress Archive/Delete targets
+are excluded before the 1,000-target ceiling, with a separate distinct-plan
+warning count. They still use the scan's slot/window budgets and cannot prevent
+Check more from continuing to eligible plans.
+
 One confirmation covers at most 1,000 targets. A complete loaded scope needs no
 read; otherwise a separate traversal of existing list/search reads checks at most
 2,000 plans or 40 request windows per explicit scan, whichever is reached first.

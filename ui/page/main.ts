@@ -82,6 +82,7 @@ let selectionEpoch = 0;
 function selectionChanged() { selectionEpoch++; frame?.updateUi(() => ({})); }
 let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
+let selectionHitCount = -1;
 let selectionSearchPlans: SearchViewState['page']['hits'][number]['plan'][] = [];
 let selectionPage = '';
 const derivedBoard = (vc: ViewContext<Ui>) => boardDerivation.get({
@@ -152,6 +153,11 @@ const toRegion = (vc: ViewContext<Ui>, key: 'removed' | 'cleared' | 'updated' | 
 function isSearching(vc: ViewContext<Ui>) {
   const s = vc.ui.search;
   return !!s && !!vc.read && vc.health?.planTaskSearch === 1 && s.owner === ownerOf(vc) && search.key === s.key;
+}
+/** A Select all rule belongs to the displayed scope, not a stale location choice. */
+function selectionScope(vc: ViewContext<Ui>) {
+  return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters,
+    isSearching(vc) ? vc.ui.search!.criteria : derivedBoard(vc).filters, vc.ui.search?.key ?? null]);
 }
 /** The submitted search of this frame identity, when the controller still runs it. */
 const searching = (vc: ViewContext<Ui>): SearchViewState | null => (isSearching(vc) ? search.view(resolveLanguage('auto', vc.env.locale)) : null);
@@ -263,9 +269,10 @@ startView<Ui>({
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
   tidyPlans: visiblePlans,
+  selectionScope,
   tidyArchived: vc => vc.ui.archived,
   tidyMatching: vc => isSearching(vc) || Object.values(derivedBoard(vc).filters).some(v => v !== ALL),
-  tidyScan: (vc, key, includes) => {
+  tidyScan: (vc, key, includes, allowActive = true) => {
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
     const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
@@ -285,7 +292,7 @@ startView<Ui>({
       const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
         { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
       return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
-    }, matching, criteria ? 64 : 50, includes);
+    }, matching, criteria ? 64 : 50, includes, allowActive);
   },
   // Stable through the run's own reconciliation (which temporarily clears read).
   tidyScope: vc => JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch]),
@@ -367,7 +374,7 @@ startView<Ui>({
     const v = capable ? searching(vc) : null;
     if (v) search.membership(env.live);
     // Derive once per list/search page, never walk every plan during an idle paint.
-    if (v && selectionHits !== v.page.hits) {
+    if (v && (selectionHits !== v.page.hits || selectionHitCount !== v.page.hits.length)) {
       const page = `${ui.search?.key}:${v.page.number}`;
       if (selectionPage === page && v.page.checked) {
         const keys = new Set(v.page.hits.map(h => h.plan.key));
@@ -375,10 +382,11 @@ startView<Ui>({
       }
       selectionPage = page;
       selectionHits = v.page.hits;
+      selectionHitCount = v.page.hits.length;
       selectionSearchPlans = [...new Map(v.page.hits.map(h => [h.plan.key, h.plan])).values()];
     }
     if (!v) selectionPlans = visiblePlans(vc);
-    selection.reconcile(JSON.stringify([ownerOf(vc), ui.archived, ui.filters, ui.search?.key ?? null]),
+    selection.reconcile(selectionScope(vc),
       v ? selectionSearchPlans : selectionPlans!, v ? true : !!read.truncated);
     const empty = !v && !read.plans.length && ui.filters.session === ALL;
     // Location selects live in Filters: browsing applies them on choice, a search reruns with them.
@@ -629,10 +637,11 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
     } : null,
   }, vc.env.locale));
   if (vc.health?.planCleanup === 1 && vc.read) {
+    const scope = selectionScope(vc);
     const current = () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch;
     area.querySelector('.ap-board-bar')?.append(selectionBar(selection, vc.env.locale, vc.ui.archived,
       () => { if (current()) selectionChanged(); },
-      action => { if (current()) vc.requestSelection(action, selection.snapshot()); },
+      action => { if (current()) vc.requestSelection(action, { ...selection.snapshot(), scope }); },
       vc.cleanup.pending || !!vc.failure));
   }
   const popup = area.querySelector<HTMLElement>('[data-live-popup]');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PlanSelection, selectionConfirmation, selectionCopy, CleanupScan, runTidy, type CleanupPlan } from '../../ui/shared/cleanup.ts';
+import { PlanSelection, selectionConfirmation, selectionTargets, selectionCopy, CleanupScan, runTidy, type CleanupPlan } from '../../ui/shared/cleanup.ts';
 
 const plan = (id: string, lifecycle: CleanupPlan['lifecycle'] = 'active'): CleanupPlan =>
   ({ key: id, id, title: id, sourceId: 'fixture', revision: 1, lifecycle });
@@ -62,4 +62,31 @@ test('departed search results are removed without clearing the other selected pa
   assert.equal(s.has(a.key), false);
   s.selectAll(); s.toggle(b);
   for (const locale of ['en', 'ru', 'zh-CN']) assert(!selectionCopy(locale).count(s.count, s.incomplete).includes('0+'));
+});
+
+test('unsupported active plans do not consume the loaded selection target ceiling', () => {
+  const active = Array.from({ length: 1000 }, (_, n) => plan(`active-${n}`));
+  const c = selectionConfirmation([...active, plan('closed', 'completed')], 'store', 'scope', false, 'delete', false);
+  assert.deepEqual(c.targets.map(p => p.key), ['closed']);
+  assert.equal(c.excludedActive, 1000);
+  assert.equal(c.limited, false);
+});
+
+test('unsupported active plans do not consume scan targets or prevent Check more', async () => {
+  const active = Array.from({ length: 2050 }, (_, n) => plan(`active-${n}`));
+  const library = [...active, plan('closed', 'completed')];
+  const cursors: (string | null)[] = [];
+  const scan = new CleanupScan('scope', 'store', false, async cursor => {
+    cursors.push(cursor); const offset = Number(cursor ?? 0), end = Math.min(offset + 50, library.length);
+    return { plans: library.slice(offset, end), visited: end - offset, nextCursor: end === library.length ? null : String(end) };
+  }, false, 50, () => true, false);
+  const first = selectionTargets((await scan.more(() => true))!, 'archive', false);
+  assert.equal(first.limited, false);
+  assert.equal(first.unchecked, true, 'the plan-slot bound must offer continuation, not an empty terminal ceiling');
+  assert.equal(first.excludedActive, 2000);
+  const second = selectionTargets((await scan.more(() => true))!, 'archive', false);
+  assert.deepEqual(second.targets.map(p => p.key), ['closed']);
+  assert.equal(second.excludedActive, 2050);
+  assert.equal(second.unchecked, false);
+  assert.equal(new Set(cursors).size, cursors.length, 'continuation must not recount excluded plans');
 });

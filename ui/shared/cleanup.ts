@@ -132,6 +132,8 @@ export class CleanupScan {
   private matching: boolean;
   private windowBound: number;
   private includes?: (plan: CleanupPlan) => boolean;
+  private allowActive: boolean;
+  private excludedActive = new Set<string>();
   constructor(
     context: string,
     storeId: string,
@@ -141,10 +143,12 @@ export class CleanupScan {
     /** Search windows visit at most 64 plans; reserve that before issuing one. */
     windowBound = 50,
     includes?: (plan: CleanupPlan) => boolean,
+    allowActive = true,
   ) {
     this.context = context; this.storeId = storeId; this.archived = archived;
     this.read = read; this.matching = matching; this.windowBound = windowBound;
     this.includes = includes;
+    this.allowActive = allowActive;
   }
   cancel() { this.retired = true; }
   async more(current: () => boolean): Promise<TidyConfirmation | null> {
@@ -162,7 +166,9 @@ export class CleanupScan {
           (page.nextCursor !== null && page.nextCursor === this.cursor)) throw new Error('Invalid cleanup scan continuation.');
         visited += page.visited;
         for (const p of page.plans) {
-          if (!(this.includes ? (p.cleanup?.state === 'archived') === this.archived && this.includes(p) : tidyEligible(p, this.archived)) || this.targets.has(p.key)) continue;
+          if (!(this.includes ? (p.cleanup?.state === 'archived') === this.archived && this.includes(p) : tidyEligible(p, this.archived))) continue;
+          if (this.targets.has(p.key) || this.excludedActive.has(p.key)) continue;
+          if (!this.allowActive && !cleanupClosed(p)) { this.excludedActive.add(p.key); continue; }
           if (this.targets.size >= TIDY_LIMIT) { this.overflow = true; break; }
           this.targets.set(p.key, cleanupTarget(p, this.storeId, this.context));
         }
@@ -170,6 +176,7 @@ export class CleanupScan {
         this.exhausted = this.cursor === null;
       }
       return { context: this.context, targets: [...this.targets.values()], total: this.targets.size,
+        ...(this.excludedActive.size ? { excludedActive: this.excludedActive.size } : {}),
         archived: this.archived, matching: this.matching,
         limited: this.overflow || this.targets.size === TIDY_LIMIT && !this.exhausted,
         unchecked: this.targets.size < TIDY_LIMIT && !this.exhausted };
@@ -231,19 +238,25 @@ export class PlanSelection {
   }
 }
 export interface SelectionRequest {
+  scope?: string;
   all: boolean;
   plans: CleanupPlan[];
   includes: (plan: CleanupPlan) => boolean;
 }
 export function selectionTargets(c: TidyConfirmation, action: CleanupAction, active: boolean): TidyConfirmation {
-  const activeCount = c.targets.filter(p => !cleanupClosed(p)).length;
-  const excludedActive = action !== 'restore' && !active ? activeCount : 0;
-  const targets = excludedActive ? c.targets.filter(cleanupClosed) : c.targets;
+  const activeTargets = c.targets.filter(p => !cleanupClosed(p)).length;
+  const activeCount = (c.excludedActive ?? 0) + activeTargets;
+  const exclude = action !== 'restore' && !active;
+  const excludedActive = (c.excludedActive ?? 0) + (exclude ? activeTargets : 0);
+  const targets = exclude ? c.targets.filter(cleanupClosed) : c.targets;
   return { ...c, selection: action, activeCount, excludedActive, targets, total: targets.length, deleting: action === 'delete' };
 }
 export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean) {
-  const eligible = plans.filter(p => (p.cleanup?.state === 'archived') === archived);
+  const matching = plans.filter(p => (p.cleanup?.state === 'archived') === archived);
+  const exclude = action !== 'restore' && !active;
+  const eligible = exclude ? matching.filter(cleanupClosed) : matching;
   return selectionTargets({ context, archived, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)),
+    excludedActive: matching.length - eligible.length,
     total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT }, action, active);
 }
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
