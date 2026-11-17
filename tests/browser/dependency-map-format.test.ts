@@ -66,5 +66,5 @@ for (const language of ['ru', 'en'] as const) for (const status of ['working', '
     assert.ok(nodes.find(node => node.dataset.testid === 'map-region').attributes['aria-label'].includes(language === 'ru' ? '1\u00a0000' : '1000'));
     assert.equal(nodes.find(node => node.dataset.testid === 'map-region').dataset.revision, '11000');
     const hidden = nodes.find(node => node.dataset.testid === 'map-hidden');
-    assert.equal(hidden.textContent, language === 'ru' ? 'Показаны все: 1\u00a0000 задач' : 'Showing all 1000 tasks');
+    assert.equal(hidden.textContent, language === 'ru' ? 'Показаны все: 1\u00a0000 задач.' : 'Showing all 1000 tasks.');
   });

@@ -36,7 +36,7 @@ const EN = {
   acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => `${plural(n, 'task', 'tasks')}: ${parts}${!compact && omitted ? `, ${omitted} more` : ''}`,
   claimed: (word: string, _compact: boolean) => `says ${word}`,
   unmatched: ' · not matched to one run', open: 'Open', openSession: (title: string) => `Open session ${title}`, startedBy: (title: string) => `started by ${title}`,
-  history: 'from session history', during: 'requested during this plan', ran: 'Run', claimedLabel: 'Sub-agent says', acceptedLabel: 'Task state',
+  history: 'from session history', during: 'requested during this plan', ran: 'Run', claimedLabel: 'Sub-agent', acceptedLabel: 'Task state',
   recordedTip: 'Runs recorded for this session and its sub-agents. A finished run is not a finished task.',
   hostTip: 'Sub-agents OpenChamber lists now; no run records were available.', soFar: 'so far', unchecked: 'more not checked',
   loss: 'Some runs weren’t recorded.', activityUnavailable: 'Current activity unavailable.', notEvery: 'Not every sub-agent is checked.', unavailable: 'Run records unavailable.',
@@ -69,7 +69,7 @@ const RU: typeof EN = {
   acceptedMany: (n, parts, omitted, compact) => `Задачи (${formatCount(n, 'ru')}): ${parts}${!compact && omitted ? `, ещё ${formatCount(omitted, 'ru')}` : ''}`,
   claimed: (word, _compact) => `говорит: ${word}`,
   unmatched: ' · не сопоставлено с отдельным запуском', open: 'Открыть', openSession: title => `Открыть сессию ${title}`, startedBy: title => `запущен из ${title}`,
-  history: 'из истории сессии', during: 'запрошен во время этого плана', ran: 'Запуск', claimedLabel: 'Слова субагента', acceptedLabel: 'Состояние задачи',
+  history: 'из истории сессии', during: 'запрошен во время этого плана', ran: 'Запуск', claimedLabel: 'Субагент', acceptedLabel: 'Состояние задачи',
   recordedTip: 'Запуски этой сессии и её субагентов. Завершённый запуск не означает выполненную задачу.',
   hostTip: 'Субагенты, которых сейчас показывает OpenChamber; записи запусков недоступны.', soFar: 'на данный момент', unchecked: 'остальные не проверены',
   loss: 'Некоторые запуски не записаны.', activityUnavailable: 'Текущая активность недоступна.', notEvery: 'Проверены не все субагенты.', unavailable: 'Записи запусков недоступны.',
@@ -102,7 +102,7 @@ const ZH: typeof EN = {
   acceptedMany: (n, parts, omitted, compact) => `${formatCount(n, 'zh-CN')} 个任务：${parts}${!compact && omitted ? `，另有 ${formatCount(omitted, 'zh-CN')} 个` : ''}`,
   claimed: (word, _compact) => `自述${word}`,
   unmatched: ' · 未匹配到单次运行', open: '打开', openSession: title => `打开会话 ${title}`, startedBy: title => `由 ${title} 启动`,
-  history: '来自会话历史', during: '在此计划期间请求启动', ran: '运行', claimedLabel: '子智能体自述', acceptedLabel: '任务状态',
+  history: '来自会话历史', during: '在此计划期间请求启动', ran: '运行', claimedLabel: '子智能体', acceptedLabel: '任务状态',
   recordedTip: '此会话及其子智能体的运行记录。运行结束不等于任务完成。',
   hostTip: 'OpenChamber 当前列出的子智能体；没有可用的运行记录。', soFar: '截至目前', unchecked: '更多未检查',
   loss: '部分运行未被记录。', activityUnavailable: '当前活动不可用。', notEvery: '并非所有子智能体都已检查。', unavailable: '运行记录不可用。',
@@ -417,7 +417,8 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
-  const notes = coverageNode(r.notes.filter(separateNote), v.runs, language);
+  // The shell already shows recording-off once for the whole surface.
+  const notes = coverageNode(r.notes.filter(n => separateNote(n) && n.kind !== 'capture-off'), v.runs, language);
   if (notes) section.append(notes);
   return section;
 }

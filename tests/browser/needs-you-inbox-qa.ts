@@ -10,6 +10,7 @@ import { launchChromium } from './phone-cdp.ts';
 import { inboxIntegration } from '../fixtures/inbox-integration.ts';
 import { needsYouMembershipIntegration } from '../fixtures/needs-you-membership.ts';
 import { S, SRC } from './fixtures.ts';
+import { internalCopy } from './interface-copy.ts';
 
 const arg = (key: string) => process.argv[process.argv.indexOf(key) + 1];
 const artifacts = arg('--artifacts'), chromium = arg('--chromium');
@@ -118,7 +119,7 @@ try {
   check('literal-in-place-no-pinned-reading', await guest('panel', `return d.querySelector('${row('task-a')} [data-testid="needs-you-reason"]').textContent==='Two formats meet the brief.' && !d.querySelector('[data-testid="needs-you-reading"]')`));
   await c.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
   await click('panel', `${row('task-a')} [data-testid="needs-you-copy-reply"] button`);
-  await wait('panel', `d.querySelector('${row('task-a')} [data-testid="needs-you-copy-status"]').textContent.includes('copied')`);
+  await wait('panel', `d.querySelector('${row('task-a')} [data-testid="needs-you-copy-status"]').textContent.includes('Copied')`);
   check('clipboard-literal-titles', await guest('panel', `return w.navigator.clipboard.readText().then(text=>text.includes('Choose CSV or JSON')&&text.includes('Export pipeline')&&text.endsWith('\\n\\n'))`));
   const before = await evaluate<number>('qa.messages.length');
   await click('panel', `${row('task-a')} [data-testid="needs-you-open-session"] button`);
@@ -220,6 +221,14 @@ try {
     const tree = await c.send('Page.getFrameTree');
     const frameId = tree.frameTree.childFrames.find((f: any) => f.frame.url.includes('/ui/panel/')).frame.id;
     const ax = await c.send('Accessibility.getFullAXTree', { frameId });
+    const visible = await guest<string>('panel', `return d.querySelector('[data-testid="progress-root"]').innerText`);
+    const inboxText = await guest<string>('panel', `return d.querySelector('[data-testid="needs-you-inbox"]').innerText`);
+    const axNames = ax.nodes.filter((n: any) => !n.ignored && n.role?.value !== 'InlineTextBox').flatMap((n: any) => [n.name?.value, n.description?.value]).filter(Boolean).join('\n');
+    check(`phone-${locale}-${darkMode}-no-spelled-out-lower-bound`, !/\bat least\b|не менее|至少/iu.test(visible + '\n' + axNames));
+    check(`phone-${locale}-${darkMode}-plain-inbox-copy`, internalCopy(inboxText).length === 0);
+    const labels = ({ en: ['Why', 'Asks you to'], ru: ['Почему', 'Что нужно сделать'], 'zh-CN': ['原因', '需要你做的事'] } as Record<string, string[]>)[locale];
+    check(`phone-${locale}-${darkMode}-request-labels`, await guest('panel', `return ${js(labels)}.every(label=>[...d.querySelectorAll('${row('task-a')} .ap-inbox-facts > span')].some(n=>n.textContent===label))`));
+    check(`phone-${locale}-${darkMode}-lower-bound-plus-and-exact-tooltip`, await guest('panel', `const times=[...d.querySelectorAll('[data-testid="needs-you-inbox"] time[data-kind="lower-bound"]')];return times.length>0&&times.every(n=>n.textContent.endsWith('+')&&n.title&&n.dateTime)`));
     const names = ({ en: ['Open session', 'Copy reply', 'Hide'], ru: ['Открыть сессию', 'Скопировать ответ', 'Скрыть'], 'zh-CN': ['打开会话', '复制回复', '隐藏'] } as Record<string, string[]>)[locale];
     check(`phone-${locale}-${darkMode}-accessible-actions`, names.every(name => ax.nodes.some((n: any) => n.role?.value === 'button' && n.name?.value === name)));
     await shot(`phone-${locale}-${darkMode ? 'dark' : 'light'}`);

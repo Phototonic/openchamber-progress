@@ -638,7 +638,7 @@ test('P2: a terminal run with the SDK still holding that execution\'s Running sn
   emit('running'); ({ r, e } = entry([done]));
   assert.deepEqual([e.ran.label, e.now], ['Finished', { kind: 'active', label: 'Running' }]);
   assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '1 finished']);
-  emit('waiting-question'); ({ r } = entry([done])); assert.equal(r.summary[0].text, '1 waiting on you');
+  emit('waiting-question'); ({ r } = entry([done])); assert.equal(r.summary[0].text, '1 waiting for you');
   emit('idle'); ({ r, e } = entry([done]));
   assert.equal(e.now, null);
   assert.equal(r.featured.filter((x) => x.runId).length, 0, 'once idle again it folds back into the earlier list');
@@ -654,7 +654,7 @@ test('coverage gate: retained host rows during a reload or incomplete coverage g
     rosterFor(input({ facts, census: censusFor('A', alpha.directory, snap(records, {}, coverage)), runs: panel(readOf([live])) }))!;
   // Full coverage: the host words are current.
   const full = roster([{ directory: alpha.directory, state: 'ready' }]);
-  assert.deepEqual(full.summary.map((s) => s.text), ['2 waiting on you', '1 running']);
+  assert.deepEqual(full.summary.map((s) => s.text), ['2 waiting for you', '1 running']);
   assert.ok(!full.notes.some((n) => n.kind === 'host-activity-unavailable'), 'no note in the normal state');
   for (const coverage of [[{ directory: alpha.directory, state: 'loading' as const }], [{ directory: alpha.directory, state: 'error' as const }], null]) {
     const r = roster(coverage);
@@ -1028,10 +1028,10 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   const unloaded = rosterFor(input({ census: census('waiting-question'), runs: panel(read, [], { hasMore: true }) }))!;
   assert.equal(unloaded.featured[0].sessionId, 'K50', 'still shown, first');
   assert.deepEqual(texts(unloaded), ['51+ running'], 'not added to any count while it may be recorded; current activity remains qualified');
-  assert.deepEqual(texts(rosterFor(input({ census: census('waiting-question'), runs: panel(read, [rows[50]]) }))), ['1 waiting on you', '50 running']);
+  assert.deepEqual(texts(rosterFor(input({ census: census('waiting-question'), runs: panel(read, [rows[50]]) }))), ['1 waiting for you', '50 running']);
   // Every recorded child loaded: a host-only child really is unrecorded and is counted (once).
   const extra = censusFor('A', alpha.directory, snap([rec('A', null), rec('K0', 'A', { activity: 'running' }), rec('X1', 'A', { activity: 'running' }), rec('X2', 'A', { activity: 'waiting-permission' })]));
-  assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting on you', '2 running']);
+  assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting for you', '2 running']);
 });
 
 test('host row limit: a truncated host census is disclosed and host-only counts are not presented as complete', () => {
@@ -1044,7 +1044,7 @@ test('host row limit: a truncated host census is disclosed and host-only counts 
   const at = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids(128, 'waiting-question'))), runs: panel(empty) }))!;
   assert.ok(!at.notes.some((n) => n.kind === 'host-truncated'));
   assert.equal(at.hostTruncated, false);
-  assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting on you', '127 running']);
+  assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting for you', '127 running']);
 });
 
 test('lower-bound marks are count-specific in three languages; complete completed-run totals stay exact', () => {
@@ -1136,7 +1136,7 @@ test('latest run per child: a historical summary\'s later session update never d
     const r = rosterFor(input({ census, runs: panel(readOf(rows)) }))!;
     const all = [...r.featured, ...r.earlier];
     const cur = all.find((e) => e.runId === live.id)!, hist = all.find((e) => e.runId === past.id)!;
-    assert.deepEqual(r.summary.map((s) => s.text), ['1 waiting on you', '1 finished'], 'the dispatch keeps the current waiting state');
+    assert.deepEqual(r.summary.map((s) => s.text), ['1 waiting for you', '1 finished'], 'the dispatch keeps the current waiting state');
     assert.equal(cur.ran.kind, 'waiting');
     assert.ok(cur.accepted, 'task facts stay on the dispatch record');
     assert.equal(hist.accepted, null);

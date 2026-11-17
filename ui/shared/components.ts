@@ -373,7 +373,7 @@ export function age(iso: string, env: Env, prefix = '') {
 
 const elapsedLabelText = (kind: string | undefined, ms: number, locale = 'en') => {
   const text = elapsedText(ms, locale);
-  return text === null ? say('time unknown', locale) : kind === 'lower-bound' ? say('at least {time}', locale, { time: text }) : text;
+  return text === null ? say('time unknown', locale) : kind === 'lower-bound' ? `${text}+` : text;
 };
 
 /**

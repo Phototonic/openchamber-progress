@@ -260,10 +260,12 @@ test('ticker relabels anchored elapsed values, unknowns and tooltips using its e
   const root = { querySelectorAll: (selector: string) => selector === 'time[data-elapsed]' ? [elapsed]
     : selector === '[data-elapsed-unknown]' ? [unknown] : [] };
   c.refreshLabels(root, 'ru', 0, 60_000);
-  assert.equal(elapsed.textContent, 'не менее 2 мин');
+  assert.equal(elapsed.textContent, '2 мин+');
   assert.match(elapsed.title, /начало неизвестно/);
   assert.equal(unknown.textContent, 'время неизвестно');
   c.refreshLabels(root, 'en', 0, 60_000);
-  assert.equal(elapsed.textContent, 'at least 2 min');
+  assert.equal(elapsed.textContent, '2 min+');
   assert.match(elapsed.title, /start unknown/);
+  c.refreshLabels(root, 'zh-CN', 0, 60_000);
+  assert.equal(elapsed.textContent, '2 分钟+');
 });

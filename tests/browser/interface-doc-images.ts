@@ -78,9 +78,25 @@ try {
   await show('panel', 390, 844);
   await wait('panel', `!!d.querySelector('[data-testid="map-card-task-b"]')`);
   await shot('panel', 'rail');
+  await click('panel', '[data-testid="plan-view-list"] button');
+  await wait('panel', `!!d.querySelector('[data-testid="item-toggle-task-b"]')`);
+  await shot('panel', 'rail-list');
+  await click('panel', '[data-testid="plan-view-map"] button');
+  await wait('panel', `!!d.querySelector('[data-testid="map-card-task-b"]')`);
+  await click('panel', '[data-testid="map-help-trigger"]');
+  await wait('panel', `d.querySelector('[data-testid="map-help"]').open`);
+  await shot('panel', 'rail-help');
+  await click('panel', '[data-testid="map-help-trigger"]');
   await show('page', 1280, 900);
   await wait('page', `!!d.querySelector('[data-testid="map-card-task-b"]')`);
   await shot('page', 'board');
+  await click('page', '[data-testid="map-help-trigger"]');
+  await wait('page', `d.querySelector('[data-testid="map-help"]').open`);
+  await shot('page', 'board-help');
+  await click('page', '[data-testid="map-help-trigger"]');
+  await click('page', '[data-testid="map-card-task-b"]');
+  await wait('page', `d.querySelector('[data-testid="map-inspector"]').dataset.selected==='task-b'`);
+  await shot('page', 'board-selected');
   // Capture the actual live arrow animation, not reconstructed image frames.
   for (let i = 0; i < 24; i++) {
     await new Promise(r => setTimeout(r, 100)); // recording cadence, not a readiness wait
