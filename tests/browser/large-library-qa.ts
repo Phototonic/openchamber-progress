@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { startSearchShell } from './plan-task-search-shell.ts';
 import { launchChromium } from './phone-cdp.ts';
 import { boardInput } from './board-qa.ts';
+import { searchStatusText } from '../../ui/shared/search.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 
 const args = process.argv.slice(2);
@@ -101,6 +102,11 @@ async function searchJourney() {
   await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' });
   await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter' });
   await wait('page', `!!d.querySelector('[data-testid="search-more"] button')&&!d.querySelector('[data-testid="search-results"] [data-testid="search-loading"]')`);
+  // More can be ready before the first action's queued live-region write. Observe
+  // continuation speech only after that initial outcome has actually arrived.
+  const firstCounts = await guest('page', `const n=d.querySelector('[data-testid="search-counts"]');return {matchedPlans:Number(n.dataset.matchedPlans),matchingTasks:Number(n.dataset.matchingTasks),shown:Number(n.dataset.shown)}`);
+  const firstAnnouncement = searchStatusText({ kind: 'outcome', ...firstCounts, exhausted: false });
+  await wait('page', `d.querySelector('[data-testid="search-announcer"]')?.textContent===${JSON.stringify(firstAnnouncement)}`);
   const before = await guest('page', `const n=d.querySelector('[data-testid="search-more"] button');n.scrollIntoView({block:'center'});n.focus();w.__searchButton=n;w.__searchAnnouncements=[];let last=d.querySelector('[data-testid="search-announcer"]')?.textContent??'';w.__searchObserver=new w.MutationObserver(()=>{const text=d.querySelector('[data-testid="search-announcer"]')?.textContent??'';if(text&&text!==last)w.__searchAnnouncements.push(text);last=text});w.__searchObserver.observe(d.body,{childList:true,subtree:true,characterData:true});return {page:d.querySelector('[data-testid="search-results"]').dataset.page,shown:Number(d.querySelector('[data-testid="search-counts"]').dataset.shown)}`);
   await guest('page', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
   const point = await guest('page', `const a=w.__searchButton.getBoundingClientRect(),b=w.frameElement.getBoundingClientRect();return {x:b.x+a.x+a.width/2,y:b.y+a.y+a.height/2}`);
