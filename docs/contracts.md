@@ -1810,6 +1810,14 @@ text retain the owned section too. Clients can still omit/truncate descriptions
 below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
+The inline and packaged skill explain that `closed` while a reported plan was
+in progress, a refused reopen, or `not-found` for a plan the agent started means
+the user archived or deleted it: stop reporting, do not retry, and do not recreate
+it (including under another identifier) unless the user specifically asks.
+Ordinary continuation of an agent-finished plan still uses the coordinator's
+explicit `revise`/`commit` with `reopen:true`. This is advisory guidance only;
+tool inputs, validation, replies and size limits are unchanged.
+
 The start/revise guidance floor asks agents to report only known real prerequisites
 in each task's optional `dependencies` array, using same-plan task IDs that must
 finish first. Full structural replacements (`revise` or `stage`/`commit`) must
