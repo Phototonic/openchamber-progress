@@ -25,7 +25,7 @@ export const INBOX_COPY = {
     heading: 'Needs you',
     scope: 'Decisions and reviews reported in all current plans of this OpenCode setup.',
     tasks: (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`,
-    atLeastTasks: (n: number) => `at least ${n} ${n === 1 ? 'task' : 'tasks'}`,
+    atLeastTasks: (n: number) => `${n}+ tasks`,
     summary: (n: number) => (n === 1 ? '1 task needs you' : `${n} tasks need you`),
     summaryAtLeast: (n: number) => `${n}+ tasks need you`,
     none: 'Nothing needs you right now.',
@@ -46,10 +46,10 @@ export const INBOX_COPY = {
     rechecking: 'Rechecking loaded plans. Later rows may be out of date; counts include only the first checked window until this finishes.',
     recheckWaiting: 'Waiting for the next refresh to recheck loaded plans. Later rows may be out of date; counts include only the first checked window.',
     showMore: (n: number) => `Show ${n} more`, showFewer: 'Show fewer',
-    also: (n: number, exact: boolean) => `Also blocked · ${exact ? n : `${n}+`}`,
+    also: (n: number, exact: boolean) => `${n}${exact ? '' : '+'} more blocked on other work`,
     alsoNote: 'Other blocked work, including sub-agent requests to their parent.',
     open: (task: string, plan: string) => `Open ${task} in ${plan}`,
-    plan: 'Plan: ', reason: 'Reason', next: 'Next step', unknown: 'Unknown',
+    plan: 'Plan: ', reason: 'Why', next: 'Asks you to', nextOther: 'Next step', unknown: 'Unknown',
     waiting: 'Waiting', waitUnknown: 'Waiting time unknown', waitUnavailable: 'Waiting time unavailable',
     waitExact: (at: string) => `Blocked since ${at}`,
     waitLower: (at: string) => `Already blocked at ${at}; start unknown.`,
@@ -78,7 +78,7 @@ export const INBOX_COPY = {
     heading: 'Нужно ваше участие',
     scope: 'Решения и проверки из отчётов во всех текущих планах этой установки OpenCode.',
     tasks: (n: number) => `${num(n, 'ru')} ${forms(n, 'ru', 'задача', 'задачи', 'задач')}`,
-    atLeastTasks: (n: number) => `не менее ${num(n, 'ru')} ${forms(n, 'ru', 'задачи', 'задач', 'задач')}`,
+    atLeastTasks: (n: number) => `${num(n, 'ru')}+ задач`,
     summary: (n: number) => `Нужно ваше участие: ${num(n, 'ru')} ${forms(n, 'ru', 'задача', 'задачи', 'задач')}`,
     summaryAtLeast: (n: number) => `Нужно ваше участие: ${num(n, 'ru')}+`,
     none: 'Сейчас ничего не требует вашего участия.',
@@ -99,10 +99,10 @@ export const INBOX_COPY = {
     rechecking: 'Повторно проверяем загруженные планы. Дальние строки могут быть устаревшими; до завершения счётчики учитывают только первое проверенное окно.',
     recheckWaiting: 'Ждём следующего обновления, чтобы повторно проверить загруженные планы. Дальние строки могут быть устаревшими; счётчики учитывают только первое проверенное окно.',
     showMore: (n: number) => `Показать ещё ${num(n, 'ru')}`, showFewer: 'Свернуть',
-    also: (n: number, exact: boolean) => `Также заблокировано · ${exact ? num(n, 'ru') : `${num(n, 'ru')}+`}`,
+    also: (n: number, exact: boolean) => `Ещё заблокировано другой работой: ${num(n, 'ru')}${exact ? '' : '+'}`,
     alsoNote: 'Другие заблокированные задачи, включая запросы субагентов к родительской сессии.',
     open: (task: string, plan: string) => `Открыть «${task}» в плане «${plan}»`,
-    plan: 'План: ', reason: 'Причина', next: 'Следующий шаг', unknown: 'Неизвестно',
+    plan: 'План: ', reason: 'Почему', next: 'Что нужно сделать', nextOther: 'Следующий шаг', unknown: 'Неизвестно',
     waiting: 'Ожидает', waitUnknown: 'Время ожидания неизвестно', waitUnavailable: 'Время ожидания недоступно',
     waitExact: (at: string) => `Заблокирована с ${at}`,
     waitLower: (at: string) => `Уже заблокирована к ${at}; начало неизвестно.`,
@@ -131,7 +131,7 @@ export const INBOX_COPY = {
     heading: '需要你处理',
     scope: '此 OpenCode 配置所有当前计划中报告的决策和审阅事项。',
     tasks: (n: number) => `${num(n, 'zh-CN')} 个任务`,
-    atLeastTasks: (n: number) => `至少 ${num(n, 'zh-CN')} 个任务`,
+    atLeastTasks: (n: number) => `${num(n, 'zh-CN')}+ 个任务`,
     summary: (n: number) => `${num(n, 'zh-CN')} 个任务需要你处理`,
     summaryAtLeast: (n: number) => `${num(n, 'zh-CN')}+ 个任务需要你处理`,
     none: '目前没有需要你处理的事项。', noneShort: '没有需要你处理的事项', noneYet: '尚未找到需要你处理的事项',
@@ -149,10 +149,10 @@ export const INBOX_COPY = {
     rechecking: '正在重新检查已加载的计划。后续行可能已过期；完成前计数仅涵盖首个已检查窗口。',
     recheckWaiting: '等待下次刷新以重新检查已加载的计划。后续行可能已过期；计数仅涵盖首个已检查窗口。',
     showMore: (n: number) => `再显示 ${num(n, 'zh-CN')} 项`, showFewer: '收起',
-    also: (n: number, exact: boolean) => `其他受阻任务 · ${num(n, 'zh-CN')}${exact ? '' : '+'}`,
+    also: (n: number, exact: boolean) => `${num(n, 'zh-CN')}${exact ? '' : '+'} 项因其他工作受阻`,
     alsoNote: '其他受阻任务，包括子智能体向父会话提出的请求。',
     open: (task: string, plan: string) => `打开“${plan}”中的“${task}”`,
-    plan: '计划：', reason: '原因', next: '下一步', unknown: '未知',
+    plan: '计划：', reason: '原因', next: '需要你做的事', nextOther: '下一步', unknown: '未知',
     waiting: '等待中', waitUnknown: '等待时长未知', waitUnavailable: '等待时长不可用',
     waitExact: (at: string) => `自 ${at} 起受阻`,
     waitLower: (at: string) => `${at} 时已受阻，开始时间未知。`,
@@ -176,16 +176,16 @@ export const INBOX_COPY = {
 export const inboxCopy = (locale: string) => INBOX_COPY[resolveLanguage('auto', locale)];
 
 const COMPACT_COPY = {
-  en: { session: 'This session', plan: 'This plan', all: 'All plans', open: 'Open session', unavailable: 'This session is not available here.', copy: 'Copy reply', copied: 'Reply frame copied.', fallback: 'Copy this reply frame:', hide: 'Hide', undo: 'Undo hide', unhide: 'Show again', savedFailed: 'Could not save this choice on this device.', readFailed: 'Could not read saved choices on this device.', other: (n: string) => `${n} need you in other plans`, hidden: (n: number) => `Hidden items · ${n}`, reply: (task: string, plan: string) => `Reply about “${task}” in “${plan}”:\n\n` },
-  ru: { session: 'Эта сессия', plan: 'Этот план', all: 'Все планы', open: 'Открыть сессию', unavailable: 'Эта сессия здесь недоступна.', copy: 'Скопировать ответ', copied: 'Шаблон ответа скопирован.', fallback: 'Скопируйте шаблон ответа:', hide: 'Скрыть', undo: 'Отменить скрытие', unhide: 'Показать снова', savedFailed: 'Не удалось сохранить выбор на этом устройстве.', readFailed: 'Не удалось прочитать сохранённый выбор на этом устройстве.', other: (n: string) => `Нужно ваше участие в других планах: ${n}`, hidden: (n: number) => `Скрытые задачи · ${n}`, reply: (task: string, plan: string) => `Ответ по задаче «${task}» в плане «${plan}»:\n\n` },
-  'zh-CN': { session: '此会话', plan: '此计划', all: '所有计划', open: '打开会话', unavailable: '此会话在这里不可用。', copy: '复制回复', copied: '回复模板已复制。', fallback: '复制此回复模板：', hide: '隐藏', undo: '撤销隐藏', unhide: '重新显示', savedFailed: '无法在此设备上保存选择。', readFailed: '无法读取此设备上保存的选择。', other: (n: string) => `其他计划中有 ${n} 项需要你处理`, hidden: (n: number) => `已隐藏事项 · ${n}`, reply: (task: string, plan: string) => `关于“${plan}”中“${task}”的回复：\n\n` },
+  en: { session: 'This session', plan: 'This plan', all: 'All plans', open: 'Open session', unavailable: 'This session is not available here.', copy: 'Copy reply', copied: 'Copied; paste it in the session’s message box, then edit and send.', fallback: 'Copy this reply frame:', hide: 'Hide', undo: 'Undo hide', unhide: 'Show again', savedFailed: 'Could not save this choice on this device.', readFailed: 'Could not read saved choices on this device.', other: (n: string) => `${n} need you in other plans`, hidden: (n: number) => `Hidden items · ${n}`, reply: (task: string, plan: string) => `Reply about “${task}” in “${plan}”:\n\n` },
+  ru: { session: 'Эта сессия', plan: 'Этот план', all: 'Все планы', open: 'Открыть сессию', unavailable: 'Эта сессия здесь недоступна.', copy: 'Скопировать ответ', copied: 'Скопировано; вставьте в поле сообщения сессии, затем измените и отправьте.', fallback: 'Скопируйте шаблон ответа:', hide: 'Скрыть', undo: 'Отменить скрытие', unhide: 'Показать снова', savedFailed: 'Не удалось сохранить выбор на этом устройстве.', readFailed: 'Не удалось прочитать сохранённый выбор на этом устройстве.', other: (n: string) => `Нужно ваше участие в других планах: ${n}`, hidden: (n: number) => `Скрытые задачи · ${n}`, reply: (task: string, plan: string) => `Ответ по задаче «${task}» в плане «${plan}»:\n\n` },
+  'zh-CN': { session: '此会话', plan: '此计划', all: '所有计划', open: '打开会话', unavailable: '此会话在这里不可用。', copy: '复制回复', copied: '已复制，请粘贴到会话输入框，编辑后发送。', fallback: '复制此回复模板：', hide: '隐藏', undo: '撤销隐藏', unhide: '重新显示', savedFailed: '无法在此设备上保存选择。', readFailed: '无法读取此设备上保存的选择。', other: (n: string) => `其他计划中有 ${n} 项需要你处理`, hidden: (n: number) => `已隐藏事项 · ${n}`, reply: (task: string, plan: string) => `关于“${plan}”中“${task}”的回复：\n\n` },
 };
 export const compactInboxCopy = (locale: string) => COMPACT_COPY[resolveLanguage('auto', locale)];
 export const replyFrame = (row: InboxRowView, locale: string) => compactInboxCopy(locale).reply(row.task.title, row.planTitle);
 const hiddenNotice = (locale: string) => ({
-  en: 'Hidden on this device until the task’s details change.',
-  ru: 'Скрыто на этом устройстве, пока сведения задачи не изменятся.',
-  'zh-CN': '已在此设备上隐藏，任务详情更改后将重新显示。',
+  en: 'Hidden on this device until this task changes.',
+  ru: 'Скрыто на этом устройстве, пока задача не изменится.',
+  'zh-CN': '已在此设备上隐藏，任务更改后将重新显示。',
 })[resolveLanguage('auto', locale)];
 export function revealInboxTask(reading: ReadingView | null, plan: PlanView | null, row: InboxRowView, revealMap?: (id: string) => boolean) {
   if (!plan || plan.key !== row.planKey) return;
@@ -303,10 +303,7 @@ function waitLabel(row: InboxRowView, m: InboxModel, env: Env) {
   const at = absoluteTime(a.since, env.locale);
   time.title = a.kind === 'exact' ? t.waitExact(at) : t.waitLower(at);
   const text = elapsedText(elapsedAt(a, env.mono), env.locale);
-  const lowerBound: Record<InterfaceLanguage, (value: string) => string> = {
-    en: value => `at least ${value}`, ru: value => `не менее ${value}`, 'zh-CN': value => `至少 ${value}`,
-  };
-  time.textContent = text === null ? t.unknown : a.kind === 'lower-bound' ? lowerBound[resolveLanguage('auto', env.locale)](text) : text;
+  time.textContent = text === null ? t.unknown : a.kind === 'lower-bound' ? `${text}+` : text;
   wrap.append(el('span', 'ap-muted', `${t.waiting} `), time);
   return wrap;
 }
@@ -342,7 +339,7 @@ function rowItem(row: InboxRowView, index: number, prefix: string, m: InboxModel
       dl.append(pair);
     };
     add(t.reason, row.blocker.reason, 'needs-you-reason');
-    add(t.next, row.blocker.nextAction, 'needs-you-next');
+    add(inboxGroup(row) === 'needs-you' ? t.next : t.nextOther, row.blocker.nextAction, 'needs-you-next');
     facts.append(dl);
   }
   li.append(b, facts);
@@ -424,7 +421,7 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
     box.append(testid(warningLine(t.stale(clockTime(options.stale, env.locale)), 'warning', 'p'), 'needs-you-stale'));
     if (options.retry) button(box, 'needs-you-retry', t.retry, options.retry, 'ghost');
   }
-  if (!m.captureEnabled) box.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
+  // Recording state belongs to the surface's one non-dismissible recording line.
   if (!m.counts.needsYou && !state.all && other) button(box, 'needs-you-other-plans', c.other(`${other}${panel.model.complete && options.stale === null ? '' : '+'}`), () => { state.all = true; state.expanded = true; void device?.setExpanded(surface, true); options.changed(); }, 'ghost');
   const body = testid(el('div', 'ap-inbox-content'), 'needs-you-content'); body.id = 'ap-inbox-content'; body.hidden = !expanded;
   box.append(body);

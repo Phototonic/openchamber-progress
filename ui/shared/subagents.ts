@@ -12,6 +12,10 @@ import type { ItemStatus, PlanView } from './model.ts';
 import type { RunsPanel } from './runs.ts';
 import type { InterfaceLanguage } from './i18n.ts';
 
+const russianCountWord = (n: number | string, one: string, few: string, many: string) => {
+  const form = new Intl.PluralRules('ru').select(Number(String(n).replace(/\s/gu, '')));
+  return form === 'one' ? one : form === 'few' ? few : many;
+};
 const COPY = {
   en: {
     reasons: { user: 'stopped by the user', shutdown: 'the host shut down', superseded: 'replaced by a newer run', inactivity: 'inactive too long', unknown: 'reason not recorded' },
@@ -21,7 +25,7 @@ const COPY = {
     updated: 'last updated ', started: 'started ', dispatched: 'request sent ', idle: 'Idle now; outcome unknown', running: 'Running', outcome: 'Outcome unknown',
     pending: 'Launch requested; not confirmed yet', dispatchFailed: 'Launch request failed before a run was confirmed', unconfirmed: 'Not confirmed by the host', noOutcome: 'Outcome unknown',
     unavailable: 'Current activity unavailable', session: (id: string) => `Session ${id}`, subagent: 'Sub-agent',
-    summary: { waiting: (n: number | string) => `${n} waiting on you`, running: (n: number | string) => `${n} running`, finished: (n: number | string) => `${n} finished`, failed: (n: number | string) => `${n} failed`, interrupted: (n: number | string) => `${n} interrupted`, unknown: (n: number | string) => `${n} unknown` },
+    summary: { waiting: (n: number | string) => `${n} waiting for you`, running: (n: number | string) => `${n} running`, finished: (n: number | string) => `${n} finished`, failed: (n: number | string) => `${n} failed`, interrupted: (n: number | string) => `${n} interrupted`, unknown: (n: number | string) => `${n} unknown` },
   },
   ru: {
     reasons: { user: 'остановлен пользователем', shutdown: 'хост завершил работу', superseded: 'заменён новым запуском', inactivity: 'слишком долгая неактивность', unknown: 'причина не записана' },
@@ -31,7 +35,7 @@ const COPY = {
     updated: 'обновлён ', started: 'начат ', dispatched: 'запрос отправлен ', idle: 'Сейчас бездействует; результат неизвестен', running: 'Выполняется', outcome: 'Результат неизвестен',
     pending: 'Запуск запрошен; ещё не подтверждён', dispatchFailed: 'Ошибка запроса до подтверждения запуска', unconfirmed: 'Не подтверждён хостом', noOutcome: 'Результат неизвестен',
     unavailable: 'Текущая активность недоступна', session: (id: string) => `Сессия ${id}`, subagent: 'Субагент',
-    summary: { waiting: (n: number | string) => `Ждут вас: ${n}`, running: (n: number | string) => `Выполняются: ${n}`, finished: (n: number | string) => `Завершены: ${n}`, failed: (n: number | string) => `С ошибкой: ${n}`, interrupted: (n: number | string) => `Прерваны: ${n}`, unknown: (n: number | string) => `Результат неизвестен: ${n}` },
+    summary: { waiting: (n: number | string) => `${n} ${russianCountWord(n, 'ждёт вас', 'ждут вас', 'ждут вас')}`, running: (n: number | string) => `${n} ${russianCountWord(n, 'выполняется', 'выполняются', 'выполняются')}`, finished: (n: number | string) => `${n} ${russianCountWord(n, 'завершён', 'завершены', 'завершено')}`, failed: (n: number | string) => `${n} с ошибкой`, interrupted: (n: number | string) => `${n} ${russianCountWord(n, 'прерван', 'прерваны', 'прервано')}`, unknown: (n: number | string) => `${n} с неизвестным результатом` },
   },
   'zh-CN': {
     reasons: { user: '由用户停止', shutdown: '宿主关闭', superseded: '被较新的运行取代', inactivity: '长时间无活动', unknown: '未记录原因' },

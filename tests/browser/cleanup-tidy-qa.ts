@@ -104,7 +104,7 @@ try {
     const count = await posts();
     await open(s);
     const targetCount = await guest<number>(s, `return d.querySelectorAll('[data-testid="tidy-confirm"] li').length`);
-    check(id + '-label', await guest(s, `return d.querySelector('#tidy-heading').textContent===${js(t.heading)}`));
+    check(id + '-label', await guest(s, `return d.querySelector('#tidy-heading').textContent===${js(t.heading(targetCount))}&&d.querySelector('[data-testid="tidy-confirm-archive"] button').textContent===${js(t.confirm(targetCount))}`));
     check(id + '-failed-kept', await guest(s, `return d.querySelector('[data-testid="tidy-confirm"]').textContent.includes(${js(t.failed)}) && ![...d.querySelectorAll('[data-testid="tidy-confirm"] li')].some(n=>n.textContent.includes('P-failed'))`));
     check(id + '-reflow', await guest(s, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
     await shot(id + '-confirm');

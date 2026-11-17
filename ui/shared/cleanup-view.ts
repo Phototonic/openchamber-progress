@@ -112,7 +112,7 @@ function tidyBlock<U>(vc: ViewContext<U>) {
     const c = state.confirmation;
     const confirm = testid(el('div', 'ap-cleanup-confirm'), 'tidy-confirm');
     confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-labelledby', 'tidy-heading');
-    const heading = el('h3', '', text.heading); heading.id = 'tidy-heading';
+    const heading = el('h3', '', text.heading(c.targets.length)); heading.id = 'tidy-heading';
     confirm.append(heading, el('p', '', text.count(c.targets.length, c.total)), el('p', '', text.effect), el('p', 'ap-note', text.failed));
     const list = el('ul');
     // Fifty literal titles must not push confirmation controls out of a phone frame.
@@ -129,7 +129,7 @@ function tidyBlock<U>(vc: ViewContext<U>) {
     confirm.append(list);
     const actions = el('div', 'ap-row');
     button(actions, 'tidy-cancel', text.cancel, vc.cancelTidy, 'outline', vc.cleanup.pending);
-    button(actions, 'tidy-confirm-archive', vc.cleanup.pending ? text.pending : text.confirm, () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.confirmTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
+    button(actions, 'tidy-confirm-archive', vc.cleanup.pending ? text.pending : text.confirm(c.targets.length), () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.confirmTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
     confirm.append(actions);
     confirm.addEventListener('keydown', event => { if (event.key === 'Escape' && !vc.cleanup.pending) { event.preventDefault(); vc.cancelTidy(); } });
     box.append(confirm);

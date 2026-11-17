@@ -111,6 +111,7 @@ try {
         const target = mode === 'failure' ? '[role="alert"][data-testid^="state-"]' : `[data-testid="${hook}"]`;
         await wait(inFrame(s, `!!d.querySelector(${js(target)})`), `${s}:${mode}:settled`);
         await scan(s, `${language}:${mode}`);
+        if (mode === 'recording-off') check(`${s}:${language}:recording-off appears once`, await guest(s, `return d.querySelectorAll('[data-testid="capture-off"]').length===1&&!d.querySelector('[data-testid="needs-you-capture-off"],[data-testid="subagent-coverage"][data-notes="capture-off"]')`));
         if (mode === 'plan' && s !== 'status') check(`${s}:${language}:agent title stays literal`, await guest(s, `return d.body.textContent.includes(${js(USER_TASK_TITLE)})&&!w.__qaInjected`));
         if (mode === 'plan') await shot(s, `${s}-${language}-${s === 'status' ? 280 : 390}`);
         if (mode === 'setup' && s !== 'status') {

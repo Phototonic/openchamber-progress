@@ -2,6 +2,7 @@ import type { CleanupAction, CleanupRequest } from './adapter.ts';
 import type { PlanView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
 import { cleanupCall, type ServiceHost } from './source.ts';
+import { formatCount, plural } from './format.ts';
 
 const en = {
   changed: 'This plan changed or is no longer available. Progress is being refreshed; review it before trying again.',
@@ -108,30 +109,35 @@ export async function runTidy(host: ServiceHost, action: 'archive' | 'restore', 
 }
 
 const tidyEn = {
-  menu: 'Archive finished and cancelled plans…',
-  heading: 'Archive finished and cancelled plans?',
+  menu: 'Archive closed plans…',
+  heading: (n: number) => `Archive ${plural(n, 'closed plan', 'closed plans')}?`,
   failed: 'Failed plans are kept. You can archive them one at a time.',
-  effect: 'Plans are hidden, not deleted. Their status and history stay unchanged.',
-  cancel: 'Cancel', confirm: 'Archive plans', pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
-  count: (n: number, total: number) => `${n} of ${total} listed finished and cancelled ${total === 1 ? 'plan' : 'plans'} will be archived.`,
-  result: (n: number, total: number, restore: boolean) => `${n} of ${total} ${total === 1 ? 'plan' : 'plans'} ${restore ? 'restored' : 'archived'}.${n < total ? ` ${total - n} could not be confirmed; check the plans before trying again.` : ''}`,
+  effect: 'You can restore them at any time; their status and history stay unchanged.',
+  cancel: 'Cancel', confirm: (n: number) => `Archive ${plural(n, 'plan', 'plans')}`, pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
+  count: (n: number, total: number) => `They move to Archived plans on the board${n < total ? `; this batch includes ${n} of ${total} closed plans` : ''}.`,
+  result: (n: number, total: number, restore: boolean) => `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${restore ? 'restored' : 'archived'}.${n < total ? ` ${total - n} could not be confirmed; check the plans before trying again.` : ''}`,
+};
+const russianPlans = (n: number, closed = false) => {
+  const form = new Intl.PluralRules('ru').select(n);
+  return closed ? form === 'one' ? 'закрытый план' : form === 'few' ? 'закрытых плана' : 'закрытых планов'
+    : form === 'one' ? 'план' : form === 'few' ? 'плана' : 'планов';
 };
 const tidyRu: typeof tidyEn = {
-  menu: 'Архивировать завершённые и отменённые планы…',
-  heading: 'Архивировать завершённые и отменённые планы?',
+  menu: 'Архивировать закрытые планы…',
+  heading: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n, true)}?`,
   failed: 'Планы с ошибкой останутся. Их можно архивировать по одному.',
-  effect: 'Планы будут скрыты, но не удалены. Статус и история не изменятся.',
-  cancel: 'Отмена', confirm: 'Архивировать планы', pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
-  count: (n, total) => `Завершённые и отменённые планы в списке: будет архивировано ${n} из ${total}.`,
-  result: (n, total, restore) => `${restore ? 'Восстановлено' : 'Архивировано'} планов: ${n} из ${total}.${n < total ? ` Не удалось подтвердить результат для ${total - n}; проверьте планы перед повторной попыткой.` : ''}`,
+  effect: 'Их можно восстановить в любое время; статус и история не изменятся.',
+  cancel: 'Отмена', confirm: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n)}`, pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
+  count: (n, total) => `Они переместятся в архивные планы на доске${n < total ? `; в этой группе ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов` : ''}.`,
+  result: (n, total, restore) => `${restore ? 'Восстановлено' : 'Архивировано'} ${n < total ? `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} планов` : `${formatCount(n, 'ru')} ${russianPlans(n)}`}.${n < total ? ` Не удалось подтвердить результат для ${formatCount(total - n, 'ru')}; проверьте планы перед повторной попыткой.` : ''}`,
 };
 const tidyZh: typeof tidyEn = {
-  menu: '归档已完成和已取消的计划…', heading: '归档已完成和已取消的计划？',
+  menu: '归档已关闭的计划…', heading: n => `归档 ${formatCount(n, 'zh-CN')} 个已关闭的计划？`,
   failed: '失败的计划会保留，可逐个归档。',
-  effect: '计划只会隐藏，不会删除，状态和历史记录保持不变。',
-  cancel: '取消', confirm: '归档计划', pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
-  count: (n, total) => `将归档列表中 ${total} 个已完成和已取消的计划中的 ${n} 个。`,
-  result: (n, total, restore) => `已${restore ? '恢复' : '归档'} ${total} 个计划中的 ${n} 个。${n < total ? `有 ${total - n} 个计划的操作结果无法确认，请检查后再试。` : ''}`,
+  effect: '你可以随时恢复，计划状态和历史记录保持不变。',
+  cancel: '取消', confirm: n => `归档 ${formatCount(n, 'zh-CN')} 个计划`, pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
+  count: (n, total) => `它们将移至看板上的已归档计划${n < total ? `，本批处理 ${formatCount(total, 'zh-CN')} 个已关闭计划中的 ${formatCount(n, 'zh-CN')} 个` : ''}。`,
+  result: (n, total, restore) => `已${restore ? '恢复' : '归档'} ${n < total ? `${formatCount(total, 'zh-CN')} 个计划中的 ${formatCount(n, 'zh-CN')} 个` : `${formatCount(n, 'zh-CN')} 个计划`}。${n < total ? `有 ${formatCount(total - n, 'zh-CN')} 个计划的操作结果无法确认，请检查后再试。` : ''}`,
 };
 export function tidyCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);

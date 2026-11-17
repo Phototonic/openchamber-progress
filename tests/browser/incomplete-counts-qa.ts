@@ -97,9 +97,9 @@ export async function verifyIncompleteCounts(h: Harness) {
 
   await changed(`qa.clock=0;qa.clean();qa.partialPlans=true;qa.capture=false`);
   await reasons('panel', 'plans-not-loaded'); await open();
-  check('recording off keeps its separate line', await guest('panel', `return !!d.querySelector('[data-testid="subagent-coverage"][data-notes="capture-off"]')`));
+  check('recording off keeps one separate line', await guest('panel', `return d.querySelectorAll('[data-testid="capture-off"]').length===1&&!d.querySelector('[data-testid="needs-you-capture-off"],[data-testid="subagent-coverage"][data-notes="capture-off"]')`));
   await click('panel', dismiss); await wait('panel', `!d.querySelector('${note}')`);
-  check('recording-off line is not dismissible', await guest('panel', `return !!d.querySelector('[data-testid="subagent-coverage"][data-notes="capture-off"]')`));
+  check('recording-off line is not dismissible', await guest('panel', `return !!d.querySelector('[data-testid="capture-off"]')`));
 
   // Changed copy in EN/RU/zh-CN, real clicks/taps at phone and desktop sizes, both themes.
   await changed(`qa.capture=true;qa.partialPlans=false;qa.lose()`);
