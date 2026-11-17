@@ -214,7 +214,7 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-final' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' | 'design-refactor' = 'search', keyboard = mode === 'keyboard-focus', productionMap = mode === 'dependency-map-final', design: { guestRoot?: string; slice?: string } = {}) {
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-final' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' | 'design-refactor' = 'search', keyboard = mode === 'keyboard-focus', productionMap = mode === 'dependency-map-final', design: { guestRoot?: string; slice?: string } = {}, measure?: { surface: string; allRoutes?: boolean }) {
   if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-final', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'design-refactor'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const isDesign = mode === 'design-refactor';
   const large = mode === 'large-plan' || mode === 'dependency-map-large';
@@ -253,6 +253,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         if (attribution) page = page.replace('<script>', '<script>window.__mapAttribution=true;');
         if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
+        if (measure?.allRoutes) page = page.replace("if(!q.path.startsWith('/v1/search')&&!['/v1/plan','/v1/plan-graph','/v1/subagent-runs','/health','/v1/plans'].includes(q.path))return;", '').replace('const e={frame:f,traffic:', 'const e={query:q.query,frame:f,traffic:');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
       }
       else if (primitiveRoot && url.pathname === '/primitives.html') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><meta name="viewport" content="width=device-width"><title>Primitive QA</title><div id="root"></div><script src="/primitives.js"></script></html>'); }
@@ -265,7 +266,10 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         else throw Error('Unknown fixture step');
         res.end('{}');
       }
-      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); let body = (isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : path.join(design.guestRoot ?? '.', url.pathname.slice(1)), 'utf8'); if (url.pathname.endsWith('.html')) body = body.replace('</body>', preferenceBarrier + '</body>'); res.end(body); }
+      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); let body = (isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : path.join(design.guestRoot ?? '.', url.pathname.slice(1)), 'utf8'); if (url.pathname.endsWith('.html')) {
+        if (measure) body = body.replace('<head>', `<head><script>Object.defineProperty(document,"visibilityState",{configurable:true,get:()=>${JSON.stringify(url.pathname.includes('/' + measure.surface + '/'))}?"visible":"hidden"});</script>`);
+        body = body.replace('</body>', preferenceBarrier + '</body>');
+      } res.end(body); }
       else if (url.pathname === '/fresh-setup' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         res.setHeader('content-type','application/json');res.end(JSON.stringify(await freshSetup.reply(JSON.parse(body))));
@@ -324,7 +328,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     if (!r.ok) throw new Error(`fixture ${action} failed (${r.status})`);
   }
   return {
-    freshSetup, port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
+    ...(measure ? { fixture: f } : {}), freshSetup, port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
     previewHash: previewRoot ? createHash('sha256').update(previewPrefix).update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     mapAttribution: attribution,

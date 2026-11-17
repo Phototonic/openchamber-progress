@@ -224,6 +224,8 @@ export interface ViewSpec<U> {
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Optional native focus continuity seam, with both old and new roots connected. */
   preserveFocus?: (previous: HTMLElement, next: HTMLElement) => void;
+  /** Keep a connected region's ancestor chain without requiring state-preserving DOM moves. */
+  reconcilePaint?: (previous: HTMLElement, next: HTMLElement) => HTMLElement;
   /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
   refreshed?: (vc: ViewContext<U>) => void;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
@@ -1423,7 +1425,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       vc.reading = readingView();
     }
 
-    const root = el('main', 'ap');
+    let root = el('main', 'ap');
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
@@ -1461,18 +1463,25 @@ export function startView<U>(spec: ViewSpec<U>) {
       const v = values.get(n.dataset.keep!);
       if (v !== undefined && n.value !== v && !n.dataset.fixed) n.value = v;
     }
-    if ((spec.preserveFocus || sameReading) && 'moveBefore' in root && typeof root.moveBefore === 'function') {
+    // Disclosure handles belong to this logical paint even if a view keeps the
+    // physical root and moves the new regions into it.
+    const infoRoot = root;
+    const nativeMoves = 'moveBefore' in root && typeof root.moveBefore === 'function';
+    if (spec.reconcilePaint || ((spec.preserveFocus || sameReading) && nativeMoves)) {
       // State-preserving moves require connected source AND destination. Connect the
       // new tree before removing the old one; no frame is displayed between these steps.
       const previous = mount!.firstElementChild as HTMLElement | null;
       mount!.append(root);
       if (previous) {
-        spec.preserveFocus?.(previous, root);
-        if (sameReading && complete) preserveFocusedTaskRow(previous, root);
+        if (nativeMoves) {
+          spec.preserveFocus?.(previous, root);
+          if (sameReading && complete) preserveFocusedTaskRow(previous, root);
+        }
+        root = spec.reconcilePaint?.(previous, root) ?? root;
       }
       for (const child of [...mount!.children]) if (child !== root) child.remove();
     } else mount!.replaceChildren(root);
-    commitInfoPaint(root);
+    commitInfoPaint(infoRoot);
     alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
       const top = scrolls.get(n.dataset.scrollKey!);
