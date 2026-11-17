@@ -1,19 +1,19 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
-import { age, allDone, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, retryRead, testid, type Env } from '../shared/components.ts';
+import { age, allDone, button, el, emptyBlock, failureBlock, loadingBlock, retryRead, testid } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
 import { clockTime, formatCount, plural } from '../shared/format.ts';
-import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
+import { planProject } from '../shared/live.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
-import { runClaim, subagentsBlock } from '../shared/census-view.ts';
-import { lifecycleLabel, showsLiveness, summarize, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
+import { runClaim } from '../shared/census-view.ts';
+import { rosterFor } from '../shared/subagents.ts';
+import { lifecycleLabel, showsLiveness, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
-import { segmentedBar, stateChip, warningLine, type MarkStatus } from '../shared/primitives.ts';
+import { segmentedBar } from '../shared/primitives.ts';
 import { StatusSelection } from './selection.ts';
 import { projectStatus, type StatusProjection } from './projection.ts';
 import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
-import { statusInboxLine } from '../shared/inbox-view.ts';
 import { scopeInbox } from '../shared/inbox.ts';
 
 type Ui = { selection: StatusSelection };
@@ -72,9 +72,6 @@ startView<Ui>({
       else if (vc.session?.id) root.append(loadingBlock(env.locale));
       return;
     }
-    // Session-scoped (including helped plans), independent of the featured plan.
-    const inbox = vc.inbox?.model ? statusInboxLine(scopeInbox(vc.inbox.model, new Set(vc.session ? read.plans.map(p => p.key) : []), !failure && !read.truncated, vc.inbox.device, vc.inbox.storeId).model, env.locale, () => openRail(vc), failure ? vc.lastGoodAt : null) : null;
-    if (inbox) root.append(inbox);
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);
     const { plan, selected } = vc.ui.selection.resolve(scope);
@@ -88,21 +85,19 @@ startView<Ui>({
       return;
     }
     if (!plan) return;
-    const rest = scope.plans.filter((p) => p.key !== plan.key);
     const p = projectStatus(plan, vc.detail(plan), env.view);
     const box = testid(el('section', 'ap-status-plan'), `plan-${plan.id}`);
     box.dataset.source = plan.sourceId;
     box.dataset.lifecycle = plan.lifecycle;
     box.dataset.revision = String(plan.revision);
     if (showsLiveness(plan.lifecycle, p.summary, env.view)) box.dataset.motion = 'on';
-    // One title. With several plans the title is the featured-plan picker: a quiet "⌄ Automatic"
-    // trigger beside it when space permits, otherwise below, whose popup keeps Automatic and every plan.
+    // One title with a compact position picker; its popup keeps Automatic and every full title.
     const head = el('div', 'ap-status-head');
     // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
     const title = testid(el('span', 'ap-status-title', plan.title), 'status-plan-title');
+    title.title = plan.title;
     title.tabIndex = -1;
     head.append(title);
-    let openPicker: (() => void) | null = null;
     if (scope.plans.length > 1) {
       const holder = testid(el('div', 'ap-picker ap-title-picker ap-status-pick'), 'status-plan-selector');
       mountSelect(holder, {
@@ -120,46 +115,67 @@ startView<Ui>({
       });
       const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
       if (trigger) {
+        const position = `${scope.plans.indexOf(plan) + 1}/${scope.plans.length}${read.truncated ? '+' : ''}`;
         trigger.removeAttribute('aria-labelledby');
-        trigger.setAttribute('aria-label', t.picker(plan.title, !!selected, scope.plans.length));
-        trigger.prepend(el('span', 'ap-title-picker-hint', selected ? t.chosen : t.automatic));
-        openPicker = () => trigger.click();
+        trigger.setAttribute('aria-label', `${t.featured}: ${plan.title}. ${selected ? t.chosen : t.automatic}. ${position}`);
+        trigger.prepend(el('span', 'ap-title-picker-hint', position));
         // The title reads as the picker too (pointer only; the trigger is the keyboard control).
         title.classList.add('ap-plan-title-pick');
         title.addEventListener('click', () => trigger.click());
       }
       head.append(holder);
     }
-    if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan, env.locale));
     box.append(head, statusProgress(p, plan, env.locale));
-    const quals = qualifiers(p, read.captureEnabled, failure && vc.lastGoodAt ? clockTime(vc.lastGoodAt, env.locale) : null, env.locale);
-    if (quals) box.append(quals);
-    const focus = focusRows(p, plan, env);
-    if (focus) box.append(focus);
-    // Age and live state, one compact line; other titles and working/lifecycle hints are in the picker.
-    const meta = el('div', 'ap-meta ap-status-meta');
-    meta.append(age(plan.reportedAt, env, t.updated), el('span', '', liveLabel(coverageFor(plan.ownerSessionId, plan.directory, env.live), env.locale).label));
-    box.append(meta);
-    if (rest.length && openPicker) {
-      const open = openPicker;
-      const more = testid(el('button', 'ap-link ap-status-more'), 'more-plans');
-      more.type = 'button';
-      more.textContent = `+${t.more(rest.length)}`;
-      more.setAttribute('aria-label', t.moreAria(rest.length));
-      more.addEventListener('click', () => open());
-      box.append(more);
-    }
-    root.append(box);
-
-    // After the featured plan and its picker, so sub-agents never displace them.
+    // Reuse the roster's proven, deduplicated session counts, never task-working counts.
+    // No roster/pager is mounted here; failures still have an undismissable compact home.
     const session = vc.session?.id;
-    if (session && read.binding.verified && plan.sourceId === env.boundSource) {
-      const observed = subagentsBlock({
+    const runs = session && read.binding.verified && plan.sourceId === env.boundSource
+      ? vc.runs(runClaim(read, session, plan)) : null;
+    const roster = session && read.binding.verified && plan.sourceId === env.boundSource
+      ? rosterFor({
         surface: 'status', plan, census: censusFor(session, vc.directory, vc.live), facts: planFacts(plan, vc.detail(plan), env.boundSource),
-        runs: vc.runs(runClaim(read, session, plan)), verified: true, currentSession: session, liveSeq: vc.live.seq, env,
-      });
-      if (observed) root.append(observed);
+        runs, verified: true, currentSession: session, liveSeq: vc.live.seq,
+      }, resolveLanguage('auto', env.locale)) : null;
+    const activity = testid(el('div', 'ap-status-activity'), 'status-activity');
+    for (const part of [...(roster?.summary ?? [])].sort((a, b) => Number(b.kind === 'running') - Number(a.kind === 'running'))) {
+      if (part.kind === 'running' || part.kind === 'waiting') {
+        if (activity.childNodes.length) activity.append(' · ');
+        activity.append(el('span', '', part.text));
+      }
     }
+    const inbox = vc.inbox?.model ? scopeInbox(vc.inbox.model, new Set(scope.plans.map(p => p.key)), !failure && !read.truncated, vc.inbox.device, vc.inbox.storeId).model : null;
+    const compact = compactMessages[resolveLanguage('auto', env.locale)];
+    if (inbox?.availability === 'ready' && (inbox.counts.needsYou || !inbox.complete)) {
+      if (activity.childNodes.length) activity.append(' · ');
+      const count = testid(el('button', 'ap-link', compact.needs(`${formatCount(inbox.counts.needsYou, env.locale)}${inbox.complete ? '' : '+'}`)), 'needs-you-count');
+      count.type = 'button';
+      Object.assign(count.dataset, { count: String(inbox.counts.needsYou), exact: String(inbox.complete) });
+      count.setAttribute('aria-label', `${count.textContent}. ${t.open}`);
+      count.addEventListener('click', () => openRail(vc));
+      activity.append(count);
+    }
+    if (plan.lifecycle !== 'active') {
+      if (activity.childNodes.length) activity.prepend(`${lifecycleLabel(plan.lifecycle, env.locale)} · `);
+      else activity.append(lifecycleLabel(plan.lifecycle, env.locale));
+    }
+    if (activity.childNodes.length) box.append(activity);
+    // Report age is not host activity. Only old active reports need an age line.
+    const old = plan.lifecycle === 'active' && env.now - Date.parse(plan.reportedAt) > 3_600_000;
+    if (!read.captureEnabled) box.append(testid(el('div', 'ap-note', compact.off), 'capture-off'));
+    else if (old && !failure) box.append(testid(age(plan.reportedAt, env, t.updated), 'status-stale-time'));
+    if (failure) {
+      const failed = testid(el('div', 'ap-note', t.stale(clockTime(vc.lastGoodAt ?? env.now, env.locale))), 'stale-banner');
+      failed.setAttribute('role', 'status');
+      button(failed, 'status-retry', compact.retry, retryRead(vc), 'ghost');
+      box.append(failed);
+    }
+    if (p.detailUnavailable) box.append(testid(el('p', 'ap-note', compact.detailFailed), 'status-detail-unavailable'));
+    if (inbox && inbox.availability !== 'ready') box.append(testid(el('p', 'ap-note', compact.inboxFailed), 'status-inbox-error'));
+    if (inbox?.moreFailed) box.append(testid(el('p', 'ap-note', compact.moreFailed), 'status-inbox-page-error'));
+    if (runs?.state === 'error' || runs?.failure) box.append(testid(el('p', 'ap-note', compact.runsFailed), 'status-runs-error'));
+    if (runs?.pageError) box.append(testid(el('p', 'ap-note', compact.moreFailed), 'subagent-page-error'));
+    if (runs?.historyRequestFailed || runs?.read?.recovery.state === 'failed') box.append(testid(el('p', 'ap-note', compact.historyFailed), 'status-history-error'));
+    root.append(box);
     const actions = el('div', 'ap-row ap-between');
     button(actions, 'open-detail', t.open, () => openRail(vc), 'ghost');
     root.append(actions);
@@ -173,8 +189,8 @@ startView<Ui>({
     }
     let height = Math.ceil(root.getBoundingClientRect().height);
     heights.request(height);
-    // A roster row or record list opened in place changes the height without a repaint: ask once
-    // per actual disclosure change (the same bounded HeightSync), never per row or chip.
+    // Keep the existing bounded layout-change guard; a queued event from a retired
+    // or already measured layout cannot send another height request.
     const sync = heights;
     root.addEventListener('toggle', () => {
       if (!root.isConnected) return;
@@ -189,9 +205,8 @@ startView<Ui>({
 });
 
 /**
- * The bar (whole plan), then "3/8" and the counts as informational chips (no list to filter):
- * guidance (in progress, blocked, ready, waiting) only from complete current active detail;
- * otherwise the reported statuses. Without complete detail only the list's in-progress count.
+ * Whole-plan bar and fraction. The accessible summary retains remaining/skipped
+ * and reported working/blocked facts without adding visible chips.
  */
 function statusProgress(p: StatusProjection, plan: PlanView, locale: string) {
   const language = resolveLanguage('auto', locale), t = messages[language];
@@ -207,47 +222,12 @@ function statusProgress(p: StatusProjection, plan: PlanView, locale: string) {
   else counts.append(el('span', 'ap-muted', summaryText(s, language)));
   allDone(counts, s);
   line.append(counts);
-  const r = p.reported;
-  const guided = p.ready !== null && p.waiting !== null && r !== null;
-  const chips: [MarkStatus, number, string][] = guided
-    // Every reported blocker counts here; only decision/review waits are Needs you (the line above).
-    ? [['working', r.working, t.progress], ['blocked', r.blocked, t.blocked], ['ready', p.ready!, t.ready], ['waiting', p.waiting!, t.waiting], ['skipped', r.skipped, t.skipped]]
-    : r ? [['working', r.working, t.progress], ['blocked', r.blocked, t.blocked], ['pending', r.pending, t.pending], ['skipped', r.skipped, t.skipped]]
-    : plan.lifecycle === 'active' ? [['working', plan.working.length, t.progress]] : [];
-  for (const [state, count, label] of chips) { const c = stateChip({ state, count, label, locale }); if (c) line.append(c); }
   wrap.append(line);
   return wrap;
 }
 
-/** Concrete states beside the counts they qualify; never behind an explanation. */
-function qualifiers(p: StatusProjection, captureEnabled: boolean, staleAt: string | null, locale: string) {
-  const t = messages[resolveLanguage('auto', locale)];
-  const box = el('div', 'ap-quals');
-  if (staleAt) box.append(testid(warningLine(t.stale(staleAt), 'warning', 'div'), 'stale-banner'));
-  if (!captureEnabled) box.append(testid(warningLine(t.capture, 'info', 'div'), 'capture-off'));
-  if (p.detailUnavailable) box.append(testid(warningLine(t.unavailable, 'warning', 'div'), 'status-detail-unavailable'));
-  const r = p.readiness;
-  if (r.state === 'invalid') box.append(testid(warningLine(t.invalid, 'warning', 'div'), 'status-readiness-invalid'));
-  else if (r.state === 'ready' && r.incomplete) box.append(testid(warningLine(t.incomplete, 'warning', 'div'), 'status-readiness-incomplete'));
-  return box.childNodes.length ? box : null;
-}
-
-/** At most two rows, first reported blocked then first reported working; each task once. */
-function focusRows(p: StatusProjection, plan: PlanView, env: Env) {
-  if (!p.detail) {
-    // Detail still loading: the list's own count only (no fabricated rows or zeros).
-    return null;
-  }
-  if (!p.focus.length) return null;
-  const list = testid(el('ul', 'ap-status-focus'), 'current-work');
-  list.setAttribute('aria-label', messages[resolveLanguage('auto', env.locale)].focus);
-  for (const item of p.focus) {
-    const li = testid(el('li', 'ap-status-row'), `status-focus-${item.id}`);
-    li.dataset.status = item.status;
-    li.append(glyph(item.status, env.locale), el('span', 'ap-grow', item.title));
-    const elapsed = elapsedLabel(plan, item, p.detail, env);
-    if (elapsed) li.append(elapsed);
-    list.append(li);
-  }
-  return list;
-}
+const compactMessages = {
+  en: { needs: (n: string) => `${n} needs you`, retry: 'Retry', off: 'Recording is off.', detailFailed: 'Task details could not load.', inboxFailed: 'Needs you is unavailable.', runsFailed: 'Sub-agent records could not load.', moreFailed: 'More records could not load. Open progress to retry.', historyFailed: 'Earlier history could not load. Open progress to retry.' },
+  ru: { needs: (n: string) => `Нужны вы: ${n}`, retry: 'Повторить', off: 'Запись отключена.', detailFailed: 'Не удалось загрузить задачи.', inboxFailed: 'Список «Нужны вы» недоступен.', runsFailed: 'Не удалось загрузить записи субагентов.', moreFailed: 'Не удалось загрузить ещё записи. Откройте прогресс для повтора.', historyFailed: 'Не удалось загрузить раннюю историю. Откройте прогресс для повтора.' },
+  'zh-CN': { needs: (n: string) => `${n} 项需要你处理`, retry: '重试', off: '记录已关闭。', detailFailed: '无法加载任务详情。', inboxFailed: '需要你处理的事项暂不可用。', runsFailed: '无法加载子智能体记录。', moreFailed: '无法加载更多记录，请打开进度重试。', historyFailed: '无法加载较早的历史，请打开进度重试。' },
+} satisfies Record<InterfaceLanguage, unknown>;

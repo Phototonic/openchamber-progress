@@ -39,7 +39,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
-  const exposed = surface === 'status' ? 'statusProgress, qualifiers, messages' : surface === 'page' ? 'planList, labelsFor, boardTop, currentTask, surface, footer' : 'picker';
+  const exposed = surface === 'status' ? 'statusProgress, messages' : surface === 'page' ? 'planList, labelsFor, boardTop, currentTask, surface, footer' : 'picker';
   const historyIntent = surface === 'page' ? `exports.historyIntent = (key,stage='detail') => { pendingTask = { key, item:'I1', title:'Fixture task', stage, origin:stage==='detail'?'history':'search' }; }; exports.surfacePanel = kind => { shell.activePanel = kind; }; exports.pendingIntent = () => pendingTask;` : '';
   runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });\n${historyIntent}`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: frameWindow, require: (path: string) => {
     if (overrides[path]) return overrides[path];
@@ -62,6 +62,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null, cleanupBlock: () => el('div') };
     if (path.endsWith('/setup.ts')) return { setupBlock: () => ({ text: '' }), reloadNote: () => null };
     if (path.endsWith('/census-view.ts')) return { runClaim: () => null, subagentsBlock: () => null };
+    if (path.endsWith('/subagents.ts')) return { rosterFor: () => null };
     if (path.endsWith('/census.ts')) return { censusFor: () => null, planFacts: () => null };
     if (path.endsWith('/inbox-view.ts')) return { CompactInbox, hiddenInboxAction: () => [], inboxSection: (inbox: unknown, _env: unknown, options: unknown) => ({ dataset: { testid: 'needs-you-inbox' }, inbox, options }) };
     return {};
@@ -208,22 +209,19 @@ test('panel: a pinned scope offers a localized Show current session that hands f
   assert.equal(h.nodes.some(n => /^session-action-/.test(n?.dataset?.testid ?? '')), false, 'ordinary opening has no pinned line or reset');
 });
 
-test('status counts, readiness chips and qualifiers rerender in Russian and English', () => {
+test('status fraction and accessible whole-plan summary rerender without chips', () => {
   const h = surfaceHarness('status');
   const projection = { summary: { total: 8, done: 3, remaining: 4, skipped: 1, working: 1, blocked: 1 }, reported: { working: 1, blocked: 1, skipped: 1, pending: 3 }, ready: 2, waiting: 1, detailUnavailable: true, readiness: { state: 'invalid' } };
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'ru');
-  h.exports.qualifiers(projection, false, '12:30', 'ru');
   assert.match(h.rendered(), /выполнено, осталось: 4, пропущено: 1/);
-  // Q1: a reported blocker is "blocked" here; only decision/review waits are Needs you (the inbox line).
-  assert.match(h.rendered(), /1 заблокировано 2 готово к работе/);
-  assert.doesNotMatch(h.rendered(), /нужно ваше участие/);
-  assert.match(h.rendered(), /готово к работе/);
-  assert.match(h.rendered(), /Не обновлялось с 12:30/);
-  assert.match(h.rendered(), /Готовность и ожидание недоступны/);
+  assert.match(h.rendered(), /1 заблокировано/);
+  assert.doesNotMatch(h.rendered(), /готово к работе/);
+  assert.equal(h.nodes.some(n => n.dataset?.testid === 'state-chip'), false);
   h.nodes.length = 0;
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'en');
   assert.match(h.rendered(), /done, 4 remaining, 1 skipped/);
-  assert.match(h.rendered(), /1 blocked 2 ready/);
+  assert.match(h.rendered(), /1 blocked/);
+  assert.doesNotMatch(h.rendered(), /2 ready/);
   assert.doesNotMatch(h.rendered(), /needs you/);
 });
 

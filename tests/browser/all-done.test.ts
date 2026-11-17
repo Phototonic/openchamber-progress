@@ -65,6 +65,7 @@ function fixture() {
     if (name === '../shared/scope.ts') return scope;
     if (name === './selection.ts') return { StatusSelection };
     if (name === './projection.ts') return { projectStatus };
+    if (name === '../shared/subagents.ts') return { rosterFor: () => null };
     if (name === '../shared/official.ts') return { officialMainLine: () => null };
     return {};
   });

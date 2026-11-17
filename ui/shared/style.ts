@@ -578,9 +578,8 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
 html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
-/* Compact Work Status: one title (the featured-plan picker beside it), the whole-plan bar, "3/8"
-   with informational chips, at most two focus rows, a compact meta line and "+N more plans".
-   Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
+/* Work Status base primitives. The surface-scoped five-row rules below put the
+   position picker beside the title and the fraction beside the bar. */
 .ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
 /* A short title shares its line with the picker and badge; a long title takes the full width,
    with the remaining controls wrapping below rather than reserving a column. */
@@ -614,6 +613,18 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 /* A wrapped title keeps its mark on the first line */
 .ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
+/* Five-row Work Status only; rail and board keep their existing layout. */
+.ap[data-surface="status"] .ap-status-head{flex-wrap:nowrap;align-items:start}
+.ap[data-surface="status"] .ap-status-title{flex:1;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.ap[data-surface="status"] .ap-status-pick{flex:none}
+.ap[data-surface="status"] .ap-status-progress{flex-direction:row;align-items:center;gap:8px}
+.ap[data-surface="status"] .ap-status-progress>.ap-seg{flex:1;min-width:0}
+/* Text ink can overhang its advance box: reserve an end inset inside the
+   iframe rather than clipping the last digit against its viewport edge. */
+.ap[data-surface="status"] .ap-status-counts{flex:none;padding-inline-end:4px;white-space:nowrap}
+.ap[data-surface="status"] .ap-status-activity{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.ap[data-surface="status"] .ap-status-activity button{font:inherit;min-height:24px}
+.ap[data-surface="status"] .ap-note{margin:0}
 /* Page */
 /* Wide board on every tab: the plan list and detail tabs keep one position; Progress, Document and
    History hold their reading width while the Map tab uses the full detail column. */

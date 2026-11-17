@@ -50,8 +50,8 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 7. Work Status
 
-- [ ] 7.1 Rebuild the card to the five-line order with the position picker, activity line, qualification rule and scoped Needs you count that excludes hidden items; remove chips, focus rows, roster rows and the more-plans line.
-- [ ] 7.2 Verify height and wrapping at 190, 280 and 390 px in three languages, the host section maximum, every lifecycle and empty state, and the accessible summary. Update `docs/ui.md`, the README image and affected documentation images; regenerate the Work Status guest.
+- [x] 7.1 Rebuild the card to the five-line order with the position picker, activity line, qualification rule and scoped Needs you count that excludes hidden items; remove chips, focus rows, roster rows and the more-plans line.
+- [x] 7.2 Verify height and wrapping at 190, 280 and 390 px in three languages, the host section maximum, every lifecycle and empty state, and the accessible summary. Update `docs/ui.md`, the README image and affected documentation images; regenerate the Work Status guest.
 
 ## 8. Setup presentation
 
