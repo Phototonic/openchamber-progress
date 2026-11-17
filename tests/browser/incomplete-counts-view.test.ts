@@ -81,11 +81,11 @@ test('Work Status keeps a failed-page explanation beside its working pagination 
   const roster = { earlier: [], earlierTotal: 1, canPage: true, recorded: true, notes: [], featured: [] };
   const runs = { pageError: true, continuation: true, showMore: () => retries++ };
   const status = recordsNode(roster, { surface: 'status', env: { locale: 'en' }, runs }, []);
-  assert.match(status.textContent, /More rows couldn’t be read/, 'a failed page is not silent on the indicator-free surface');
+  assert.match(status.textContent, /Couldn’t load more sub-agents; try again/, 'a failed page is not silent on the indicator-free surface');
   status.hook('subagent-more').handlers.get('click')();
   assert.equal(retries, 1);
   const panel = recordsNode(roster, { surface: 'panel', env: { locale: 'en' }, runs }, []);
-  assert.doesNotMatch(panel.textContent, /More rows couldn’t be read/, 'rail uses its separate indicator retry line');
+  assert.doesNotMatch(panel.textContent, /Couldn’t load more sub-agents; try again/, 'rail uses its separate indicator retry line');
 });
 
 test('removed count controls capture scope from the painted main, not its mount', () => {

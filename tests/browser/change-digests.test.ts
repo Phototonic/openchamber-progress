@@ -24,7 +24,7 @@ test('Russian digest presentation keeps revisions, counts and recorded task titl
   assert.equal(countsText({ done: 1, total: 2, remaining: 1, skipped: 0 }, 'ru'), '1/2 выполнено (50%)');
   const { request, body } = real(1, 6);
   const d = parseChangeDigest(body, request);
-  assert.deepEqual(coverageText(d, 'ru'), ['Изменения с ревизии 1 до ревизии 6.']);
+  assert.deepEqual(coverageText(d, 'ru'), ['Изменения с последнего просмотра.']);
   assert.deepEqual(groupTasks(d.tasks, 'ru').map(g => g.id), groupTasks(d.tasks).map(g => g.id));
   assert.match(groupTasks(d.tasks, 'ru')[0].title, /[А-Яа-я]/);
   const reference = d.tasks.flatMap(t => t.references).find(r => r.before && r.after)!;
@@ -80,18 +80,23 @@ test('initial, baseline-unavailable and target-unavailable stay distinct; unknow
   const missingBaseline = real(1, 6, (f) => { f.store.db.prepare('DELETE FROM contributions WHERE revision=1').run(); f.store.db.prepare('DELETE FROM revisions WHERE revision=1').run(); });
   const b = parseChangeDigest(missingBaseline.body, missingBaseline.request);
   assert.equal(b.availability, 'baseline-unavailable'); assert.equal(b.counts.before, null); assert.equal(b.complete, false);
-  assert.match(coverageText(b).join(' '), /Revision 1 can’t be read any more, so totals can’t be compared/);
+  assert.match(coverageText(b).join(' '), /earlier plan is unavailable, so totals can’t be compared/);
   assert.doesNotMatch(coverageText(b).join(' '), /Initial view/);
   const gap = real(1, 6, (f) => { f.store.db.prepare('DELETE FROM contributions WHERE revision=3').run(); f.store.db.prepare('DELETE FROM revisions WHERE revision=3').run(); });
   const g = parseChangeDigest(gap.body, gap.request);
   assert.equal(g.availability, 'comparison'); assert.equal(g.complete, false); assert.ok(g.reasons.includes('missing-snapshot'));
-  assert.match(coverageText(g).join(' '), /Only revisions \d–6 could be compared .*The totals still compare revisions 1 and 6/);
+  assert.match(coverageText(g).join(' '), /Some earlier changes couldn’t be compared/);
+  for (const language of ['en', 'ru', 'zh-CN'] as const) {
+    const text = coverageText({ ...g, reasons: ['revision-bound'] }, language);
+    assert.equal(text.length, 1, 'one calm sentence');
+    assert.doesNotMatch(text[0], /128|revision|ревизи|修订/iu, 'limits stay in Advanced details');
+  }
   const target = real(1, 6, (f) => { f.store.db.prepare('DELETE FROM contributions WHERE revision=6').run(); f.store.db.prepare('DELETE FROM revisions WHERE revision=6').run(); });
   const t = parseChangeDigest(target.body, target.request);
   assert.equal(t.availability, 'target-unavailable'); assert.equal(t.validTarget, false);
-  assert.match(coverageText(t)[0], /can’t be read, so its changes can’t be shown or marked reviewed/);
+  assert.match(coverageText(t)[0], /Couldn’t load these changes; try again/);
   const initial = real(undefined, 6);
-  assert.deepEqual(coverageText(parseChangeDigest(initial.body, initial.request)), ['Initial view — no saved reviewed revision in this profile.', 'Showing revision 6. Mark reviewed to compare later changes against it.']);
+  assert.deepEqual(coverageText(parseChangeDigest(initial.body, initial.request)), ['Mark reviewed to compare future changes with this plan.']);
 });
 
 test('older service (404) and capability-less reads classify as failures, not empty comparisons', async () => {

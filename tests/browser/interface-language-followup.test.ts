@@ -109,25 +109,26 @@ test('renewed attention retires queued success and a later quiet outcome uses th
   assert.equal(node.writes.length, writes);
 });
 
-test('actual History and Details keep revision IDs raw while real counts retain Russian grouping', () => {
+test('truncated oldest-first History warns about newer updates in every language while IDs stay raw', () => {
   const { components: c } = fixture();
-  const plan = { id: 'plan', revision: 1000, structuralRevision: 11000, reportedAt: '2026-01-01T00:00:00Z',
+  const plan = { id: 'plan', revision: 3000, structuralRevision: 11000, reportedAt: '2026-01-01T00:00:00Z',
     ownerSessionId: 'session', sourceId: 'source', document: { state: 'missing' } };
   const entries = Array.from({ length: 1000 }, (_, i) => ({ revision: 1000 + i, structuralRevision: 11000,
     lifecycle: 'active', reportedAt: plan.reportedAt }));
-  for (const locale of ['en', 'ru']) {
+  for (const locale of ['en', 'ru', 'zh-CN']) {
     const env = { locale, now: Date.parse(plan.reportedAt) };
     const history = c.historyBlock(plan, { state: 'ready', value: { entries, truncated: true } }, env);
     const rows = history.children[1].children;
-    assert.equal(rows[0].children[0].textContent, locale === 'ru' ? 'Ревизия 1999' : 'Revision 1999');
-    assert.equal(rows.at(-1).children[0].textContent, locale === 'ru' ? 'Ревизия 1000' : 'Revision 1000');
-    assert.equal(history.children[2].textContent, locale === 'ru'
-      ? 'Показаны только первые 1\u00a0000 ревизий.' : 'Only the first 1000 revisions are shown.');
+    assert.equal(rows[0].children[0].textContent, locale === 'ru' ? 'Обновление 1999' : locale === 'zh-CN' ? '更新 1999' : 'Update 1999');
+    assert.equal(rows.at(-1).children[0].textContent, locale === 'ru' ? 'Обновление 1000' : locale === 'zh-CN' ? '更新 1000' : 'Update 1000');
+    assert.equal(history.children[2].textContent, {
+      en: 'Newer updates are not shown.', ru: 'Более новые обновления не показаны.', 'zh-CN': '未显示较新的更新。',
+    }[locale], 'truncating oldest-first pages omits newer updates');
     const details = c.detailsBlock(null, plan, [], env);
     assert.equal(details.children[1].children[3].textContent, locale === 'ru'
-      ? '1000 (структура 11000)' : '1000 (structure 11000)');
+      ? '3000 (структура 11000)' : locale === 'zh-CN' ? '3000（结构 11000）' : '3000 (structure 11000)');
   }
-  assert.equal(plan.revision, 1000);
+  assert.equal(plan.revision, 3000);
   assert.equal(plan.structuralRevision, 11000);
   assert.equal(entries[0].revision, 1000);
 });

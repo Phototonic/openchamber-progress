@@ -125,7 +125,7 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
   advanced.append(counts);
   advanced.append(el('p','ap-note',text.checked));
   box.setAttribute('aria-busy',String(p.busy));
-  if(p.busy)box.append(el('p','ap-note',text.checking));
+  if(p.busy)box.append(el('p','ap-note',language === 'ru' ? 'Проверяем…' : language === 'zh-CN' ? '正在检查…' : 'Checking…'));
   if(p.facts){
     const labels=Object.entries(text.labels) as [keyof typeof text.labels,string][];
     const managed=managedCopy(locale);

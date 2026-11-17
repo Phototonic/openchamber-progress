@@ -351,10 +351,10 @@ test('ran: real host times and justified durations; failed/interrupted/historica
   }
   // Only an active → idle change observed after this execution's start qualifies (rosterFor decides).
   const idle = ranOf(run('running'), host('idle', 'completed'), { idleAfterStart: true });
-  assert.deepEqual([idle.kind, idle.label, idle.duration], ['idle', 'Idle now, no outcome reported yet', null]);
+  assert.deepEqual([idle.kind, idle.label, idle.duration], ['idle', 'Idle now; outcome unknown', null]);
   // A host event that already ended a run is never overridden by later host activity.
   assert.equal(ranOf(run('succeeded'), host('running')).label, 'Finished');
-  assert.equal(ranOf(run('unknown', { ran: { dispatchState: 'pending', startedAt: null } }), null).label, 'Dispatched, not confirmed yet');
+  assert.equal(ranOf(run('unknown', { ran: { dispatchState: 'pending', startedAt: null } }), null).label, 'Launch requested; not confirmed yet');
 });
 
 test('Russian run copy keeps times, machine error codes and host evidence unchanged', () => {
@@ -436,7 +436,7 @@ test('P6: an unconfirmed dispatch and a new host child stay separate rows; nothi
   const dispatch = all.find((e) => e.runId === pending.id)!;
   const child = all.find((e) => e.sessionId === 'C1')!;
   assert.notEqual(dispatch, child, 'two rows');
-  assert.deepEqual([dispatch.sessionId, dispatch.ran.label, dispatch.accepted, dispatch.openable], [null, 'Dispatched, not confirmed yet', null, false], 'the dispatch borrows no activity, tasks or navigation');
+  assert.deepEqual([dispatch.sessionId, dispatch.ran.label, dispatch.accepted, dispatch.openable], [null, 'Launch requested; not confirmed yet', null, false], 'the dispatch borrows no activity, tasks or navigation');
   assert.deepEqual([child.runId, child.ran.label, child.title], [null, 'Running', 'Title C1'], 'the host child keeps only its own facts');
   assert.ok(!('paired' in dispatch), 'no pairing field remains');
   assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '1 unknown']);
@@ -464,7 +464,7 @@ test('P1: a native Running run survives a cached idle snapshot (first in a subsc
   emit('ready', 'running');
   assert.equal(ran().label, 'Running');
   emit('ready', 'idle', 'completed');
-  assert.deepEqual([ran().kind, ran().label], ['idle', 'Idle now, no outcome reported yet']);
+  assert.deepEqual([ran().kind, ran().label], ['idle', 'Idle now; outcome unknown']);
   emit('loading', 'idle', 'completed'); emit('ready', 'idle', 'completed');
   assert.equal(ran().kind, 'idle', 'the seen transition survives a reload of the same subscription');
   // Active again clears it; a new subscription (view re-entry) starts with no transition evidence.
@@ -507,7 +507,7 @@ test('P1: transition evidence is per execution: a previous execution\'s active �
   emit('idle', 'completed'); assert.equal(n1().label, 'Running', 'an unchanged cached idle is still not evidence');
   // N+1's own active → idle, observed after its start, does.
   emit('running'); assert.equal(n1().label, 'Running');
-  emit('idle', 'completed'); assert.deepEqual([n1().kind, n1().label], ['idle', 'Idle now, no outcome reported yet']);
+  emit('idle', 'completed'); assert.deepEqual([n1().kind, n1().label], ['idle', 'Idle now; outcome unknown']);
   // A new start event on the same dispatch is a new execution too.
   const resumed = { ...next, ran: { ...next.ran, eventId: 'start-N2', sequence: 3 } };
   assert.equal(entry([first, resumed], resumed.id).ran.label, 'Running');

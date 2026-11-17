@@ -41,22 +41,22 @@ const MARK_SHAPES: Record<MarkStatus, Part[]> = {
 };
 
 /**
- * Spoken name of a mark that has no adjacent equivalent text. A task is "Reported working", never
+ * Spoken name of a mark that has no adjacent equivalent text. A task is "In progress", never
  * "Running": only sessions and sub-agents are observed running.
  */
 export const MARK_LABEL: Record<MarkStatus, string> = {
   pending: 'Pending',
-  working: 'Reported working',
+  working: 'In progress',
   blocked: 'Blocked',
   done: 'Done',
   skipped: 'Skipped',
   ready: 'Ready to start',
-  waiting: 'Waiting on prerequisites',
+  waiting: 'Waiting on earlier tasks',
 };
 const LABELS: Record<InterfaceLanguage, { marks: Record<MarkStatus, string>; actions: string }> = {
   en: { marks: MARK_LABEL, actions: 'Plan actions' },
-  ru: { marks: { pending: 'Ожидает', working: 'По отчёту в работе', blocked: 'Заблокирована', done: 'Выполнена', skipped: 'Пропущена', ready: 'Готова к началу', waiting: 'Ожидает предпосылок' }, actions: 'Действия с планом' },
-  'zh-CN': { marks: { pending: '未开始', working: '报告为进行中', blocked: '受阻', done: '已完成', skipped: '已跳过', ready: '已就绪', waiting: '等待前置任务' }, actions: '计划操作' },
+  ru: { marks: { pending: 'Не начата', working: 'В работе', blocked: 'Заблокирована', done: 'Выполнена', skipped: 'Пропущена', ready: 'Готова к началу', waiting: 'Ждёт предыдущие задачи' }, actions: 'Действия с планом' },
+  'zh-CN': { marks: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过', ready: '已就绪', waiting: '等待前置任务' }, actions: '计划操作' },
 };
 
 /** Plain interface icons (never status). Decorative unless given a name. */

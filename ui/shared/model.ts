@@ -320,9 +320,9 @@ export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'workin
   lifecycle === 'active' && s.working > 0 && view.fresh && view.captureEnabled;
 
 const SUMMARY_TEXT = {
-  en: { empty: 'No tasks reported', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
-  ru: { empty: 'Нет зарегистрированных задач', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
-  'zh-CN': { empty: '尚未报告任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
+  en: { empty: 'No tasks yet', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
+  ru: { empty: 'Задач пока нет', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
+  'zh-CN': { empty: '还没有任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
 } satisfies Record<InterfaceLanguage, { empty: string; uncounted: string; done: (done: string, total: string) => string; remaining: (n: string) => string; skipped: (n: string) => string }>;
 
 export function summaryText(s: Counts, locale: InterfaceLanguage = 'en') {

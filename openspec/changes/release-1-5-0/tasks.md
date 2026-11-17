@@ -62,9 +62,9 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 9. Plain-language copy pass
 
-- [ ] 9.1 Reword the remaining default strings and accessible names on every surface in the three catalogs together, following the copy guide: state words, sub-agent rows, session and install notes, stale and recording lines, empty states and menu labels.
-- [ ] 9.2 Add a check that renders each surface's default states in each language and fails on a listed internal term in visible text or accessible names, with the allowed locations excluded. Review Russian and Chinese wording by a semantic read, not a phrase search.
-- [ ] 9.3 Update `docs/ui.md`, `docs/setup.md`, the README and documentation images to the shipped wording; regenerate every affected guest and the background entry if shared copy it bundles changed.
+- [x] 9.1 Reword the remaining default strings and accessible names on every surface in the three catalogs together, following the copy guide: state words, sub-agent rows, session and install notes, stale and recording lines, empty states and menu labels.
+- [x] 9.2 Add a check that renders each surface's default states in each language and fails on a listed internal term in visible text or accessible names, with the allowed locations excluded. Review Russian and Chinese wording by a semantic read, not a phrase search.
+- [x] 9.3 Update `docs/ui.md`, `docs/setup.md`, the README and documentation images to the shipped wording; regenerate every affected guest and the background entry if shared copy it bundles changed.
 
 ## 10. Joined verification
 

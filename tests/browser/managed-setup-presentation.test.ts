@@ -13,8 +13,8 @@ import {managedFreshStepFixtures} from '../fixtures/managed-fresh-steps.ts';
 import {setupRead} from './fixtures.ts';
 import type {ManagedFreshStepProgress} from '../../shared/managed-steps.ts';
 
-function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false){
-  const el=(_tag:string,_class='',text=''):any=>({text,dataset:{},children:[] as any[],
+function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false,initial=false){
+  const el=(tag:string,_class='',text=''):any=>({tag,text,dataset:{},children:[] as any[],
     get childElementCount(){return this.children.length;},
     append(...children:any[]){this.children.push(...children);},setAttribute(){},removeAttribute(){},addEventListener(){},querySelector:()=>null});
   const testid=(node:any,id:string)=>{node.dataset.testid=id;return node;};
@@ -22,7 +22,8 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
   const js=ts.transpileModule(readFileSync(new URL('../../ui/shared/setup.ts',import.meta.url),'utf8'),
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   runInNewContext(js,{exports,document:{visibilityState:'visible'},require:(name:string)=>{
-    if(name==='@openchamber/sdk/ui')return {mountBanner:(node:any,o:any)=>node.append(el('p','',o.title),el('p','',o.body))};
+    if(name==='@openchamber/sdk/ui')return {mountBanner:(node:any,o:any)=>node.append(el('p','',o.title),el('p','',o.body)),
+      mountTextField:(node:any,o:any)=>node.append(el('label','',o.label),el('p','',o.helper))};
     if(name==='./components.ts')return {el,testid,button:(parent:any,id:string,label:string)=>parent.append(testid(el('button','',label),id))};
     if(name==='./i18n.ts')return {resolveLanguage};
     if(name==='./managed-copy.ts')return copy;
@@ -33,14 +34,28 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
   }});
   const info=parseSetup(JSON.stringify(setupRead({separateLifecycle:false,captureEnabled:null,verified:false,diagnostics,
     delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,planKind:'fresh',
-      configuration:invalid?'invalid':'configured',migration:invalid?'unavailable':progress?.state==='complete'?'complete':'pending',
+       configuration:initial?'unconfigured':invalid?'invalid':'configured',migration:initial?'none':invalid?'unavailable':progress?.state==='complete'?'complete':'pending',
       mode:'unknown',observation:'unknown',expectedVersion:null,...(progress?{freshProgress:progress}:{})}})));
   const root=exports.setupBlock({env:{locale},ui:{setup:exports.initialSetupUi()},setup:{state:'ready',value:info},
     ctx:{connection:{account:'synthetic'}},requestSetup(){throw new Error('Unexpected status request');},updateUi(){},service(){throw new Error('Unexpected mutation');}});
   const nodes=(node:any):any[]=>[node,...node.children.flatMap((child:any)=>typeof child==='string'?[{text:child,dataset:{}}]:nodes(child))];
   const all=nodes(root);
-  return {text:all.map(n=>n.text).join(' '),has:(id:string)=>all.some(n=>n.dataset.testid===id)};
+  return {all,nodes,text:all.map(n=>n.text).join(' '),has:(id:string)=>all.some(n=>n.dataset.testid===id)};
 }
+
+for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: initial technical facts remain reachable in one disclosure, recording stays outside`,()=>{
+  const shown=render(undefined,locale,[],false,true),text=copy.managedCopy(locale);
+  const disclosure=shown.all.find(n=>n.dataset.testid==='setup-changes');
+  assert.equal(disclosure.tag,'details');
+  assert.equal(disclosure.children[0].tag,'summary');
+  assert.equal(disclosure.children[0].text,copy.managedFreshCopy(locale).disclosure);
+  const within=shown.nodes(disclosure),facts=within.map(n=>n.text).join(' ');
+  for(const fact of [text.unconfigured,text.unknown,text.observation,text.privilege,text.lifecycle,text.reach])assert.ok(facts.includes(fact),'moved fact is retained');
+  assert.ok(shown.has('managed-capture-control'));
+  assert.ok(!within.some(n=>n.dataset.testid==='managed-capture-control'),'recording is visible before opening the disclosure');
+  assert.ok(shown.has('setup-storeRoot'));
+  assert.ok(shown.has('setup-inspect'));
+});
 
 const prepared=managedFreshStepFixtures().replies.prepared.progress!;
 for (const [store, missing, source] of [['create',true,'create'],['create',false,'create'],['retain',false,'create'],['retain',false,'reuse']] as const)

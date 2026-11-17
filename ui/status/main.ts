@@ -18,9 +18,42 @@ import { scopeInbox } from '../shared/inbox.ts';
 
 type Ui = { selection: StatusSelection };
 const messages = {
-  en: { openFailed: 'Progress details could not open here.', noSession: 'No session selected', openSession: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', setupHelp: 'Set it up to see plans here.', setUp: 'Set up', noPlan: 'No plan reported for this session', appears: 'Progress appears here when an agent reports a plan.', featured: 'Featured plan', automatic: 'Automatic', prefer: 'Prefer reported working tasks', chosen: 'Chosen', chosenLabel: 'chosen', automaticLabel: 'chosen automatically', working: (n: number) => `${n} working`, picker: (title: string, chosen: boolean, n: number) => `Featured plan: ${title}, ${chosen ? 'chosen' : 'chosen automatically'}. ${plural(n, 'plan', 'plans')}; choose another`, updated: 'Updated ', more: (n: number) => plural(n, 'more plan', 'more plans'), moreAria: (n: number) => `${plural(n, 'more plan', 'more plans')} in this session: choose the featured plan`, open: 'Open progress', progress: 'in progress', ready: 'ready', waiting: 'waiting', blocked: 'blocked', pending: 'pending', skipped: 'skipped', counts: (n: number, skipped: number) => ` done, ${n} remaining${skipped ? `, ${skipped} skipped` : ''}`, stale: (time: string) => `Not refreshed since ${time}. Counts may be out of date.`, capture: 'Capture off: these are the last reported counts.', unavailable: 'Task details couldn’t be loaded.', invalid: 'Ready and waiting are unavailable for this report.', incomplete: 'Some recorded prerequisites aren’t in this plan.', focus: 'Blocked and in progress' },
-  ru: { openFailed: 'Не удалось открыть подробности прогресса.', noSession: 'Сессия не выбрана', openSession: 'Откройте сессию, чтобы увидеть её отчёты о прогрессе.', setup: 'Прогресс агента ещё не настроен', setupHelp: 'Настройте его, чтобы видеть планы.', setUp: 'Настроить', noPlan: 'В этой сессии нет отчёта о плане', appears: 'Прогресс появится здесь, когда агент сообщит о плане.', featured: 'Основной план', automatic: 'Автоматически', prefer: 'Предпочитать задачи с отчётом о работе', chosen: 'Выбран', chosenLabel: 'выбран', automaticLabel: 'выбран автоматически', working: (n: number) => `В работе: ${formatCount(n, 'ru')}`, picker: (title: string, chosen: boolean, n: number) => `Основной план: ${title}, ${chosen ? 'выбран' : 'выбран автоматически'}. Планов: ${formatCount(n, 'ru')}; выбрать другой`, updated: 'Обновлено ', more: (n: number) => `Ещё планов: ${formatCount(n, 'ru')}`, moreAria: (n: number) => `Других планов в этой сессии: ${formatCount(n, 'ru')}; выбрать основной план`, open: 'Открыть прогресс', progress: 'в работе', ready: 'готово к работе', waiting: 'ожидает', blocked: 'заблокировано', pending: 'не начато', skipped: 'пропущено', counts: (n: number, skipped: number) => ` выполнено, осталось: ${formatCount(n, 'ru')}${skipped ? `, пропущено: ${formatCount(skipped, 'ru')}` : ''}`, stale: (time: string) => `Не обновлялось с ${time}. Счётчики могут быть устаревшими.`, capture: 'Запись отключена: показаны последние полученные счётчики.', unavailable: 'Не удалось загрузить подробности задач.', invalid: 'Готовность и ожидание недоступны для этого отчёта.', incomplete: 'Некоторые записанные предварительные условия отсутствуют в этом плане.', focus: 'Заблокированные и в работе' },
-  'zh-CN': { openFailed: '无法在此处打开进度详情。', noSession: '未选择会话', openSession: '打开一个会话，查看其已报告的进度。', setup: '尚未设置智能体进度', setupHelp: '完成设置后即可在此查看计划。', setUp: '开始设置', noPlan: '此会话尚未报告计划', appears: '智能体报告计划后，进度将显示在这里。', featured: '重点计划', automatic: '自动选择', prefer: '优先显示已报告进行中的任务', chosen: '已选择', chosenLabel: '已选择', automaticLabel: '自动选择', working: (n: number) => `${n} 个进行中`, picker: (title: string, chosen: boolean, n: number) => `重点计划：${title}，${chosen ? '手动选择' : '自动选择'}。共 ${n} 个计划；选择其他计划`, updated: '更新于 ', more: (n: number) => `${n} 个其他计划`, moreAria: (n: number) => `此会话另有 ${n} 个计划：选择重点计划`, open: '打开进度', progress: '进行中', needs: '需要你处理', ready: '已就绪', waiting: '等待中', blocked: '受阻', pending: '未开始', skipped: '已跳过', counts: (n: number, skipped: number) => ` 已完成，剩余 ${n}${skipped ? `，已跳过 ${skipped}` : ''}`, stale: (time: string) => `自 ${time} 起尚未刷新，计数可能已过期。`, capture: '采集已关闭：这些是上次报告的计数。', unavailable: '无法加载任务详情。', invalid: '此报告的就绪和等待状态不可用。', incomplete: '部分已记录的前置任务不在此计划中。', focus: '受阻和进行中的任务' },
+  en: {
+    openFailed: 'Couldn’t open progress; try again.', noSession: 'No session selected', openSession: 'Open a session to see its progress.',
+    setup: 'Agent Progress is not set up yet', setupHelp: 'Set it up to see plans here.', setUp: 'Set up',
+    noPlan: 'No plan yet', appears: 'When an agent shares its plan, it shows up here.',
+    featured: 'Featured plan', automatic: 'Automatic', prefer: 'Prefer in-progress tasks', chosen: 'Chosen', chosenLabel: 'chosen', automaticLabel: 'chosen automatically',
+    working: (n: number) => `${n} in progress`, picker: (title: string, chosen: boolean, n: number) => `Featured plan: ${title}, ${chosen ? 'chosen' : 'chosen automatically'}. ${plural(n, 'plan', 'plans')}; choose another`,
+    updated: 'Last update ', more: (n: number) => plural(n, 'more plan', 'more plans'), moreAria: (n: number) => `${plural(n, 'more plan', 'more plans')} in this session: choose the featured plan`,
+    open: 'Open progress', progress: 'in progress', ready: 'ready', waiting: 'waiting', blocked: 'blocked', pending: 'not started', skipped: 'skipped',
+    counts: (n: number, skipped: number) => ` done, ${n} remaining${skipped ? `, ${skipped} skipped` : ''}`,
+    stale: (time: string) => `Not updated since ${time}; try again.`, capture: 'Recording is off; new progress isn’t saved.',
+    unavailable: 'Couldn’t load task details; try again.', invalid: 'Readiness is unavailable.', incomplete: 'Some earlier tasks aren’t in this plan.', focus: 'Blocked and in progress',
+  },
+  ru: {
+    openFailed: 'Не удалось открыть прогресс; попробуйте снова.', noSession: 'Сессия не выбрана', openSession: 'Откройте сессию, чтобы увидеть её прогресс.',
+    setup: 'Agent Progress ещё не настроен', setupHelp: 'Настройте его, чтобы видеть планы.', setUp: 'Настроить',
+    noPlan: 'Плана пока нет', appears: 'Когда агент поделится планом, он появится здесь.',
+    featured: 'Основной план', automatic: 'Автоматически', prefer: 'Предпочитать задачи в работе', chosen: 'Выбран', chosenLabel: 'выбран', automaticLabel: 'выбран автоматически',
+    working: (n: number) => `В работе: ${formatCount(n, 'ru')}`, picker: (title: string, chosen: boolean, n: number) => `Основной план: ${title}, ${chosen ? 'выбран' : 'выбран автоматически'}. Планов: ${formatCount(n, 'ru')}; выбрать другой`,
+    updated: 'Последнее обновление ', more: (n: number) => `Ещё планов: ${formatCount(n, 'ru')}`, moreAria: (n: number) => `Других планов в этой сессии: ${formatCount(n, 'ru')}; выбрать основной план`,
+    open: 'Открыть прогресс', progress: 'в работе', ready: 'готово к работе', waiting: 'ожидает', blocked: 'заблокировано', pending: 'не начато', skipped: 'пропущено',
+    counts: (n: number, skipped: number) => ` выполнено, осталось: ${formatCount(n, 'ru')}${skipped ? `, пропущено: ${formatCount(skipped, 'ru')}` : ''}`,
+    stale: (time: string) => `Не обновлялось с ${time}; попробуйте снова.`, capture: 'Запись выключена; новый прогресс не сохраняется.',
+    unavailable: 'Не удалось загрузить сведения о задачах; попробуйте снова.', invalid: 'Готовность недоступна.', incomplete: 'Некоторых предыдущих задач нет в плане.', focus: 'Заблокированные и в работе',
+  },
+  'zh-CN': {
+    openFailed: '无法打开进度，请重试。', noSession: '未选择会话', openSession: '打开会话以查看进度。',
+    setup: '尚未设置 Agent Progress', setupHelp: '完成设置后即可在此查看计划。', setUp: '开始设置',
+    noPlan: '还没有计划', appears: '智能体分享计划后，就会显示在这里。',
+    featured: '重点计划', automatic: '自动选择', prefer: '优先显示进行中的任务', chosen: '已选择', chosenLabel: '已选择', automaticLabel: '自动选择',
+    working: (n: number) => `${formatCount(n, 'zh-CN')} 个进行中`, picker: (title: string, chosen: boolean, n: number) => `重点计划：${title}，${chosen ? '手动选择' : '自动选择'}。共 ${formatCount(n, 'zh-CN')} 个计划；选择其他计划`,
+    updated: '上次更新于 ', more: (n: number) => `${formatCount(n, 'zh-CN')} 个其他计划`, moreAria: (n: number) => `此会话另有 ${formatCount(n, 'zh-CN')} 个计划：选择重点计划`,
+    open: '打开进度', progress: '进行中', needs: '需要你处理', ready: '已就绪', waiting: '等待中', blocked: '受阻', pending: '未开始', skipped: '已跳过',
+    counts: (n: number, skipped: number) => ` 已完成，剩余 ${formatCount(n, 'zh-CN')}${skipped ? `，已跳过 ${formatCount(skipped, 'zh-CN')}` : ''}`,
+    stale: (time: string) => `自 ${time} 起尚未更新，请重试。`, capture: '记录已关闭，新进度不会保存。',
+    unavailable: '无法加载任务详情，请重试。', invalid: '就绪状态不可用。', incomplete: '部分前置任务不在此计划中。', focus: '受阻和进行中的任务',
+  },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 let heights: HeightSync | null = null;
 let reportAgeShown = false;

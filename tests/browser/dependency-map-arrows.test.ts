@@ -104,7 +104,7 @@ function facts(items: { id: string; status: Status; dependencies?: string[] }[])
 
 test('waiting summary: unfinished direct prerequisites with nonzero working/blocked parts', () => {
   const f = facts([{ id: 'A', status: 'working' }, { id: 'B', status: 'blocked' }, { id: 'C', status: 'pending' }, { id: 'X', status: 'done' }, { id: 'T', status: 'pending', dependencies: ['A', 'B', 'C', 'X'] }]);
-  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting on 3 unfinished recorded prerequisites: 1 reported working, 1 explicitly blocked.');
+  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting on 3 unfinished recorded prerequisites: 1 in progress, 1 blocked.');
   // Without arrow-state eligibility (e.g. an archived plan) the sentence stays as it was.
   assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, false), 'Waiting on 3 unfinished recorded prerequisites.');
 });
@@ -112,19 +112,19 @@ test('waiting summary: unfinished direct prerequisites with nonzero working/bloc
 test('waiting summary: each direct prerequisite once, zero parts omitted, singular wording, no transitive or group relationships', () => {
   const f = facts([{ id: 'R', status: 'working' }, { id: 'A', status: 'working', dependencies: ['R'] }, { id: 'T', status: 'pending', dependencies: ['A', 'A'] }]);
   assert.deepEqual(prerequisiteCounts(f.get('T')), { unfinished: 1, working: 1, blocked: 0 });
-  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting on 1 unfinished recorded prerequisite: 1 reported working.');
+  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting on 1 unfinished recorded prerequisite: 1 in progress.');
   const g = deriveDependencies([{ id: 'G', kind: 'group', status: 'pending' }, { id: 'B', kind: 'task', status: 'blocked' }, { id: 'T', kind: 'task', status: 'pending', dependencies: ['G', 'B'] }]);
   assert.equal(g.state, 'valid');
   if (g.state === 'valid') assert.deepEqual(prerequisiteCounts(g.tasks.get('T')), { unfinished: 2, working: 0, blocked: 1 }, 'a group prerequisite is unfinished but never working/blocked');
   assert.equal(prerequisiteStates({ working: 0, blocked: 0 }), '');
-  assert.equal(prerequisiteStates({ working: 2, blocked: 0 }), '2 reported working');
+  assert.equal(prerequisiteStates({ working: 2, blocked: 0 }), '2 in progress');
   const none = facts([{ id: 'P', status: 'pending' }, { id: 'T', status: 'pending', dependencies: ['P'] }]);
   assert.equal(readinessText(item('T'), none.get('T'), true, true, titles, true), 'Waiting on 1 unfinished recorded prerequisite.');
 });
 
 test('waiting summary: the skipped warning stays and the summary joins it', () => {
   const f = facts([{ id: 'S', status: 'skipped' }, { id: 'W', status: 'working' }, { id: 'T', status: 'pending', dependencies: ['S', 'W'] }]);
-  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting: a recorded prerequisite was skipped (Task S), and skipped work never counts as done. Its unfinished recorded prerequisites include 1 reported working.');
+  assert.equal(readinessText(item('T'), f.get('T'), true, true, titles, true), 'Waiting: a recorded prerequisite was skipped (Task S), and skipped work never counts as done. Its unfinished recorded prerequisites include 1 in progress.');
   const only = facts([{ id: 'S', status: 'skipped' }, { id: 'T', status: 'pending', dependencies: ['S'] }]);
   assert.equal(readinessText(item('T'), only.get('T'), true, true, titles, true), 'Waiting: a recorded prerequisite was skipped (Task S), and skipped work never counts as done.');
 });

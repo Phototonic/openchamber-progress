@@ -84,7 +84,7 @@ test('cleanup, search, digest and health feedback are Chinese without changing m
   assert.equal(digestStatusText({ kind: 'saving' }, 'zh-CN'), '正在保存审阅…');
   assert.match(digestStatusText({ kind: 'saved', revision: 3 }, 'zh-CN'), /修订 3/);
   assert.equal(reportingCopyText('copied', 'zh-CN'), '已复制。');
-  assert.equal(managedCopy('zh-CN').title, '设置');
+  assert.equal(managedCopy('zh-CN').title, '设置 Agent Progress');
   assert.match(managedErrorText('managed-migration-conflict', 'zh-CN')!, /冲突/);
   assert.equal(managedErrorText('unknown-code', 'zh-CN'), null);
 });
@@ -134,7 +134,7 @@ test('every InterfaceLanguage-typed catalog includes Simplified Chinese', () => 
 
 test('1.4.0 Chinese inbox, delegation and Setup copy preserves reported-state boundaries', () => {
   assert.equal(inboxCopy('zh-CN').heading, '需要你处理');
-  assert.match(inboxCopy('zh-CN').alsoNote, /已报告/);
+  assert.match(inboxCopy('zh-CN').alsoNote, /其他受阻任务/);
   const components = readFileSync(new URL('../../ui/shared/components.ts', import.meta.url), 'utf8');
   assert.ok(components.includes("'Next sub-agent will take this': '下一个子智能体将接手此任务'"));
   assert.ok(components.includes('工作尚未开始，也尚未分配子智能体。'));
