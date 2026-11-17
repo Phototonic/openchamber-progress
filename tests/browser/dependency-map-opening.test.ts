@@ -85,3 +85,21 @@ test('reference 100-task and 980-task plans use current work on rail and board; 
     assert.deepEqual(f.c.value.transform, fitProjection(f.input.layout, f.input.layout.order, f.input.viewport, 16, 1));
   }
 });
+
+test('Focus current work restores opening framing without selection, focus or filter changes and announces once', () => {
+  const f = open([task('A', 'working'), task('B', 'pending', ['A']), task('C', 'done')], 330, 540);
+  f.c.dispatch({ type: 'filters', status: 'unfinished', group: null });
+  f.c.dispatch({ type: 'current' });
+  const target = f.c.value.transform;
+  f.c.dispatch({ type: 'select', id: 'B' });
+  f.c.dispatch({ type: 'fit' });
+  f.c.dispatch({ type: 'pan', x: 100, y: -80 });
+  f.commands.length = 0;
+  f.c.dispatch({ type: 'current' });
+  assert.deepEqual(f.c.value.transform, target);
+  assert.equal(f.c.value.selected, 'B');
+  assert.equal(f.c.value.status, 'unfinished');
+  assert.equal(f.c.value.group, null);
+  assert.deepEqual(f.commands.filter(c => c.type === 'announce').map(c => c.type === 'announce' && c.message), [{ kind: 'current' }]);
+  assert.equal(f.commands.some(c => c.type === 'selection' || c.type === 'focus' || c.type === 'filters'), false);
+});

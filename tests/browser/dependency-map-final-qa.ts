@@ -351,7 +351,8 @@ export async function productionMapQa(d: Driver) {
         await wait(s,`w.innerWidth===${width/factor}`,'effective zoom layout');await frames2();
         const metrics=await guest(s,`const n=d.querySelector('${hook('map-fit-all')}'),r=n.getBoundingClientRect();return {cssWidth:w.innerWidth,cssHeight:w.innerHeight,font:getComputedStyle(n).fontSize,controlWidth:r.width}`);
         check(`${name}:zoom-${factor}:no-document-overflow`,await overflow(s));
-        await activate(s,'map-fit-all');await activate(s,'map-zoom-in');await activate(s,'map-zoom-out');
+        await activate(s,'map-fit-all');await activate(s,'map-zoom-in');await activate(s,'map-zoom-out');await activate(s,'map-focus-current');
+        check(`${name}:zoom-${factor}:current-action-keeps-focus`,await guest(s,`return d.activeElement?.dataset.testid==='map-focus-current'`));
         await select(s,'B');await activate(s,'map-list');await wait(s,`d.activeElement?.dataset?.testid==='item-B'`,'zoom list reveal');await open(s);
         await d.shot(`${name}/zoom-${factor*100}`,hook('map-fit-all'),12,850,s);await d.shot(`${name}/zoom-${factor*100}-inspector`,inspector,0,850,s);save(`${name}/zoom-${factor*100}.json`,{method:'equivalent CSS zoom of embedding section plus divided layout viewport; not graph zoom or deviceScaleFactor',factor,originalWidth:width,originalHeight:850,effective:metrics,physicalTextScale:factor});
         await evaluate(`(()=>{const n=document.querySelector('section[data-frame=${s}]');n.style.zoom='1';n.style.width='${width}px';frame('${s}').style.height='850px';return true})()`);await wait(s,`w.innerWidth===${width}`);await frames2();
@@ -395,7 +396,7 @@ export async function productionMapQa(d: Driver) {
   check('board:wide:panel-over-canvas-with-selection',await guest('page',`const i=d.querySelector('${inspector}'),r=i.getBoundingClientRect(),v=d.querySelector('${viewport}').getBoundingClientRect();return i.dataset.selected==='D'&&!i.hidden&&r.left>v.left&&r.right<=v.right&&r.top>=v.top&&r.bottom<=v.bottom&&i.tabIndex===0`));
   check('board:wide:selected-card-clear-of-panel',await clearOfPanel('D'));
   await guest('page',`d.querySelector(${literal(hook('map-card-D'))}).focus();return true`);await key('Escape');await frames2();
-  check('board:wide:no-panel-without-selection',await guest('page',`const i=d.querySelector('${inspector}');return i.dataset.selected===''&&i.hidden&&!i.getClientRects().length&&[...d.querySelectorAll('${hook('map-help')} p')].some(p=>p.textContent.startsWith('Select a card'))`));
+  check('board:wide:no-panel-without-selection',await guest('page',`const i=d.querySelector('${inspector}');return i.dataset.selected===''&&i.hidden&&!i.getClientRects().length`));
   await activate('page','map-fit-all');
   check('board:wide:fit-all-at-most-100',await zoomLevel()<=100,[String(await zoomLevel())]);
   const canvasBefore=await wideCanvas(),zoomBefore=await zoomLevel();

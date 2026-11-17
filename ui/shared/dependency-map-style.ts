@@ -71,12 +71,12 @@ export const MAP_CSS = `
 .ap-map-world{position:relative}
 /* Interactive canvas: a fixed-height clipped viewport; the world is transformed, never scrolled */
 .ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;overscroll-behavior:contain}
-.ap-map[data-frame="rail"] .ap-map-viewport[data-interactive]{height:clamp(240px,54vh,460px)}
+.ap-map[data-frame="rail"] .ap-map-viewport[data-interactive]{height:clamp(320px,54vh,60vh);max-height:none}
 /* Touch: the interactive canvas owns its gestures (touch-action:none): one finger pans, two pinch the
    map's own zoom (dependency-map-interaction.ts MAP_TOUCH); mouse, pen, wheel and keys are unchanged.
    The page scrolls from everything around the canvas, so on a coarse pointer the canvas is held to
    about half the frame height, leaving the header, toolbar and inspector as scroll handles. */
-.ap-map[data-pointer="coarse"] .ap-map-viewport[data-interactive]{height:clamp(220px,50vh,440px)}
+.ap-map[data-pointer="coarse"] .ap-map-viewport[data-interactive]{height:clamp(220px,50vh,300px)}
 /* Coarse pointer (the host's device hint, else the pointer media query; presentation only): every map
    control is at least 44 x 44 CSS px. Cards are already larger than that at the readable zoom. */
 .ap-map[data-pointer="coarse"] .ap-map-tool{min-width:44px;height:auto;min-height:44px}
@@ -127,7 +127,7 @@ export const MAP_CSS = `
   .ap-map-toolbar>[data-testid="plan-view"]{flex:1 1 100%;flex-wrap:wrap;margin-right:0}
 }
 .ap-map-help strong{color:var(--oc-fg);font-weight:600}
-.ap-map-keys{line-height:1.9}
+.ap-map-keys{line-height:1.5}
 .ap-map-keys .ap-map-nowrap{white-space:nowrap}
 .ap-map-help kbd{display:inline-block;min-width:1.6em;padding:0 5px;border:1px solid var(--oc-border);border-bottom-width:2px;border-radius:4px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:11px;line-height:1.5;text-align:center}
 .ap-map-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
