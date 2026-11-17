@@ -10,6 +10,7 @@ import { lifecycleLabel, statusLabel, type ItemStatus, type Lifecycle, type Sear
 import { ALL } from './scope.ts';
 import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+import type { CleanupPlan } from './cleanup.ts';
 
 const EN = {
   searchHint: 'Search',
@@ -323,6 +324,7 @@ export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 
 }
 
 export interface ResultHooks {
+  selection?: { has: (key: string) => boolean; toggle: (plan: CleanupPlan) => void; disabled: boolean };
   selected: { key: string; item: string | null } | null;
   openPlan: (hit: SearchHitView) => void;
   openTask: (hit: SearchHitView) => void;
@@ -346,6 +348,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   if (g.changed) section.dataset.changed = 'true';
   const head = testid(el('button', 'ap-hit ap-hit-plan'), `search-plan-${g.plan.sourceId}/${g.plan.id}`);
   head.type = 'button';
+  head.disabled = !!h.selection?.disabled;
   Object.assign(head.dataset, { source: g.plan.sourceId, plan: g.plan.id, kind: 'plan' });
   if (h.selected?.key === g.plan.key && !h.selected.item) head.setAttribute('aria-current', 'true');
   head.append(el('span', 'ap-hit-title', g.plan.title), el('span', 'ap-hit-meta', hitMeta(g.plan, env)));
@@ -354,10 +357,14 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   if (g.planOnly) notes.push(copy.planMatch);
   if (g.changed) notes.push(copy.changed);
   if (notes.length) head.append(el('span', 'ap-hit-note', notes.join(' · ')));
-  head.setAttribute('aria-label', `${copy.openPlan}: ${g.plan.title}`);
-  head.addEventListener('click', () => h.openPlan(g.hits[0] ?? { plan: g.plan, planMatched: true, task: null, ancestors: [], omittedAncestors: 0, continued: g.continued, classified: null }));
+  head.setAttribute('aria-label', h.selection ? g.plan.title : `${copy.openPlan}: ${g.plan.title}`);
+  if (h.selection) head.setAttribute('aria-pressed', String(h.selection.has(g.plan.key)));
+  head.addEventListener('click', () => {
+    if (h.selection) { if (head.isConnected) h.selection.toggle(g.plan); }
+    else h.openPlan(g.hits[0] ?? { plan: g.plan, planMatched: true, task: null, ancestors: [], omittedAncestors: 0, continued: g.continued, classified: null });
+  });
   section.append(head);
-  if (g.hits.length) {
+  if (g.hits.length && !h.selection) {
     const list = el('ul', 'ap-hit-tasks');
     list.setAttribute('aria-label', ru ? `Подходящие задачи в ${g.plan.title}` : zh ? `${g.plan.title} 中的匹配任务` : `Matching tasks in ${g.plan.title}`);
     for (const hit of g.hits) {

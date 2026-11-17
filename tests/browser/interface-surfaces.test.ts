@@ -9,6 +9,7 @@ import * as scope from '../../ui/shared/scope.ts';
 import * as live from '../../ui/shared/live.ts';
 import * as inbox from '../../ui/shared/inbox.ts';
 import * as defaultView from '../../ui/shared/default-view.ts';
+import * as cleanup from '../../ui/shared/cleanup.ts';
 import { formatCount, plural } from '../../ui/shared/format.ts';
 import { queryProblem } from '../../ui/shared/search.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
@@ -56,6 +57,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/components.ts')) return components;
     if (path.endsWith('/dependency-map-view.ts')) return { createMapFrame: () => ({ sync(...args: any[]) { maps.push(args); }, paint() { nodes.push({ dataset: { testid: 'painted-map' } }); }, listTargets() {} }) };
     if (path.endsWith('/default-view.ts')) return defaultView;
+    if (path.endsWith('/cleanup.ts')) return cleanup;
     if (path.endsWith('/refresh.ts')) return { RecentMemory: class {} };
     if (path.endsWith('/search.ts')) return { SearchController: noopController };
     if (path.endsWith('/capture-comparison.ts')) return { CaptureController: noopController };

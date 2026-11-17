@@ -52,6 +52,13 @@ for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gon
     assert.deepEqual(counted?.targets.map(p => p.request.plan), ['older']);
     assert.equal(counted?.matching, false);
     assert.equal(hook('tidyMatching', globals)(vc), false);
+    const selectionScan = hook('tidyScan', globals)(vc, 'selection', () => true) as CleanupScan;
+    const selected = await selectionScan.more(() => true);
+    assert.deepEqual(selected?.targets.map(p => p.request.plan), ['visible', 'older'],
+      'Select all shares the effective scope and includes in-progress plans');
+    const unsupported = await (hook('tidyScan', globals)(vc, 'selection', () => true, false) as CleanupScan).more(() => true);
+    assert.deepEqual(unsupported?.targets.map(p => p.request.plan), ['older']);
+    assert.equal(unsupported?.excludedActive, 1, 'unsupported active plans are counted outside the target ceiling');
     vc.read = { ...vc.read, plans: [...loaded, ...older], truncated: false };
     assert.equal(hook('tidyScan', globals)(vc, 'board'), null);
     assert.deepEqual(tidyConfirmation(derivedBoard().plans, vc.read.storeId, 'board').targets.map(p => p.request.plan), counted?.targets.map(p => p.request.plan));

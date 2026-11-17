@@ -634,6 +634,13 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-filters{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end}
 .ap-filters>div{min-width:150px;flex:1 1 150px;max-width:260px}
 .ap-board{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
+.ap-selection-bar{flex-wrap:wrap;gap:6px}
+.ap-selection-row{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:10px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:start;overflow-wrap:anywhere;cursor:pointer}
+.ap-selection-row:hover{background:var(--oc-hover)}
+.ap-selection-row[aria-pressed="true"],.ap-hit-plan[aria-pressed="true"]{background:var(--oc-hover);box-shadow:inset 0 0 0 2px var(--oc-primary)}
+.ap-selection-row:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-selection-mark{flex:none;width:18px;height:18px;border:1px solid var(--oc-border);border-radius:4px;text-align:center;line-height:16px}
+@media(max-width:819px){.ap-board.ap-selecting>.ap-plan-list>.ap-board-project{display:flex}.ap-board.ap-selecting>.ap-detail{display:none}.ap-selecting .ap-hit-plan{min-height:44px}}
 .ap-plan-list{display:flex;flex-direction:column;gap:12px;min-width:0}
 .ap-plan-list .oc-sdk-row{min-height:52px}
 .ap-detail{min-width:0;padding:16px;border-radius:var(--oc-radius,12px);background:color-mix(in srgb,var(--oc-fg) 3%,transparent)}

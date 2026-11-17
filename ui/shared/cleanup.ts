@@ -53,10 +53,10 @@ export function cleanupClosed(plan: Pick<PlanView, 'lifecycle'>) {
   return ['completed', 'cancelled', 'failed'].includes(plan.lifecycle);
 }
 export function cleanupMatches(target: CleanupTarget, plan: PlanView | null, storeId: string | undefined, context: string) {
-  return !!plan && cleanupClosed(plan) && target.context === context && target.request.storeId === storeId && target.key === plan.key && target.request.rev === plan.revision && target.request.cleanupRev === (plan.cleanup?.revision ?? 0);
+  return !!plan && (cleanupClosed(plan) || plan.cleanup?.state === 'archived') && target.context === context && target.request.storeId === storeId && target.key === plan.key && target.request.rev === plan.revision && target.request.cleanupRev === (plan.cleanup?.revision ?? 0);
 }
 export function cleanupEligible(action: CleanupAction, plan: PlanView) {
-  return cleanupClosed(plan) && (action === 'delete' || (action === 'restore') === (plan.cleanup?.state === 'archived'));
+  return (cleanupClosed(plan) || plan.cleanup?.state === 'archived') && (action === 'delete' || (action === 'restore') === (plan.cleanup?.state === 'archived'));
 }
 export function cleanupError(code: string, locale = 'en') {
   const language = resolveLanguage('auto', locale);
@@ -71,6 +71,9 @@ export const TIDY_SCAN_LIMIT = 2000;
 /** Network round trips per explicit action, even when search continues one task-heavy plan. */
 export const TIDY_SCAN_WINDOWS = 40;
 export interface TidyConfirmation {
+  selection?: CleanupAction;
+  activeCount?: number;
+  excludedActive?: number;
   context: string;
   targets: CleanupTarget[];
   total: number;
@@ -88,6 +91,9 @@ export interface TidyResult {
   remaining: CleanupTarget[];
 }
 export interface TidyState {
+  selectionRequest?: SelectionRequest;
+  selection?: CleanupAction;
+  opener?: string;
   context: string;
   confirmation?: TidyConfirmation;
   result?: TidyResult;
@@ -125,6 +131,9 @@ export class CleanupScan {
   private read: (cursor: string | null, current: () => boolean) => Promise<CleanupScanPage>;
   private matching: boolean;
   private windowBound: number;
+  private includes?: (plan: CleanupPlan) => boolean;
+  private allowActive: boolean;
+  private excludedActive = new Set<string>();
   constructor(
     context: string,
     storeId: string,
@@ -133,9 +142,13 @@ export class CleanupScan {
     matching = false,
     /** Search windows visit at most 64 plans; reserve that before issuing one. */
     windowBound = 50,
+    includes?: (plan: CleanupPlan) => boolean,
+    allowActive = true,
   ) {
     this.context = context; this.storeId = storeId; this.archived = archived;
     this.read = read; this.matching = matching; this.windowBound = windowBound;
+    this.includes = includes;
+    this.allowActive = allowActive;
   }
   cancel() { this.retired = true; }
   async more(current: () => boolean): Promise<TidyConfirmation | null> {
@@ -153,7 +166,9 @@ export class CleanupScan {
           (page.nextCursor !== null && page.nextCursor === this.cursor)) throw new Error('Invalid cleanup scan continuation.');
         visited += page.visited;
         for (const p of page.plans) {
-          if (!tidyEligible(p, this.archived) || this.targets.has(p.key)) continue;
+          if (!(this.includes ? (p.cleanup?.state === 'archived') === this.archived && this.includes(p) : tidyEligible(p, this.archived))) continue;
+          if (this.targets.has(p.key) || this.excludedActive.has(p.key)) continue;
+          if (!this.allowActive && !cleanupClosed(p)) { this.excludedActive.add(p.key); continue; }
           if (this.targets.size >= TIDY_LIMIT) { this.overflow = true; break; }
           this.targets.set(p.key, cleanupTarget(p, this.storeId, this.context));
         }
@@ -161,11 +176,88 @@ export class CleanupScan {
         this.exhausted = this.cursor === null;
       }
       return { context: this.context, targets: [...this.targets.values()], total: this.targets.size,
+        ...(this.excludedActive.size ? { excludedActive: this.excludedActive.size } : {}),
         archived: this.archived, matching: this.matching,
         limited: this.overflow || this.targets.size === TIDY_LIMIT && !this.exhausted,
         unchecked: this.targets.size < TIDY_LIMIT && !this.exhausted };
     } finally { this.busy = false; }
   }
+}
+/** Frame-local rule, never persisted. Reconcile only when the reading/list changes, not per paint. */
+export class PlanSelection {
+  mode = false;
+  all = false;
+  version = 0;
+  private reading = '';
+  private known = new Map<string, CleanupPlan>();
+  private chosen = new Set<string>();
+  private omitted = new Set<string>();
+  private partial = false;
+  private plans: CleanupPlan[] | null = null;
+  private selectedCount = 0;
+  private recount() {
+    this.selectedCount = this.all ? this.known.size - [...this.omitted].filter(k => this.known.has(k)).length : this.chosen.size;
+  }
+  reconcile(reading: string, plans: CleanupPlan[], incomplete: boolean) {
+    if (reading !== this.reading) {
+      this.clear(); this.mode = false; this.known.clear(); this.plans = null; this.reading = reading;
+    }
+    if (this.plans === plans && this.partial === incomplete) return;
+    this.plans = plans; this.partial = incomplete;
+    if (!incomplete) {
+      const keys = new Set(plans.map(p => p.key));
+      for (const key of this.chosen) if (!keys.has(key)) this.chosen.delete(key);
+      this.known.clear();
+    }
+    for (const p of plans) this.known.set(p.key, p);
+    this.recount();
+    this.version++;
+  }
+  has(key: string) { return this.all ? !this.omitted.has(key) : this.chosen.has(key); }
+  get count() { return this.selectedCount; }
+  get incomplete() { return this.all && this.partial; }
+  clear() { this.all = false; this.chosen.clear(); this.omitted.clear(); this.selectedCount = 0; this.version++; }
+  selectAll() { this.all = true; this.chosen.clear(); this.omitted.clear(); this.selectedCount = this.known.size; this.version++; }
+  toggle(p: CleanupPlan) {
+    this.known.set(p.key, p);
+    const set = this.all ? this.omitted : this.chosen;
+    if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
+    this.recount();
+    this.version++;
+  }
+  forget(keys: string[]) {
+    if (!keys.length) return;
+    for (const key of keys) { this.known.delete(key); this.chosen.delete(key); }
+    this.recount();
+    this.version++;
+  }
+  snapshot(): SelectionRequest {
+    const all = this.all, chosen = new Set(this.chosen), omitted = new Set(this.omitted);
+    return { all, plans: [...this.known.values()].filter(p => this.has(p.key)),
+      includes: p => all ? !omitted.has(p.key) : chosen.has(p.key) };
+  }
+}
+export interface SelectionRequest {
+  scope?: string;
+  all: boolean;
+  plans: CleanupPlan[];
+  includes: (plan: CleanupPlan) => boolean;
+}
+export function selectionTargets(c: TidyConfirmation, action: CleanupAction, active: boolean): TidyConfirmation {
+  const activeTargets = c.targets.filter(p => !cleanupClosed(p)).length;
+  const activeCount = (c.excludedActive ?? 0) + activeTargets;
+  const exclude = action !== 'restore' && !active;
+  const excludedActive = (c.excludedActive ?? 0) + (exclude ? activeTargets : 0);
+  const targets = exclude ? c.targets.filter(cleanupClosed) : c.targets;
+  return { ...c, selection: action, activeCount, excludedActive, targets, total: targets.length, deleting: action === 'delete' };
+}
+export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean) {
+  const matching = plans.filter(p => (p.cleanup?.state === 'archived') === archived);
+  const exclude = action !== 'restore' && !active;
+  const eligible = exclude ? matching.filter(cleanupClosed) : matching;
+  return selectionTargets({ context, archived, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)),
+    excludedActive: matching.length - eligible.length,
+    total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT }, action, active);
 }
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
  * Selection explicitly opts into active targets; Tidy never does. */
@@ -244,4 +336,33 @@ const tidyZh: typeof tidyEn = {
 export function tidyCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);
   return language === 'ru' ? tidyRu : language === 'zh-CN' ? tidyZh : tidyEn;
+}
+
+const selectionEn = {
+  select: 'Select', done: 'Done', all: 'Select all', clear: 'Clear',
+  archive: 'Archive', restore: 'Restore', counting: 'Counting selected plans…',
+  count: (n: number, more: boolean) => !n && more ? 'Matching plans selected' : `${formatCount(n, 'en')}${more ? '+' : ''} selected`,
+  confirm: (n: number, action: 'archive' | 'restore') => `${action === 'archive' ? 'Archive' : 'Restore'} ${plural(n, 'plan', 'plans')}`,
+  deleteHeading: (n: number, active: number, excluded: boolean) => `Delete ${plural(n, 'plan', 'plans')}? ${active ? excluded ? `${plural(active, 'in-progress plan', 'in-progress plans')} left out; this cannot be undone.` : `${active} still in progress; this cannot be undone.` : 'This cannot be undone.'}`,
+  scope: (n: number, limited?: boolean, unchecked?: boolean, active = 0, excluded = false) => `${limited ? 'First ' : ''}${plural(n, 'selected plan', 'selected plans')}${limited ? '; more remain' : unchecked ? '; more plans weren’t checked' : ''}${active ? excluded ? `; ${plural(active, 'in-progress plan', 'in-progress plans')} left out` : `; ${active} still in progress; updates stop until restored` : ''}.`,
+};
+const selectionRu: typeof selectionEn = {
+  select: 'Выбрать', done: 'Готово', all: 'Выбрать все', clear: 'Снять выбор',
+  archive: 'Архивировать', restore: 'Восстановить', counting: 'Считаем выбранные планы…',
+  count: (n, more) => !n && more ? 'Выбраны подходящие планы' : `Выбрано: ${formatCount(n, 'ru')}${more ? '+' : ''}`,
+  confirm: (n, action) => `${action === 'archive' ? 'Архивировать' : 'Восстановить'} ${formatCount(n, 'ru')} ${russianPlans(n)}`,
+  deleteHeading: (n, active, excluded) => `Удалить ${formatCount(n, 'ru')} ${russianPlans(n)}? ${active ? excluded ? `Пропущено активных планов: ${formatCount(active, 'ru')}; это нельзя отменить.` : `Ещё в работе: ${formatCount(active, 'ru')}; это нельзя отменить.` : 'Это нельзя отменить.'}`,
+  scope: (n, limited, unchecked, active = 0, excluded = false) => `Выбрано планов: ${formatCount(n, 'ru')}${limited ? '; есть ещё' : unchecked ? '; остальные ещё не проверены' : ''}${active ? excluded ? `; пропущено активных планов: ${formatCount(active, 'ru')}` : `; ещё в работе: ${formatCount(active, 'ru')}, обновления остановятся до восстановления` : ''}.`,
+};
+const selectionZh: typeof selectionEn = {
+  select: '选择', done: '完成', all: '全选', clear: '清除选择',
+  archive: '归档', restore: '恢复', counting: '正在统计所选计划…',
+  count: (n, more) => !n && more ? '已选择匹配的计划' : `已选 ${formatCount(n, 'zh-CN')}${more ? '+' : ''} 个`,
+  confirm: (n, action) => `${action === 'archive' ? '归档' : '恢复'} ${formatCount(n, 'zh-CN')} 个计划`,
+  deleteHeading: (n, active, excluded) => `删除 ${formatCount(n, 'zh-CN')} 个计划？${active ? excluded ? `已跳过 ${formatCount(active, 'zh-CN')} 个进行中的计划；` : `${formatCount(active, 'zh-CN')} 个仍在进行中；` : ''}此操作无法撤销。`,
+  scope: (n, limited, unchecked, active = 0, excluded = false) => `已选 ${formatCount(n, 'zh-CN')} 个计划${limited ? '；还有更多' : unchecked ? '；更多计划尚未检查' : ''}${active ? excluded ? `；已跳过 ${formatCount(active, 'zh-CN')} 个进行中的计划` : `；${formatCount(active, 'zh-CN')} 个仍在进行中，恢复前将停止接受更新` : ''}。`,
+};
+export function selectionCopy(locale = 'en') {
+  const language = resolveLanguage('auto', locale);
+  return language === 'ru' ? selectionRu : language === 'zh-CN' ? selectionZh : selectionEn;
 }
