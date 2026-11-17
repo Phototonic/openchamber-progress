@@ -492,8 +492,8 @@ No new polling owner or subscription budget is introduced.
 
 Current attention requires a visible active plan and an explicitly blocked task.
 Finish/cancel/fail stop it without converting leftover task statuses to acceptance.
-Archive/delete cannot supply current attention; restore leaves a finished plan
-finished. Explicit reopening uses existing semantics and current reports only.
+Archive/delete cannot supply current attention; restore preserves the plan's closed
+lifecycle. Explicit reopening uses existing semantics and current reports only.
 One row represents each store/source/plan/task identity, without cross-plan
 text/title deduplication. Complete active empty detail may say “No reported
 blockers”; partial, loading, unavailable, stale and capture-off data cannot make
@@ -560,8 +560,9 @@ service/RPC field, durable hint state, prompt configuration or global gate.
 
 A qualifying write leaves independent writer and verified direct-parent flags,
 at most two recipients. Only that exact parent is looked up: returned ID must
-match, absolute directories must be lexically normalized-equal, project IDs must
-match, and immediately visible self/two-node cycles exclude relay. No ancestor
+match, project IDs must match, and absolute directories must be lexically
+normalized-equal or the parent's directory must be in the host's worktree list
+for the writer's project. Immediately visible self/two-node cycles exclude relay. No ancestor
 search or sibling/grandparent fallback exists. Each recipient still requires a
 verified session/source, enabled capture and an effective report tool. An
 ineligible child drops only its own flag; an ineligible parent receives nothing.
@@ -578,6 +579,30 @@ not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
+
+Plan-shaped Markdown paths are named `plan`, inside `plans`/`.plans`, or exactly
+`openspec/changes/<change>/tasks.md` or `proposal.md`. Archived changes, spec
+deltas and design notes do not qualify. Paths are accepted inside the writer's
+directory or a root/worktree directory listed by the host for that same project.
+Only lexical path and host metadata are used: no file, folder or repository
+metadata is read. A missing, failing, malformed or timed-out worktree list
+declines cross-directory observation and relay.
+
+Hints also travel in completed tool results, independently of forwarded system
+text. The latest verified eligible context must expose both the report tool and
+the observed tool directly. Unknown eligibility, hidden report tools, disabled
+recording, failed/partial calls, and unknown content shapes leave results intact.
+Native-proven string or content-array results get one fixed note after the
+original content, with `output`, metadata and returned child identity unchanged.
+At most one note is delivered per source/session/model message; recent calls
+dedupe within the existing bound. Context and result carriers consume their
+own reason bits once; a child's plan observation can reach its verified direct
+parent on the parent's next qualifying call, including the returning dispatch.
+No plan-presence lookup suppresses notes on already-mirrored work.
+Code Mode inner calls still raise context hints, but receive no result note:
+they are absent from the direct tool inventory, and native proof shows their
+content note is lost on the way back to the script/model. Structured-only
+results likewise stay unchanged. Neither carrier reports or grants authority.
 
 The dispatch hint conditionally asks coordinators of planned or multi-step work
 to start an Agent Progress mirror with `op=start` and the complete real task
@@ -766,6 +791,15 @@ except the bounded mention POST reads specified above:
   diagnostic, not a current-checklist claim. Unicode-character cursor; no files.
 - `/v1/history?source=ID&plan=ID&cursor=0&limit=20`: envelope/page of
   `{revision,structuralRevision,lifecycle,reportedAt}`. No full snapshot per row.
+  Rows are oldest-first; cursor is a row offset, not a revision. Committed plan
+  revisions start at 1 and append one retained row per revision atomically;
+  staging/replay create no revision, archive/restore preserve history, and
+  permanent deletion removes the whole plan rather than pruning older rows.
+  The UI reads the suffix ending at the listed plan revision, starting at
+  `max(0, revision - 250)`, within five 50-row pages, then displays newest-first.
+  It verifies the contiguous suffix through that boundary and shows a read
+  failure if rows/cursors disagree, never an older prefix labelled complete.
+  Later appends wait for the next listed revision; no new polling is added.
 
 Unknown routes/queries404; wrong method405; auth401; invalid parameters400;
 not-found404; unavailable/corrupt/schema/busy stores503 with fixed codes.
@@ -807,8 +841,27 @@ store and verified binding, `readAt`, `captureEnabled`, `rows`, cumulative
 one row per explicitly blocked task in plan-ID keyset then stored task order.
 Rows carry source/plan/revision/structural revision/cleanup generation, plan title,
 coordinator, task identity/title, up to eight ancestors and `omittedAncestors`.
-Only validated current blocker categories `decision` or `review` enter `needs-you`;
-everything else enters `also-blocked`. Absent/invalid annotations contain no text;
+Wire groups and their cumulative counts retain revision-1 category-only meaning:
+validated current categories `decision` or `review` enter `needs-you`; everything
+else enters `also-blocked`. They are not the person-facing Needs you counts.
+Each row and list/detail plan summary additionally carries response-only
+`mainSessionKind: 'top-level' | 'subagent' | 'unknown'`, read from one bounded,
+source/session-keyed recorded identity lookup per plan. Missing, malformed or
+unreadable parent identity is `unknown`, not top-level. Snapshots and stored
+reports are never rewritten, migrated or deleted for this rule.
+
+Person-facing membership uses the shared `isNeedsYou` predicate: valid current
+decision/review details, reported by the plan's main session, whose recorded
+identity positively establishes no parent. A top-level main-session relay counts;
+a sub-agent's direct or handoff report does not, even for its own plan. Unknown
+parent status does not count. Excluded tasks remain blocked with their literal
+details, waiting time and other-blocked count. New guests count from held rows,
+retaining the details' reporter and reported revision, not the category-only wire
+counts. Missing row facts from older services make Needs you unavailable with
+update-together guidance, never a guessed empty. Older guests ignore this
+additive fact and retain their earlier behavior; capability revision stays 1.
+
+Absent/invalid annotations contain no text;
 future categories preserve only validated prose/provenance with `unclassified`.
 Optional timing is reported blocked time, exact or lower-bound, never activity;
 missing timing is unknown/unavailable, not zero. Annotation text remains bounded
@@ -818,8 +871,8 @@ Each read transaction admits at most 64 raw plan-slot attempts (including an
 exhaustion lookup), 1,000 items per plan, 8 MiB snapshot input, 50 rows and 256 KiB
 encoded output. Timing for displayed rows shares one budget of 128 snapshot
 visits and 8 MiB history input across the entire window, not per task or plan.
-No timing scan is performed for a count-only window. There is no full-table count,
-background job, cache or automatic continuation.
+No timing scan is performed for a count-only window. The service has no full-table
+count, background job, cache or automatic continuation.
 
 Counts are cumulative through the cursor, not page deltas. Coverage is
 `{kind:'observed-current',complete,exhausted,gapped,skippedRecords,reasons}`;
@@ -830,6 +883,31 @@ and any mid-plan revision/cleanup generation; changed or missing pinned records
 return 409 and require restarting, never splicing windows. Earlier completed plans
 are not pinned forever: multiple windows are observations, not an atomic source
 census. Reads never update task status, cleanup, history, assignments or acceptance.
+
+Guests partition the same held rows into the current session's plans (including
+helped plans), the board's selected plan, or explicitly chosen All plans. They
+never widen an empty scope automatically. Visible guests admit at most one
+continuation request per existing successful refresh, with eight automatic
+windows per traversal including the first; beyond that, Load more admits one
+window per activation. No timer or per-task read is added. A completed unchanged
+traversal retains exactness during its bounded recheck; differing, failed or
+retired observations withdraw exactness. Session counts additionally require a
+complete session plan list.
+
+Hide is a device preference, not an acknowledgement or progress write. Its key
+is store/source/plan/task/current-details-reported-revision; unrelated plan
+reports do not unhide an item, replacement details do. All device counts exclude
+hidden items. Device storage is used only after explicit host support, with no
+instance/server/browser fallback. The versioned view record holds at most 200
+hidden keys (oldest evicted, stale keys pruned after complete traversal), one
+expanded value per rail/board and one incomplete-indicator dismissal identity
+per rail/board. Failed/malformed reads are not repaired; failed writes are never
+confirmed. Other frames converge through existing refreshes. Shared browser
+profiles/installations share preferences, not isolated authenticated-user state.
+Open session uses the existing verified-source/host-listed-session gate; Copy
+reply copies literal task/plan titles in a localized reply frame, with selectable
+fallback on failure. Neither sends a message, drafts one, changes a task or
+removes an item.
 
 ## Plan graph revision 1 (additive v2 read)
 
@@ -1021,11 +1099,32 @@ consumer's live identity/cleanup checks and cannot authorize review by itself.
 No backend checkpoint, mutation, filesystem capture, schema change or cache is
 introduced. List/detail/history routes do not invoke digest comparison.
 
-## Finished-plan cleanup (frozen additive contract)
+## Closed-plan cleanup (additive contract)
 
 This additive cleanup contract keeps protocol/base schema **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.
+
+The rail and board's **Archive finished and cancelled plans…** action composes
+these per-plan routes; it adds no bulk service route or capability revision.
+Only already listed, unarchived finished and cancelled plans are eligible, at most
+50 per explicit inline confirmation. Failed plans are kept and may be archived
+one at a time; active plans are never eligible. The confirmation captures every
+target's store/source/plan, progress revision and cleanup generation, lists its
+title and outcome, and gives Cancel initial focus. Opening, Cancel and Escape
+send nothing. Requests run sequentially; a refused/changed plan is not retried
+automatically, and account, store/binding or surface-scope changes stop further
+requests. One final invalidation/re-read reconciles the result, including
+uncertain failures. Only validated archive receipts count as archived.
+
+Undo restores exactly the successful archive receipts of that action through
+the restore route, each bound to the generation returned by its receipt and a
+fresh operation ID. It never widens to other archived plans. Changed or refused
+restores are reported, not treated as success. Archive and Undo preserve lifecycle,
+counts, report history and copied documents. There is no bulk delete path.
+The result and Undo survive the action's reconciliation read and remain until
+the next action or refresh, not a timer. Other surfaces converge through their
+existing refresh cadence; no polling loop or new stored state is introduced.
 
 Authenticated, query-free **POST** `/v1/plan/archive`, `/v1/plan/restore`, and
 `/v1/plan/delete` accept only this JSON body (identifiers use the existing80-character
@@ -1041,9 +1140,10 @@ the selected record, not these illustrative values. No paths, arrays, wildcard,
 session changes or unknown fields are accepted. Confirmation must remain bound to
 that captured key/revisions across context changes. Opening/cancelling sends nothing.
 
-Archive is the ordinary action; only lifecycle `finished` is eligible. Restore
-requires archived+finished and leaves it finished; deletion accepts visible or
-archived finished plans. Counts, report age and immutable progress history do not
+Archive is the ordinary action; closed lifecycles `finished`, `cancelled` and `failed`
+are eligible. Restore requires an archived closed plan and preserves its lifecycle;
+deletion accepts visible or archived closed plans. Active plans are ineligible.
+Counts, report age and immutable progress history do not
 change on archive/restore. Cleanup works while capture is disabled without enabling it.
 
 Success200 is a bounded receipt, not a plan or progress revision:
@@ -1066,7 +1166,7 @@ Errors are code-only; no submitted values or exception text is returned:
 | --- | --- |
 |400|`{"error":"invalid"}` malformed, extra fields, missing/false confirmation|
 |409|`{"error":"conflict"}` wrong store, stale progress revision or cleanup generation|
-|409|`{"error":"closed"}` non-finished plan or ineligible state transition|
+|409|`{"error":"closed"}` active plan or ineligible state transition|
 |409|`{"error":"operation-reused"}` latest oid with altered semantic input/action|
 |404|`{"error":"not-found"}` missing/deleted key, unknown route or query|
 |401/405|`{"error":"unauthorized"}` / `{"error":"method-not-allowed"}`|
@@ -1689,15 +1789,25 @@ counts/documentState/detailPageSize without items; explicit 0-based page returns
 paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
 
-The report description front-loads the same conditional rule as native and skill
-guidance: tracker updates are not Agent Progress reports; explicitly mirror
+The report description, context section and inline/packaged skill open with the
+same four-step checklist: `start` when a plan is ready with real tasks and
+prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to working;
+`finish` explicitly (finished, cancelled or failed). The listing line asks agents
+to load the skill when writing, receiving or coordinating plans and before
+dispatching sub-agents. The description is at most 4,096 characters, with the
+checklist and executable prerequisite start example inside the first 2,048.
+Operation details remain in the skill. The following conditional rule still applies:
+tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
 canonical states, not detected plugin events. PLAN_READY mirrors actionable
 structure, not implementation completion or approval. Review and owner approval
 are separate; reflect only existing canonical gate/work items, never invent review
 tasks. Dispatch is not work start. No file or automatic per-turn report is required.
-Description-only clients may omit/truncate tool descriptions; delivery does not
+No custom instructions or provider-specific branch is needed. System-dropping
+providers retain tool definitions and result notes; providers forwarding system
+text retain the owned section too. Clients can still omit/truncate descriptions
+below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The start/revise guidance floor asks agents to report only known real prerequisites
@@ -2082,6 +2192,41 @@ the additive notice but cannot dismiss. New guests treat genuine legacy gaps as
 unknown-date/non-attention without a control; malformed format-2 notice metadata
 is invalid, not legacy. Old run-aware binaries reject upgraded storage, including
 potential `503 schema` health. Do not down-migrate to restore them.
+
+### Count qualification and device dismissal
+
+Rail and board combine incomplete-count reasons into one neutral, expandable
+“Counts may be incomplete.” note, last in the ordinary content. The reason set
+is derived from held list, inbox, run-history and host-census facts; it adds no
+request, timer, protocol revision or stored progress. Possibly low counts carry
+`+` directly after the number even when the note is dismissed. A complete
+recorded completed-run count is not qualified merely because the host census
+or a row page is incomplete; complete map/task counts remain exact.
+
+Dismissal uses only the existing bounded device view record, separately for rail
+and board, keyed by store, the canonical reason set and recording-gap detection
+sequence. Totals, page cursors, language, read time and attention ageing do not
+change that identity. New reasons or a new detection bring the note back.
+Without device storage it lasts only in the frame. A failed write is not saved.
+Shared profiles share this state; it is not per-person isolation.
+Dismissal does not withdraw continuation access: when another bounded window
+can be loaded, a quiet Load more disclosure reopens the expanded indicator.
+Reopening is frame-local, leaves the remembered dismissal intact and performs
+no read itself; the existing action inside the expansion reads one window.
+
+An attended format-2 gap is named in the expanded note. Dismissal first sends
+the existing revision-fenced store-wide acknowledgement; only success permits
+device dismissal. Failure, conflict or a retired run visit cannot hide it.
+Legacy, migrated, old and acknowledged gaps still qualify counts. Reasons,
+limits and held record totals remain in Troubleshooting → Advanced details.
+The support summary preserves its earlier lines and appends fixed-vocabulary
+`count-reasons`, `count-limits`, `count-gap` and `count-records` lines; no agent text, identity
+or path is serialized. Failed/stale reads, recording off and another-install
+restrictions stay separate and are never dismissed with the note.
+Retry dispatches to the failed source, independently of the normal continuation
+priority. The indicator-free Work Status retains page-failure feedback. Diagnostic
+count facts derive from current held data even while a surface panel replaces
+ordinary content; copied support output uses those same facts.
 
 ### Optional authored child handoff
 

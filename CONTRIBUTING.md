@@ -13,7 +13,7 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 ## Branches and scope
 
 - Start a focused feature/fix branch from **`dev`** and normally target **`dev`** with your PR. Discuss large behavior, storage, permission, or compatibility changes before implementing them.
-- **`main` is the versioned distribution branch.** Runtime promotions require maintainer approval, a higher matching extension/companion version, and the accepted built guest/backend projection plus distribution and lifecycle checks. Do not bump versions or regenerate unrelated outputs in a routine contribution.
+- **`main` is the versioned distribution branch.** Runtime promotions require maintainer approval, a higher matching extension/companion version, and the accepted built guest/backend projection plus distribution and lifecycle checks. Do not bump versions in a routine contribution. `dev` is source only; never include generated outputs in a PR targeting it.
 - The explicitly owner-authorized **launch documentation, licensing, and CI setup on `main`** is a narrow exception, not permission for routine runtime changes or a general direct-push workflow.
 
 ### Change proposals
@@ -30,6 +30,7 @@ From the repository root:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
+bun run build:all
 bun run typecheck
 bun run tsc --noEmit -p ui/tsconfig.json
 ```
@@ -71,7 +72,7 @@ The legacy-writer fixtures read earlier committed code with `git show`; a source
 export without `.git` or a shallow clone missing that history is insufficient.
 The helper **refuses a nonempty `build/artifacts` before reading runtime entries or starting checks**. It never deletes existing archives. Do not clear a maintainer's artifact folder to make it run; use a fresh disposable checkout instead. The helper creates `/tmp/opencode` for its fixtures.
 
-It runs root/UI typechecks (including background actions), portable backend tests, browser-model and automation tests, backend/guest builds with nine-entry parity checks, the SDK's `openchamber-guest-check` against the built package, then package assembly and verification. It explicitly excludes these external-runtime tests:
+Before release-notes validation or any test, it checks the revision's output inventory. A push to or PR into `main` must track all nine outputs; every other event must track none. Without event variables, the tree selects the kind, and a partly tracked tree is refused. Source revisions build all outputs before root/UI typechecks (including background actions), portable backend tests, browser-model and automation tests. A second build must match byte for byte. Distribution revisions compare the committed outputs with a rebuild. Both then run the SDK's `openchamber-guest-check`, package assembly and verification. Missing outputs fail rather than skip. It explicitly excludes these external-runtime tests:
 
 - `production-runtime.test.ts`
 - `plugin-failure-runtime.test.ts`
@@ -90,11 +91,33 @@ is used.
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
-The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on every pull request whatever branch it targets, so a PR stacked on another feature branch gets the same checks as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
+The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, on every pull request whatever branch it targets, weekly on Tuesday at 04:17 UTC, and on manual dispatch. A PR stacked on another feature branch gets the same selection as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the full Windows job on its `main` push. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
-To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's literal `main` or `dev`: the push checks already validate that head commit. A lightweight Bash gate compares branch names case-sensitively, receiving event values through environment variables rather than script interpolation. Feature branches (including `Dev` and `MAIN`) and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. For same-repository `main`/`dev` PRs this deliberately checks the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow still runs its gate, but its check jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Existing job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed.
+To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's literal `main` or `dev`, **except when the base is `main`**: push checks already validate those heads, but a distribution proposal must be checked as a distribution. A lightweight Bash gate compares branch names case-sensitively, receiving event values through environment variables rather than script interpolation. Feature branches (including `Dev` and `MAIN`) and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. Same-repository `main`/`dev` PRs into another branch deliberately check the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow still runs its gate, but its check jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Existing job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed. The existing docs-only skip below is unchanged.
 
-Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
+Pull requests that change only documentation or OpenSpec text also skip the Linux CI and CodeQL check jobs. For pull requests only, the gate checks out the code without credentials and lists the files changed since the merge base, counting renames as a delete plus an add. If every path is under `docs/` or `openspec/`, or is `README.md`, `CONTRIBUTING.md`, `AGENTS.md` or `.github/PULL_REQUEST_TEMPLATE.md`, those checks are skipped. Three exceptions still run them: `docs/setup.md` (packaged), `docs/tracking.md` (excluded from the Git package by name) and `openspec/changes/archive/` (read by tests). Any other path, an empty list or a failed listing keeps those checks. The secrets scan always runs, and pushes to `main` and `dev` still run all jobs, so a merged docs change is checked on its destination push. Release notes and the changelog are not docs-only: they feed the release scripts.
+
+Windows selection is independent of the unchanged Linux/CodeQL docs-only gate.
+Outside promotion PRs into `main`, PRs limited to `ui/`, `background/`,
+`tests/browser/`, `docs/`, `openspec/` and the root documentation paths above
+skip Windows (the duplicate-head skip above still applies). Backend inputs run
+it: `service/`, `setup/`, `shared/`, `plugin/`, `scripts/`, `package.json`,
+`bun.lock`, `tsconfig.json`, `build/{service,setup,companion}/`,
+`tests/backend/windows-*`, `tests/fixtures/windows-*` and `.github/workflows/`.
+These cover the native tests' imports and backend build entries/payloads;
+unknown paths, an empty diff or a failed listing conservatively run Windows.
+
+Ordinary PRs and every `dev` push run the fast Windows set: all native tests
+except the two released 1.1.1 migration journeys and the `empty-delayed` fresh
+journey. Every PR into `main`, every `main` push, the weekly run and manual
+dispatch run the full set, even for UI/docs-only changes. The workflow sets
+`AP_WINDOWS_FULL=1` only for those full runs and fetches `v1.1.1` only then.
+Without that opt-in, the three journeys explicitly skip; no per-request
+assertion, budget or deadline is relaxed. Local full native runs must also set
+`AP_WINDOWS_FULL=1`. Weekly and manual CI runs target Windows only; the Linux
+jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).
+
+Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the source on `dev` first, then prepare a promotion commit containing that source and its built outputs. Run the required host gates on the promotion checkout before its PR into `main` merges.
 
 ### Security scans and action updates
 
@@ -104,20 +127,30 @@ The same duplicate-PR job conditions above apply to security scans; neither push
 
 If Gitleaks flags a synthetic test fixture, confirm it cannot be a real credential, then add a narrowly scoped allowlist in `.gitleaks.toml` with a comment naming the file and explaining why the value is synthetic. Never disable the scan or broadly exempt tests. Treat a potentially real credential as a security issue: do not publish it, and arrange private reporting and rotation rather than allowlisting it.
 
-### Built files are intentional
+### Build locally, commit source only
 
-TypeScript is the source of truth, but Git installs execute the checked-in JavaScript. Include the affected built outputs with runtime changes; consumers do not compile or install dependencies. Rebuild only the relevant outputs, coordinating changes to shared contracts and generated files rather than overwriting another contributor's work.
+TypeScript is the source of truth. The nine outputs owned by `scripts/build-all.ts` are ignored on source branches: service, setup, companion entry/manifest/skill, background script and three guest bundles. A UI-source PR into `dev` includes source, tests and docs, never bundles. When rebasing an older PR, keep deletions in generated-file modify/delete conflicts. Never merge `main` into `dev` or move `dev` forward to a release merge.
 
 ```sh
-# Backend service, companion, and setup entries (does not build guests)
-bun run build:backend
+# All runtime entries, before standalone tests or rendered drivers
+bun run build:all
 
-# Each guest bundle takes BOTH an entry and an output; run only affected views
+# Optional focused rebuilds while iterating
+bun run build:backend
 bun run bundle:guest ui/panel/main.ts ui/panel/main.js
 bun run bundle:guest ui/status/main.ts ui/status/main.js
 bun run bundle:guest ui/page/main.ts ui/page/main.js
 bun run bundle:guest background/main.ts background/main.js
 ```
+
+Rendered drivers that offer `--source` build disposable guests; they still need
+`build:all` first if they start or hash a built service. Other standalone scripts,
+tests and fixtures that read entries require `build:all`; missing bytes are errors,
+not permission to skip. In particular this covers the worker/Windows service tests,
+source-guests tests, needs-you/cleanup fixtures, native update and managed-host
+drivers, packaged-runtime/performance scripts and default-mode guest drivers.
+Portable CI and the Windows workflow build before these readers. A build leaves
+the source checkout clean. Do not hand-edit generated outputs.
 
 ### Package and integration checks
 
@@ -130,18 +163,21 @@ bun run package
 bun run verify:package
 ```
 
-The `build` alias runs `build:backend` only; it does not rebuild guests.
-`package` copies the accepted guest bundles byte for byte and does not compile them.
+The `build` alias runs `build:all`. The `test:backend`, `package`, `verify:package`,
+`prepare:probe`, `setup` and `check` scripts build all entries before reading them.
+The underlying `scripts/package.ts` only copies built bytes: direct invocation
+requires an existing build. Distribution validation compares committed bytes
+before any packaging command can replace them.
 The background HTML/classic script is required alongside the three visible guests
 in folder, ZIP and Git distributions; it runs only when a session action is invoked.
 Assembly writes the extension and companion folders/ZIPs under `build/artifacts/`; these are local outputs, not files to commit. Verification exercises those folders and ZIPs, checks entries/versions, and runs isolated service and companion lifecycle checks.
 
-`bun run check` combines the root typecheck, backend tests, backend build, package assembly, and package verification. It **does not** include the UI typecheck or browser tests. Use it for relevant integration changes, not as a mandatory gate for a typo or documentation-only PR.
+`bun run check` combines the full runtime build, root typecheck, backend tests, package assembly, and package verification. It **does not** include the UI typecheck or browser tests. Use it for relevant integration changes, not as a mandatory gate for a typo or documentation-only PR.
 
 The actual OpenChamber folder/ZIP installer check runs only when `AGENT_PROGRESS_HOST_MODULE` points to an isolated host's `server/lib/guests/install.js`. That module is not supplied by this repository and may come from a separate host checkout/extracted test environment. Without it, package verification reports the host check as not run; do not claim host installation was tested. The Git-distribution gate also needs this module and a disposable source-tree projection: see [distribution validation](docs/setup.md#git-distribution-validation-and-main-promotion). Neither gate authorizes installation into a real host.
 
-The release preparer runs the opt-in real-host journeys before promotion; ordinary
-CI does not run them. They require Linux isolation tools (`unshare -Urn`, `ip`),
+The release preparer runs the opt-in real-host journeys from the promotion
+checkout before its PR merges; ordinary CI does not run them. They require Linux isolation tools (`unshare -Urn`, `ip`),
 an isolated OpenChamber 2.7.1 host module, an independent OpenCode 2.2.7 binary,
 and Chromium. Never use a live profile: the fixture creates synthetic HOME/XDG
 directories and uses a credential-free scripted provider, not paid models.
@@ -155,7 +191,41 @@ timeout -k 10 900 node --experimental-strip-types tests/fixtures/managed-compani
 
 ### Versioned main promotions and releases
 
-Maintainers must complete the supported native-host Git/folder/ZIP and companion lifecycle gates **before** promoting a runtime version from `dev`. Portable CI does not replace those gates. The approved tree must contain the matching package/RELEASE/compiled versions and accepted built entries.
+Maintainers first accept source on `dev`, then create a local promotion branch:
+
+```sh
+bun run promote main dev promote/<version>
+```
+
+Both revisions are required and pinned to commits at command start. Start clean,
+with the documented Node/Bun versions available. The command freezes dependency
+installation in a disposable worktree, merges source changes, refuses any
+distribution-only change absent from `dev`, builds twice, checks version stamps
+and creates one commit on the new local branch. Its parents are the given `main`
+tip then the accepted `dev` revision; its tree is exactly `dev` plus the nine
+force-added outputs. Neither input branch moves. It never pushes, tags or
+publishes. A failed command creates no promotion branch; fix the reported problem
+and retry with the same inputs or newly accepted source.
+
+Rehearse two consecutive promotions only in a disposable clone with its remote
+removed. For a real release, check out the promotion branch and complete the
+supported native-host Git/folder/ZIP, companion lifecycle and release-journey
+gates **before its PR merges into `main`**. Portable CI is not a substitute.
+After acceptance, the maintainer pushes only the promotion branch and opens its
+PR into `main`; checks validate the merge result. Use a merge commit (or an
+explicitly approved fast-forward), not a squash that loses the source ancestry.
+The destination push validates that exact revision and runs unchanged publication
+eligibility. Do not merge or fast-forward the resulting `main` back into `dev`.
+
+Bring a main-only fix to `dev` through a separate source-only PR before another
+promotion. If the promotion is refused, neither branch needs rollback. If an
+incorrect direct merge has already left `main` missing/stale outputs, prepare a
+correct promotion on top and rerun its gates; do not publish the broken revision.
+To roll back this tooling change on `dev`, revert it and regenerate all nine in
+the same PR, restoring strict committed-equals-rebuilt validation. If a new-style
+promotion already reached `main`, the next old-style promotion can have add/add
+output conflicts: resolve them to the rebuilt `dev` bytes and validate strictly.
+Never repair a release by moving or deleting its tag.
 
 A **higher numeric `major.minor.patch` package version reaching `main`** makes the included workflow eligible to validate that exact revision and automatically publish a matching `v<version>` tag and release assets: extension/companion ZIPs and checksum inventories. The release name is **`Agent Progress v<version>: <headline>`**. The body contains only the curated notes and editorial contributor credits: no GitHub-generated What's Changed list or automatic Full Changelog footer.
 

@@ -8,8 +8,9 @@ context: |
   docs/contracts.md, docs/backend.md, docs/ui.md, docs/setup.md and
   docs/compatibility.md remain the contract of record. Update the affected
   guides in the same change as the behaviour.
-  TypeScript is authoritative. Regenerate affected tracked backend and guest
-  outputs with the existing repository scripts; never edit bundles by hand.
+  TypeScript is authoritative. Development revisions track no generated runtime
+  outputs. Build locally with build:all; promotion commits all nine outputs on
+  a separate branch for main. Never edit bundles by hand or merge main into dev.
 
 rules:
   proposal:

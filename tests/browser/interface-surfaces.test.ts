@@ -7,26 +7,41 @@ import { resolveLanguage } from '../../ui/shared/i18n.ts';
 import * as model from '../../ui/shared/model.ts';
 import * as scope from '../../ui/shared/scope.ts';
 import * as live from '../../ui/shared/live.ts';
+import * as defaultView from '../../ui/shared/default-view.ts';
 import { formatCount, plural } from '../../ui/shared/format.ts';
 import { queryProblem } from '../../ui/shared/search.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { chipLabel } from '../../ui/shared/search-view.ts';
 import { criteriaKey } from '../../ui/shared/search.ts';
 import { plansPage, summary } from './fixtures.ts';
+import { CompactInbox } from '../../ui/shared/inbox-view.ts';
 
 function surfaceHarness(surface: string, overrides: Record<string, object> = {}) {
   let spec: any;
   const nodes: any[] = [];
-  const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
-  const components = { el, allDone: () => {}, testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
+  const shells: any[] = [], maps: any[] = [], lists: any[] = [];
+  const frameWindow = { innerWidth: 390, addEventListener() {} };
+  const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, classList: { add() {} }, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const components = { el, allDone: () => {}, ProgressShell: class {
+      activePanel: string | null = null; selected: string | null = null;
+      constructor() { shells.push(this); }
+      reconcile(_vc: any, plan: any) { const selected = plan?.key ?? null; if (selected !== this.selected) { this.selected = selected; this.activePanel = null; } }
+      paint(_root: any, vc: any, plan: any) { this.reconcile(vc, plan); return !!this.activePanel; }
+      reset() { this.selected = null; this.activePanel = null; }
+    },
+    narrowSurface: () => frameWindow.innerWidth < 320,
+    planPicker: (options: any) => { const node = el('div'); node.dataset.testid = 'plan-selector'; node.options = options; nodes.push(node); return node; },
+    planDetail: (...args: any[]) => { lists.push(args); return el('article'); }, surfaceViewSwitch: () => el('div'),
+    testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
     emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
     button: (_p: any, id: string, text: string, click?: () => void) => nodes.push({ text, dataset: { testid: id }, click }), recoveredHeading: (root: any) => root.recovered ?? null, detailsBlock: () => ({ text: '' }), failureFacts: () => [],
     failureBlock: () => ({ text: 'Read failed' }), retryRead: () => () => {}, loadingBlock: () => ({ text: 'Loading' }) };
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
-  const exposed = surface === 'status' ? 'statusProgress, qualifiers, messages' : surface === 'page' ? 'planList, labelsFor, boardTop' : 'picker';
-  runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} }, require: (path: string) => {
+  const exposed = surface === 'status' ? 'statusProgress, messages' : surface === 'page' ? 'planList, labelsFor, boardTop, currentTask, surface, footer' : 'picker';
+  const historyIntent = surface === 'page' ? `exports.historyIntent = (key,stage='detail') => { pendingTask = { key, item:'I1', title:'Fixture task', stage, origin:stage==='detail'?'history':'search' }; }; exports.surfacePanel = kind => { shell.activePanel = kind; }; exports.pendingIntent = () => pendingTask;` : '';
+  runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });\n${historyIntent}`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: frameWindow, require: (path: string) => {
     if (overrides[path]) return overrides[path];
     if (path.endsWith('/app.ts')) return { startView: (value: any) => { spec = value; } };
     if (path.endsWith('/i18n.ts')) return { resolveLanguage };
@@ -37,19 +52,105 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/primitives.ts')) return { segmentedBar: (_s: any, label: string) => ({ text: label }), stateChip: ({ count, label }: any) => count ? { text: `${count} ${label}` } : null, warningLine: (text: string) => ({ text }), icon: () => ({ text: '' }) };
     if (path === '@openchamber/sdk/ui') return { mountList(_holder: any, options: any) { nodes.push(...options.items.map((item: any) => ({ text: item.title }))); } };
     if (path.endsWith('/components.ts')) return components;
-    if (path.endsWith('/dependency-map-view.ts')) return { createMapFrame: () => ({ sync() {} }) };
-    if (path.endsWith('/default-view.ts')) return { DefaultViewChoice: class {} };
+    if (path.endsWith('/dependency-map-view.ts')) return { createMapFrame: () => ({ sync(...args: any[]) { maps.push(args); }, paint() { nodes.push({ dataset: { testid: 'painted-map' } }); }, listTargets() {} }) };
+    if (path.endsWith('/default-view.ts')) return defaultView;
     if (path.endsWith('/refresh.ts')) return { RecentMemory: class {} };
     if (path.endsWith('/search.ts')) return { SearchController: noopController };
     if (path.endsWith('/capture-comparison.ts')) return { CaptureController: noopController };
     if (path.endsWith('/reporting-health.ts')) return { ReportingHealth: noopController };
     if (path.endsWith('/reporting-health-view.ts')) return { reportingHealthBlock: () => ({ text: '' }) };
-    if (path.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null };
-    if (path.endsWith('/setup.ts')) return { setupBlock: () => ({ text: '' }) };
+    if (path.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null, cleanupBlock: () => el('div') };
+    if (path.endsWith('/setup.ts')) return { setupBlock: () => ({ text: '' }), reloadNote: () => null };
+    if (path.endsWith('/census-view.ts')) return { runClaim: () => null, subagentsBlock: () => null };
+    if (path.endsWith('/subagents.ts')) return { rosterFor: () => null };
+    if (path.endsWith('/census.ts')) return { censusFor: () => null, planFacts: () => null };
+    if (path.endsWith('/inbox-view.ts')) return { CompactInbox, hiddenInboxAction: () => [], inboxSection: (inbox: unknown, _env: unknown, options: unknown) => ({ dataset: { testid: 'needs-you-inbox' }, inbox, options }) };
     return {};
   } });
-  return { spec, nodes, exports, rendered: () => nodes.map(n => n?.text ?? '').join(' ') };
+  return { spec, nodes, exports, shells, maps, lists, window: frameWindow, rendered: () => nodes.map(n => n?.text ?? '').join(' ') };
 }
+
+function shellContext() {
+  const items = [{ id: 'A', title: 'First', kind: 'task' as const, status: 'done' as const }, { id: 'B', title: 'Second', kind: 'task' as const, status: 'pending' as const, dependencies: ['A'] }];
+  const plan = parsePlansPage(JSON.stringify(plansPage([summary('P-shell', items)]))).data[0]!;
+  const vc: any = {
+    ctx: { connection: { account: 'fixture' } }, identity: 'fixture', session: { id: plan.ownerSessionId },
+    ui: { filters: scope.NO_FILTERS, selected: plan.key, tab: 'progress', presentation: 'list', archived: false, search: null },
+    read: { plans: [plan], binding: { verified: true }, captureEnabled: true }, health: { ready: true, planGraph: 1 },
+    live: live.EMPTY_LIVE, env: { locale: 'en', live: live.EMPTY_LIVE, boundSource: plan.sourceId },
+    detailResult: () => ({ current: () => true, result: { ok: true, plan, detail: { items } } }),
+    detail: () => null, summary: () => null, document: () => null,
+  };
+  return { vc, plan };
+}
+
+test('board without a selected plan keeps the held source-wide inbox reachable', () => {
+  const h = surfaceHarness('page'), { vc } = shellContext();
+  vc.read.plans = []; vc.ui.selected = null; vc.ui.archived = true;
+  vc.inbox = { marker: 'source-wide' };
+  h.exports.footer({ append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc, null);
+  const inbox = h.nodes.find(n => n?.dataset?.testid === 'needs-you-inbox');
+  assert.equal(inbox?.inbox, vc.inbox);
+  assert.equal(inbox?.options.keys.size, 0, 'no selected plan stays in an empty current scope; the component offers other plans explicitly');
+  assert.equal(inbox?.options.state.all, false);
+});
+
+for (const surface of ['panel', 'page']) test(`${surface}: a settled automatic Map survives resizing below 320px`, () => {
+  const h = surfaceHarness(surface), { vc } = shellContext();
+  Object.assign(vc.ui, h.spec.prepareUi(vc));
+  assert.equal(surface === 'page' ? vc.ui.tab : vc.ui.presentation, 'map');
+  h.window.innerWidth = 280;
+  Object.assign(vc.ui, h.spec.prepareUi(vc));
+  assert.equal(surface === 'page' ? vc.ui.tab : vc.ui.presentation, 'map');
+  const fresh = surfaceHarness(surface);
+  fresh.window.innerWidth = 280;
+  vc.ui.tab = 'progress'; vc.ui.presentation = 'list';
+  Object.assign(vc.ui, fresh.spec.prepareUi(vc));
+  assert.equal(surface === 'page' ? vc.ui.tab : vc.ui.presentation, surface === 'page' ? 'progress' : 'list', 'a new narrow reading still starts on List');
+});
+
+test('board search never offers the browse-only plan picker', () => {
+  const h = surfaceHarness('page', { '../shared/search.ts': { SearchController: class { key = 'run'; view() { return { run: 1 }; } } } });
+  const { vc, plan } = shellContext();
+  vc.read.plans.push({ ...plan, id: 'another', key: `${plan.sourceId}/another` });
+  vc.health.planTaskSearch = 1;
+  vc.ui.search = { key: 'run', owner: JSON.stringify(['fixture', 'fixture']) };
+  h.exports.surface({ append() {} }, vc, plan);
+  assert.equal(h.nodes.some(n => n?.dataset?.testid === 'plan-selector'), false);
+});
+
+test('rail reconciles a previous plan panel before choosing the cached plan Map mount', () => {
+  const h = surfaceHarness('panel'), { vc, plan } = shellContext();
+  h.shells[0].selected = `${plan.sourceId}/previous`;
+  h.shells[0].activePanel = 'document';
+  vc.ui.presentation = 'map';
+  h.spec.paint({ append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc);
+  assert.equal(h.maps.at(-1)[3], true, 'selected Map is active for the new plan on its first paint');
+  assert.equal(h.nodes.some(n => n?.dataset?.testid === 'painted-map'), true);
+  assert.equal(h.lists.length, 0, 'must not render List under a pressed Map switch');
+});
+
+test('leaving History cancels a delayed current-task reveal before it can read or navigate', () => {
+  const h = surfaceHarness('page');
+  const plan = parsePlansPage(JSON.stringify(plansPage([summary('P-history', [])]))).data[0]!;
+  h.exports.historyIntent(plan.key);
+  h.exports.currentTask({}, {
+    ui: { search: null, filters: scope.NO_FILTERS, selected: plan.key, tab: 'progress' },
+    env: { live: live.EMPTY_LIVE, boundSource: plan.sourceId }, read: { plans: [plan] },
+    detail() { throw Error('A closed History panel must not resume its task reveal'); },
+    setUi() { throw Error('A closed History panel must not navigate'); },
+  });
+  assert.equal(h.exports.pendingIntent(), null);
+});
+test('opening a replacement panel cancels pending search and list reveals', () => {
+  const h = surfaceHarness('page');
+  for (const stage of ['search', 'reveal']) {
+    h.exports.historyIntent('fixture-plan', stage);
+    h.exports.surfacePanel('document');
+    h.exports.currentTask({}, {});
+    assert.equal(h.exports.pendingIntent(), null);
+  }
+});
 
 for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: current source render has no update notice in pending, setup and failed views`, () => {
   const h = surfaceHarness(surface);
@@ -108,22 +209,19 @@ test('panel: a pinned scope offers a localized Show current session that hands f
   assert.equal(h.nodes.some(n => /^session-action-/.test(n?.dataset?.testid ?? '')), false, 'ordinary opening has no pinned line or reset');
 });
 
-test('status counts, readiness chips and qualifiers rerender in Russian and English', () => {
+test('status fraction and accessible whole-plan summary rerender without chips', () => {
   const h = surfaceHarness('status');
   const projection = { summary: { total: 8, done: 3, remaining: 4, skipped: 1, working: 1, blocked: 1 }, reported: { working: 1, blocked: 1, skipped: 1, pending: 3 }, ready: 2, waiting: 1, detailUnavailable: true, readiness: { state: 'invalid' } };
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'ru');
-  h.exports.qualifiers(projection, false, '12:30', 'ru');
   assert.match(h.rendered(), /выполнено, осталось: 4, пропущено: 1/);
-  // Q1: a reported blocker is "blocked" here; only decision/review waits are Needs you (the inbox line).
-  assert.match(h.rendered(), /1 заблокировано 2 готово к работе/);
-  assert.doesNotMatch(h.rendered(), /нужно ваше участие/);
-  assert.match(h.rendered(), /готово к работе/);
-  assert.match(h.rendered(), /Не обновлялось с 12:30/);
-  assert.match(h.rendered(), /Готовность и ожидание недоступны/);
+  assert.match(h.rendered(), /1 заблокировано/);
+  assert.doesNotMatch(h.rendered(), /готово к работе/);
+  assert.equal(h.nodes.some(n => n.dataset?.testid === 'state-chip'), false);
   h.nodes.length = 0;
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'en');
   assert.match(h.rendered(), /done, 4 remaining, 1 skipped/);
-  assert.match(h.rendered(), /1 blocked 2 ready/);
+  assert.match(h.rendered(), /1 blocked/);
+  assert.doesNotMatch(h.rendered(), /2 ready/);
   assert.doesNotMatch(h.rendered(), /needs you/);
 });
 

@@ -46,8 +46,11 @@ export interface RunsPanel {
   /** Shows `step` more of the earlier list, reading further pages only when `loaded` runs out. */
   showMore: (visible: number, loaded: number, step: number) => void;
   retryHistory: () => void;
+  /** Exactly one further bounded page, without changing the record disclosure's visible limit. */
+  loadMore?: () => void;
+  retryRead?: () => void;
   /** Explicit, read-bound action. Surfaces decide whether to render a control. */
-  dismissLoss: () => void;
+  dismissLoss: () => Promise<boolean> | void;
   lossDismissal: LossDismissalState;
   lossDismissalFailure: ReadFailure | null;
 }
@@ -104,12 +107,15 @@ export class RunsController {
         else this.host.changed();
       },
       retryHistory: () => { if (live()) void this.reconcile(v, v.read?.recovery.token ?? undefined, true); },
+      retryRead: () => { if (live() && !v.loading) void this.load(v); },
+      loadMore: () => { if (live() && v.lossDismissal !== 'pending' && !v.paging && v.phase !== 'done') void this.page(v, 1, 1); },
       lossDismissal: v.lossDismissal, lossDismissalFailure: v.lossDismissalFailure,
       dismissLoss: () => {
         // An identical poll replaces the snapshot without repainting. Bind to the painted fence,
         // not object identity, while retiring controls from earlier paints and changed detections.
         if (live() && controlEpoch === v.controlEpoch && reading?.runFormat === v.read?.runFormat
-          && reading?.capture.lossNotice?.sequence === v.read?.capture.lossNotice?.sequence) void this.dismissLoss(v);
+          && reading?.capture.lossNotice?.sequence === v.read?.capture.lossNotice?.sequence) return this.dismissLoss(v);
+        return Promise.resolve(false);
       },
     };
   }
@@ -133,7 +139,7 @@ export class RunsController {
     if (v.read && read.revision < v.read.revision) return;
     // The server read time moves on every read; it is not a change worth a repaint.
     const same = (a: RunRead) => JSON.stringify({ ...a, readAt: 0 });
-    const changed = !v.read || v.state !== 'ready' || same(v.read) !== same(read);
+    const changed = !!v.failure || !v.read || v.state !== 'ready' || same(v.read) !== same(read);
     // A newer run-data revision invalidates continuation cursors: paging starts again.
     if (v.read && v.read.revision !== read.revision) { v.more = []; v.phase = 'useful'; v.pageEpoch++; v.paging = false; v.pageError = false; v.shown = 0; }
     if (v.phase === 'useful' && !v.more.length) v.cursor = read.nextCursor;
@@ -154,14 +160,14 @@ export class RunsController {
 
   private async dismissLoss(v: Visit) {
     const read = v.read, notice = read?.capture.lossNotice;
-    if (v.state !== 'ready' || read?.runFormat !== 2 || !notice?.attention || v.lossDismissal === 'pending') return;
+    if (v.state !== 'ready' || read?.runFormat !== 2 || !notice?.attention || v.lossDismissal === 'pending') return false;
     const q = v.claim.request;
     const request = { storeId: q.storeId, binding: { ...q.binding }, source: q.source, root: q.root, observedLossSequence: notice.sequence };
     const epoch = ++v.mutationEpoch;
     const own = () => this.visit === v && v.mutationEpoch === epoch && this.host.visible();
     this.invalidateReads(v); v.controlEpoch++; v.lossDismissal = 'pending'; v.lossDismissalFailure = null; this.host.changed();
     const result = await dismissRunLoss(this.host.service(own), request);
-    if (!own()) return;
+    if (!own()) return false;
     this.invalidateReads(v);
     if (result.ok) {
       const ack = result.value, current = v.read!;
@@ -176,6 +182,7 @@ export class RunsController {
     this.host.changed();
     // Ordinary owner refresh; no new cadence or cross-frame channel.
     void this.load(v);
+    return result.ok && v.lossDismissal === 'success';
   }
 
   /**

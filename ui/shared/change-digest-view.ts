@@ -6,7 +6,7 @@ import type { DigestPanel } from './change-digest.ts';
 import { digestStatusText, reviewCopy } from './change-digest.ts';
 import { age, el, failureCopy, glyph, testid, type Env } from './components.ts';
 import { plural } from './format.ts';
-import { statusLabel, type Counts, type DigestEvents, type DigestFacet, type DigestFacts, type DigestReason, type DigestReference, type DigestScope, type DigestTask, type DigestView } from './model.ts';
+import { statusLabel, type Counts, type DigestEvents, type DigestFacet, type DigestFacts, type DigestReference, type DigestScope, type DigestTask, type DigestView } from './model.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const RU_FACETS: typeof FACET_LABEL = { completed: 'Выполнено', reopened: 'Больше не выполнено', blocked: 'Сообщено о блокировке', unblocked: 'Блокировка больше не сообщается', added: 'Добавлено', removed: 'Удалено', revised: 'Изменено', skipped: 'Пропущено (исключено из подсчёта)', unskipped: 'Возвращено в подсчёт' };
@@ -25,13 +25,6 @@ export const FACET_LABEL: Record<DigestFacet, string> = {
   added: 'Added', removed: 'Removed', revised: 'Revised', skipped: 'Skipped (left the count)', unskipped: 'Returned to the count',
 };
 const FACET_ORDER: DigestFacet[] = ['completed', 'reopened', 'blocked', 'unblocked', 'added', 'removed', 'skipped', 'unskipped', 'revised'];
-const REASON_TEXT: Record<DigestReason, string> = {
-  gap: 'a saved revision in this range is missing',
-  'missing-snapshot': 'a saved revision in this range is missing',
-  'invalid-snapshot': 'a saved revision is unreadable',
-  'revision-bound': 'only the most recent 128 revisions are compared',
-  'byte-bound': 'the saved history is too large to compare at once',
-};
 
 /** `D/T done (P%)`; a zero total has no percentage (the existing unavailable-percentage rule). */
 export function countsText(c: Counts, language: InterfaceLanguage = 'en') {
@@ -85,48 +78,23 @@ export function scopeLines(before: Counts, after: Counts, s: DigestScope, langua
   return { scope, done };
 }
 
-export const rangeText = (from: number, to: number, language: InterfaceLanguage = 'en') => language === 'ru' ? (from === to ? `ревизия ${to}` : `ревизии ${from}–${to}`) : language === 'zh-CN' ? (from === to ? `修订 ${to}` : `修订 ${from}–${to}`) : (from === to ? `revision ${to}` : `revisions ${from}–${to}`);
+export const rangeText = (from: number, to: number, language: InterfaceLanguage = 'en') => language === 'ru' ? (from === to ? `обновление ${to}` : `обновления ${from}–${to}`) : language === 'zh-CN' ? (from === to ? `更新 ${to}` : `更新 ${from}–${to}`) : (from === to ? `update ${to}` : `updates ${from}–${to}`);
 
 /**
- * Coverage and qualification, one sentence each; unknown history is never called zero changes.
- * Lines after the first are qualifications when the digest is not complete (warning tone).
+ * One calm qualification; unknown history is never called zero changes.
+ * Diagnostic bounds remain in Advanced details and the support summary.
  */
 export function coverageText(d: DigestView, language: InterfaceLanguage = 'en'): string[] {
-  const i = d.interval;
-  if (language === 'ru') {
-    const reasons: Record<DigestReason, string> = { gap: 'сохранённая ревизия в этом диапазоне отсутствует', 'missing-snapshot': 'сохранённая ревизия в этом диапазоне отсутствует', 'invalid-snapshot': 'сохранённая ревизия нечитаема', 'revision-bound': 'сравниваются только последние 128 ревизий', 'byte-bound': 'сохранённая история слишком велика для одного сравнения' };
-    const reason = [...new Set(d.reasons.map(r => reasons[r]))].join('; ');
-    const suffix = reason ? ` (${reason})` : '';
-    if (d.availability === 'target-unavailable') return [`Ревизию ${i.to} не удалось прочитать: её изменения нельзя показать или отметить просмотренными.`];
-    if (d.availability === 'initial') return ['Первый просмотр — в этом профиле нет сохранённой просмотренной ревизии.', `Показана ревизия ${i.to}. Отметьте её просмотренной для сравнения последующих изменений.`];
-    if (d.availability === 'baseline-unavailable') return [`Изменения после просмотренной ревизии ${i.after}, до ревизии ${i.to}.`, `Ревизию ${i.after} больше нельзя прочитать, поэтому итоговые числа нельзя сравнить.`, i.coverageStart! < i.to ? `Показаны только изменения в диапазоне: ${rangeText(i.coverageStart!, i.to, language)}${suffix}.` : `Изменения не удалось сравнить${suffix}.`];
-    if (i.after === i.to) return [`После просмотра ревизии ${i.to} новых ревизий нет.`];
-    return [`Изменения с ревизии ${i.after} до ревизии ${i.to}.`, ...(!d.complete ? [`Сравнены только ${rangeText(i.coverageStart!, i.to, language)}${suffix}; более ранние изменения этого диапазона не показаны. Итоговые числа по-прежнему сравнивают ревизии ${i.after} и ${i.to}.`] : [])];
-  }
-  if (language === 'zh-CN') {
-    const reasons: Record<DigestReason, string> = { gap: '此范围内缺少已保存的修订', 'missing-snapshot': '此范围内缺少已保存的修订', 'invalid-snapshot': '某个已保存的修订无法读取', 'revision-bound': '仅比较最近 128 个修订', 'byte-bound': '已保存历史过大，无法一次比较' };
-    const reason = [...new Set(d.reasons.map(r => reasons[r]))].join('；');
-    const suffix = reason ? `（${reason}）` : '';
-    if (d.availability === 'target-unavailable') return [`无法读取修订 ${i.to}，因此不能显示其变更或标记为已审阅。`];
-    if (d.availability === 'initial') return ['初始视图：此配置文件中没有已保存的审阅修订。', `正在显示修订 ${i.to}。标记为已审阅后可与之后的变更比较。`];
-    if (d.availability === 'baseline-unavailable') return [`自所审阅的修订 ${i.after} 起至修订 ${i.to} 的变更。`, `修订 ${i.after} 已无法读取，因此不能比较总数。`, i.coverageStart! < i.to ? `仅显示 ${rangeText(i.coverageStart!, i.to, language)} 中记录的变更${suffix}。` : `无法比较任何变更${suffix}。`];
-    if (i.after === i.to) return [`自审阅修订 ${i.to} 以来没有新修订。`];
-    return [`从修订 ${i.after} 到修订 ${i.to} 的变更。`, ...(!d.complete ? [`只能比较${rangeText(i.coverageStart!, i.to, language)}${suffix}；此范围内更早的变更未显示。总数仍比较修订 ${i.after} 和 ${i.to}。`] : [])];
-  }
-  if (d.availability === 'target-unavailable') return [`Revision ${i.to} can’t be read, so its changes can’t be shown or marked reviewed.`];
-  if (d.availability === 'initial') return ['Initial view — no saved reviewed revision in this profile.', `Showing revision ${i.to}. Mark reviewed to compare later changes against it.`];
-  const out: string[] = [];
-  const reasons = [...new Set(d.reasons.map((r) => REASON_TEXT[r]))].join('; ');
-  if (d.availability === 'baseline-unavailable') {
-    out.push(`Changes since your reviewed revision ${i.after}, up to revision ${i.to}.`);
-    out.push(`Revision ${i.after} can’t be read any more, so totals can’t be compared.`);
-    out.push(i.coverageStart! < i.to ? `Showing changes recorded in ${rangeText(i.coverageStart!, i.to)} only${reasons ? ` (${reasons})` : ''}.` : `No changes could be compared${reasons ? ` (${reasons})` : ''}.`);
-    return out;
-  }
-  if (i.after === i.to) return [`No new revisions since you reviewed revision ${i.to}.`];
-  out.push(`Changes from revision ${i.after} to revision ${i.to}.`);
-  if (!d.complete) out.push(`Only ${rangeText(i.coverageStart!, i.to)} could be compared${reasons ? ` (${reasons})` : ''}; earlier changes in this range aren’t shown. The totals still compare revisions ${i.after} and ${i.to}.`);
-  return out;
+  const text = {
+    en: { unavailable: 'Couldn’t load these changes; try again.', initial: 'Mark reviewed to compare future changes with this plan.', baseline: 'The earlier plan is unavailable, so totals can’t be compared.', same: 'No changes since your last review.', partial: 'Some earlier changes couldn’t be compared.', complete: 'Changes since your last review.' },
+    ru: { unavailable: 'Не удалось загрузить изменения; попробуйте снова.', initial: 'Отметьте план просмотренным, чтобы сравнивать будущие изменения.', baseline: 'Прежний план недоступен, поэтому итоги нельзя сравнить.', same: 'С последнего просмотра изменений нет.', partial: 'Некоторые прежние изменения не удалось сравнить.', complete: 'Изменения с последнего просмотра.' },
+    'zh-CN': { unavailable: '无法加载这些变更，请重试。', initial: '标记为已审阅，以便比较今后的变更。', baseline: '较早的计划不可用，无法比较总数。', same: '上次审阅后没有变更。', partial: '部分较早的变更无法比较。', complete: '上次审阅以来的变更。' },
+  }[language];
+  return [d.availability === 'target-unavailable' ? text.unavailable
+    : d.availability === 'initial' ? text.initial
+    : d.availability === 'baseline-unavailable' ? text.baseline
+    : d.interval.after === d.interval.to ? text.same
+    : !d.complete ? text.partial : text.complete];
 }
 
 const sum = (e: DigestEvents) => FACET_ORDER.reduce((n, f) => n + e[f], 0);
@@ -292,7 +260,7 @@ export function digestBlock(panel: DigestPanel, env: Env, onViewTask: (itemId: s
   const coverage = testid(el('div', 'ap-digest-coverage'), 'digest-coverage');
   coverage.dataset.complete = String(digest.complete);
   coverage.dataset.reasons = digest.reasons.join(' ');
-  coverageText(digest, language).forEach((line, n) => coverage.append(el('p', n > 0 && !digest.complete && digest.availability !== 'initial' ? 'ap-digest-warn' : '', line)));
+  coverageText(digest, language).forEach(line => coverage.append(el('p', 'ap-note', line)));
   if (digest.interval.coverageEndReportedAt) { const p = el('p', 'ap-note'); p.append(age(digest.interval.coverageEndReportedAt, env, ru ? `Ревизия ${digest.interval.to} сообщена ` : zh ? `修订 ${digest.interval.to} 报告于 ` : `Revision ${digest.interval.to} reported `)); coverage.append(p); }
   section.append(coverage);
 

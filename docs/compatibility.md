@@ -2,6 +2,14 @@
 
 ## Current use and development
 
+`dev` now carries source only. Build with `bun run build:all` before standalone
+checks that read runtime entries. Installable refs are default/main, explicit
+`#main` and published tags, never `#dev`. Maintainer promotion builds and commits
+the nine outputs on a separate local branch; host gates run on that promotion
+checkout. Historical built-dev evidence below describes its tested revision,
+not current development-branch installation support. See the
+[promotion guide](../CONTRIBUTING.md#versioned-main-promotions-and-releases).
+
 The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
 **2.7.1** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
 historical and do not certify managed delivery. Isolated Linux web 2.7.1 /
@@ -483,10 +491,23 @@ job's assertions, not portable certification. Timeout never undoes changes or
 permits cleanup/permission repair. See
 [Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 
-The `Windows setup, storage and capture` CI job retains the existing native
-platform suite and adds `tests/backend/windows-service.test.ts`, in the same
-provisioned non-admin account. `Fetch released Windows migration fixture` fetches
-`v1.1.1`; the test uses that tag's emitted lifecycle/Store and actual payloads,
+The `Windows setup, storage and capture` CI job runs the native platform suite
+and `tests/backend/windows-service.test.ts` in the same provisioned non-admin
+account. Ordinary PRs run it when backend/build/test inputs change (unknown
+paths conservatively run it); UI, documentation, OpenSpec and browser-test-only
+PRs skip it, as do duplicate same-repository main/dev heads outside promotion.
+Every `dev` push runs the fast set. This retains every native test except three
+full-only journeys: released 1.1.1 migration undelayed, released 1.1.1 migration
+with 2500ms helpers, and fresh setup `empty-delayed`.
+
+Every promotion PR into `main`, every `main` push, the weekly schedule and manual
+dispatch run all journeys, regardless of changed paths. Only these runs set
+`AP_WINDOWS_FULL=1`; without it the three full-only journeys skip with an
+explicit opt-in reason. The same opt-in is required for a local full native run.
+All assertions, budgets and deadlines inside each journey remain unchanged.
+Publication still requires the full Windows job on the exact `main` push.
+`Fetch released Windows migration fixture` fetches `v1.1.1` only for full runs;
+the migration tests use that tag's emitted lifecycle/Store and actual payloads,
 not a reconstruction using current installer code. No host, profile, model,
 administrator product operation or runtime dependency download is used.
 
@@ -753,6 +774,25 @@ handoff. Any missing typed lifecycle event needs demonstrated demand and separat
 review; RPC-supplied session IDs are not authority. No Slim dependency, adapter,
 new declaration gate or external repository change is implemented or required.
 
+## Provider-independent plan guidance
+
+The Claude Code provider proxy inspected at version 1.7.0 forwards recognised
+host system blocks but drops arbitrary plugin-added system sections. The effective
+tool check is not the cause: host tool names are checked before proxy renaming.
+Tool descriptions and results survive under host-prefixed names. The companion
+therefore puts its checklist and start example inside the first 2,048 description
+characters (4,096 overall), and appends conditional fixed notes to qualifying
+completed direct calls. Its existing system section remains for providers that
+forward it; no provider identifier or custom instructions are required.
+
+Credential-free native 2.2.2 probes establish result-content delivery for dispatch,
+write, edit and typed tracker results, with original content first and unchanged
+structured output. Code Mode inner result content does not reach the model:
+those calls retain context hints but get no result note. Adapter checks cover
+both run-observer orders and the provider view that drops system text. These
+checks establish delivery, not that a real model will mirror a plan unprompted.
+That live workflow remains an owner-only check, never a paid-model test.
+
 ## Historical CLI isolation
 
 The isolated probe used an independent temporary CLI download. The PATH
@@ -763,7 +803,7 @@ not by copying a live DB/config/profile. The independent archive came from the o
 
 ```sh
 mkdir -p /tmp/opencode/agent-progress-probe-cli
-curl -fL --max-time 90 https://opencode.ai/update/api/latest/cli/opencode/opencode-linux-x64.tar.gz -o /tmp/opencode/agent-progress-probe-cli/cli.tar.gz
+curl -fL --max-time 90 https://github.com/anomalyco/opencode/releases/download/v2.2.2/opencode-linux-x64.tar.gz -o /tmp/opencode/agent-progress-probe-cli/cli.tar.gz
 tar -xzf /tmp/opencode/agent-progress-probe-cli/cli.tar.gz -C /tmp/opencode/agent-progress-probe-cli
 ```
 
@@ -798,7 +838,7 @@ found no matching local copy, public release, npm package or archived snapshot;
 `latest`. The owner selected 2.2.2 rather than waiving native proof. That recovery
 decision does not claim a permanent inventory of all possible private archives.
 
-`latest` is mutable: on every fetch verify the archive digest against this pin
+Use the version-pinned release URL above (`latest` now serves different bytes). On every fetch verify the archive digest against this pin
 **before extraction/use**, then verify extracted `--version`. A changed digest or
 version fails closed; do not silently follow `latest` or download from inside an
 isolated test. Archive identity is provenance, not behavioral compatibility proof:

@@ -10,17 +10,17 @@
 Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) extension that turns your agents' plans into a calm, live progress view. One glance tells you what's done, what's running, what's blocked and what needs you. When you want more, the detail is one click away.
 
 <p align="center">
-  <img src="docs/images/readme/map-arrows.gif" alt="Animation of the dependency map on the fullscreen board: task cards joined by prerequisite arrows, under reported working, ready, explicitly blocked and unlocks-next counts. Small blue beads move steadily along the arrows from the two tasks reported working to the tasks waiting on them; the arrow from the explicitly blocked task stays still, in the warning colour, with a stop bar before its arrowhead" width="860">
+  <img src="docs/images/readme/map-arrows.gif" alt="Animated dependency map on the fullscreen board: arrows connect tasks that must finish first, blue beads move from a task in progress, and a blocked prerequisite has a stop bar before its arrowhead" width="860">
 </p>
 
 ## Why you'll like it
 
-- **At a glance, then in depth.** A single grouped list, *Now*, *Needs you*, *Up next*, with finished work folded away. Expand any task for its reason, next step, prerequisites and who's on it.
+- **At a glance, then in depth.** A map or task list sits below the plan's progress bar, followed by *Needs you* and *Sub-agents*. Expand a task for its reason, next step, prerequisites and who's on it.
 - **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view. Blue beads travel along the arrows from a task reported working to the tasks waiting on it, and an arrow from a blocked task ends in a stop bar.
-- **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
+- **Know when it's your turn.** *Needs you* shows decisions and reviews the main session asks you to handle, with **Open session**, **Copy reply** and **Hide**.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
 - **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session. Choose **Show current session** to follow the visible chat again; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context).
-- **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
+- **One More menu.** Copy a progress update or handoff note, open the plan document, change language or find Setup and Troubleshooting.
 - **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
 - **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.
 
@@ -32,8 +32,8 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th width="50%">Work Status</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="300"></td>
-    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="322"></td>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: a plan's progress, dependency map and Needs you, with one More menu" width="390"></td>
+    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: plan title with position picker, progress bar, running and Needs you counts, and Open progress" width="322"></td>
   </tr>
   <tr>
     <td>The current session's plan, right beside your chat.</td>
@@ -43,7 +43,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th colspan="2">Fullscreen board</th>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for release across every plan, with matching plans and tasks listed beside the selected plan's grouped progress" width="820"></td>
+    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for pages, with a matching task opened beside its search result" width="820"></td>
   </tr>
   <tr>
     <td colspan="2">Every plan across projects, worktrees and sessions, with search, filters, history and the dependency map.</td>
@@ -59,19 +59,20 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
    ```
 
 2. Review the **Add a plugin to OpenCode** disclosure and choose **Allow and enable**. The plugin runs with your account's full access inside OpenCode.
-3. Open **Agent progress → Setup**, review the resolved source and private store, then explicitly confirm configuration. No global plugin installation is needed. The next eligible managed session/context can activate reporting; agents with `agent_progress_report` receive guidance without special prompts or agent names. Reporting is best-effort model participation.
+3. Open **Agent progress → More → Setup**, review what changes on your computer, then confirm. Setup creates a private progress folder, connects it to OpenCode, turns on recording and checks that it works. No global plugin installation is needed. Agents with `agent_progress_report` receive guidance without special prompts or agent names; reporting still depends on the agent following that guidance.
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
 **Verifying a download (Linux):** Download both ZIPs, `entries-<version>.sha256` and `sha256.txt` into an empty folder. In that folder, run `sha256sum -c --ignore-missing sha256.txt`. The inventory also lists files inside the ZIPs; `--ignore-missing` skips those before extraction. To check extracted files, unpack each ZIP into its matching `agent-progress-extension-<version>` or `agent-progress-companion-<version>` folder, then run `sha256sum -c entries-<version>.sha256` from the download folder, replacing `<version>` with the release number.
 
-**Updating:** Git installs use **Settings → Extensions → Check for updates → Update**. The URL above follows the remote default branch (`main` here); append `#main` to select it explicitly, `#dev` for development builds, or a published tag such as `#v1.1.1` to stay on that tag. A fixed tag does not follow later releases. Offers depend on a higher package version, not just a new commit: same-version development changes produce no offer. Folder and ZIP installs need manual replacement, not Git update checks. See [update and approval details](docs/setup.md#updates-observations-and-integrity).
+**Updating:** Git installs use **Settings → Extensions → Check for updates → Update**. The URL above follows the remote default branch (`main` here); append `#main` to select it explicitly, or a published tag such as `#v1.1.1` to stay on that tag. A fixed tag does not follow later releases. `dev` is source only and not installable. Existing `#dev` installations keep their files when an update lacks built entries; replace them with a default-branch or tagged installation. Offers depend on a higher package version, not just a new commit: same-version changes produce no offer. Folder and ZIP installs need manual replacement, not Git update checks. See [update and approval details](docs/setup.md#updates-observations-and-integrity).
 
 **Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
 
-- **Three interface languages.** Follow OpenChamber or choose English, Russian or Simplified Chinese. Progress summaries follow the choice; saved plan and task text is never translated.
+- **Three interface languages.** Use **More → Language** to follow OpenChamber or choose English, Russian or Simplified Chinese. Progress summaries follow the choice; plan and task text is never translated.
+- **Calm, qualified counts.** A `+` means a number may be low; **Some counts may be incomplete** explains it once, with **Load more** when available. Technical limits stay in **Troubleshooting → Advanced details** and the support summary.
 - **Phone views.** Open the rail or fullscreen board on a phone, with larger touch controls and a tap/pan/pinch dependency map. Physical-phone acceptance is deferred to the live release; current checks use browser emulation.
 - **Windows setup and upgrades.** New setup and migration run in short, resumable steps with visible progress rather than one long PowerShell request. See [setup and recovery limits](docs/setup.md#install-review-confirm).
 

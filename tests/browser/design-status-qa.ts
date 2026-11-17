@@ -1,119 +1,363 @@
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Five-line Status QA. Synthetic SDK host, disposable real service, isolated Chromium.
+// Usage: node --experimental-strip-types tests/browser/design-status-qa.ts --source
+//   --chromium <binary> --artifacts <dir>
+// Built guests are used without --source. Neither mode uses a live profile or paid model.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { GUEST_STATUS_SECTION_HEIGHT_MAX } from '@openchamber/sdk';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import type { designRefactorQa } from './design-refactor-qa.ts';
 
-/** Whole guest-region Status measurements, never the host's Project section. */
+/** Retains the established design-refactor driver's Status entry. */
 export async function designStatusQa(q: Parameters<typeof designRefactorQa>[0]) {
-  const { guest, evaluate, wait, show, click, check, shot } = q;
-  const reloadStatus = async () => {
-    const generation = await evaluate<number>(`qa.reload('status')`);
-    // Old hooks remain visible until navigation commits; do not click that retired document.
-    await wait('status', `d.readyState==='complete'&&d.defaultView.parent.qa.loaded.status===${generation}`, 'new Status document loaded');
-  };
-  await show(['status'], 360);
-  await wait('status', `d.querySelector('[data-testid="status-plan-selector"] button')`, 'Status scoped plans available');
-  await click('status', '[data-testid="status-plan-selector"] button');
-  await wait('status', `d.querySelector('[role="option"][id$="source-design/P-calm"]')`, 'F8 featured choice');
-  await click('status', '[role="option"][id$="source-design/P-calm"]');
-  await wait('status', `d.querySelector('[data-testid="plan-P-calm"][data-source="source-design"] [data-testid="counts"]')?.dataset.done==='3'&&d.querySelector('[data-testid="current-work"]')?.textContent.includes('Build release candidate')`, 'complete selected F8 detail');
-  await wait('status', `d.querySelector('[data-testid="subagent-activity"]')&&!/Loading older history/.test(d.querySelector('[data-testid="subagent-activity"]').textContent)`, 'settled Status roster');
-  const density: object[] = [], screenshots: object[] = [];
-  for (const width of [280, 360, 480, 190]) {
-    await show(['status'], width);
+  await q.show(['status'], 280);
+  await q.wait('status', `d.querySelector('[data-testid="counts"]')`);
+  for (const width of [190, 280, 390]) {
+    await q.show(['status'], width);
     for (const theme of ['light', 'dark'] as const) {
       await q.theme(theme);
-      await evaluate(`(()=>{const f=frame('status');f.style.height=Math.max(1500,Math.ceil(f.contentDocument.documentElement.scrollHeight))+'px';return true})()`);
-      const metrics = await guest('status', `const root=d.querySelector('[data-testid="progress-root"]');const visible=n=>{if(n.closest('[hidden],.ap-sr,.sr-only,[aria-hidden="true"]'))return false;for(let p=n;p&&root.contains(p);p=p.parentElement){if(p.tagName==='DETAILS'&&!p.open&&!p.querySelector(':scope > summary')?.contains(n))return false;const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden')return false}return n.getClientRects().length>0};const lines=new Set(),walker=d.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n;while(n=walker.nextNode()){if(!n.textContent.trim()||!visible(n.parentElement))continue;const r=d.createRange();r.selectNodeContents(n);for(const b of r.getClientRects())if(b.width&&b.height)lines.add(Math.round(b.top)+':'+Math.round(b.bottom))}return {textLines:lines.size,controls:[...root.querySelectorAll('button,input,select,summary,a[href],[tabindex="0"]')].filter(visible).length,height:root.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1}`);
-      density.push({ fixture: 'F8', surface: 'status', width, theme, view: 'status', ...metrics });
-      check(`status:${width}:${theme}:whole-plan-counts`, await guest('status', `const n=d.querySelector('[data-testid="plan-P-calm"][data-source="source-design"] [data-testid="counts"]');return n?.dataset.done==='3'&&n.dataset.total==='8'`));
-      if (q.label === 'after') {
-        check(`status:${width}:${theme}:no-horizontal-overflow`, !metrics.overflow);
-        if (width === 280) {
-          const file = join(q.artifacts, '..', 'before', 'density.json');
-          if (!existsSync(file)) throw Error('Status density requires sibling before measurements');
-          const baseline = JSON.parse(readFileSync(file, 'utf8')).measurements.find((m: any) => m.surface === 'status' && m.width === width && m.theme === theme);
-          check(`status:${width}:${theme}:twenty-five-percent-fewer-lines`, !!baseline && metrics.textLines <= baseline.textLines * .75);
-        }
-      }
-      const name = `F8-status-${width}-${theme}`;
-      await shot(name, '[data-testid="progress-root"]', 0, Math.ceil(metrics.height) + 1, 'status');
-      screenshots.push({ file: `${name}.png`, fixture: 'F8', surface: 'status', width, theme, state: 'fresh complete; disclosures closed; explicit F8 featured choice', height: metrics.height });
+      const m = await q.guest('status', `const r=d.querySelector('[data-testid="progress-root"]');return {height:r.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1}`);
+      q.check(`status:${width}:${theme}:fits`, !m.overflow && m.height <= GUEST_STATUS_SECTION_HEIGHT_MAX);
+      q.check(`status:${width}:${theme}:compact`, await q.guest('status', `return !d.querySelector('[data-testid="state-chip"],[data-testid="current-work"],[data-testid="subagent-activity"],[data-testid="more-plans"]')`));
+      await q.shot(`status-${width}-${theme}`, '[data-testid="progress-root"]', 0, Math.ceil(m.height) + 1, 'status');
     }
   }
-  if (q.label === 'after') {
-    await show(['status'], 280); await q.theme('light');
-    const capture = async (name: string, state: string) => {
-      const height = await guest<number>('status', `return Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height)`);
-      await shot(name, '[data-testid="progress-root"]', 0, height + 1, 'status');
-      screenshots.push({ file: `${name}.png`, surface: 'status', width: 280, theme: 'light', state, height });
-    };
-    check('status:focus-blocked-then-working', await guest('status', `return JSON.stringify([...d.querySelectorAll('[data-testid="current-work"] > li')].map(n=>[n.dataset.testid,n.dataset.status]))===JSON.stringify([['status-focus-B1','blocked'],['status-focus-W1','working']])`));
-    check('status:qualified-whole-counts', await guest('status', `const n=d.querySelector('[data-testid="counts"]');return n.textContent.startsWith('3/8')&&n.dataset.remaining==='5'&&n.dataset.skipped==='0'`));
-    const boundary = await evaluate<{ x: number; y: number; width: number; height: number }>(`(()=>{const f=frame('status'),section=f.parentElement,p=document.createElement('div');p.dataset.testid='synthetic-host-project';p.textContent='Project · synthetic host context';p.style.cssText='padding:12px 0';section.prepend(p);f.style.height=Math.ceil(f.contentDocument.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height)+'px';const r=section.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
-    check('status:host-project-stays-outside-guest', await guest('status', `return !d.querySelector('[data-testid="synthetic-host-project"]')`));
-    const hostShot = await q.c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { ...boundary, scale: 1 } });
-    writeFileSync(join(q.artifacts, 'F8-status-synthetic-host-boundary.png'), Buffer.from(hostShot.data, 'base64'));
-    screenshots.push({ file: 'F8-status-synthetic-host-boundary.png', surface: 'status + synthetic host', width: 280, theme: 'light', state: 'explicitly synthetic host Project context outside production guest' });
-    await click('status', '[data-testid="more-plans"]');
-    await wait('status', `d.querySelector('[role="listbox"]')`, 'other plans reached through +N');
-    check('status:more-plans-opens-all-scoped-options', await guest('status', `return d.querySelectorAll('[role="option"]').length===4&&[...d.querySelectorAll('[role="option"]')].some(n=>n.textContent.includes('Automatic'))`));
-    await capture('F8-status-picker-open', 'all scoped plans and Automatic reached through +N');
-    await q.key('Escape');
-    if (!q.setCapture) throw Error('Status capture-state fixture required');
-    q.setCapture(false);
-    await wait('status', `d.querySelector('[data-testid="capture-off"]')`, 'capture off warning beside counts');
-    check('status:capture-off-keeps-last-reported-counts', await guest('status', `return d.querySelector('[data-testid="capture-off"]').textContent.includes('last reported counts')&&d.querySelector('[data-testid="counts"]').dataset.total==='8'`));
-    await capture('F8-status-capture-off', 'capture off; last reported counts');
-    q.setCapture(true);
-    await wait('status', `!d.querySelector('[data-testid="capture-off"]')`, 'capture restored');
-    await evaluate(`qa.fail.push({path:'/v1/plans',frame:'status',status:503,code:'unavailable'});true`);
-    await wait('status', `d.querySelector('[data-testid="stale-banner"]')`, 'retained counts qualified after failed refresh');
-    check('status:stale-keeps-qualified-counts', await guest('status', `return d.querySelector('[data-testid="stale-banner"]').textContent.includes('Counts may be out of date')&&d.querySelector('[data-testid="counts"]').dataset.total==='8'`));
-    await capture('F8-status-stale', 'failed refresh; retained qualified counts');
-    await evaluate(`qa.fail=[];true`);
-    await wait('status', `!d.querySelector('[data-testid="stale-banner"]')`, 'freshness restored');
-    await evaluate(`qa.fail.push({path:'/v1/plan',frame:'status',status:503,code:'unavailable'});true`);
-    await reloadStatus();
-    await wait('status', `d.querySelector('[data-testid="status-detail-unavailable"]')`, 'detail read unavailable');
-    check('status:unavailable-does-not-fabricate-focus-or-guidance', await guest('status', `return !d.querySelector('[data-testid="current-work"]')&&!d.querySelector('[data-testid="state-chip"][data-state="ready"],[data-testid="state-chip"][data-state="waiting"]')&&d.querySelector('[data-testid="counts"]').dataset.total==='8'`));
-    await capture('F8-status-unavailable', 'detail unavailable; summary totals retained');
-    await evaluate(`qa.fail=[];true`);
-    await reloadStatus();
-    await wait('status', `d.querySelector('[data-testid="current-work"]')`, 'detail restored');
-    if (!q.seedDesignRegroup || !q.finishDesignRegroup) throw Error('Status finished-plan fixture required');
-    const finished = q.seedDesignRegroup('finished'); q.finishDesignRegroup(finished, 'finished');
-    // The normal poll must first admit the new scoped choice.
-    await wait('status', `d.querySelector('[data-testid="more-plans"]')?.textContent==='+3 more plans'`, 'finished plan admitted to scoped picker');
-    await click('status', '[data-testid="more-plans"]');
-    await wait('status', `d.querySelector('[role="option"][id$="source-design/${finished}"]')`, 'finished option reachable');
-    const replyStart = await evaluate<number>(`qa.replies.length`);
-    await evaluate(`qa.fail.push({path:'/v1/plan',frame:'status',status:503,code:'unavailable'});true`);
-    await click('status', `[role="option"][id$="source-design/${finished}"]`);
-    await wait('status', `d.querySelector('[data-testid="plan-${finished}"][data-lifecycle="completed"] [data-testid="counts"]')?.dataset.done==='1'`, 'finished manual choice');
-    await wait('status', `d.defaultView.parent.qa.replies.slice(${replyStart}).some(r=>r.frame==='status'&&r.path==='/v1/plan'&&r.status===503)&&!d.querySelector('[data-testid="progress-root"][aria-busy="true"]')`, 'closed-plan selected detail read failed');
-    // Let the accepted error response paint before inspecting the warning's new home.
-    await guest('status', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
-    check('status:closed-detail-failure-visible-with-valid-summary', await guest('status', `return !!d.querySelector('[data-testid="status-detail-unavailable"]')&&d.querySelector('[data-testid="counts"]').dataset.done==='1'&&d.querySelector('[data-testid="counts"]').dataset.total==='1'&&!d.querySelector('[data-testid="current-work"]')`));
-    await capture('status-finished-detail-unavailable', 'finished selection; failed detail read visible beside valid summary');
-    await evaluate(`qa.fail=[];true`);
-    await reloadStatus();
-    await wait('status', `d.querySelector('[data-testid="more-plans"]')?.textContent==='+3 more plans'`, 'fresh complete scoped picker after failure');
-    await click('status', '[data-testid="more-plans"]');
-    await wait('status', `d.querySelector('[role="option"][id$="source-design/${finished}"]')`, 'finished option after read recovery');
-    await click('status', `[role="option"][id$="source-design/${finished}"]`);
-    await wait('status', `d.querySelector('[data-testid="plan-${finished}"] [data-testid="counts"]')?.dataset.done==='1'&&!d.querySelector('[data-testid="status-detail-unavailable"]')`, 'finished detail recovery');
-    check('status:finished-has-reported-counts-not-readiness', await guest('status', `return d.querySelector('[data-testid="counts"]').dataset.total==='1'&&!d.querySelector('[data-testid="state-chip"][data-state="ready"],[data-testid="state-chip"][data-state="waiting"]')`));
-    await capture('status-finished-choice', 'explicit finished choice; no readiness guidance');
-    await evaluate(`qa.context(null);true`);
-    await wait('status', `d.querySelector('[data-testid="unscoped-state"]')`, 'no selected host session');
-    check('status:no-session-has-no-roster-or-picker', await guest('status', `return !d.querySelector('[data-testid="subagent-activity"],[data-testid="status-plan-selector"]')`));
-    await capture('status-no-session', 'no session; no roster');
-  }
-  check('status:no-map-or-search-ui', await guest('status', `return !d.querySelector('[data-testid="map-region"],[data-testid="map-announcer"],[data-testid="search-form"]')`));
-  check('status:no-map-or-search-traffic', await evaluate<boolean>(`!qa.requests.some(r=>r.frame==='status'&&['/v1/plan-graph','/v1/search','/v1/search-state'].includes(r.path))`));
-  check('status:no-proxy-errors', (await evaluate<string[]>('qa.errors')).length === 0);
-  const hashes = Object.fromEntries(['panel', 'page', 'status'].map(s => [`ui/${s}/main.js`, createHash('sha256').update(readFileSync(join(q.root, `ui/${s}/main.js`))).digest('hex')]));
-  writeFileSync(join(q.artifacts, 'density.json'), JSON.stringify({ label: q.label, slice: 'status', measurements: density, note: 'Whole guest line-box union, not viewport clipping; host Project chrome excluded. Before records measurements without new-target assertions.' }, null, 2) + '\n');
-  writeFileSync(join(q.artifacts, 'screenshots.json'), JSON.stringify({ label: q.label, hashes, screenshots }, null, 2) + '\n');
 }
+
+async function main() {
+  const arg = (n: string) => { const i = process.argv.indexOf(n); return i < 0 ? undefined : process.argv[i + 1]; };
+  const artifacts = arg('--artifacts'), chromium = arg('--chromium');
+  if (!artifacts || !chromium) throw Error('Pass --artifacts and --chromium');
+  mkdirSync(artifacts, { recursive: true });
+  const { productionFixture } = await import('../fixtures/production.ts');
+  const { createProgressServer } = await import('../../service/server.ts');
+  const { startLanguageFixture } = await import('./interface-language-fixture.ts');
+  const { launchChromium } = await import('./phone-cdp.ts');
+  const f = productionFixture();
+  let oid = 0;
+  const apply = (plan: string, request: Record<string, unknown>, actor = f.actor) => {
+    f.store.apply({ plan, oid: `status-qa-${++oid}`, rev: f.store.get(f.source.id, plan)?.revision ?? 0, ...request }, actor);
+  };
+  const items = [
+    { id: 'done', title: 'Prepare the release', kind: 'task', status: 'done' },
+    { id: 'working', title: 'Build the release', kind: 'task', status: 'working' },
+    { id: 'decision', title: 'Choose the release window', kind: 'task', status: 'blocked', blocker: { category: 'decision', reason: 'Choose a window.', nextAction: 'Choose morning or evening.' } },
+  ];
+  apply('main', { op: 'start', title: 'Release checklist', items });
+  apply('second', { op: 'start', title: 'Review checklist', items: [{ ...items[2], id: 'review' }] });
+  apply('outside', { op: 'start', title: 'Another session', items: [{ ...items[2], id: 'outside' }] }, { ...f.actor, sessionId: 'other' });
+  for (const outcome of ['finished', 'cancelled', 'failed']) {
+    apply(outcome, { op: 'start', title: `${outcome} plan`, items: [{ ...items[0] }] });
+    apply(outcome, { op: 'finish', outcome });
+  }
+  apply('group', { op: 'start', title: 'Context only', items: [{ id: 'group', title: 'Context', kind: 'group' }] });
+  apply('picker-extra', { op: 'start', title: 'Additional checklist', items: [{ id: 'extra', title: 'Later step', kind: 'task' }] });
+  apply('skipped-only', { op: 'start', title: 'Skipped-only plan', items: [{ id: 'skipped', title: 'Optional step', kind: 'task', status: 'skipped' }] }, { ...f.actor, sessionId: 'skipped-session' });
+  apply('long', { op: 'start', title: 'A deliberately long synthetic plan title that keeps its full accessible name while its compact visual title wraps. '.repeat(2), items: [{ id: 'next', title: 'Continue', kind: 'task' }] });
+  const many = Array.from({ length: 148 }, (_, i) => ({ id: `many-${i}`, title: `Task ${i + 1}`, kind: 'task', status: i < 12 ? 'done' : 'pending' }));
+  apply('multi', { op: 'start', title: 'Multi-digit progress', items: many.slice(0, 50) });
+  for (let chunk = 0; chunk < 3; chunk++) apply('multi', { op: 'stage', upload: 'many-tasks', chunk, items: many.slice(chunk * 50, (chunk + 1) * 50) });
+  apply('multi', { op: 'commit', upload: 'many-tasks', chunks: 3 });
+  f.store.bindReads(f.source.id, true);
+  const storeId = f.store.detail(f.source.id, 'main').storeId;
+  // Enable the real run reader and settle its empty synthetic history through
+  // production writes, so run-read faults exercise an admitted request, not a hidden capability.
+  f.store.installSubagentRuns();
+  f.store.requestRunReconciliation({ storeId, binding: { sourceId: f.source.id, verified: true }, source: f.source.id, root: 'M' });
+  const history = f.store.claimRunRecovery(f.source.id, 'M');
+  if (!history) throw Error('Synthetic history job missing');
+  f.store.finishRunRecovery(history, 'complete');
+  const service = createProgressServer(f.store, 'status-fixture-only');
+  await new Promise<void>(r => service.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
+  let empty = false, setup = false, partial = false, old = false;
+  const fixture = await startLanguageFixture({ source: process.argv.includes('--source'), service: async q => {
+    if (q.path === '/health' && setup) return { status: 200, body: JSON.stringify({ ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2 }) };
+    const r = await fetch(`${origin}${q.path}?${new URLSearchParams(q.query)}`, {
+      method: q.body ? 'POST' : 'GET', headers: { authorization: 'Bearer status-fixture-only', 'content-type': 'application/json' }, ...(q.body ? { body: q.body } : {}),
+    });
+    const body = await r.json() as any;
+    if (q.path === '/v1/plans') {
+      if (empty) body.data = [];
+      if (old) for (const p of body.data ?? []) p.reportedAt = new Date(Date.now() - 7_200_000).toISOString();
+      if (partial && body.needsYou) {
+        body.needsYou.coverage.complete = false; body.needsYou.coverage.gapped = true;
+        body.needsYou.coverage.skippedRecords = 1; body.needsYou.coverage.reasons = ['invalid-snapshot'];
+      }
+    }
+    return { status: r.status, body: JSON.stringify(body) };
+  } });
+  const browser = await launchChromium(chromium), c = browser.page;
+  const checks: { id: string; pass: boolean; facts?: unknown }[] = [], measurements: unknown[] = [];
+  let failure: string | null = null;
+  const check = (id: string, pass: boolean, facts?: unknown) => { checks.push({ id, pass, facts }); if (!pass) throw Error(`${id}: ${JSON.stringify(facts)}`); };
+  const evaluate = async <T = any>(expression: string): Promise<T> => {
+    const r = await c.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+    return r.result.value;
+  };
+  const guest = <T = any>(code: string) => evaluate<T>(`(()=>{const w=frame('status').contentWindow,d=w.document;${code}})()`);
+  const fractionFits = async (id: string) => {
+    // Range boxes use advance widths; actual glyph ink may overhang those boxes.
+    // Reconstruct the font from longhands: tabular numerals can make `.font` empty.
+    const fraction = await guest(`const n=d.querySelector('[data-testid="counts"]'),r=n.getBoundingClientRect(),card=n.closest('.ap-status-plan').getBoundingClientRect(),bar=d.querySelector('[data-testid="progress-bar"]').getBoundingClientRect(),total=n.querySelector('.ap-muted'),range=d.createRange();range.selectNodeContents(total);const text=range.getBoundingClientRect(),ctx=d.createElement('canvas').getContext('2d'),s=w.getComputedStyle(total);ctx.font=s.fontStyle+' '+s.fontWeight+' '+s.fontSize+' '+s.fontFamily;const ink=ctx.measureText(total.textContent);return {right:r.right,cardRight:card.right,viewport:w.innerWidth,barRight:bar.right,barWidth:bar.width,fractionLeft:r.left,text:n.textContent,textRight:text.right,inkRight:text.left+ink.actualBoundingBoxRight,textWidth:text.width,advance:ink.width,font:ctx.font}`);
+    check(`${id}:fraction-inside-card`, fraction.right <= fraction.cardRight && fraction.right <= fraction.viewport, fraction);
+    check(`${id}:fraction-ink-inside-card`, fraction.inkRight <= fraction.cardRight, fraction);
+  };
+  const wait = async (cond: string) => {
+    const ok = await evaluate(`(async()=>{const end=performance.now()+20000;while(performance.now()<end){try{const w=frame('status').contentWindow,d=w.document;if(${cond})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
+    if (!ok) throw Error(`Timeout: ${cond}; ${await guest('return d.body.innerText')}`);
+  };
+  const refresh = async () => {
+    // The ordinary poll is installed after the previous response settles. Focus alone
+    // refreshes language, not progress, and must not be mistaken for a completed poll.
+    // The fixture also freezes SDK request deadlines. Never tick those while a
+    // service reply is still in flight; let its result message clear the deadline.
+    await wait(`w.__qaClock.pending.size>0&&d.defaultView.parent.qa.requests.length===d.defaultView.parent.qa.responses.length`);
+    await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    await evaluate(`qa.tick('status')`);
+  };
+  const observedPoll = async () => {
+    const before = await evaluate<number>(`qa.responses.filter(r=>r.surface==='status'&&r.path==='/v1/plans').length`);
+    await refresh();
+    await wait(`d.defaultView.parent.qa.responses.filter(r=>r.surface==='status'&&r.path==='/v1/plans').length>${javascriptLiteral(before)}&&w.__qaClock.pending.size>0&&d.defaultView.parent.qa.requests.length===d.defaultView.parent.qa.responses.length`);
+    await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+  };
+  const reload = async () => {
+    // A selector can still match the retired document until navigation commits.
+    // Wait for the new document before accepting its own loading/read state.
+    await evaluate(`frame('status').contentWindow.__qaRetired=true;qa.reload('status')`);
+    await wait(`!w.__qaRetired&&d.readyState==='complete'`);
+  };
+  const key = async (key: string) => {
+    const code = ({ Tab: 9, Enter: 13, Escape: 27, ArrowDown: 40, Home: 36, End: 35 } as Record<string, number>)[key];
+    for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: code, ...(type === 'keyDown' && key === 'Enter' ? { text: '\r' } : {}) });
+  };
+  const click = async (selector: string, touch = false) => {
+    // The SDK intentionally closes popups on viewport resize/outside scroll.
+    // Finish the harness's preceding resize/scroll before activating a control.
+    await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
+    const point = await evaluate(`(async()=>{
+      const f=frame('status'),selector=${javascriptLiteral(selector)},target=f.contentDocument.querySelector(selector),popup=target?.closest('.oc-sdk-popup');
+      if(popup){const a=target.getBoundingClientRect(),p=popup.getBoundingClientRect();popup.scrollTop+=a.y+a.height/2-p.y-p.height/2}else target?.scrollIntoView({block:'nearest'});
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+      const n=f.contentDocument.querySelector(selector);if(!n)throw Error('Missing click target: '+selector);
+      const a=n.getBoundingClientRect(),b=f.getBoundingClientRect(),p=popup?.getBoundingClientRect();
+      const left=Math.max(a.left,p?.left??0,0),right=Math.min(a.right,p?.right??f.contentWindow.innerWidth,f.contentWindow.innerWidth);
+      const top=Math.max(a.top,p?.top??0,0),bottom=Math.min(a.bottom,p?.bottom??f.contentWindow.innerHeight,f.contentWindow.innerHeight);
+      const x=(left+right)/2,y=(top+bottom)/2,hit=f.contentDocument.elementFromPoint(x,y);
+      if(right<=left||bottom<=top||!hit||!n.contains(hit))throw Error('Obscured click target: '+JSON.stringify({selector,x,y,viewport:f.contentWindow.innerHeight,hit:hit?.tagName,target:a.toJSON(),popup:p?.toJSON()}));
+      return {x:b.x+x,y:b.y+y}
+    })()`);
+    if (touch) {
+      await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+      await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    } else for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+  };
+  const shot = async (name: string) => {
+    const clip = await evaluate(`(()=>{const f=frame('status'),a=f.getBoundingClientRect(),b=f.contentDocument.querySelector('[data-testid="progress-root"]').getBoundingClientRect();return{x:a.x,y:a.y,width:a.width,height:Math.ceil(b.height),scale:1}})()`);
+    const r = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+    writeFileSync(join(artifacts, name + '.png'), Buffer.from(r.data, 'base64'));
+  };
+  const narrowStates = async (name: string) => {
+    for (const locale of ['en', 'ru', 'zh-CN']) {
+      await evaluate(`qa.show('status',190);qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
+      const m = await guest(`const r=d.querySelector('[data-testid="progress-root"]');return {height:r.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1}`);
+      check(`${name}:${locale}:host-height-and-wrap`, !m.overflow && m.height <= GUEST_STATUS_SECTION_HEIGHT_MAX, m);
+      await shot(`${name}-${locale}-190`);
+    }
+    await evaluate(`qa.show('status',390);qa.ready('status',{locale:'en'})`);
+    await wait(`d.documentElement.lang==='en'`);
+  };
+  const dark = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryForeground: '#191b20', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58e', warning: '#e8c372', error: '#ff9e9e', info: '#83aff7', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' };
+  try {
+    await c.send('Runtime.enable'); await c.send('Page.enable');
+    await c.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 844, deviceScaleFactor: 1, mobile: false });
+    await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture.port}` });
+    // Showing/resizing an existing host section preserves its accepted guest height.
+    // The generic fixture resets it to 240px; unchanged context need not repaint
+    // and cannot owe another height message to undo that artificial reset.
+    await evaluate(`{const show=qa.show.bind(qa);qa.show=(s,width)=>{const height=frame(s).style.height;show(s,width);frame(s).style.height=height}}`);
+    await evaluate(`qa.show('status',390);qa.workspace=q=>q.kind==='projects'?{kind:'projects',state:'ready',projects:[{id:'Alpha',directory:'/fixture/Alpha',name:'Example'}]}:q.kind==='worktrees'?{kind:'worktrees',projectId:'Alpha',state:'ready',worktrees:[]}:{kind:'sessions',state:'ready',projectId:'Alpha',coverage:[{directory:'/fixture/Alpha',state:'ready'}],sessions:['M','C1','C2'].map(id=>({id,title:'Example session',projectId:'Alpha',directory:'/fixture/Alpha',parentId:id==='M'?null:'M',createdAt:1,updatedAt:2,archivedAt:null,worktree:null,activity:id==='M'?'idle':'running',outcome:null,items:[]}))};qa.context('M');qa.reload('status')`);
+    await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.count==='2'&&d.querySelector('[data-testid="status-activity"]')?.textContent.includes('2 running')`);
+    check('session-scope-excludes-other-session', await guest(`return d.querySelector('[data-testid="needs-you-count"]').dataset.count==='2'`));
+    // The same device record used by the rail: hide exactly one main-session wait.
+    // Reopen with the persisted device record. This shell freezes ordinary refresh timers;
+    // a ready delivered while the initial storage read is busy is not a completed refresh.
+    // The hidden-item key is JSON data; encode that complete string as a JS literal.
+    await evaluate(`qa.maps.get('primary').set('progress-view.v1',${javascriptLiteral({ v: 1, hidden: [JSON.stringify([storeId, f.source.id, 'main', 'decision', 1])], expanded: {}, dismissed: {} })})`);
+    await reload();
+    await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.count==='1'`);
+    // Nine plans plus Automatic in the real, auto-height narrow frame. Navigate
+    // every option with native keys, then activate the last via native pointer.
+    for (const height of ['auto', 'maximum']) {
+      await evaluate(`qa.show('status',190);qa.ready('status',{locale:'ru'})`);
+      await wait(`d.documentElement.lang==='ru'&&Math.abs(w.innerHeight-Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height))<=1`);
+      if (height === 'maximum') await evaluate(`frame('status').style.height=${javascriptLiteral(GUEST_STATUS_SECTION_HEIGHT_MAX + 'px')}`);
+      // Let the frame's resize event finish before opening the SDK popup.
+      await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+      // Maximum-height probe intentionally exercises a host frame taller than the card.
+      await guest(`d.querySelector('[data-testid="status-plan-selector"] button').focus();return true`);
+      await key('Enter'); await wait(`d.querySelector('[role="listbox"]')`);
+      const count = await guest<number>(`return d.querySelectorAll('[role="option"]').length`);
+      check(`picker:${height}:nine-plans`, count === 10, { count });
+      await key('Home');
+      for (let i = 0; i < count; i++) {
+        if (i) await key('ArrowDown');
+        const fit = await guest(`const p=d.querySelector('.oc-sdk-popup'),r=p.getBoundingClientRect(),n=p.querySelector('[data-active="true"]'),a=n.getBoundingClientRect(),top=Math.max(a.top,r.top+1,0),bottom=Math.min(a.bottom,r.bottom-1,w.innerHeight),left=Math.max(a.left,r.left+1,0),right=Math.min(a.right,r.right-1,w.innerWidth),hit=d.elementFromPoint((left+right)/2,(top+bottom)/2);return {frame:w.innerHeight,popup:r.toJSON(),option:a.toJSON(),id:n.id,visible:bottom>top&&right>left&&!!hit&&n.contains(hit),scroll:p.scrollHeight,client:p.clientHeight}`);
+        check(`picker:${height}:option-${i}:reachable`, fit.visible && fit.popup.top >= 0 && fit.popup.bottom <= fit.frame && fit.popup.left >= 0 && fit.popup.right <= 190, fit);
+      }
+      const lastId = await guest<string>(`return d.querySelector('.oc-sdk-popup [data-active="true"]').id`);
+      await key('Home');
+      const wheel = await evaluate(`(()=>{const f=frame('status'),r=f.contentDocument.querySelector('.oc-sdk-popup').getBoundingClientRect(),b=f.getBoundingClientRect();return {x:b.x+r.x+r.width/2,y:b.y+r.y+r.height/2}})()`);
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...wheel, deltaX: 0, deltaY: 10000 });
+      await wait(`(()=>{const p=d.querySelector('.oc-sdk-popup');return p.scrollTop+p.clientHeight>=p.scrollHeight-1})()`);
+      check(`picker:${height}:wheel-reaches-last`, await guest(`const p=d.querySelector('.oc-sdk-popup'),r=p.getBoundingClientRect(),n=d.getElementById(${javascriptLiteral(lastId)}),a=n.getBoundingClientRect();return Math.min(a.bottom,r.bottom)>Math.max(a.top,r.top)`));
+      await click(`[role="option"][id=${JSON.stringify(lastId)}]`);
+      await wait(`!d.querySelector('[role="listbox"]')&&d.querySelector('[data-testid="plan-finished"]')`);
+      check(`picker:${height}:last-option-clicked`, true);
+      await click('[data-testid="status-plan-selector"] button'); await wait(`d.querySelector('[role="listbox"]')`);
+      await key('Home'); await key('Enter');
+      await wait(`d.querySelector('[data-testid="plan-main"]')`);
+    }
+    for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [190, 280, 390]) for (const mode of ['light', 'dark']) {
+      await evaluate(`${mode === 'light' ? 'delete qa.ctx.theme;' : ''}qa.show('status',${javascriptLiteral(width)});qa.ready('status',${javascriptLiteral({ locale, ...(mode === 'dark' ? { theme: { mode: 'dark', tokens: dark } } : {}) })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}&&d.documentElement.dataset.ocTheme===${javascriptLiteral(mode)}`);
+      const m = await guest(`const r=d.querySelector('[data-testid="progress-root"]');return {height:r.getBoundingClientRect().height,overflow:d.documentElement.scrollWidth>w.innerWidth+1,text:r.innerText,bar:d.querySelector('[data-testid="progress-bar"]')?.getAttribute('aria-label')}`);
+      measurements.push({ locale, width, mode, ...m });
+      await fractionFits(`${locale}:${width}:${mode}`);
+      check(`${locale}:${width}:${mode}:height-and-wrap`, !m.overflow && m.height <= GUEST_STATUS_SECTION_HEIGHT_MAX, m);
+      check(`${locale}:${width}:${mode}:removed-rows`, await guest(`return !d.querySelector('[data-testid="state-chip"],[data-testid="current-work"],[data-testid="subagent-activity"],[data-testid="more-plans"],[data-testid="incomplete-counts"]')`));
+      check(`${locale}:${width}:${mode}:fresh-no-time`, await guest(`return !d.querySelector('time,[data-testid="status-stale-time"]')`));
+      check(`${locale}:${width}:${mode}:summary`, !!m.bar && await guest(`return d.querySelector('[data-testid="counts"]').dataset.total==='3'`), m.bar);
+      await shot(`status-${locale}-${width}-${mode}`);
+    }
+    await evaluate(`qa.show('status',390);qa.ready('status',${javascriptLiteral({ locale: 'en', theme: { mode: 'dark', tokens: dark } })})`);
+    await wait(`d.documentElement.lang==='en'`);
+    await evaluate(`qa.show('status',322)`); await shot('status-readme-dark');
+    await evaluate(`qa.show('status',390)`);
+    await click('[data-testid="status-plan-selector"] button');
+    await wait(`d.querySelector('[role="listbox"]')`);
+    await click('[role="option"][id$="/multi"]');
+    await wait(`d.querySelector('[data-testid="counts"]')?.dataset.done==='12'&&d.querySelector('[data-testid="counts"]')?.dataset.total==='148'`);
+    for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [190, 280, 390]) {
+      await evaluate(`qa.show('status',${javascriptLiteral(width)});qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
+      await fractionFits(`multi:${locale}:${width}`);
+      await shot(`status-multi-${locale}-${width}`);
+    }
+    await evaluate(`qa.show('status',390);qa.ready('status',{locale:'en'})`);
+    await wait(`d.documentElement.lang==='en'`);
+    await click('[data-testid="status-plan-selector"] button');
+    await wait(`d.querySelector('[role="listbox"]')`);
+    await click('[role="option"][id$="-automatic"]');
+    await wait(`d.querySelector('[data-testid="plan-main"] [data-testid="counts"]')?.dataset.total==='3'`);
+    // A dedicated selected session makes this a direct zero-total render regression,
+    // independent of an extra plan-picker interaction in the short Status frame.
+    await evaluate(`qa.context('skipped-session')`);
+    await wait(`d.querySelector('[data-testid="plan-skipped-only"] [data-testid="counts"]')?.dataset.skipped==='1'`);
+    for (const locale of ['ru', 'en', 'zh-CN']) for (const width of [190, 280, 390]) {
+      await evaluate(`qa.show('status',${javascriptLiteral(width)});qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
+      const prose = await guest(`const n=d.querySelector('[data-testid="counts"]'),r=n.getBoundingClientRect(),card=n.closest('.ap-status-plan').getBoundingClientRect();return {right:r.right,cardRight:card.right,scroll:d.documentElement.scrollWidth,width:w.innerWidth,total:n.dataset.total,skipped:n.dataset.skipped,bar:!!d.querySelector('[data-testid="progress-bar"]')}`);
+      check(`skipped-only:${locale}:${width}:summary-wraps`, prose.right <= prose.cardRight && prose.scroll <= prose.width && prose.total === '0' && prose.skipped === '1' && !prose.bar, prose);
+      await shot(`status-skipped-only-${locale}-${width}`);
+    }
+    await evaluate(`qa.show('status',390);qa.ready('status',{locale:'en'})`);
+    await wait(`d.documentElement.lang==='en'`);
+    await evaluate(`qa.context('M')`);
+    await wait(`d.querySelector('[data-testid="plan-main"] [data-testid="counts"]')?.dataset.total==='3'`);
+    const ageBoundary = Date.parse(f.store.get(f.source.id, 'main')!.reportedAt) + 3_600_000;
+    const ageRevision = await guest(`return d.querySelector('[data-testid="plan-main"]').dataset.revision`);
+    await wait(`d.defaultView.parent.qa.responses.length===d.defaultView.parent.qa.requests.length`);
+    await guest(`w.__qaStatusNow=w.Date.now;w.Date.now=()=>${javascriptLiteral(ageBoundary - 1)};return true`);
+    await observedPoll();
+    check('age-boundary:fresh-before-hour', await guest(`return !d.querySelector('[data-testid="status-stale-time"]')`));
+    await guest(`w.Date.now=()=>${javascriptLiteral(ageBoundary + 1)};return true`);
+    await observedPoll();
+    await wait(`!!d.querySelector('[data-testid="status-stale-time"]')`);
+    const ageFacts = await guest(`return {shown:!!d.querySelector('[data-testid="status-stale-time"]'),revision:d.querySelector('[data-testid="plan-main"]').dataset.revision,now:w.Date.now(),boundary:${javascriptLiteral(ageBoundary)}}`);
+    check('age-boundary:unchanged-poll-shows-time', ageFacts.shown && ageFacts.revision === ageRevision, ageFacts);
+    await guest(`w.Date.now=w.__qaStatusNow;delete w.__qaStatusNow;return true`);
+    await observedPoll();
+    await wait(`!d.querySelector('[data-testid="status-stale-time"]')`);
+    // Keyboard uses real Tab/Enter/Escape; a fresh pointer lookup is used after each paint.
+    await evaluate(`document.querySelector('#outside').focus()`);
+    await key('Tab');
+    await wait(`d.activeElement?.closest('[data-testid="status-plan-selector"]')`);
+    await key('Enter'); await wait(`d.querySelector('[role="listbox"]')`);
+    check('automatic-first', await guest(`return d.querySelector('[role="option"]')?.textContent.includes('Automatic')`));
+    await key('Escape');
+    await wait(`!d.querySelector('[role="listbox"]')&&d.activeElement?.closest('[data-testid="status-plan-selector"]')`);
+    await key('Tab'); await key('Enter');
+    await wait(`d.defaultView.parent.qa.messages.some(m=>m.surface==='status'&&m.type==='open-surface')`);
+    check('keyboard-needs-you-opens-rail', await evaluate(`qa.messages.some(m=>m.surface==='status'&&m.type==='open-surface')`));
+    await key('Tab'); await key('Enter');
+    check('open-progress-keyboard', await guest(`return d.activeElement?.closest('[data-testid="open-detail"]')!==null`));
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await c.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await click('[data-testid="status-plan-selector"] button', true);
+    await wait(`d.querySelector('[role="listbox"]')`);
+    await key('Escape');
+    check('phone-tap-picker', await guest(`return !d.querySelector('[role="listbox"]')`));
+    await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 844, deviceScaleFactor: 1, mobile: false });
+    const frames = await c.send('Page.getFrameTree');
+    const frameId = frames.frameTree.childFrames.find((f: any) => f.frame.url.includes('/ui/status/')).frame.id;
+    const tree = await c.send('Accessibility.getFullAXTree', { frameId });
+    writeFileSync(join(artifacts, 'accessibility.json'), JSON.stringify(tree, null, 2));
+    check('accessible-controls-and-summary', tree.nodes.some((n: any) => n.name?.value === 'Open progress') && tree.nodes.some((n: any) => n.name?.value?.includes('1 needs you')) && tree.nodes.some((n: any) => n.name?.value?.includes('remaining')));
+    old = true; await refresh(); await wait(`d.querySelector('[data-testid="status-stale-time"]')`);
+    await shot('status-stale');
+    await narrowStates('status-stale');
+    old = false; f.store.setEnabled(false); await refresh(); await wait(`d.querySelector('[data-testid="capture-off"]')`);
+    await shot('status-recording-off');
+    await narrowStates('status-recording-off');
+    f.store.setEnabled(true); await refresh(); await wait(`!d.querySelector('[data-testid="capture-off"]')`);
+    partial = true; await refresh(); await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`);
+    check('partial-plus-without-note', await guest(`return d.querySelector('[data-testid="needs-you-count"]').textContent.includes('1+')&&!d.querySelector('[data-testid="incomplete-counts"]')`));
+    await shot('status-partial'); partial = false;
+    for (const lifecycle of ['finished', 'cancelled', 'failed', 'group', 'long']) {
+      await click('[data-testid="status-plan-selector"] button'); await wait(`d.querySelector('[role="listbox"]')`);
+      await click(`[role="option"][id$="/${lifecycle}"]`);
+      await wait(`d.querySelector(${javascriptLiteral(`[data-testid="plan-${lifecycle}"]`)})`);
+      check(`lifecycle:${lifecycle}`, await guest(`return d.querySelector('[data-testid="status-activity"]').textContent.includes(${javascriptLiteral(lifecycle === 'finished' ? 'Finished' : lifecycle === 'group' || lifecycle === 'long' ? 'running' : lifecycle === 'cancelled' ? 'Cancelled' : 'Failed')})`));
+      await shot(`status-${lifecycle}`);
+      await narrowStates(`status-${lifecycle}`);
+    }
+    for (const path of ['/v1/plan', '/v1/subagent-runs']) {
+      await evaluate(`qa.faults=${javascriptLiteral([{ kind: 'service', surface: 'status', path }])}`);
+      await reload();
+      await wait(`d.querySelector(${javascriptLiteral(path === '/v1/plan' ? '[data-testid="status-detail-unavailable"]' : '[data-testid="status-runs-error"]')})`);
+      await shot(path === '/v1/plan' ? 'status-detail-error' : 'status-runs-error');
+      await narrowStates(path === '/v1/plan' ? 'status-detail-error' : 'status-runs-error');
+    }
+    await evaluate(`qa.faults=[]`); await reload(); await wait(`d.querySelector('[data-testid="counts"]')`);
+    await evaluate(`qa.faults=[{kind:'service',surface:'status',path:'/v1/plans'}]`); await refresh();
+    await wait(`d.querySelector('[data-testid="stale-banner"]')`);
+    await shot('status-refresh-error');
+    await narrowStates('status-refresh-error');
+    await evaluate(`qa.faults=[]`); await click('[data-testid="status-retry"] button');
+    await wait(`!d.querySelector('[data-testid="stale-banner"]')`);
+    empty = true; await refresh(); await wait(`d.querySelector('[data-testid="empty-state"]')`); await narrowStates('status-empty');
+    await evaluate(`qa.context(null)`); await wait(`d.querySelector('[data-testid="unscoped-state"]')`); await narrowStates('status-no-session');
+    setup = true; await evaluate(`qa.context('M')`); await reload(); await wait(`d.querySelector('[data-testid="setup-needed"]')`); await narrowStates('status-setup');
+    setup = false; await evaluate(`qa.holds=[{kind:'service',surface:'status',path:'/v1/plans',tag:'loading'}]`); await reload();
+    await wait(`d.querySelector('[data-testid="state-loading"]')`);
+    await narrowStates('status-loading');
+    await evaluate(`qa.faults=[{kind:'service',surface:'status',path:'/v1/plans'}];qa.release('loading')`);
+    await wait(`d.querySelector('[data-testid="state-busy"]')`);
+    await narrowStates('status-initial-error');
+    check('no-map-or-search-traffic', await evaluate(`!qa.requests.some(r=>r.surface==='status'&&['/v1/search','/v1/plan-graph'].includes(r.path))`));
+    check('no-browser-exceptions', c.errors.length === 0, c.errors);
+  } catch (e) { failure = String(e); throw e; }
+  finally {
+    writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ failure, checks, measurements, browserErrors: c.errors, browser: browser.version, host: 'synthetic', service: 'disposable real HTTP/SQLite', limits: 'No native host, physical phone or screen-reader speech certification.' }, null, 2));
+    await browser.stop(); await fixture.stop(); service.closeAllConnections(); await new Promise<void>(r => service.close(() => r())); f.cleanup();
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();

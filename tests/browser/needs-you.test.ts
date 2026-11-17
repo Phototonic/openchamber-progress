@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
 import { parsePlanPage } from '../../ui/shared/adapter.ts';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
@@ -361,6 +362,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
     AbortController,
     exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } }, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {}, HTMLElement: Node, Element: Node,
     require: (name: string) => {
+      if (name in appCountsModules) return appCountsModules[name];
       if (name === '@openchamber/sdk') return { connectHost: () => h };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module

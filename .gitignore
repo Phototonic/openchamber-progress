@@ -23,20 +23,12 @@ node_modules/
 .env*
 !.env.example
 
-# Git installs consume built entries directly; everything else stays local.
-# Keep this after generic exceptions so even build/**/.env.example stays ignored.
-/build/*
-!/build/service/
-/build/service/*
-!/build/service/main.js
-!/build/companion/
-/build/companion/*
-!/build/companion/index.js
-!/build/companion/package.json
-!/build/companion/SKILL.md
-!/build/setup/
-/build/setup/*
-!/build/setup/main.js
+# Source branches never track generated outputs. Promotion adds them by force.
+/build/
+/background/main.js
+/ui/panel/main.js
+/ui/status/main.js
+/ui/page/main.js
 
 # Editor and IDE state (shared run configurations and settings stay trackable)
 .idea/*

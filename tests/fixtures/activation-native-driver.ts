@@ -7,9 +7,10 @@ import { networkInterfaces } from 'node:os';
 import { OpenCode } from '@opencode/client';
 import { ProgressStatus } from '../../plugin/status.ts';
 import { Store } from '../../shared/store.ts';
-import { ACTIVATION_GUIDANCE, ACTIVATION_HINT } from '../../plugin/activation.ts';
+import { ACTIVATION_GUIDANCE, ACTIVATION_HINT, REPORT_CHECKLIST } from '../../plugin/activation.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
+import { checkNativeCarrier } from './result-note-probe.ts';
 
 const root = process.argv[2];
 assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3], 'must run in independent network namespace');
@@ -20,6 +21,7 @@ const env = {
   OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', ACTIVATION_EVENTS: `${root}/events.jsonl`,
   ACTIVATION_SDK: `file://${root}/sdk.mjs`,
   ACTIVATION_STORE: `${root}/store/progress.sqlite`,
+  RESULT_NOTE_PROBE: process.env.RESULT_NOTE_PROBE ?? '0',
 };
 fs.writeFileSync(`${root}/sdk.mjs`, 'export function createActivationFixture() { return {}; }\n');
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
@@ -88,6 +90,14 @@ try {
   assert.deepEqual(childAfter.map(e => [e.tool, e.status]), [['write', 'completed']], 'hidden report tool does not prevent independently authorized writing');
   assert.equal(childAfter[0].input.path, 'docs/plans/delegated.md');
   const outgoing = allEvents.filter(e => e.type === 'driver');
+  if (process.env.RESULT_NOTE_EVIDENCE) fs.writeFileSync(process.env.RESULT_NOTE_EVIDENCE, JSON.stringify({
+    probes: allEvents.filter(e => e.type === 'note-probe'), outgoing,
+  }, null, 2));
+  checkNativeCarrier(allEvents.filter(e => e.type === 'note-probe'), outgoing);
+  const delivered = (id: string) => outgoing.flatMap(request => request.prompt).filter(message => message.role === 'tool')
+    .flatMap(message => message.content).find(message => message.toolCallId === id);
+  for (const event of after.slice(0, 3)) assert.ok(JSON.stringify(delivered(event.id)).includes('Agent Progress note'), `native direct write/edit note: ${event.id}`);
+  assert.ok(!JSON.stringify(delivered(childAfter[0].id)).includes('Agent Progress note'), 'restricted child result unchanged');
   assert.equal(outgoing.length, 10);
   assert.ok(outgoing[0].prompt.some((m: any) => m.role === 'user' && JSON.stringify(m.content).includes('Make a two-step plan for a search feature.')));
   assert.equal(outgoing[0].tools.includes('agent_progress_report'), true);
@@ -95,7 +105,7 @@ try {
   assert.ok(childOutgoing.every(e => !e.tools.includes('agent_progress_report')), 'hiding reaches all child outgoing requests');
   assert.ok(childOutgoing[0].tools.includes('write'), 'write remains independently permitted');
   const reportDefinition = allEvents.filter(e => e.type === 'registered').flatMap(e => e.tools).find((t: any) => t.id === 'agent_progress_report');
-  const lead = 'Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current.';
+  const lead = REPORT_CHECKLIST;
   assert.ok(reportDefinition.description.startsWith(lead), 'compact selected lead precedes request help');
   for (const request of [...outgoing.slice(0, 6), ...outgoing.slice(8)]) {
     assert.equal(request.definitions.find((t: any) => t.name === 'agent_progress_report').description, reportDefinition.description, 'full revised description reaches outgoing tool definitions');

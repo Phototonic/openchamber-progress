@@ -12,43 +12,47 @@ import type { ItemStatus, PlanView } from './model.ts';
 import type { RunsPanel } from './runs.ts';
 import type { InterfaceLanguage } from './i18n.ts';
 
+const russianCountWord = (n: number | string, one: string, few: string, many: string) => {
+  const form = new Intl.PluralRules('ru').select(Number(String(n).replace(/\s/gu, '')));
+  return form === 'one' ? one : form === 'few' ? few : many;
+};
 const COPY = {
   en: {
     reasons: { user: 'stopped by the user', shutdown: 'the host shut down', superseded: 'replaced by a newer run', inactivity: 'inactive too long', unknown: 'reason not recorded' },
     activity: { running: 'Running', retrying: 'Retrying', 'waiting-permission': 'Waiting for permission', 'waiting-question': 'Waiting for an answer', idle: 'Idle', unknown: 'State unknown' },
     turnFailed: 'Turn failed', turnEnded: 'Turn ended', finished: 'Finished', failed: 'Failed',
     failure: (code: string) => `Failed: ${code}`, interrupted: (reason: string) => `Interrupted: ${reason}`,
-    updated: 'last updated ', started: 'started ', dispatched: 'dispatched ', idle: 'Idle now, no outcome reported yet', running: 'Running', outcome: 'Outcome unknown',
-    pending: 'Dispatched, not confirmed yet', dispatchFailed: 'Dispatch failed before a run was confirmed', unconfirmed: 'Not confirmed by the host', noOutcome: 'No outcome reported',
+    updated: 'last updated ', started: 'started ', dispatched: 'request sent ', idle: 'Idle now; outcome unknown', running: 'Running', outcome: 'Outcome unknown',
+    pending: 'Launch requested; not confirmed yet', dispatchFailed: 'Launch request failed before a run was confirmed', unconfirmed: 'Not confirmed by the host', noOutcome: 'Outcome unknown',
     unavailable: 'Current activity unavailable', session: (id: string) => `Session ${id}`, subagent: 'Sub-agent',
-    summary: { waiting: (n: number) => `${n} waiting on you`, running: (n: number) => `${n} running`, finished: (n: number) => `${n} finished`, failed: (n: number) => `${n} failed`, interrupted: (n: number) => `${n} interrupted`, unknown: (n: number) => `${n} unknown` },
+    summary: { waiting: (n: number | string) => `${n} waiting for you`, running: (n: number | string) => `${n} running`, finished: (n: number | string) => `${n} finished`, failed: (n: number | string) => `${n} failed`, interrupted: (n: number | string) => `${n} interrupted`, unknown: (n: number | string) => `${n} unknown` },
   },
   ru: {
     reasons: { user: 'остановлен пользователем', shutdown: 'хост завершил работу', superseded: 'заменён новым запуском', inactivity: 'слишком долгая неактивность', unknown: 'причина не записана' },
     activity: { running: 'Выполняется', retrying: 'Повторная попытка', 'waiting-permission': 'Ожидает разрешения', 'waiting-question': 'Ожидает ответа', idle: 'Бездействует', unknown: 'Состояние неизвестно' },
     turnFailed: 'Ход завершился с ошибкой', turnEnded: 'Ход завершён', finished: 'Завершён', failed: 'Ошибка',
     failure: (code: string) => `Ошибка: ${code}`, interrupted: (reason: string) => `Прерван: ${reason}`,
-    updated: 'обновлён ', started: 'начат ', dispatched: 'отправлен ', idle: 'Сейчас бездействует, результат ещё не сообщён', running: 'Выполняется', outcome: 'Результат неизвестен',
-    pending: 'Отправлен, ещё не подтверждён', dispatchFailed: 'Ошибка отправки до подтверждения запуска', unconfirmed: 'Не подтверждён хостом', noOutcome: 'Результат не сообщён',
+    updated: 'обновлён ', started: 'начат ', dispatched: 'запрос отправлен ', idle: 'Сейчас бездействует; результат неизвестен', running: 'Выполняется', outcome: 'Результат неизвестен',
+    pending: 'Запуск запрошен; ещё не подтверждён', dispatchFailed: 'Ошибка запроса до подтверждения запуска', unconfirmed: 'Не подтверждён хостом', noOutcome: 'Результат неизвестен',
     unavailable: 'Текущая активность недоступна', session: (id: string) => `Сессия ${id}`, subagent: 'Субагент',
-    summary: { waiting: (n: number) => `Ждут вас: ${n}`, running: (n: number) => `Выполняются: ${n}`, finished: (n: number) => `Завершены: ${n}`, failed: (n: number) => `С ошибкой: ${n}`, interrupted: (n: number) => `Прерваны: ${n}`, unknown: (n: number) => `Результат неизвестен: ${n}` },
+    summary: { waiting: (n: number | string) => `${n} ${russianCountWord(n, 'ждёт вас', 'ждут вас', 'ждут вас')}`, running: (n: number | string) => `${n} ${russianCountWord(n, 'выполняется', 'выполняются', 'выполняются')}`, finished: (n: number | string) => `${n} ${russianCountWord(n, 'завершён', 'завершены', 'завершено')}`, failed: (n: number | string) => `${n} с ошибкой`, interrupted: (n: number | string) => `${n} ${russianCountWord(n, 'прерван', 'прерваны', 'прервано')}`, unknown: (n: number | string) => `${n} с неизвестным результатом` },
   },
   'zh-CN': {
     reasons: { user: '由用户停止', shutdown: '宿主关闭', superseded: '被较新的运行取代', inactivity: '长时间无活动', unknown: '未记录原因' },
     activity: { running: '运行中', retrying: '正在重试', 'waiting-permission': '等待授权', 'waiting-question': '等待回答', idle: '空闲', unknown: '状态未知' },
     turnFailed: '轮次失败', turnEnded: '轮次结束', finished: '已结束', failed: '失败',
     failure: (code: string) => `失败：${code}`, interrupted: (reason: string) => `已中断：${reason}`,
-    updated: '上次更新于 ', started: '开始于 ', dispatched: '派发于 ', idle: '当前空闲，尚未报告结果', running: '运行中', outcome: '结果未知',
-    pending: '已派发，尚未确认', dispatchFailed: '运行确认前派发失败', unconfirmed: '宿主尚未确认', noOutcome: '尚未报告结果',
+    updated: '上次更新于 ', started: '开始于 ', dispatched: '请求发送于 ', idle: '当前空闲，结果未知', running: '运行中', outcome: '结果未知',
+    pending: '已请求启动，尚未确认', dispatchFailed: '运行确认前启动请求失败', unconfirmed: '宿主尚未确认', noOutcome: '结果未知',
     unavailable: '当前活动不可用', session: (id: string) => `会话 ${id}`, subagent: '子智能体',
-    summary: { waiting: (n: number) => `${n} 个等待你处理`, running: (n: number) => `${n} 个运行中`, finished: (n: number) => `${n} 个已结束`, failed: (n: number) => `${n} 个失败`, interrupted: (n: number) => `${n} 个已中断`, unknown: (n: number) => `${n} 个结果未知` },
+    summary: { waiting: (n: number | string) => `${n} 个等待你处理`, running: (n: number | string) => `${n} 个运行中`, finished: (n: number | string) => `${n} 个已结束`, failed: (n: number | string) => `${n} 个失败`, interrupted: (n: number | string) => `${n} 个已中断`, unknown: (n: number | string) => `${n} 个结果未知` },
   },
 } satisfies Record<InterfaceLanguage, {
   reasons: Record<NonNullable<RunRow['ran']['interruptionReason']>, string>; activity: Record<ObservedRow['activity'], string>;
   turnFailed: string; turnEnded: string; finished: string; failed: string; failure: (code: string) => string; interrupted: (reason: string) => string;
   updated: string; started: string; dispatched: string; idle: string; running: string; outcome: string;
   pending: string; dispatchFailed: string; unconfirmed: string; noOutcome: string; unavailable: string; session: (id: string) => string; subagent: string;
-  summary: Record<SummaryPart['kind'], (n: number) => string>;
+  summary: Record<SummaryPart['kind'], (n: number | string) => string>;
 }>;
 function observationLabel(r: ObservedRow, language: InterfaceLanguage): string {
   const c = COPY[language];
@@ -91,7 +95,7 @@ export interface SubagentEntry {
   historical: boolean;
   openable: boolean;
 }
-export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'failed' | 'interrupted' | 'unknown'; count: number; text: string }
+export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'failed' | 'interrupted' | 'unknown'; count: number; partial: boolean; text: string }
 export type RosterNote =
   | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' }
   | { kind: 'capture-loss'; lastLossAt: number | null; dateKind: 'known' | 'migrated-unknown' | 'legacy-unknown'; attention: boolean; canDismiss: boolean }
@@ -327,24 +331,29 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
   const activeHost = [...entries, ...hostOnly].filter((e) => liveKind(e) !== null && countable(e) && (!e.runId || runRows.find((r) => r.id === e.runId)?.ran.state !== 'running'));
   const pendingShown = [...entries].filter((e) => (e.ran.kind === 'active' || e.ran.kind === 'waiting') && runRows.find((r) => r.id === e.runId)?.ran.state === 'unknown').length;
   const summary: SummaryPart[] = [];
-  const add = (kind: SummaryPart['kind'], count: number, text: string) => { if (count > 0) summary.push({ kind, count, text }); };
-  add('waiting', waiting.length, c.summary.waiting(waiting.length));
+  const add = (kind: SummaryPart['kind'], count: number) => {
+    // A partial host census cannot lower the completed recorded counts. History/loss/traversal can.
+    const partial = !!read && (!read.coverage.complete || read.capture.loss || read.recovery.state !== 'complete')
+      || (kind === 'waiting' || kind === 'running') && (!isComplete(v.census) || !!read && read.counts.children > loadedChildren);
+    if (count > 0) summary.push({ kind, count, partial, text: c.summary[kind](partial ? `${count}+` : count) });
+  };
+  add('waiting', waiting.length);
   if (read) {
     const running = Math.max(0, read.counts.running + activeHost.length - waiting.length);
-    add('running', running, c.summary.running(running));
-    add('finished', read.counts.succeeded, c.summary.finished(read.counts.succeeded));
-    add('failed', read.counts.failed, c.summary.failed(read.counts.failed));
-    add('interrupted', read.counts.interrupted, c.summary.interrupted(read.counts.interrupted));
+    add('running', running);
+    add('finished', read.counts.succeeded);
+    add('failed', read.counts.failed);
+    add('interrupted', read.counts.interrupted);
     const unknown = Math.max(0, read.counts.unknown - pendingShown);
-    add('unknown', unknown, c.summary.unknown(unknown));
+    add('unknown', unknown);
   } else {
     const running = activeHost.length - waiting.length;
-    add('running', running, c.summary.running(running));
+    add('running', running);
   }
 
   const notes: RosterNote[] = [];
   if (!runs || runs.state === 'unavailable' || read?.availability === 'unavailable') notes.push({ kind: 'runs-unavailable' });
-  else if (runs.state === 'error') notes.push({ kind: 'runs-error' });
+  else if (runs.state === 'error' || runs.failure) notes.push({ kind: 'runs-error' });
   if (read) {
     if (!read.capture.enabled) notes.push({ kind: 'capture-off' });
     if (read.capture.loss) {

@@ -18,8 +18,9 @@ test('cleanup feedback translates semantic outcomes and never echoes arbitrary s
   assert.match(cleanupError('private-error-sentinel', 'ru'), /не удалось подтвердить/);
   assert.doesNotMatch(cleanupError('private-error-sentinel', 'ru'), /sentinel/);
   const message = { kind: 'restore' } as const;
-  assert.match(cleanupFeedback(message, 'en'), /still finished/);
-  assert.match(cleanupFeedback(message, 'ru'), /завершённым/);
+  assert.match(cleanupFeedback(message, 'en'), /status and history are unchanged/);
+  assert.match(cleanupFeedback(message, 'ru'), /Статус и история не изменились/);
+  assert.match(cleanupFeedback(message, 'zh-CN'), /状态和历史记录不变/);
 });
 test('setup translates fixed explanations and version facts without changing entered paths or state', () => {
   const s=initialSetupUi();s.form.configRoot='/fixture/Review';s.edited.configRoot=true;
@@ -66,13 +67,24 @@ test('success receipt must bind key, store, oid, next generation and requested t
   assert.equal(parseCleanupReceipt(JSON.stringify(receipt), request, 'archive').state, 'archived');
   for (const patch of [{ storeId: 'other' }, { source: 'other' }, { plan: 'other' }, { oid: 'other' }, { cleanup: { state: 'visible', revision: 4 } }, { cleanup: { state: 'archived', revision: 3 } }]) assert.throws(() => parseCleanupReceipt(JSON.stringify({ ...receipt, ...patch }), request, 'archive'));
 });
-test('confirmation binds store, context, key, progress revision and cleanup generation; only finished is eligible', () => {
+test('confirmation binds store, context, key, progress revision and cleanup generation; all closed lifecycles are eligible', () => {
   const target = cleanupTarget(plan, 'store', 'context');
   assert.equal(cleanupMatches(target, plan, 'store', 'context'), true);
   for (const changed of [null, { ...plan, key: 'other' }, { ...plan, revision: plan.revision + 1 }, { ...plan, cleanup: { state: 'visible' as const, revision: 1 } }, { ...plan, lifecycle: 'active' as const }]) assert.equal(cleanupMatches(target, changed, 'store', 'context'), false);
   assert.equal(cleanupMatches(target, plan, 'other', 'context'), false);
   assert.equal(cleanupMatches(target, plan, 'store', 'other'), false);
-  for (const lifecycle of ['active', 'cancelled', 'failed'] as const) for (const action of ['archive', 'restore', 'delete'] as const) assert.equal(cleanupEligible(action, { ...plan, lifecycle }), false);
+  for (const action of ['archive', 'restore', 'delete'] as const) assert.equal(cleanupEligible(action, { ...plan, lifecycle: 'active' }), false);
+  for (const lifecycle of ['completed', 'cancelled', 'failed'] as const) {
+    const closed = { ...plan, lifecycle };
+    assert.equal(cleanupMatches(cleanupTarget(closed, 'store', 'context'), closed, 'store', 'context'), true);
+    assert.equal(cleanupEligible('archive', closed), true);
+    assert.equal(cleanupEligible('delete', closed), true);
+    assert.equal(cleanupEligible('restore', closed), false);
+    const archived = { ...closed, cleanup: { state: 'archived' as const, revision: 1 } };
+    assert.equal(cleanupEligible('restore', archived), true);
+    assert.equal(cleanupEligible('archive', archived), false);
+    assert.equal(cleanupEligible('delete', archived), true);
+  }
   assert.equal(cleanupEligible('archive', plan), true);
   assert.equal(cleanupEligible('restore', plan), false);
   assert.equal(cleanupEligible('restore', { ...plan, cleanup: { state: 'archived', revision: 1 } }), true);

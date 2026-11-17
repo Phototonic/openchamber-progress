@@ -326,7 +326,8 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert.equal((text.match(/cancel-in-progress:/g)??[]).length,4);
   assert.equal((text.match(/cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/g)??[]).length,3);
   assert.match(text,/publish:\n(?:    [^\n]*\n)*?    concurrency:\n      group: publish-v[^\n]+\n      cancel-in-progress: false/);
-  assert.equal((text.match(/persist-credentials: false/g)??[]).length,4);
+  // Every checkout, including the pull-request gate's file listing, drops credentials.
+  assert.equal((text.match(/persist-credentials: false/g)??[]).length,5);
   assert.equal((text.match(/name: tested-release-\$\{\{ github.sha \}\}/g)??[]).length,2);
   assert.match(text,/ref: \$\{\{ github.sha \}\}/);
   assert.match(text,/needs.portable.outputs.eligible == 'true'/);
@@ -363,22 +364,47 @@ test('HTTP adapter sends JSON/curated notes and binary assets only to fixed GitH
 });
 
 // The tracked compiled entries are larger than Node's default 1 MiB child-output
-// buffer. Reading them with the real Git reader must return every byte, and the
-// real eligibility read set must work on the checked-out revision.
-test('real Git reads return tracked compiled entries in full, beyond the default child buffer',()=>{
-  const head=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
+// buffer. Reading a synthetic distribution with the real Git reader must return
+// every byte even when the checkout running these tests is source only.
+test('real Git reads return distribution entries in full, beyond the default child buffer',()=>{
+  const root=mkdtempSync(join(tmpdir(),'release-large-entry-'));
+  const git=(...args:string[])=>{const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0);return r.stdout.trim();};
+  try {
+  git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+  const files=['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','package.json','shared/release.ts'];
+  for(const file of files) {mkdirSync(join(root,file,'..'),{recursive:true});writeFileSync(join(root,file),file.endsWith('.js')?'// synthetic compiled entry\n'+'x'.repeat(1024*1024):'fixture');}
+  git('add','.');git('commit','-qm','Distribution fixture');
+  const head=git('rev-parse','HEAD');
   let largest=0;
-  for(const file of ['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','package.json','shared/release.ts']) {
-    const size=Number(spawnSync('git',['cat-file','-s',`${head}:${file}`],{encoding:'utf8'}).stdout.trim());
+  for(const file of files) {
+    const size=Number(git('cat-file','-s',`${head}:${file}`));
     assert(Number.isSafeInteger(size)&&size>0&&size<gitReadLimit,`${file} must be tracked and within the read limit`);
-    assert.equal(Buffer.byteLength(gitFile(head,file)),size,`${file} must be read in full`);
+    // Run the real reader with an isolated Git directory; no process-wide cwd changes.
+    const result=spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',
+      `import {gitFile} from ${JSON.stringify(new URL('../../scripts/release.ts',import.meta.url).href)}; process.stdout.write(gitFile(${JSON.stringify(head)},${JSON.stringify(file)}));`],
+      {cwd:root,encoding:'utf8',maxBuffer:gitReadLimit});
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(Buffer.byteLength(result.stdout),size,`${file} must be read in full`);
     largest=Math.max(largest,size);
   }
   // Guards the regression itself: at least one entry really exceeds the old limit.
   assert(largest>1024*1024,'expected a tracked compiled entry above 1 MiB');
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
-test('eligibility reads the real revision for a canonical main push without a version change',()=>{
-  const head=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
-  assert.equal(eligibility({ref:'refs/heads/main',before:head,after:head,repository:{full_name:canonical}},'push',head,canonical),null);
+test('eligibility reads a real distribution revision for a canonical main push without a version change',()=>{
+  const root=mkdtempSync(join(tmpdir(),'release-no-bump-'));
+  const git=(...args:string[])=>{const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
+  try {
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    for(const file of ['package.json','shared/release.ts','build/companion/package.json','build/service/main.js','build/setup/main.js']){
+      mkdirSync(join(root,file,'..'),{recursive:true});writeFileSync(join(root,file),source('1.0.0','1.0.0')(sha,file));
+    }
+    git('add','.');git('commit','-qm','Distribution fixture');
+    const head=git('rev-parse','HEAD');
+    const result=spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',
+      `import assert from 'node:assert/strict'; import {eligibility,canonical} from ${JSON.stringify(new URL('../../scripts/release.ts',import.meta.url).href)}; const head=${JSON.stringify(head)}; assert.equal(eligibility({ref:'refs/heads/main',before:head,after:head,repository:{full_name:canonical}},'push',head,canonical),null);`],
+      {cwd:root,encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });

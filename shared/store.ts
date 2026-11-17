@@ -367,10 +367,20 @@ export class Store {
     need(!this.readOnly,'storage');
     try{return mutateCleanup(this.db,this.file,action,value,(write,fn)=>this.transaction(write,fn));}catch(e){throw storageError(e);}
   }
+  /** One bounded keyed read per plan. Missing/malformed parent identity is never top-level. */
+  mainSessionKind(source: string, session: string): import('./needs-you.ts').MainSessionKind {
+    const row = this.db.prepare('SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?').get(source, session);
+    try {
+      const a = JSON.parse(String(row?.actor));
+      if (!a || a.sourceId !== source || a.sessionId !== session) return 'unknown';
+      if (a.parentId === null) return 'top-level';
+      return identifier(a.parentId) ? 'subagent' : 'unknown';
+    } catch { return 'unknown'; }
+  }
   private summary(p: StoredPlan): PlanSummary {
     const { items, links: _links, boundCanonicalPath:_bound, ...rest } = p;
     const state=cleanupInstalled(this.db)?cleanupState(this.db,p.sourceId,p.id):undefined;
-    return { ...rest, ...(state?{cleanup:{state:state.state as 'visible'|'archived',revision:Number(state.generation)}}:{}), counts: countItems(items), working: items.filter(i => i.kind === 'task' && i.status === 'working').map(i => i.id) };
+    return { ...rest, mainSessionKind: this.mainSessionKind(p.sourceId, p.sessionId), ...(state?{cleanup:{state:state.state as 'visible'|'archived',revision:Number(state.generation)}}:{}), counts: countItems(items), working: items.filter(i => i.kind === 'task' && i.status === 'working').map(i => i.id) };
   }
   private metadata(): Envelope {
     const meta = this.db.prepare('SELECT * FROM meta WHERE singleton=1').get()!;

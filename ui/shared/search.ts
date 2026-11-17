@@ -33,9 +33,9 @@ const STATUS_COPY = {
 } satisfies Record<InterfaceLanguage, typeof STATUS_EN>;
 const MESSAGES_EN = {
   removed: (count: number) => `${count === 1 ? 'A result was' : `${count} results were`} archived, restored or deleted, so ${count === 1 ? 'it was' : 'they were'} removed. Refresh search for current results.`,
-  found: (plans: number, tasks: number) => `${plans === 1 ? '1 plan' : `${plans} plans`} and ${tasks === 1 ? '1 matching task' : `${tasks} matching tasks`}`,
-  finished: (found: string) => `Search finished: ${found} found, as searched.`,
-  empty: 'Search finished: nothing matched, as searched.',
+  found: (plans: number, tasks: number) => `${plans === 1 ? '1 plan' : `${plans} plans`}, ${tasks === 1 ? '1 matching task' : `${tasks} matching tasks`}`,
+  finished: (found: string) => `Found ${found}.`,
+  empty: 'No matches found.',
   noneYet: 'No matches found yet; more recorded plans remain unchecked.',
   partial: (found: string) => `${found} found so far; more recorded plans may match.`,
   character: 'Remove the unsupported character from the search text.',
@@ -45,8 +45,8 @@ const MESSAGES_EN = {
 const MESSAGES = { en: MESSAGES_EN, ru: {
   removed: (count: number) => `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(count, 'ru')}. Обновите поиск для актуальных результатов.`,
   found: (plans: number, tasks: number) => `планов: ${formatCount(plans, 'ru')}, подходящих задач: ${formatCount(tasks, 'ru')}`,
-  finished: (found: string) => `Поиск завершён: найдено ${found} на момент поиска.`,
-  empty: 'Поиск завершён: совпадений на момент поиска нет.',
+  finished: (found: string) => `Найдено ${found}.`,
+  empty: 'Совпадений нет.',
   noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.',
   partial: (found: string) => `Пока найдено ${found}; другие записанные планы тоже могут подойти.`,
   character: 'Удалите неподдерживаемый символ из поискового текста.',
@@ -55,8 +55,8 @@ const MESSAGES = { en: MESSAGES_EN, ru: {
 }, 'zh-CN': {
   removed: (count: number) => `${formatCount(count, 'zh-CN')} 条结果所属的计划已归档、恢复或删除，因此结果已移除。请刷新搜索以获取当前结果。`,
   found: (plans: number, tasks: number) => `${formatCount(plans, 'zh-CN')} 个计划和 ${formatCount(tasks, 'zh-CN')} 个匹配任务`,
-  finished: (found: string) => `搜索完成：按搜索条件找到 ${found}。`,
-  empty: '搜索完成：按搜索条件没有匹配结果。',
+  finished: (found: string) => `找到 ${found}。`,
+  empty: '未找到匹配结果。',
   noneYet: '尚未找到匹配项；仍有记录的计划尚未检查。',
   partial: (found: string) => `目前找到 ${found}；更多记录的计划可能匹配。`,
   character: '请从搜索文本中移除不支持的字符。',

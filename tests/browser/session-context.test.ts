@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import * as source from '../../ui/shared/source.ts';
 import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
@@ -10,6 +11,7 @@ import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as language from '../../ui/shared/language.ts';
 import * as sessionContext from '../../ui/shared/session-context.ts';
+import { countSupportLines, supportSummary, unknownFacts } from '../../ui/shared/reporting-health.ts';
 import { EMPTY_LIVE, LiveWorkspace, hostWorkContext, projectFor, type LiveSnapshot } from '../../ui/shared/live.ts';
 import { contextListScope, contextScope, pageListScope, NO_FILTERS, placeOf } from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
@@ -60,10 +62,10 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   let expanded = false, disclosure = false, livePopup = false;
   let ownsFocus = true, focusCalls = 0;
   const body = { isConnected: true };
-  const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
+  const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any, panel: false,
     control: null as any,
     contains(active: unknown): boolean { return !!active && (active === this.control || this.firstElementChild?.contains(active)); },
-    querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
+    querySelector(s: string): any { return s === '.ap-surface-panel' ? this.panel ? {} : null : s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null; },
     querySelectorAll(s: string): any[] { return s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
       ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : s === '[data-testid="fixture-control"]' ? [this.control ?? this.firstElementChild?.control].filter(Boolean) : []; },
     getAnimations: () => [], setAttribute() {}, append() {},
@@ -102,6 +104,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     setTimeout: (fn: () => void, ms: number) => { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
     clearTimeout: (id: number) => { timers.delete(id); },
     require: (name: string) => {
+      if (name in appCountsModules) return appCountsModules[name];
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
@@ -163,6 +166,24 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
 }
 
 const progressAction = (id = 'A', directory = '/fixture/Alpha') => ({ kind: 'session', action: 'open-progress', sessionId: id, directory, sessionTitle: 'Not an identity' });
+
+test('Troubleshooting uses current count facts on its first paint and while the panel stays open', async () => {
+  const observed: string[] = [];
+  const c = controller(false, undefined, (vc, root) => {
+    root.panel = true; // Ordinary indicator DOM is intentionally not painted.
+    observed.push(countSupportLines(vc.countFacts).join('\n'));
+  });
+  let rows = [row];
+  c.intercept(async (q, next) => q.path === '/v1/plans' ? response(plansPage(rows)) : next());
+  try {
+    c.ready('A'); await settle();
+    assert.match(observed.at(-1)!, /count-records: plans=1;/);
+    rows = [row, { ...row, id: 'P-second' }];
+    c.vc.retry(); await settle();
+    assert.match(observed.at(-1)!, /count-records: plans=2;/);
+    assert.match(supportSummary(unknownFacts(), c.vc.countFacts), /count-records: plans=2;/, 'copied support summary uses the same current facts');
+  } finally { c.stop(); }
+});
 
 test('visibility loss retires Setup synchronously and reopening reads status; disposal retires too', async () => {
   const c = controller();

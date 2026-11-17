@@ -102,6 +102,7 @@ export function needsYou(store: Store, request: NeedsYouRequest, now = new Date(
       r.work.inspectedItems += p.items.length;
       if (p.lifecycle !== 'active') { need(!pending, 'conflict'); advance(id); continue; }
       const tasks = p.items.filter(i => i.kind === 'task' && i.status === 'blocked');
+      const mainSessionKind = store.mainSessionKind(request.source, p.sessionId);
       const pos = pending ?? { plan: id, revision, cleanup: generation, offset: 0 };
       need(!pending || pos.offset < tasks.length, 'conflict');
       while (pos.offset < tasks.length && r.rows.length < limit) {
@@ -109,7 +110,7 @@ export function needsYou(store: Store, request: NeedsYouRequest, now = new Date(
         const primary = annotation.state === 'reported' && ['decision','review'].includes(annotation.annotation.category ?? '');
         const hit: NeedsYouRow = {
           source: request.source, plan: id, revision, structuralRevision: p.structuralRevision, cleanup: { state: 'visible', revision: generation },
-          planTitle: p.title, coordinatorSessionId: p.sessionId, task: { id: item.id, title: item.title, kind: 'task', status: 'blocked' },
+          planTitle: p.title, coordinatorSessionId: p.sessionId, mainSessionKind, task: { id: item.id, title: item.title, kind: 'task', status: 'blocked' },
           ...context(p, item), group: primary ? 'needs-you' : 'also-blocked', blocker: annotation,
         };
         const size = Buffer.byteLength(JSON.stringify(hit)) + 1;

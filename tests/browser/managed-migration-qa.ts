@@ -177,6 +177,9 @@ try {
     await viewport(width, height);
     await evaluate(`(()=>{try{frame().contentWindow.__stale=true}catch{}return true})()`);
     await evaluate(`qa.load(${literal(locale)},${literal(mode)})`);
+    await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="more-trigger"]')`, 'surface menu');
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
     await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="setup-panel"][data-steps="1"],[data-testid="setup-panel"][data-phase]')`, 'setup panel');
     await watchAlerts();
   }
@@ -237,6 +240,33 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`,'explicit Continue completes');
   check('hide-show:explicit-continue-finishes',engine.progress?.state==='complete');
 
+  // Shell close is presentation retirement, not a pause/cancel of the operation in flight.
+  for (const close of ['Back', 'Escape']) {
+    await open('en', 'light', close === 'Escape' ? 390 : 1280, 900);
+    await startSwitch(); const releaseClosed = engine.hold(5); await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="disable"]')`, 'held disable before panel close');
+    const sentBefore = stepCalls();
+    if (close === 'Back') await click('[data-testid="surface-panel-back"] button');
+    else await key('Escape');
+    await wait(`!d.querySelector('[data-testid="surface-panel-setup"]')`, `${close} closes Setup`);
+    check(`panel-${close}:focus-returns-to-more`, await focused() === 'more-trigger', await focused());
+    releaseClosed();
+    for (const end = Date.now() + 10_000; engine.progress?.step?.name !== 'remove-discovery'; await sleep(40)) {
+      if (Date.now() > end) throw new Error('held operation did not settle after panel close');
+    }
+    await frames();
+    check(`panel-${close}:operation-settles-without-control-request`, engine.progress?.capture.state === 'off' && stepCalls() === sentBefore);
+    await idle(`panel-${close}:no-unattended-continuation`);
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-step="remove-discovery"][data-capture="off"][data-driving="false"]')&&d.querySelector('[data-testid="setup-migration-continue"]')`, 'reopened current durable state');
+    check(`panel-${close}:reopen-is-read-only`, stepCalls() === sentBefore);
+    await shot(`panel-${close.toLowerCase()}-reopened`);
+    await click('[data-testid="setup-migration-continue"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'explicit continuation after panel reopen');
+    check(`panel-${close}:explicit-continue-finishes`, engine.progress?.state === 'complete');
+  }
+
   // 2. Failure at a middle step, RU phone light: fixed stage/code, actionable text, Resume focused.
   await open('ru', 'light', 390, 844, e => e.faults.fail.add('remove-discovery:2'));
   await startSwitch(); await confirmByKeyboard();
@@ -278,7 +308,7 @@ try {
   check('pause:after-settle', JSON.stringify(actions) === '["advance","pause"]', actions);
   check('paused:off-warning', await card('data-capture') === 'off' && await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()`));
   check('paused:resume-focused', await focused() === 'setup-migration-resume', await focused());
-  check('paused:distinct-from-pending', await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === 'Switch paused');
+  check('paused:distinct-from-pending', await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === 'Move paused');
   check('paused:warning-announced-once', await alerts('setup-migration-capture-warning') === 1, await alerts('setup-migration-capture-warning'));
   check('paused:fits-390', (await fits()).ok, await fits());
   await shot('paused-off');
@@ -303,7 +333,7 @@ try {
   await open('en', 'dark', 390, 844, undefined, true);
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="running"]')`, 'reopened interrupted');
   check('restart:no-step-request-on-reopen', stepCalls() === before);
-  check('restart:interrupted-unknown', await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === 'Switch interrupted' && await card('data-capture') === 'unknown');
+  check('restart:interrupted-unknown', await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === 'Move interrupted' && await card('data-capture') === 'unknown');
   await shot('restart-reopened');
   await click('[data-testid="setup-migration-resume"] button');
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'complete after resume');
@@ -426,9 +456,9 @@ try {
   const clipped = () => guest<{ ok: boolean; offenders: string[] }>(`const win=frame().contentWindow;const bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();if(r.width<=2||r.height<=2||!e.checkVisibility())return false;const cs=win.getComputedStyle(e);const text=[...e.childNodes].some(n=>n.nodeType===3&&n.textContent.trim());const cut=/(hidden|clip)/.test(cs.overflowX)||cs.textOverflow==='ellipsis';return (e.tagName==='BUTTON'||(text&&cut))&&e.scrollWidth>e.clientWidth+1}).slice(0,5).map(e=>e.closest('[data-testid]')?.dataset.testid||e.className||e.tagName);return {ok:!bad.length,offenders:bad}`);
   const fitsAll = async () => { const a = await fits(), b = await clipped(); return { ok: a.ok && b.ok, overflow: a.overflow, offenders: a.offenders, clipped: b.offenders }; };
   const FRESH = {
-    en: { step: 'Step 3 of 8: Creating the progress store', paused: 'Setup paused', complete: 'Setup finished', partial: 'Setup kept the partial folder.' },
-    ru: { step: 'Шаг 3 из 8: Создание хранилища прогресса', paused: 'Настройка приостановлена', complete: 'Настройка завершена', partial: 'Настройка сохранила частично созданную папку.' },
-    'zh-CN': { step: '第 3 步，共 8 步：创建进度存储', paused: '设置已暂停', complete: '设置已完成', partial: '设置已保留未完成的文件夹' },
+    en: { step: 'Step 1 of 4: Create a private progress folder', paused: 'Setup paused', complete: 'Setup finished', partial: 'Setup kept the partial folder.' },
+    ru: { step: 'Шаг 1 из 4: Создать приватную папку прогресса', paused: 'Настройка приостановлена', complete: 'Настройка завершена', partial: 'Настройка сохранила частично созданную папку.' },
+    'zh-CN': { step: '第 1 步，共 4 步：创建私有进度文件夹', paused: '设置已暂停', complete: '设置已完成', partial: '设置已保留未完成的文件夹' },
   } as const;
   const pauseHeld = async (release: () => void) => {
     await click('[data-testid="setup-migration-pause"] button');
@@ -447,6 +477,13 @@ try {
     check(`fresh-${L}:review-uses-version-2-inspection-only`, freshPosts().length === 2 && freshPosts().every(l => l.path === '/v1/setup/managed-step' && l.version === 2 && l.action === 'inspect'), freshPosts());
     check(`fresh-${L}:review-focus-cancel`, await focused() === 'setup-cancel', await focused());
     check(`fresh-${L}:review-shows-frozen-plan`, await guest(`return [...d.querySelectorAll('[data-testid="setup-fresh-plan"] li')].map(li=>li.dataset.testid.replace('setup-fresh-plan-','')).join()`) === freshEng.plan.map(s => s.name).join());
+    check(`fresh-${L}:review-four-groups-one-closed-disclosure`, await guest(`return d.querySelectorAll('[data-testid="setup-fresh-groups"] li').length===4&&d.querySelectorAll('[data-testid="setup-review"] details').length===1&&!d.querySelector('[data-testid="setup-changes"]').open`));
+    check(`fresh-${L}:review-start-refuses-without-consent`, await guest(`return d.querySelector('[data-testid="setup-confirm"] button').getAttribute('aria-disabled')==='true'`));
+    await guest(`d.querySelector('[data-testid="setup-changes-summary"]').focus();return true`); await key('Enter');
+    check(`fresh-${L}:disclosure-keyboard-before-consent`, await guest(`return d.querySelector('[data-testid="setup-changes"]').open&&d.querySelector('[data-testid="setup-fresh-facts"]').checkVisibility()`));
+    check(`fresh-${L}:disclosure-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-review-details-${L}`);
+    await key('Enter');
     check(`fresh-${L}:review-fits-390`, (await fitsAll()).ok, await fitsAll());
     await shot(`fresh-review-${L}`);
     let release = freshEng.hold(5); // inspect×2, begin, store-directory, then hold create-store
@@ -454,8 +491,8 @@ try {
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-driving="true"][data-step="create-store"]')`, 'running creation');
     check(`fresh-${L}:running-focus-on-pause`, await focused() === 'setup-migration-pause', await focused());
     check(`fresh-${L}:running-step-of-own-plan`, await guest(`return d.querySelector('[data-testid="setup-migration-step"]').textContent`) === FRESH[L].step, await guest(`return d.querySelector('[data-testid="setup-migration-step"]').textContent`));
-    check(`fresh-${L}:running-unknown-before-store`, await guest(`const w=d.querySelector('[data-testid="setup-migration-capture-warning"]');return !!w&&w.dataset.capture==='unknown'&&w.checkVisibility()`));
-    check(`fresh-${L}:running-says-creation`, await guest(`return !!d.querySelector('[data-testid="setup-fresh-mode"]')?.checkVisibility()`));
+    check(`fresh-${L}:running-plain-recording-before-store`, await guest(`return !d.querySelector('[data-testid="setup-migration-capture-warning"]')&&d.querySelector('[data-testid="setup-recording-state"]').checkVisibility()`));
+    check(`fresh-${L}:running-current-group`, await guest(`return d.querySelector('[data-testid="setup-fresh-group-folder"]').dataset.state==='running'&&d.querySelector('[data-testid="setup-fresh-group-folder"]').getAttribute('aria-current')==='step'`));
     check(`fresh-${L}:running-no-percentage`, await guest(`return !/%/.test(d.querySelector('[data-testid="setup-migration-progress"]').textContent)&&!d.querySelector('[data-testid="setup-migration-progress"] progress,[data-testid="setup-migration-progress"] [role="progressbar"]')`));
     check(`fresh-${L}:running-fits-390`, (await fitsAll()).ok, await fitsAll());
     await shot(`fresh-running-${L}`);
@@ -465,7 +502,8 @@ try {
     check(`fresh-${L}:paused-title`, await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === FRESH[L].paused);
     check(`fresh-${L}:paused-resume-focused`, await focused() === 'setup-migration-resume', await focused());
     // Unknown while creating, then off once the store exists: each new warning is announced once.
-    check(`fresh-${L}:warnings-announced-once-each`, await alerts('setup-migration-capture-warning') === 2, await alerts('setup-migration-capture-warning'));
+    check(`fresh-${L}:warnings-announced-once-per-recording-state`, await alerts('setup-migration-capture-warning') === 2, await alerts('setup-migration-capture-warning'));
+    check(`fresh-${L}:paused-group-not-complete`, await guest(`return d.querySelector('[data-testid="setup-fresh-group-folder"]').dataset.state==='complete'&&d.querySelector('[data-testid="setup-fresh-group-connect"]').dataset.state==='paused'`));
     check(`fresh-${L}:paused-fits-390`, (await fitsAll()).ok, await fitsAll());
     await shot(`fresh-paused-off-${L}`);
     if (L === 'en') await idle('fresh-paused:no-polling');
@@ -473,9 +511,19 @@ try {
     await waitComplete('fresh resumed to completion');
     check(`fresh-${L}:complete-each-step-once`, freshEng.requests.filter(r => r.action === 'advance').length === freshEng.plan.length - 1 && freshEng.progress?.capture.state === 'on');
     check(`fresh-${L}:complete-no-warning`, await guest(`return !d.querySelector('[data-testid="setup-migration-capture-warning"]')`) && await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === FRESH[L].complete);
+    check(`fresh-${L}:complete-groups-durable`, await guest(`return [...d.querySelectorAll('[data-testid="setup-fresh-groups"] li')].every(li=>li.dataset.state==='complete')`));
     await wait(`d.querySelector('[data-testid="setup-panel"][data-phase="configured"]')`, 'fresh configured status');
     check(`fresh-${L}:complete-fits-390`, (await fitsAll()).ok, await fitsAll());
     await shot(`fresh-complete-${L}`);
+    freshEng.restart(); // cold completion cannot reuse a historical recording bit
+    await open(L, mode, 390, 844, undefined, true);
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"][data-capture="unknown"]')`, 'complete with unknown recording');
+    check(`fresh-${L}:complete-unknown-warning-and-recovery`, await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()&&!!d.querySelector('[data-testid="setup-migration-status"] button')`));
+    await guest(`d.querySelector('[data-testid="setup-migration-status"] button').focus();return true`); await key('Enter');
+    await wait(`d.querySelector('[data-testid="setup-migration-status"] button')?.getAttribute('aria-disabled')==='false'`, 'completed recording status checked');
+    check(`fresh-${L}:complete-recovery-read-only`, freshEng.requests.at(-1)?.action === 'status');
+    check(`fresh-${L}:complete-unknown-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-complete-unknown-${L}`);
 
     // Failure while creating the store: fixed stage/code, kept-files note, Resume recovers.
     await openFresh(L, mode, 390, 844, {}, e => e.faults.fail.add('create-store:0'));
@@ -483,6 +531,7 @@ try {
     await wait(`d.querySelector('[data-testid="setup-migration-failure"]')`, 'fresh failure');
     const failed = await guest(`const f=d.querySelector('[data-testid="setup-migration-failure"]');return {stage:f.dataset.stage,code:f.dataset.code,partial:d.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??''}`);
     check(`fresh-${L}:failure-stage-code`, failed.stage === 'create-store' && failed.code === 'managed-step-deadline' && failed.partial.includes(FRESH[L].partial), failed);
+    check(`fresh-${L}:failure-group-not-complete`, await guest(`return d.querySelector('[data-testid="setup-fresh-group-folder"]').dataset.state==='failed'`));
     check(`fresh-${L}:failure-announced-once`, await alerts('setup-migration-failure') === 1, await alerts('setup-migration-failure'));
     check(`fresh-${L}:failure-focus-on-resume`, await focused() === 'setup-migration-resume', await focused());
     check(`fresh-${L}:failure-no-retry`, freshEng.requests.filter(r => r.action === 'advance').length === 2);
@@ -558,6 +607,13 @@ try {
   await confirmByKeyboard();
   await wait(`d.querySelector('[data-testid="setup-enable"]')`, 'capture off observed');
   check('fresh-capture:bodyless-disable', log.slice(controlAt).filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/capture/disable' && captureControl === false);
+  check('fresh-capture:disable-keeps-setup-open', await guest(`return !!d.querySelector('[data-testid="surface-panel-setup"]')`));
+  await click('[data-testid="setup-enable"] button');
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-enable"]')`, 'capture on confirmation');
+  await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-disable"]')`, 'capture on observed');
+  check('fresh-capture:enable-keeps-setup-open', await guest(`return !!d.querySelector('[data-testid="surface-panel-setup"]')`) && captureControl === true);
+  check('fresh-capture:bodyless-enable', log.slice(controlAt).filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/capture/disable,/v1/capture/enable');
 
   // Capability mismatch: a service without managedFreshSteps gets update-together guidance, no requests.
   freshCapable = false;
@@ -604,11 +660,35 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="pending"]')`, 'reopened fresh progress');
   check('fresh-desktop:reopen-sends-nothing', freshEng.requests.length === sentBeforeClose && !!(await guest(`return !!d.querySelector('[data-testid="setup-migration-continue"]')`)));
   check('fresh-desktop:reopen-keeps-off-warning', await freshCard('data-capture') === 'off' && await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()`));
+  check('fresh-desktop:reopened-group-paused-not-complete', await guest(`return d.querySelector('[data-testid="setup-fresh-group-connect"]').dataset.state==='paused'`));
   await shot('fresh-desktop-reopened');
   await guest(`d.querySelector('[data-testid="setup-migration-continue"] button').focus();return true`); await key('Enter');
   await waitComplete('desktop continue completes');
   check('fresh-desktop:explicit-continue-completes', freshEng.requests[sentBeforeClose]?.action === 'advance' && freshEng.progress?.state === 'complete');
   await shot('fresh-desktop-complete');
+
+  // Matching desktop dark evidence of the simplified review and every stopped/running state.
+  await openFresh('en', 'dark', 1280, 900);
+  await startFresh();
+  await shot('fresh-desktop-dark-review');
+  const frameTree = await send('Page.getFrameTree');
+  const ax = await send('Accessibility.getFullAXTree', { frameId: frameTree.frameTree.childFrames[0].frame.id });
+  check('fresh-desktop:consent-and-disclosure-accessible-names', ax.nodes.some((n: any) => n.name?.value === 'I understand the progress service runs with my account’s access.')
+    && ax.nodes.some((n: any) => n.name?.value === 'What Setup changes on this computer'),
+    ax.nodes.filter((n: any) => ['checkbox','DisclosureTriangle'].includes(n.role?.value)).map((n: any) => ({ role:n.role.value,name:n.name?.value })));
+  held = freshEng.hold(5);
+  await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="create-store"]')`, 'dark desktop running');
+  await shot('fresh-desktop-dark-running');
+  await pauseHeld(held);
+  await shot('fresh-desktop-dark-paused');
+  await click('[data-testid="setup-migration-resume"] button');
+  await waitComplete('dark desktop complete');
+  await shot('fresh-desktop-dark-complete');
+  await openFresh('en', 'dark', 1280, 900, {}, e => e.faults.fail.add('create-store:0'));
+  await startFresh(); await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"]')`, 'dark desktop failure');
+  await shot('fresh-desktop-dark-failed');
 
   // A real visibility event retires a held fresh reply; reopening needs explicit Continue.
   await openFresh('en', 'dark', 1280, 900);

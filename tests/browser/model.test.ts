@@ -43,7 +43,7 @@ test('pure presentation labels use explicit Russian without changing English or 
   assert.equal(labels.statusLabel('done'), labels.STATUS_LABEL.done);
   assert.equal(labels.lifecycleLabel('completed'), labels.LIFECYCLE_LABEL.completed);
   for (const n of [0, 1, 2, 5, 11, 21]) {
-    assert.equal(summaryText({ done: 0, total: n, remaining: n, skipped: 0 }, 'ru'), n ? `Выполнено: 0 из ${n} · Осталось: ${n}` : 'Нет зарегистрированных задач');
+    assert.equal(summaryText({ done: 0, total: n, remaining: n, skipped: 0 }, 'ru'), n ? `Выполнено: 0 из ${n} · Осталось: ${n}` : 'Задач пока нет');
   }
   assert.equal(summaryText({ done: 0, total: 0, remaining: 0, skipped: 2 }, 'ru'), 'Нет задач для подсчёта · Пропущено: 2');
   assert.equal(summaryText({ done: 1, total: 2, remaining: 1, skipped: 5 }, 'ru'), 'Выполнено: 1 из 2 · Осталось: 1 · Пропущено: 5');
@@ -122,7 +122,7 @@ test('counts: groups and skipped excluded, relay contributions never inflate; de
   const s = summarize(plan('P1'), d);
   assert.deepEqual([s.done, s.total, s.remaining, s.skipped, s.working], [2, 4, 2, 1, 1]);
   assert.equal(summarize(plan('P2'), null).total, 1);
-  assert.deepEqual([summaryText(summarize({ counts: { done: 0, total: 0, remaining: 0, skipped: 0 }, working: [] })), summarize({ counts: { done: 0, total: 0, remaining: 0, skipped: 0 }, working: [] }).percent], ['No tasks reported', null]);
+  assert.deepEqual([summaryText(summarize({ counts: { done: 0, total: 0, remaining: 0, skipped: 0 }, working: [] })), summarize({ counts: { done: 0, total: 0, remaining: 0, skipped: 0 }, working: [] }).percent], ['No tasks yet', null]);
   assert.deepEqual(itemTree(d.items).map((n) => [n.item.id, n.children.map((c) => c.item.id)]), [['G', ['I1', 'I2']], ['I3', []], ['I4', []], ['I5', []]]);
   assert.deepEqual(currentWork(d).map((i) => i.id), ['I3']);
 });
@@ -257,9 +257,9 @@ test('document read pins the first capture ID on continuation pages; retained ca
   assert.deepEqual(raced.ok && [raced.body.historical, raced.body.text === text, raced.body.captureId], [true, true, 7]);
 });
 
-test('history read pages oldest-first', async () => {
+test('history reads the complete short history in wire order for newest-first rendering', async () => {
   const host = fakeHost((r) => ({ status: 200, body: { ...envelope(), data: r.query?.cursor ? [{ revision: 3, structuralRevision: 2, lifecycle: 'finished', reportedAt: P1.reportedAt }] : [{ revision: 1, structuralRevision: 1, lifecycle: 'active', reportedAt: P1.reportedAt }, { revision: 2, structuralRevision: 2, lifecycle: 'active', reportedAt: P1.reportedAt }], nextCursor: r.query?.cursor ? null : '2' } }));
-  const res = await readHistory(host, plan('P1'));
+  const res = await readHistory(host, { ...plan('P1'), revision: 3 });
   assert.deepEqual(res.ok && res.entries.map((e) => [e.revision, e.lifecycle]), [[1, 'active'], [2, 'active'], [3, 'completed']]);
 });
 

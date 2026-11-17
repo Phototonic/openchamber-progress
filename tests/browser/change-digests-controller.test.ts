@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import type { DigestPanel } from '../../ui/shared/change-digest.ts';
@@ -113,6 +114,7 @@ function frame(label: string, svc: Proxy, device: Device, options: { account?: s
     exports, document, navigator: {}, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     require: (name: string) => {
+      if (name in appCountsModules) return appCountsModules[name];
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module

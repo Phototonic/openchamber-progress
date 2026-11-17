@@ -148,7 +148,7 @@ function inboxBlocker(v: unknown, revision: number): InboxRowView['blocker'] {
     && a.validAtRevision === revision && isInt(a.reportedRevision) && a.reportedRevision >= 1 && a.reportedRevision <= revision && isoInstant(a.reportedAt)
     && identifier(a.reporterSessionId) && identifier(a.attributedSessionId)
     && (a.mode === 'direct' ? a.reporterSessionId === a.attributedSessionId : a.mode === 'parent-relay' && a.reporterSessionId !== a.attributedSessionId), 'An inbox row has invalid reported details.');
-  return { state: 'reported', category, reason: (a.reason as string | undefined) ?? null, nextAction: (a.nextAction as string | undefined) ?? null };
+  return { state: 'reported', category, reason: (a.reason as string | undefined) ?? null, nextAction: (a.nextAction as string | undefined) ?? null, reporterSessionId: a.reporterSessionId as string, reportedRevision: a.reportedRevision as number };
 }
 function inboxRow(v: unknown, sourceId: string, timing: boolean, readAt: number, receivedAt: number): InboxRowView {
   check(isRec(v) && isStr(v.source) && isStr(v.plan) && isStr(v.planTitle) && identifier(v.coordinatorSessionId), 'An inbox row has no plan identity.');
@@ -160,7 +160,7 @@ function inboxRow(v: unknown, sourceId: string, timing: boolean, readAt: number,
   check(Array.isArray(v.ancestors) && v.ancestors.length <= NEEDS_YOU_LIMITS.ancestors && v.ancestors.every((x) => isRec(x) && isStr(x.id) && isStr(x.title)) && isCount(v.omittedAncestors), `Inbox plan ${v.plan} has unreadable context.`);
   check(v.group === 'needs-you' || v.group === 'also-blocked', `Inbox plan ${v.plan} has an unknown group.`);
   const blocker = inboxBlocker(v.blocker, v.revision as number);
-  // Only valid current decision/review details are person-facing; everything else is Also blocked.
+  // Revision-1 wire grouping stays category-only; inbox.ts derives person-facing membership.
   const personFacing = blocker.state === 'reported' && PERSON_FACING.includes(String(blocker.category));
   check(personFacing === (v.group === 'needs-you'), `Inbox plan ${v.plan} groups a task against its reported category.`);
   let wait: InboxRowView['wait'] = null;
@@ -174,7 +174,7 @@ function inboxRow(v: unknown, sourceId: string, timing: boolean, readAt: number,
     rowKey: JSON.stringify([v.source, v.plan, t.id]), planKey: `${v.source}/${v.plan}`, source: v.source, plan: v.plan, planTitle: v.planTitle,
     revision: v.revision as number, structuralRevision: v.structuralRevision as number, cleanupRev: v.cleanup.revision as number, coordinatorSessionId: v.coordinatorSessionId as string,
     task: { id: t.id, title: t.title }, ancestors: (v.ancestors as Rec[]).map((x) => ({ id: x.id as string, title: x.title as string })), omittedAncestors: v.omittedAncestors as number,
-    group: v.group, blocker, wait,
+    group: v.group, blocker, wait, mainSessionKind: parseMainSessionKind(v.mainSessionKind),
   };
 }
 /**
@@ -315,6 +315,9 @@ function parseCounts(v: unknown) {
   return { done: v.done, total: v.total, remaining: v.remaining, skipped: v.skipped };
 }
 
+function parseMainSessionKind(v: unknown): PlanView['mainSessionKind'] {
+  return v === undefined ? undefined : v === 'top-level' || v === 'subagent' ? v : 'unknown';
+}
 function parseSummary(v: unknown): PlanView {
   check(isRec(v) && isStr(v.id) && isStr(v.sourceId) && isStr(v.title) && isStr(v.sessionId), 'A plan has no identity.');
   check(isInt(v.revision) && isInt(v.structuralRevision) && isStr(v.reportedAt) && isStr(v.directory), `Plan ${v.id} has no revision, time or location.`);
@@ -324,7 +327,7 @@ function parseSummary(v: unknown): PlanView {
   return {
     key: `${v.sourceId}/${v.id}`, id: v.id, sourceId: v.sourceId, title: v.title, ownerSessionId: v.sessionId,
     revision: v.revision, structuralRevision: v.structuralRevision, lifecycle, reportedAt: v.reportedAt,
-    directory: v.directory, projectId: optStr(v.projectId),
+    directory: v.directory, projectId: optStr(v.projectId), mainSessionKind: parseMainSessionKind(v.mainSessionKind),
     counts: v.counts === undefined ? null : parseCounts(v.counts),
     working: Array.isArray(v.working) ? v.working.filter(isStr) : [],
     document: parseDocumentRef(v.document),

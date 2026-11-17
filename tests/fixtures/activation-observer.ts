@@ -2,6 +2,7 @@
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import { appendFileSync } from 'node:fs';
 import { Store } from '../../shared/store.ts';
+import { probeResult } from './result-note-probe.ts';
 
 export default Plugin.define({ id: 'activation-observer-fixture', async setup(ctx: any) {
     const record = (value: unknown) => appendFileSync(process.env.ACTIVATION_EVENTS!, JSON.stringify(value) + '\n');
@@ -25,6 +26,7 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
       await ctx.tool.hook('execute.after', (event: any) => {
         // All inputs here are fixture-authored. Never ship this observer or transcript capture.
         record({ type: 'after', ...event });
+        probeResult(event, record);
       });
       const steps = [
         { name: 'write', input: { path: 'docs/plans/search.md', content: '# Search\nFirst draft\n' } },

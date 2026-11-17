@@ -33,6 +33,7 @@ function statusSpec(globals: Record<string, unknown> = {}, heightModule: object 
     if (name === '../shared/live.ts') return liveModule;
     if (name === './selection.ts') return { StatusSelection };
     if (name === '../shared/height.ts') return heightModule;
+    if (name === '../shared/subagents.ts') return { rosterFor: () => null };
     return {}; // rendering-only imports are deliberately not executed here
   } });
   return spec;

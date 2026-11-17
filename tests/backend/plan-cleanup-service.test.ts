@@ -28,7 +28,7 @@ test('authenticated real HTTP cleanup validates intent and identity without side
     for(const body of [{...f.body(),storeId:second.body().storeId},{...f.body(),rev:1},{...f.body(),cleanupRev:1}])assert.equal((await f.request('/v1/plan/archive',body)).status,409);
     assert.equal(second.store.detail(second.source.id,'P-done').plan.cleanup,undefined);
     assert.equal((await f.request('/v1/plan/archive',{...f.body(),source:'missing'})).status,404);
-    for(const plan of ['P-active','P-cancelled','P-failed'])assert.equal((await f.request('/v1/plan/archive',f.body(plan,0,'ineligible',plan==='P-active'?1:2))).status,409);
+    for(const action of ['archive','restore','delete'])assert.equal((await f.request(`/v1/plan/${action}`,{...f.body('P-active',0,`ineligible-${action}`,1),...(action==='delete'?{confirmed:true}:{})})).status,409);
     assert.deepEqual(readdirSync(`${f.root}/store`),baseline);assert.equal(f.store.db.prepare("SELECT name FROM sqlite_master WHERE name='cleanup_state'").get(),undefined);
     const before=f.store.detail(f.source.id,'P-done');const history=f.store.history(f.source.id,'P-done');
     f.store.setEnabled(false);
@@ -49,6 +49,29 @@ test('authenticated real HTTP cleanup validates intent and identity without side
     for(const route of ['/v1/plan','/v1/history',`/v1/document`])assert.equal((await f.request(`${route}?source=source-fixture&plan=P-done${route==='/v1/document'?`&capture=${before.plan.document.captureId}`:''}`)).status,404);
     assert(f.store.get('source-other','P-done'));assert(f.store.get(f.source.id,'P-other'));assert.equal(f.store.list().captureEnabled,false);
   }finally{second.cleanup();await f.stop();}
+});
+
+test('cancelled and failed plans can be archived, restored unchanged and deleted with revision fencing',async()=>{
+  const f=await launchCleanupService();
+  try{
+    for(const lifecycle of ['cancelled','failed']){
+      const plan=`P-${lifecycle}`;
+      const before=f.store.detail(f.source.id,plan);
+      const history=f.store.history(f.source.id,plan);
+      for(const [action,generation] of [['archive',0],['restore',1],['delete',2]] as const){
+        const body={...f.body(plan,generation,`${lifecycle}-${action}`),...(action==='delete'?{confirmed:true}:{})};
+        assert.equal((await f.request(`/v1/plan/${action}`,{...body,rev:1})).status,409);
+        assert.equal((await f.request(`/v1/plan/${action}`,body)).status,200);
+        if(action!=='delete'){
+          const current=f.store.detail(f.source.id,plan);
+          assert.equal(current.plan.lifecycle,lifecycle);
+          assert.deepEqual(current.plan.counts,before.plan.counts);
+          assert.deepEqual(f.store.history(f.source.id,plan),history);
+          assert.equal(current.plan.cleanup?.state,action==='archive'?'archived':'visible');
+        }else assert.equal(f.store.get(f.source.id,plan),undefined);
+      }
+    }
+  }finally{await f.stop();}
 });
 
 test('normal and archived filters precede pagination with source/session/directory isolation',async()=>{

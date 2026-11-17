@@ -24,11 +24,12 @@ async function released(root:string){
 }
 const stages=new Set<string>([...MANAGED_INSPECTION_STEPS,...MANAGED_MIGRATION_STEPS,'journal','lock']);
 const codes=new Set<string>([...MANAGED_STEP_CODES,...MANAGED_ACTION_CODES,'managed-action-required','not-found','invalid']);
+const fullJourneySkip=process.env.AP_WINDOWS_FULL==='1'?false:'Full Windows journey requires AP_WINDOWS_FULL=1 (promotion, main push, weekly or manual CI).';
 
 // EMPTY runs first: no released installer, selected binding, Store or journal may
 // accidentally supply authority to the new-store journey. Retained fixtures use
 // only the Store owner, never an install followed by test-owned discovery removal.
-for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','retained-on','retained-new'] as const)test(`Windows built fresh steps (${fixture})`,{skip:process.platform!=='win32',timeout:600000},async()=>{
+for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','retained-on','retained-new'] as const)test(`Windows built fresh steps (${fixture})`,{skip:fixture==='empty-delayed'&&fullJourneySkip||process.platform!=='win32',timeout:600000},async()=>{
   const root=path.join(path.parse(os.tmpdir()).root,`agent-progress-fresh-${randomUUID()}`);
   const retained=fixture.startsWith('retained'),newSource=fixture==='retained-new',custom=fixture==='empty-custom',
     delayed=fixture==='empty-delayed',mode=delayed?'delayed':'undelayed',limitMs=delayed?19999:8000;
@@ -190,7 +191,7 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
   }
 });
 
-for(const delayed of [false,true])test(`Windows built released 1.1.1 step migration (${delayed?'2500ms helpers':'undelayed'})`,{skip:process.platform!=='win32',timeout:600000},async()=>{
+for(const delayed of [false,true])test(`Windows built released 1.1.1 step migration (${delayed?'2500ms helpers':'undelayed'})`,{skip:fullJourneySkip||process.platform!=='win32',timeout:600000},async()=>{
   const root=path.join(path.parse(os.tmpdir()).root,`agent-progress-service-${randomUUID()}`);
   let running:Awaited<ReturnType<typeof nativeService>>|undefined;
   let database='',managed='',storeRoot='',phase='fixture',failed=false;

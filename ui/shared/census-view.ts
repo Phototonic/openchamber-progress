@@ -5,7 +5,7 @@
 // reinforces it. No label here expires: the frame ticker only moves time text.
 import { age, el, info, testid, type Env } from './components.ts';
 import { icon, warningLine, type WarningTone } from './primitives.ts';
-import { absoluteTime, elapsedText, plural } from './format.ts';
+import { absoluteTime, elapsedText, formatCount, plural } from './format.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
 import type { RunsPanel } from './runs.ts';
@@ -21,28 +21,28 @@ export const runClaim = (read: { storeId: string; binding: { sourceId: string | 
 const STATE: Record<Ran['kind'], string> = { active: 'active', waiting: 'waiting', idle: 'idle', finished: 'ended', failed: 'failed', interrupted: 'interrupted', unknown: 'unknown' };
 const EN = {
   source: {
-  event: 'From the host’s run events.',
-  dispatch: 'From the dispatch record; the host has not reported this run’s outcome yet.',
+  event: 'Run status from OpenChamber.',
+  dispatch: 'OpenChamber hasn’t confirmed the outcome yet.',
   history: 'From the host’s session history: the session’s last completed run, not a specific dispatch.',
   host: 'What OpenChamber lists for this session now.',
   },
   claim: { done: 'done', partial: 'partly done', blocked: 'blocked' },
-  status: { pending: 'pending', working: 'working', blocked: 'blocked', done: 'done', skipped: 'skipped' },
-  waiting: 'Waiting on you', after: (d: string) => ` · ${d} after dispatch`, took: (d: string) => ` · took ${d}`,
+  status: { pending: 'not started', working: 'in progress', blocked: 'blocked', done: 'done', skipped: 'skipped' },
+  waiting: 'Waiting for you', after: (d: string) => ` · ${d} after launch`, took: (d: string) => ` · took ${d}`,
   nowTip: 'What OpenChamber lists for this session now. Its recorded run above is unchanged.',
   notSeen: 'not seen in OpenChamber now',
   again: (label: string, compact: boolean) => `${label} again${compact ? '' : ' now'}`,
-  accepted: (word: string, title: string | null, compact: boolean) => compact ? `task ${word}` : `Task reported ${word}${title ? `: ${title}` : ''}`,
-  acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => compact ? `${n} tasks: ${parts}` : `${plural(n, 'task', 'tasks')} reported: ${parts}${omitted ? `, ${omitted} more` : ''}`,
-  claimed: (word: string, compact: boolean) => compact ? `claims ${word}` : `Reported ${word}`,
+  accepted: (word: string, title: string | null, compact: boolean) => compact ? `task ${word}` : `Task ${word}${title ? `: ${title}` : ''}`,
+  acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => `${plural(n, 'task', 'tasks')}: ${parts}${!compact && omitted ? `, ${omitted} more` : ''}`,
+  claimed: (word: string, _compact: boolean) => `says ${word}`,
   unmatched: ' · not matched to one run', open: 'Open', openSession: (title: string) => `Open session ${title}`, startedBy: (title: string) => `started by ${title}`,
-  history: 'from session history', during: 'dispatched during this plan', ran: 'Ran', claimedLabel: 'Claimed', acceptedLabel: 'Accepted',
+  history: 'from session history', during: 'requested during this plan', ran: 'Run', claimedLabel: 'Sub-agent', acceptedLabel: 'Task state',
   recordedTip: 'Runs recorded for this session and its sub-agents. A finished run is not a finished task.',
   hostTip: 'Sub-agents OpenChamber lists now; no run records were available.', soFar: 'so far', unchecked: 'more not checked',
   loss: 'Some runs weren’t recorded.', activityUnavailable: 'Current activity unavailable.', notEvery: 'Not every sub-agent is checked.', unavailable: 'Run records unavailable.',
   loadingHistory: 'Loading older history…', about: 'About these records', loadMore: 'Load more history', retry: 'Retry history',
   loading: 'Loading…', showMore: (n: number | null) => n === null ? 'Show more' : `Show ${n} more`,
-  other: 'Other records', records: 'Sub-agent records', otherLabel: 'Other sub-agent records', pageError: 'More rows couldn’t be read. Try again in a moment.',
+  other: 'Show more', records: 'Sub-agents', otherLabel: 'Show more sub-agents', pageError: 'Couldn’t load more sub-agents; try again.',
   subagents: 'Sub-agents', aboutLabel: 'About sub-agent records', running: 'Running sub-agents',
   partial: 'Partial', coverage: ' sub-agent coverage',
   lossText: {
@@ -52,30 +52,30 @@ const EN = {
     conflict: 'A newer recording gap was detected. Review it before dismissing.', recent: 'Recent recording gap.', detected: ' Last detected: ',
   },
   aboutLines: [
-    'Ran is what OpenChamber recorded about each run: from the host’s run events, the dispatch record, or the session’s history. A finished run is not a finished task.',
-    'Claimed is the sub-agent’s own optional report, shown as it reported it. Accepted is the task status this plan records.',
-    'Running is observed by the host for sessions and sub-agents only; tasks are reported working, not running.',
+    'OpenChamber tracks runs, not task completion.',
+    'A sub-agent’s “says done” is its own account; the task’s state is separate.',
+    'Running describes sessions, while In progress describes tasks.',
   ],
 };
 const RU: typeof EN = {
-  source: { event: 'По событиям запусков хоста.', dispatch: 'По записи отправки; хост ещё не сообщил результат запуска.', history: 'По истории сессии хоста: последний завершённый запуск сессии, а не конкретная отправка.', host: 'Что OpenChamber сейчас показывает для этой сессии.' },
+  source: { event: 'Состояние запуска из OpenChamber.', dispatch: 'OpenChamber ещё не подтвердил результат.', history: 'Последний завершённый запуск сессии, не обязательно для этой задачи.', host: 'Что OpenChamber сейчас показывает для этой сессии.' },
   claim: { done: 'выполнено', partial: 'частично выполнено', blocked: 'заблокировано' },
   status: { pending: 'ожидает', working: 'в работе', blocked: 'заблокирована', done: 'выполнена', skipped: 'пропущена' },
   waiting: 'Ждёт вас', after: d => ` · ${d} после отправки`, took: d => ` · длительность ${d}`,
   nowTip: 'Что OpenChamber сейчас показывает для этой сессии. Записанный запуск выше не изменён.',
   notSeen: 'сейчас не виден в OpenChamber',
   again: (label, compact) => `${label} снова${compact ? '' : ' сейчас'}`,
-  accepted: (word, title, compact) => compact ? `задача: ${word}` : `По отчёту задача ${word}${title ? `: ${title}` : ''}`,
-  acceptedMany: (n, parts, omitted, compact) => compact ? `Задачи (${n}): ${parts}` : `По отчётам задачи (${n}): ${parts}${omitted ? `, ещё ${omitted}` : ''}`,
-  claimed: (word, compact) => compact ? `заявляет: ${word}` : `Сообщено: ${word}`,
+  accepted: (word, title, compact) => compact ? `задача: ${word}` : `Задача ${word}${title ? `: ${title}` : ''}`,
+  acceptedMany: (n, parts, omitted, compact) => `Задачи (${formatCount(n, 'ru')}): ${parts}${!compact && omitted ? `, ещё ${formatCount(omitted, 'ru')}` : ''}`,
+  claimed: (word, _compact) => `говорит: ${word}`,
   unmatched: ' · не сопоставлено с отдельным запуском', open: 'Открыть', openSession: title => `Открыть сессию ${title}`, startedBy: title => `запущен из ${title}`,
-  history: 'из истории сессии', during: 'отправлен во время этого плана', ran: 'Запуск', claimedLabel: 'Заявлено', acceptedLabel: 'Принято',
+  history: 'из истории сессии', during: 'запрошен во время этого плана', ran: 'Запуск', claimedLabel: 'Субагент', acceptedLabel: 'Состояние задачи',
   recordedTip: 'Запуски этой сессии и её субагентов. Завершённый запуск не означает выполненную задачу.',
   hostTip: 'Субагенты, которых сейчас показывает OpenChamber; записи запусков недоступны.', soFar: 'на данный момент', unchecked: 'остальные не проверены',
   loss: 'Некоторые запуски не записаны.', activityUnavailable: 'Текущая активность недоступна.', notEvery: 'Проверены не все субагенты.', unavailable: 'Записи запусков недоступны.',
   loadingHistory: 'Загрузка прошлой истории…', about: 'Об этих записях', loadMore: 'Загрузить ещё историю', retry: 'Повторить загрузку истории',
   loading: 'Загрузка…', showMore: n => n === null ? 'Показать ещё' : `Показать ещё ${n}`,
-  other: 'Другие записи', records: 'Записи субагентов', otherLabel: 'Другие записи субагентов', pageError: 'Не удалось прочитать следующие строки. Попробуйте чуть позже.',
+  other: 'Показать ещё', records: 'Субагенты', otherLabel: 'Показать ещё субагентов', pageError: 'Не удалось загрузить ещё субагентов; попробуйте снова.',
   subagents: 'Субагенты', aboutLabel: 'О записях субагентов', running: 'Выполняющиеся субагенты',
   partial: 'Неполный', coverage: ' охват субагентов',
   lossText: {
@@ -85,30 +85,30 @@ const RU: typeof EN = {
     conflict: 'Обнаружен новый пробел в записи. Просмотрите его перед скрытием.', recent: 'Недавний пробел в записи.', detected: ' Последнее обнаружение: ',
   },
   aboutLines: [
-    'Запуск — то, что OpenChamber записал о запуске: по событиям хоста, записи отправки или истории сессии. Завершённый запуск не означает выполненную задачу.',
-    'Заявлено — необязательный собственный отчёт субагента, показанный как сообщено. Принято — статус задачи, записанный в этом плане.',
-    'Хост наблюдает выполнение только сессий и субагентов; для задач статус «в работе» сообщается в отчёте, а не наблюдается хостом.',
+    'OpenChamber показывает запуски, а не выполнение задач.',
+    'Слова субагента «выполнено» и состояние задачи показаны отдельно.',
+    '«Выполняется» относится к сессиям, «В работе» — к задачам.',
   ],
 };
 const ZH: typeof EN = {
-  source: { event: '来自主机的运行事件。', dispatch: '来自派发记录；主机尚未报告此次运行的结果。', history: '来自主机的会话历史：该会话最后一次完成的运行，而非某次具体派发。', host: 'OpenChamber 当前为此会话列出的状态。' },
+  source: { event: 'OpenChamber 提供的运行状态。', dispatch: 'OpenChamber 尚未确认结果。', history: '该会话最后一次完成的运行，不一定属于此任务。', host: 'OpenChamber 当前为此会话列出的状态。' },
   claim: { done: '已完成', partial: '部分完成', blocked: '受阻' },
   status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
   waiting: '等待你处理', after: d => ` · 派发后 ${d}`, took: d => ` · 耗时 ${d}`,
   nowTip: 'OpenChamber 当前为此会话列出的状态。上方的运行记录不变。',
   notSeen: 'OpenChamber 当前未看到此会话',
   again: (label, compact) => `${label}（再次${compact ? '' : '，当前'}）`,
-  accepted: (word, title, compact) => compact ? `任务${word}` : `任务已报告为${word}${title ? `：${title}` : ''}`,
-  acceptedMany: (n, parts, omitted, compact) => compact ? `${n} 个任务：${parts}` : `${n} 个任务已报告：${parts}${omitted ? `，另有 ${omitted} 个` : ''}`,
-  claimed: (word, compact) => compact ? `自报：${word}` : `自报${word}`,
+  accepted: (word, title, compact) => compact ? `任务${word}` : `任务${word}${title ? `：${title}` : ''}`,
+  acceptedMany: (n, parts, omitted, compact) => `${formatCount(n, 'zh-CN')} 个任务：${parts}${!compact && omitted ? `，另有 ${formatCount(omitted, 'zh-CN')} 个` : ''}`,
+  claimed: (word, _compact) => `自述${word}`,
   unmatched: ' · 未匹配到单次运行', open: '打开', openSession: title => `打开会话 ${title}`, startedBy: title => `由 ${title} 启动`,
-  history: '来自会话历史', during: '在此计划期间派发', ran: '运行', claimedLabel: '自报', acceptedLabel: '已接收',
+  history: '来自会话历史', during: '在此计划期间请求启动', ran: '运行', claimedLabel: '子智能体', acceptedLabel: '任务状态',
   recordedTip: '此会话及其子智能体的运行记录。运行结束不等于任务完成。',
   hostTip: 'OpenChamber 当前列出的子智能体；没有可用的运行记录。', soFar: '截至目前', unchecked: '更多未检查',
   loss: '部分运行未被记录。', activityUnavailable: '当前活动不可用。', notEvery: '并非所有子智能体都已检查。', unavailable: '运行记录不可用。',
   loadingHistory: '正在加载更早的历史…', about: '关于这些记录', loadMore: '加载更多历史', retry: '重试加载历史',
   loading: '加载中…', showMore: n => n === null ? '显示更多' : `再显示 ${n} 条`,
-  other: '其他记录', records: '子智能体记录', otherLabel: '其他子智能体记录', pageError: '无法读取更多记录，请稍后重试。',
+  other: '显示更多', records: '子智能体', otherLabel: '显示更多子智能体', pageError: '无法加载更多子智能体，请重试。',
   subagents: '子智能体', aboutLabel: '关于子智能体记录', running: '运行中的子智能体',
   partial: '覆盖不完整', coverage: '：子智能体覆盖',
   lossText: {
@@ -118,9 +118,9 @@ const ZH: typeof EN = {
     conflict: '检测到更新的记录缺口，请先查看再忽略。', recent: '最近的记录缺口。', detected: ' 最后检测于：',
   },
   aboutLines: [
-    '“运行”是 OpenChamber 对每次运行的记录：来自主机的运行事件、派发记录或会话历史。运行结束不等于任务完成。',
-    '“自报”是子智能体可选的自身报告，按其所报告的内容显示。“已接收”是此计划记录的任务状态。',
-    '主机仅观察会话和子智能体的运行；任务的“进行中”来自报告，而非主机观察。',
+    'OpenChamber 跟踪运行，不代表任务已完成。',
+    '子智能体自述的完成情况与任务状态分开显示。',
+    '“运行中”描述会话，“进行中”描述任务。',
   ],
 };
 const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU, 'zh-CN': ZH };
@@ -292,13 +292,8 @@ const NOTE: Record<InterfaceLanguage, Record<RosterNote['kind'], string>> = { en
   'host-activity-unavailable': 'OpenChamber 的会话列表正在重新加载或不完整，因此未显示当前活动（等待、再次运行、当前空闲）；运行记录不变。',
 } };
 
-/**
- * Rail and board: routine qualifications go behind the "Partial" cue beside the counts; the others
- * (unavailable or failed reads, capture off, history loading or unavailable, withheld current
- * activity) stay visible lines. Work Status keeps its own one short line (notesNode).
- */
-const ROUTINE: ReadonlySet<RosterNote['kind']> = new Set<RosterNote['kind']>(['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off']);
-export const routineNote = (n: RosterNote) => ROUTINE.has(n.kind);
+/** Only action-changing states keep their own line; qualifications use the surface-wide note. */
+export const separateNote = (n: RosterNote) => n.kind === 'runs-error' || n.kind === 'capture-off';
 
 function summaryNode(r: Roster, compact: boolean, language: InterfaceLanguage) {
   const c = COPY[language];
@@ -312,24 +307,7 @@ function summaryNode(r: Roster, compact: boolean, language: InterfaceLanguage) {
     part.append(mark, s.text);
     p.append(part);
   }
-  if (r.soFar) p.append(el('span', 'ap-sub-part ap-muted', c.soFar));
-  // Counts from host-listed children stop at the census limit: never shown as complete. Rail and
-  // board say so through the "Partial" cue instead.
-  if (r.hostTruncated && compact) p.append(testid(el('span', 'ap-sub-part ap-muted', c.unchecked), 'subagent-truncated'));
-  return p;
-}
-
-/**
- * Work Status: one short line for genuine unavailability only; detail lives in the rail. A recording
- * gap counts only while it needs attention (recent and not dismissed); its order among the others
- * is unchanged.
- */
-function notesNode(r: Roster, language: InterfaceLanguage) {
-  const c = COPY[language];
-  const n = r.notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' && x.attention || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
-  if (!n) return null;
-  const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? NOTE[language]['capture-loss'] : n.kind === 'host-activity-unavailable' ? c.activityUnavailable : n.kind === 'host-truncated' ? c.notEvery : c.unavailable), 'subagent-coverage');
-  p.dataset.notes = n.kind;
+  // The model supplies whole translated count strings, including any lower-bound mark.
   return p;
 }
 
@@ -357,13 +335,15 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   const total = rest.length + r.earlierTotal;
   const runs = v.runs;
   const label = earlierPager(r, runs, visible, step, language);
-  if (!total && !label) return null;
+  if (!total && !label && !(v.surface === 'status' && runs?.pageError)) return null;
   const more = testid(el('details', 'ap-obs-more'), 'observed-more');
-  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}`));
+  const partial = !r.recorded || r.notes.some(n => !['capture-off', 'host-truncated', 'host-gaps', 'host-activity-unavailable'].includes(n.kind));
+  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}${partial ? '+' : ''}`));
   const list = el('ul', 'ap-obs-list');
   list.setAttribute('aria-label', c.otherLabel);
   for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
   if (list.childElementCount) more.append(list);
+  if (v.surface === 'status' && runs?.pageError) more.append(testid(el('p', 'ap-note', c.pageError), 'subagent-page-error'));
   if (runs && label) {
     const b = testid(el('button', 'ap-link ap-sub-page', label), 'subagent-more');
     b.type = 'button';
@@ -373,31 +353,23 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
     b.addEventListener('click', () => { if (!runs.paging) runs.showMore(Math.min(visible, loaded), loaded, step); });
     more.append(b);
   }
-  if (runs?.pageError) more.append(el('p', 'ap-note', c.pageError));
   return more;
 }
 
-/**
- * One coverage line, with Load more / Retry history where the read offers it. A started request
- * replaces the line and its button with the visible "Loading older sub-agent history…"; the frame's
- * focus restoration then hands focus to the cue or the heading (app.ts, coverage fallback).
- */
+/** Failed reads and recording off stay separate from the dismissible count note. */
 function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null, language: InterfaceLanguage) {
   const c = COPY[language];
   const li = el('li');
   li.append(warningLine(NOTE[language][n.kind], tone, 'span'));
-  if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
-    const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? c.loadMore : c.retry), 'subagent-retry-history');
-    b.type = 'button';
-    // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
-    if (runs.reconciling) b.setAttribute('aria-disabled', 'true');
-    b.addEventListener('click', () => { if (!runs.reconciling) runs.retryHistory(); });
-    li.append(b);
+  if (n.kind === 'runs-error' && runs) {
+    if (runs.read) li.append(el('time', '', absoluteTime(new Date(runs.read.readAt).toISOString(), language)));
+    const retry = testid(el('button', 'ap-link', c.retry), 'subagent-retry-read');
+    retry.type = 'button'; retry.addEventListener('click', () => runs.retryRead?.()); li.append(retry);
   }
   return li;
 }
 
-/** Rail and board: the notes that stay visible compact lines (the routine ones are behind the cue). */
+/** Non-dismissible action-changing lines on every surface. */
 function coverageNode(notes: RosterNote[], runs: RunsPanel | null, language: InterfaceLanguage) {
   if (!notes.length) return null;
   const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
@@ -406,143 +378,18 @@ function coverageNode(notes: RosterNote[], runs: RunsPanel | null, language: Int
   return list;
 }
 
-/** Visible lines keep their tones: information for loading and capture off, a warning otherwise. */
-const visibleTone = (n: RosterNote): WarningTone => n.kind === 'history-loading' || n.kind === 'capture-off' ? 'info' : 'warning';
-/**
- * Notes behind the cue are routine, so they carry a muted mark. Orange is kept for one case: a
- * recording gap that needs attention (recent and not dismissed, as the service says).
- */
-export const cueTone = (n: RosterNote): WarningTone => n.kind === 'capture-loss' && n.attention ? 'warning' : 'neutral';
-type LossNote = Extract<RosterNote, { kind: 'capture-loss' }>;
-const lossOf = (notes: RosterNote[]) => notes.find((n): n is LossNote => n.kind === 'capture-loss') ?? null;
-
-/**
- * The recording-gap note inside the disclosure: the approved sentence with the stored detection
- * date (never a migration, dismissal or read time), and, while the gap needs attention and the
- * service supports it, Dismiss warning with its explanation and any failure or conflict message.
- * The note stays listed after dismissal or ageing; only its tone and the control change.
- */
-function lossItem(n: LossNote, runs: RunsPanel | null, env: Env) {
-  const language = resolveLanguage('auto', env.locale), LOSS = COPY[language].lossText;
-  const li = testid(noteItem(n, cueTone(n), null, language), 'subagent-loss-note');
-  li.dataset.attention = String(n.attention);
-  li.dataset.date = n.dateKind;
-  const text = li.querySelector('.ap-warn-text')!;
-  if (n.dateKind === 'known' && n.lastLossAt !== null) {
-    const iso = new Date(n.lastLossAt).toISOString();
-    const t = testid(el('time', '', absoluteTime(iso, env.locale)), 'subagent-loss-date');
-    t.dateTime = iso;
-    text.append(LOSS.detected, t, '.');
-  } else text.append(' ', n.dateKind === 'migrated-unknown' ? LOSS.migrated : LOSS.legacy);
-  if (!runs || !n.canDismiss) return li;
-  const box = el('div', 'ap-sub-dismiss');
-  const help = el('span', 'ap-sub-dismiss-help', LOSS.explain);
-  help.id = `ap-sub-dismiss-${cueCount}`;
-  const b = testid(el('button', 'ap-link', LOSS.dismiss), 'subagent-dismiss-loss');
-  b.type = 'button';
-  b.setAttribute('aria-describedby', help.id);
-  // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
-  const pending = runs.lossDismissal === 'pending';
-  if (pending) b.setAttribute('aria-disabled', 'true');
-  b.addEventListener('click', () => { if (!pending) runs.dismissLoss(); });
-  box.append(b, help);
-  // Visible next to the control; spoken once through the frame's announcer (announceLoss).
-  if (runs.lossDismissal === 'error' || runs.lossDismissal === 'conflict') {
-    const status = testid(warningLine(LOSS[runs.lossDismissal], runs.lossDismissal === 'error' ? 'error' : 'warning', 'p'), 'subagent-dismiss-status');
-    status.dataset.state = runs.lossDismissal;
-    box.append(status);
-  }
-  li.append(box);
-  return li;
-}
-
-let lossAnnouncer: HTMLElement | null = null;
-let lossOutcome: unknown = 'idle';
-let lossText = '';
-let lossGeneration = 0;
-/**
- * Dismissal outcomes, spoken once each through one persistent polite live region outside the
- * repainted root (as the digest and search announcers do). Each failure has its own token, so a
- * repeated failure is spoken again; success is never spoken while the gap still needs attention.
- */
-function announceLoss(runs: RunsPanel, attention: boolean, language: InterfaceLanguage) {
-  const LOSS = COPY[language].lossText;
-  const s = runs.lossDismissal;
-  const token = s === 'error' || s === 'conflict' ? runs.lossDismissalFailure ?? s : s;
-  const text = s === 'success' ? attention ? '' : LOSS.success : s === 'error' || s === 'conflict' ? LOSS[s] : '';
-  if (token === lossOutcome && text === lossText) return;
-  lossOutcome = token;
-  lossText = text;
-  const generation = ++lossGeneration;
-  if (!text) return;
-  if (!lossAnnouncer?.isConnected) {
-    lossAnnouncer = testid(el('p', 'ap-sr'), 'subagent-announcer');
-    lossAnnouncer.setAttribute('role', 'status'); lossAnnouncer.setAttribute('aria-live', 'polite'); lossAnnouncer.setAttribute('aria-atomic', 'true');
-    document.body.append(lossAnnouncer);
-  }
-  const node = lossAnnouncer;
-  node.textContent = '';
-  // Next frame, so an identical repeated outcome is still a change for assistive technology.
-  requestAnimationFrame(() => { if (lossGeneration === generation) node.textContent = text; });
-}
-
-const CUE = 'subagent-coverage-cue';
-let cueCount = 0;
-
-/**
- * Rail and board: the muted "Partial" cue after the counts, a native button that expands the
- * routine notes inline below the header (`aria-expanded`/`aria-controls`; closed by default, no
- * hover or popover). The button sits in the counts' wrapping row and the notes below the header,
- * so they cannot share one `details`. Like a `details[data-testid]` across a repaint (app.ts), the open
- * state carries over from the painted cue of the same scope; focus returns through its test ID.
- */
-function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string, env: Env) {
-  const language = resolveLanguage('auto', env.locale), c = COPY[language];
-  const id = `ap-sub-cue-${cueCount += 1}`;
-  const button = testid(el('button', 'ap-sub-cue'), CUE);
-  button.type = 'button';
-  button.dataset.scope = scope;
-  // Not the counts' tooltip: the cue's words and its notes say what it means.
-  button.title = '';
-  button.setAttribute('aria-controls', id);
-  // Warning tone only while a recording gap needs attention: a triangle (shape, not just colour)
-  // and the description "Recent recording gap."; otherwise muted. The name stays the same.
-  const attention = !!lossOf(notes)?.attention;
-  button.dataset.tone = attention ? 'warning' : 'neutral';
-  // The description is a hidden sibling: it is spoken as the button's description, not its name.
-  const recent = attention ? testid(el('span', '', c.lossText.recent), 'subagent-coverage-cue-recent') : null;
-  if (recent) {
-    recent.id = `${id}-recent`;
-    recent.hidden = true;
-    button.setAttribute('aria-describedby', recent.id);
-    button.append(icon('warning'));
-  }
-  // Named "Partial sub-agent coverage"; its expanded state says whether the notes are shown.
-  button.append(el('span', '', c.partial), el('span', 'ap-sr', c.coverage), icon('chevron-down'));
-  const region = testid(el('div', 'ap-sub-cue-notes'), 'subagent-coverage-notes');
-  region.id = id;
-  region.dataset.notes = notes.map((n) => n.kind).join(' ');
-  const list = el('ul', 'ap-sub-notes ap-warn-list');
-  for (const n of notes) list.append(n.kind === 'capture-loss' ? lossItem(n, runs, env) : noteItem(n, cueTone(n), runs, language));
-  region.append(list);
-  const set = (open: boolean) => { button.setAttribute('aria-expanded', String(open)); region.hidden = !open; };
-  const painted = document.querySelector<HTMLElement>(`[data-testid="${CUE}"]`);
-  set(painted?.dataset.scope === scope && painted.getAttribute('aria-expanded') === 'true');
-  button.addEventListener('click', () => set(button.getAttribute('aria-expanded') !== 'true'));
-  return { button, recent, region };
-}
-
+const visibleTone = (n: RosterNote): WarningTone => n.kind === 'capture-off' ? 'info' : 'warning';
 /** The section, or null: no plan in scope, an unverified setup, or nothing useful to show. */
 export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const language = resolveLanguage('auto', v.env.locale), c = COPY[language];
   const r = rosterFor(v, language);
   if (!r) return null;
   const compact = v.surface === 'status';
-  // Every surface: running rows on one line each, every other record folded. Work Status keeps its
-  // one short coverage line and no ⓘ (an explanation popover would be clipped by its auto height).
+  // Running rows on one line each, every other record folded. Work Status has no indicator.
   const section = testid(el('section', 'ap-section ap-census ap-census-calm'), 'subagent-activity');
   section.dataset.state = r.recorded ? 'ready' : 'host-only';
-  section.dataset.complete = String(r.recorded && !r.soFar && !r.notes.some((n) => n.kind !== 'capture-off' && n.kind !== 'history-off'));
+  if (v.runs?.read) section.dataset.revision = String(v.runs.read.revision);
+  section.dataset.complete = String(r.recorded && !r.soFar && !r.summary.some(s => s.partial) && !r.notes.some((n) => n.kind !== 'capture-off' && n.kind !== 'history-off'));
   section.setAttribute('aria-label', c.subagents);
   const head = el('div', 'ap-census-head');
   const title = el('div', 'ap-census-title');
@@ -561,15 +408,6 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const counts = r.summary.length ? summaryNode(r, compact, language) : null;
   if (counts) head.append(counts);
   section.append(head);
-  const routine = compact ? [] : r.notes.filter(routineNote);
-  if (routine.length) {
-    const cue = coverageCue(routine, v.runs, scope, v.env);
-    // The last item of the counts' wrapping row, so it stays beside them at any width.
-    (counts ?? head).append(cue.button);
-    if (cue.recent) (counts ?? head).append(cue.recent);
-    section.append(cue.region);
-  }
-  if (!compact && v.runs) announceLoss(v.runs, !!lossOf(r.notes)?.attention, language);
   const now = r.featured.filter(running);
   if (now.length) {
     const list = el('ul', 'ap-obs-list');
@@ -579,7 +417,8 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
-  const notes = compact ? notesNode(r, language) : coverageNode(r.notes.filter((n) => !routineNote(n)), v.runs, language);
+  // The shell already shows recording-off once for the whole surface.
+  const notes = coverageNode(r.notes.filter(n => separateNote(n) && n.kind !== 'capture-off'), v.runs, language);
   if (notes) section.append(notes);
   return section;
 }

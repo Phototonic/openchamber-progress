@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { appCountsModules } from './app-counts-stub.ts';
 import * as source from '../../ui/shared/source.ts';
 import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
@@ -173,8 +174,8 @@ test('schema diagnostics and 503 replies render incompatible copy; host failure 
     assert.equal(block.dataset.testid,`state-${kind}`);
     assert.equal(banner!.title,components.FAILURE_COPY[kind].title);
     assert.equal(banner!.body,components.FAILURE_COPY[kind].body);
-    assert.equal(banner!.title,kind==='incompatible'?'Progress data needs an update':'Progress service is not responding');
-    assert.equal(banner!.body,kind==='incompatible'?'The progress store uses a format this view does not support. Update the extension and its companion.':'It may still be starting. Try again in a moment.');
+    assert.equal(banner!.title,kind==='incompatible'?'Progress data needs an update':'Progress is not responding');
+    assert.equal(banner!.body,kind==='incompatible'?'Update Agent Progress in OpenChamber.':'Try again in a moment.');
   }
 });
 
@@ -220,6 +221,7 @@ function controller() {
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     AbortController, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     require: (name: string) => {
+      if (name in appCountsModules) return appCountsModules[name];
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module

@@ -10,12 +10,14 @@ import {
   ALL_PARTICIPANTS, documentStateText, elapsedAt, jumpTargets, lifecycleLabel, nextJump, participantIndex, participants, relationsOf, showsLiveness, statusLabel, summarize, summaryText, taskProjection,
   type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
-import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
+import { icon, infoDisclosure, moreMenu, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
+import { CheckpointStore } from './change-digest-checkpoint.ts';
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 import type { DeviceView, IntentRefusal } from './model.ts';
 import { currentIntent, type CurrentIntent } from './intent.ts';
+import { tidyCopy, tidyEligible } from './cleanup.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -39,6 +41,7 @@ const RUSSIAN = {
   '{n} in progress': '{n} в работе', '{n} blocked': '{n} заблокировано',
   ' done, {n} remaining': ' выполнено, осталось: {n}',
   'from another OpenCode setup': 'из другой установки OpenCode', 'Open session': 'Открыть сессию',
+  'OpenCode install not connected': 'Установка OpenCode не подключена',
   'Updated ': 'Обновлено ', 'From another OpenCode setup': 'Из другой установки OpenCode', 'Unverified OpenCode setup': 'Непроверенная установка OpenCode',
   '{n} plans': 'Планов: {n}', 'Plan {index} of {count}: {title}. Choose another plan': 'План {index} из {count}: {title}. Выбрать другой план',
   '{index} of {count}': '{index} из {count}', 'Plan ': 'План ',
@@ -152,7 +155,8 @@ const CHINESE: Record<CopyKey, string> = {
   'Observed in progress by {at}; start unknown': '截至 {at} 观察到进行中；开始时间未知',
   '{n} in progress': '{n} 项进行中', '{n} blocked': '{n} 项受阻',
   ' done, {n} remaining': ' 已完成，剩余 {n}',
-  'from another OpenCode setup': '来自其他 OpenCode 配置', 'Open session': '打开会话',
+  'from another OpenCode setup': '来自其他 OpenCode 安装', 'Open session': '打开会话',
+  'OpenCode install not connected': 'OpenCode 安装未连接',
   'Updated ': '更新于 ', 'From another OpenCode setup': '来自其他 OpenCode 配置', 'Unverified OpenCode setup': '未经验证的 OpenCode 配置',
   '{n} plans': '{n} 个计划', 'Plan {index} of {count}: {title}. Choose another plan': '第 {index} 个计划，共 {count} 个：{title}。选择其他计划',
   '{index} of {count}': '{index} / {count}', 'Plan ': '计划 ',
@@ -258,12 +262,44 @@ const CHINESE: Record<CopyKey, string> = {
   'Not applied: the progress service refused it.': '未生效：进度服务拒绝了交接。',
   'The coordinator can plan the handoff again for the current plan, or link the task to a session.': '协调者可以按当前计划重新安排交接，或将任务关联到会话。',
 };
+// English phrases are stable message keys, not necessarily the displayed English wording.
+// Keep changed messages together so all three languages carry the same meaning.
+type MessageTranslations = Record<InterfaceLanguage, string>;
+const PLAIN_COPY: Partial<Record<CopyKey, MessageTranslations>> = {
+  'From another OpenCode setup': { en: 'From another OpenCode install; its sessions can’t be opened here.', ru: 'Из другой установки OpenCode; её сессии нельзя открыть здесь.', 'zh-CN': '来自其他 OpenCode 安装，无法在此打开其会话。' },
+  'Reported in progress at {at}': { en: 'In progress since {at}', ru: 'В работе с {at}', 'zh-CN': '自 {at} 起进行中' },
+  'Observed in progress by {at}; start unknown': { en: 'In progress by {at}; start unknown', ru: 'В работе к {at}; начало неизвестно', 'zh-CN': '{at} 时已在进行中，开始时间未知' },
+  'The progress service could not tell when this task was reported in progress.': { en: 'Start time unknown.', ru: 'Время начала неизвестно.', 'zh-CN': '开始时间未知。' },
+  'The progress service couldn’t tell when this task was reported blocked.': { en: 'Wait time unknown.', ru: 'Время ожидания неизвестно.', 'zh-CN': '等待时间未知。' },
+  'This progress service doesn’t report waiting times.': { en: 'Wait time unavailable.', ru: 'Время ожидания недоступно.', 'zh-CN': '等待时间不可用。' },
+  'Reported blocked at {at}. Counts reported status, not activity.': { en: 'Blocked since {at}', ru: 'Заблокирована с {at}', 'zh-CN': '自 {at} 起受阻' },
+  'Already reported blocked at {at}; the start is earlier and unknown.': { en: 'Already blocked at {at}; start unknown.', ru: 'Уже заблокирована к {at}; начало неизвестно.', 'zh-CN': '{at} 时已受阻，开始时间未知。' },
+  'Reported working': { en: 'In progress', ru: 'В работе', 'zh-CN': '进行中' },
+  'Reported in progress': { en: 'In progress', ru: 'В работе', 'zh-CN': '进行中' },
+  'Reported blocked': { en: 'Blocked', ru: 'Заблокировано', 'zh-CN': '受阻' },
+  'Jump to reported in progress': { en: 'Jump to in progress', ru: 'К задачам в работе', 'zh-CN': '跳转到进行中的任务' },
+  'No tasks reported in progress': { en: 'No tasks in progress', ru: 'Нет задач в работе', 'zh-CN': '没有进行中的任务' },
+  'Jump to reported blocked': { en: 'Jump to blocked', ru: 'К заблокированным', 'zh-CN': '跳转到受阻任务' },
+  'No tasks reported blocked': { en: 'No blocked tasks', ru: 'Нет заблокированных задач', 'zh-CN': '没有受阻任务' },
+  'Reported details couldn’t be read': { en: 'Couldn’t load task details; try again.', ru: 'Не удалось загрузить сведения о задаче; попробуйте снова.', 'zh-CN': '无法加载任务详情，请重试。' },
+  'Last reported: ': { en: 'Last update: ', ru: 'Последнее обновление: ', 'zh-CN': '上次更新：' },
+  'Reported wait': { en: 'Waiting', ru: 'Ожидание', 'zh-CN': '等待中' },
+  'Reason': { en: 'Why', ru: 'Почему', 'zh-CN': '原因' },
+  'Capture is turned off; no new reports are recorded.': { en: 'Recording is off; new progress isn’t saved.', ru: 'Запись выключена; новый прогресс не сохраняется.', 'zh-CN': '记录已关闭，新进度不会保存。' },
+  'No participant recorded': { en: 'No participant listed', ru: 'Участник не указан', 'zh-CN': '未列出参与者' },
+  'No task rows are recorded in this plan, only groups.': { en: 'This plan has groups, but no tasks yet.', ru: 'В плане есть группы, но пока нет задач.', 'zh-CN': '此计划有分组，但还没有任务。' },
+  'Revisions': { en: 'Updates', ru: 'Обновления', 'zh-CN': '更新' },
+  'Revision {n}': { en: 'Update {n}', ru: 'Обновление {n}', 'zh-CN': '更新 {n}' },
+  'Only the first {n} revisions are shown.': { en: 'Older updates are not shown.', ru: 'Более ранние обновления не показаны.', 'zh-CN': '未显示较早的更新。' },
+  'plan reported': { en: 'plan shared', ru: 'план добавлен', 'zh-CN': '已分享计划' },
+  'outcome reported': { en: 'plan closed', ru: 'план закрыт', 'zh-CN': '计划已关闭' },
+};
 const COPY: Record<InterfaceLanguage, Record<CopyKey, string>> = {
   en: Object.fromEntries(Object.keys(RUSSIAN).map(key => [key, key])) as Record<CopyKey, string>, ru: RUSSIAN, 'zh-CN': CHINESE,
 };
 function say(key: CopyKey, locale = 'en', values: Record<string, string | number> = {}) {
   const language = resolveLanguage('auto', locale);
-  return COPY[language][key].replace(/\{(\w+)\}/g, (_, name: string) => typeof values[name] === 'number' ? displayCount(values[name], language) : String(values[name]));
+  return (PLAIN_COPY[key]?.[language] ?? COPY[language][key]).replace(/\{(\w+)\}/g, (_, name: string) => typeof values[name] === 'number' ? displayCount(values[name], language) : String(values[name]));
 }
 const displayCount = (n: number, locale: InterfaceLanguage) => locale === 'en' ? String(n) : formatCount(n, locale);
 const COUNT_WORDS: Record<InterfaceLanguage, Record<'task' | 'blocked' | 'more', [string, string, string]>> = {
@@ -337,7 +373,7 @@ export function age(iso: string, env: Env, prefix = '') {
 
 const elapsedLabelText = (kind: string | undefined, ms: number, locale = 'en') => {
   const text = elapsedText(ms, locale);
-  return text === null ? say('time unknown', locale) : kind === 'lower-bound' ? say('at least {time}', locale, { time: text }) : text;
+  return text === null ? say('time unknown', locale) : kind === 'lower-bound' ? `${text}+` : text;
 };
 
 /**
@@ -551,18 +587,201 @@ export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' =
   return head;
 }
 
+const SHELL_COPY = {
+  en: { more: 'More', back: 'Back', document: 'Plan document', history: 'History', sessions: 'Sessions', setup: 'Setup', troubleshooting: 'Troubleshooting', language: 'Language', automatic: 'Automatic (OpenChamber)', unsupported: "Follows OpenChamber’s language on this version.", progress: 'Copy progress update…', handoff: 'Copy handoff note…', advanced: 'Advanced details', newHistory: 'More, new history', help: 'Help & filters', all: 'Show all', unfinished: 'Unfinished', pending: 'not started', working: 'in progress', blocked: 'blocked', skipped: 'skipped', done: 'All done' },
+  ru: { more: 'Ещё', back: 'Назад', document: 'Документ плана', history: 'История', sessions: 'Сессии', setup: 'Настройка', troubleshooting: 'Устранение неполадок', language: 'Язык', automatic: 'Автоматически (OpenChamber)', unsupported: 'В этой версии используется язык OpenChamber.', progress: 'Скопировать прогресс…', handoff: 'Скопировать заметку для передачи…', advanced: 'Дополнительные сведения', newHistory: 'Ещё, есть новая история', help: 'Справка и фильтры', all: 'Показать всё', unfinished: 'Незавершённые', pending: 'не начато', working: 'в работе', blocked: 'заблокировано', skipped: 'пропущено', done: 'Всё выполнено' },
+  'zh-CN': { more: '更多', back: '返回', document: '计划文档', history: '历史', sessions: '会话', setup: '设置', troubleshooting: '故障排查', language: '语言', automatic: '自动（OpenChamber）', unsupported: '此版本跟随 OpenChamber 的语言。', progress: '复制进度更新…', handoff: '复制交接备注…', advanced: '高级详情', newHistory: '更多，有新历史', help: '帮助与筛选', all: '显示全部', unfinished: '未完成', pending: '未开始', working: '进行中', blocked: '受阻', skipped: '已跳过', done: '全部完成' },
+} satisfies Record<InterfaceLanguage, Record<string, string>>;
+export const shellCopy = (locale: string) => SHELL_COPY[resolveLanguage('auto', locale)];
+export type SurfacePanel = 'document' | 'history' | 'sessions' | 'setup' | 'troubleshooting';
+/** Hidden same-origin fixture/host frames can report a provisional 300 px viewport.
+ * Do not turn that unallocated size into a latched choice. Cross-origin guests have no
+ * frameElement and use their ordinary allocated viewport. */
+export function narrowSurface() {
+  return window.innerWidth > 0 && window.innerWidth < 320 && window.frameElement?.getBoundingClientRect().width !== 0;
+}
+
+/** One frame's shell. Later features join through menuActions and the content mounts in the
+ * entry files; they must not create a second menu or own the surface's navigation state. */
+export class ProgressShell {
+  private key = '';
+  private panel: SurfacePanel | null = null;
+  private closePanel: ((kind: SurfacePanel) => void) | undefined;
+  private setPanel(panel: SurfacePanel | null) {
+    const previous = this.panel;
+    this.panel = panel;
+    if (previous && previous !== panel) this.closePanel?.(previous);
+  }
+  private menu: ReturnType<typeof moreMenu> | null = null;
+  private focus: 'heading' | 'more' | null = null;
+  private review: { key: string; revision: number | null } | null = null;
+  reset(keepSetup = false) {
+    // Same-reading data refreshes (including capture changes) keep Setup usable.
+    // Reconcile still closes it when the account, authority or selection changes.
+    if (keepSetup && this.panel === 'setup') this.closePanel?.('setup');
+    else { this.key = ''; this.setPanel(null); this.closePanel = undefined; }
+    this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null;
+  }
+  get activePanel() { return this.panel; }
+  /** Reconcile selection before callers decide which view is active, not only during paint. */
+  reconcile<U>(vc: ViewContext<U>, plan: PlanView | null, options: { board?: boolean; scope?: string } = {}) {
+    const key = JSON.stringify([vc.ctx.connection?.account, vc.identity, options.board ? null : vc.session?.id, options.scope, plan?.key]);
+    if (key !== this.key) { this.reset(); this.key = key; }
+  }
+  showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
+  reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
+  /** Called after root replacement, not before (focus must land on a connected control). */
+  afterPaint(root: HTMLElement) {
+    const target = this.focus === 'heading' ? '[data-testid="surface-panel-heading"]' : this.focus === 'more' ? '[data-testid="more-trigger"]' : null;
+    this.focus = null;
+    if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
+  }
+  paint<U>(root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, options: {
+    board?: boolean; scope?: string; picker?: HTMLElement | null;
+    renderPanel: (kind: SurfacePanel) => HTMLElement;
+    menuActions?: PlanAction[];
+    openPanel?: (kind: SurfacePanel) => void;
+    closePanel?: (kind: SurfacePanel) => void;
+  }) {
+    this.reconcile(vc, plan, options);
+    this.closePanel = options.closePanel;
+    const key = this.key;
+    this.menu?.dispose();
+    const t = shellCopy(vc.env.locale);
+    const detail = plan ? vc.detail(plan) : null;
+    const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
+    const items: MenuItem[] = [], runs = new Map<string, () => void>();
+    const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
+    const open = (kind: SurfacePanel) => {
+      if (this.key !== key) return;
+      this.setPanel(kind); this.focus = 'heading'; options.openPanel?.(kind);
+      vc.setUi({});
+    };
+    const summary = plan ? vc.summary(plan) : null;
+    if (summary) {
+      add('summary-progress', t.progress, () => summary.open('progress'));
+      add('summary-handoff', t.handoff, () => summary.open('handoff'));
+      items.push({ separator: true });
+    }
+    if (plan) {
+      add('document', t.document, () => open('document'));
+      if (options.board) add('history', t.history, () => open('history'));
+      const count = participants(plan, ready).length;
+      add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
+      items.push({ separator: true });
+    }
+    // Tidy and hidden-items owners supply only applicable actions here.
+    const menuActions = [...(options.menuActions ?? [])];
+    if (vc.health?.planCleanup === 1 && vc.tidyPlans?.().some(tidyEligible)) menuActions.unshift({
+      id: 'tidy', label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure,
+    });
+    for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
+    if (menuActions.length) items.push({ separator: true });
+    add('language', t.language + ' ›', () => {});
+    add('setup', t.setup, () => open('setup'));
+    add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
+    const reviewKey = options.board && plan && vc.read && vc.ctx.features?.deviceStorage === true ? JSON.stringify([key, vc.read.storeId, vc.read.binding, vc.refreshSerial]) : null;
+    if (reviewKey && this.review?.key !== reviewKey) {
+      this.review = { key: reviewKey, revision: this.review?.revision ?? null };
+      const identity = { integrationAccount: vc.ctx.connection?.account || null, storeId: vc.read!.storeId, binding: vc.read!.binding, source: plan!.sourceId, plan: plan!.id };
+      void new CheckpointStore(vc.storage, () => vc.ctx.features?.deviceStorage === true).read(identity).then(saved => {
+        if (this.key !== key || this.review?.key !== reviewKey) return;
+        const revision = saved.state === 'saved' ? saved.revision : null;
+        if (this.review.revision !== revision) { this.review.revision = revision; vc.setUi({}); }
+      });
+    }
+    const newHistory = !!(plan && reviewKey && this.review?.revision !== null && this.review?.revision !== undefined && this.review.revision < plan.revision);
+    const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
+    const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
+    const menu = this.menu = moreMenu({ label: newHistory ? t.newHistory : t.more, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language });
+    if (newHistory) { const dot = testid(el('span', 'ap-history-dot'), 'more-history-dot'); dot.setAttribute('aria-hidden', 'true'); menu.trigger.append(dot); }
+    const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
+    holder.append(menu.root);
+    if (plan && vc.reading) MENU_SLOTS.set(vc.reading, {
+      plan: plan.key, add: (actions, focusHook) => {
+        // Per-plan archive/restore before settings; destructive actions remain last.
+        const normal = actions.filter(a => !a.destructive), destructive = actions.filter(a => a.destructive);
+        const settings = items.findIndex(i => !('separator' in i) && i.id === 'language');
+        if (normal.length) items.splice(settings, 0, ...normal.map(a => ({ id: a.id, label: a.label, disabled: a.disabled })), { separator: true });
+        if (destructive.length) items.push({ separator: true }, ...destructive.map(a => ({ id: a.id, label: a.label, disabled: a.disabled, destructive: true })));
+        for (const action of actions) runs.set(action.id, action.run);
+        if (focusHook) holder.dataset.testid = focusHook;
+        menu.update(items);
+      },
+    });
+    if (plan) {
+      const head = planHeader(plan, vc.env, 'h2', { picker: options.picker, actions: holder });
+      head.dataset.testid = 'surface-header';
+      // Rail has no location row. Board keeps location and the gated main-session action.
+      const meta = head.querySelector<HTMLElement>('.ap-meta')!;
+      meta.replaceChildren();
+      if (options.board) {
+        meta.append(el('span', '', planLocation(plan, vc.live, vc.env.boundSource, vc.env.locale)), el('span', '', say('Main session', vc.env.locale)));
+        const nav = navButton(plan, plan.ownerSessionId, coverageFor(plan.ownerSessionId, plan.directory, vc.live), vc.env); if (nav) meta.append(nav);
+      }
+      if (plan.lifecycle === 'active' && Date.now() - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
+      if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
+      if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
+      root.append(head);
+      const s = summarize(plan, ready);
+      root.append(progressBlock(s, false, vc.env.locale));
+      const legend = testid(el('p', 'ap-progress-legend'), 'progress-legend');
+      // The progress denominator already excludes skipped tasks.
+      const pending = ready ? Math.max(0, s.total - s.done - s.working - s.blocked) : 0;
+      legend.textContent = s.total > 0 && s.remaining === 0 && !s.skipped ? t.done : [[s.working, t.working], [s.blocked, t.blocked], [pending, t.pending], [s.skipped, t.skipped]].filter(([n]) => Number(n) > 0).map(([n, word]) => `${displayCount(Number(n), vc.env.locale)} ${word}`).join(' · ');
+      root.append(legend);
+      if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
+    } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
+    if (!this.panel) return false;
+    const kind = this.panel;
+    const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
+    box.setAttribute('aria-label', t[kind]);
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = 'more'; vc.setUi({}); };
+    button(box, 'surface-panel-back', t.back, back, 'ghost');
+    const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
+    box.append(h, options.renderPanel(kind));
+    box.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented && !(e.target as Element).closest('[role="menu"],[role="listbox"]')) { e.preventDefault(); back(); } });
+    root.append(box);
+    return true;
+  }
+}
+
+/** Shared List help/filter mount. Map owns its corresponding help control. */
+export function listFilters(reading: ReadingView | null, locale: string) {
+  const t = shellCopy(locale), box = testid(el('details', 'ap-list-help'), 'list-help-filters');
+  box.append(el('summary', '', t.help));
+  if (reading) for (const [id, label] of [['all', t.all], ['unfinished', t.unfinished]] as const) {
+    const b = button(box, `list-filter-${id}`, label, () => reading.set({ status: id }), 'ghost').querySelector('button');
+    b?.setAttribute('aria-pressed', String(reading.status === id));
+  }
+  return box;
+}
+
+export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string) {
+  const language = resolveLanguage('auto', locale);
+  const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
+  const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
+  box.setAttribute('role', 'group'); box.setAttribute('aria-label', names[2]!);
+  for (const [index, mode] of ['map', 'list'].entries()) {
+    const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
+    const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
+  }
+  return box;
+}
+
 /**
  * The rail's title-picker: the SDK select, shown as "⌄ 1 of 3" beside the plan title. Its name
  * says which plan of how many is shown; every option keeps its full title in the popup.
  */
-export function planPicker(o: { title: string; index: number; count: number; value: string; options: SelectOption[]; onChange: (key: string) => void; standalone?: boolean; locale?: string }) {
+export function planPicker(o: { title: string; index: number; count: number; incomplete?: boolean; value: string; options: SelectOption[]; onChange: (key: string) => void; standalone?: boolean; locale?: string }) {
+  const count = o.incomplete ? `${displayCount(o.count, resolveLanguage('auto', o.locale ?? 'en'))}+` : o.count;
   const holder = testid(el('div', 'ap-picker ap-title-picker'), 'plan-selector');
-  mountSelect(holder, { label: say('{n} plans', o.locale, { n: o.count }), value: o.value, options: o.options, onChange: o.onChange });
+  mountSelect(holder, { label: say('{n} plans', o.locale, { n: count }), value: o.value, options: o.options, onChange: o.onChange });
   const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
   if (trigger) {
     trigger.removeAttribute('aria-labelledby');
-    trigger.setAttribute('aria-label', say('Plan {index} of {count}: {title}. Choose another plan', o.locale, { index: o.index, count: o.count, title: o.title }));
-    trigger.prepend(el('span', 'ap-title-picker-hint', `${o.standalone ? say('Plan ', o.locale) : ''}${say('{index} of {count}', o.locale, { index: o.index, count: o.count })}`));
+    trigger.setAttribute('aria-label', say('Plan {index} of {count}: {title}. Choose another plan', o.locale, { index: o.index, count, title: o.title }));
+    trigger.prepend(el('span', 'ap-title-picker-hint', `${o.standalone ? say('Plan ', o.locale) : ''}${say('{index} of {count}', o.locale, { index: o.index, count })}`));
   }
   return holder;
 }
@@ -790,7 +1009,7 @@ function showTask(control: HTMLElement, plan: PlanView, itemId: string) {
  * that repaint, announced as such. Opens its fold and ancestors, focuses the row and scrolls it
  * into view once, instantly.
  */
-function revealTask(article: HTMLElement, plan: PlanView, itemId: string, message: string | ((locale: InterfaceLanguage) => string)) {
+function revealTask(article: HTMLElement, plan: PlanView, itemId: string, message: string | ((locale: InterfaceLanguage) => string), afterReveal?: (article: HTMLElement) => void) {
   const locale = resolveLanguage('auto', article.dataset.locale ?? 'en');
   const target = [...article.querySelectorAll<HTMLElement>('[data-testid^="item-"]')].find((n) => n.tagName === 'LI' && n.dataset.testid === `item-${itemId}`);
   const notice = article.querySelector<HTMLElement>('[data-testid="focus-notice"]');
@@ -802,7 +1021,7 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, messag
     if (!reading) return;
     reading.set(CLEARED, (root) => {
       const next = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find((a) => a.dataset.testid === article.dataset.testid && a.dataset.source === article.dataset.source && a.dataset.revision === article.dataset.revision);
-      if (next) revealTask(next, plan, itemId, locale => `${say('Showing all tasks so this task is visible.', locale)}${message ? ` ${typeof message === 'function' ? message(locale) : message}` : ''}`);
+      if (next) revealTask(next, plan, itemId, locale => `${say('Showing all tasks so this task is visible.', locale)}${message ? ` ${typeof message === 'function' ? message(locale) : message}` : ''}`, afterReveal);
     });
     return;
   }
@@ -814,14 +1033,16 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, messag
   target.focus({ preventScroll: true });
   target.scrollIntoView({ block: 'center', behavior: 'instant' });
   if (notice && message) notice.textContent = typeof message === 'function' ? message(locale) : message;
+  afterReveal?.(article);
 }
 
 /**
  * History's "View current task": the same canonical reveal path, inside this plan's painted reading
  * article (same plan ID, source and revision), never a same-ID task elsewhere.
+ * The optional completion runs after task focus, including a filter-clearing repaint.
  */
-export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string) {
-  if (articleOf(article, plan)) revealTask(article, plan, itemId, message);
+export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string, afterReveal?: (article: HTMLElement) => void) {
+  if (articleOf(article, plan)) revealTask(article, plan, itemId, message, afterReveal);
 }
 
 function navLink(plan: PlanView, itemId: string, text: string, name: string) {
@@ -1024,7 +1245,7 @@ function stateChipRow(p: Paint) {
 }
 
 /** Concrete qualifications, always visible as compact lines (never behind ⓘ). */
-function qualifiers(p: Paint) {
+function qualifiers(p: Pick<Paint, 'proj' | 'plan' | 'env'>) {
   const box = testid(el('div', 'ap-quals'), 'progress-qualifiers');
   const r = p.proj.readiness;
   box.dataset.readiness = r.state;
@@ -1325,7 +1546,7 @@ function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null
     if (!details.open) { disposeInfoWithin(body); body.replaceChildren(); return; }
     if (body.childNodes.length) return;
     const { dl, text } = rowFacts(p, row);
-    body.append(dl, copyBox(p, item, text));
+    body.append(dl);
   };
   details.addEventListener('toggle', fill);
   fill();
@@ -1606,7 +1827,7 @@ function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 
  * header (for example the rail's contributing-session note). `pending`: the frame's default view is
  * still being decided (docs/ui.md Default view): only the loading placeholder, never complete rows.
  */
-export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null; picker?: HTMLElement | null; actions?: PlanAction[]; info?: HTMLElement | null; pending?: boolean }) {
+export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null; picker?: HTMLElement | null; actions?: PlanAction[]; info?: HTMLElement | null; pending?: boolean; shell?: boolean }) {
   const root = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
   root.dataset.lifecycle = plan.lifecycle;
   root.dataset.source = plan.sourceId;
@@ -1639,18 +1860,18 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     };
     root.dataset.delegation = paint.intent!.state;
   }
-  const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
-  root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));
-  const progress = progressBlock(summary, false, env.locale);
-  root.append(progress);
-  if (paint) { const chips = stateChipRow(paint); if (chips) root.append(chips); root.append(qualifiers(paint)); }
-  if (hooks.summary) { const s = summaryBlock(hooks.summary, env.locale); if (s) root.append(s); }
+  if (!options.shell) {
+    const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
+    root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));
+    root.append(progressBlock(summary, false, env.locale));
+    if (hooks.summary) { const s = summaryBlock(hooks.summary, env.locale); if (s) root.append(s); }
+  }
   if (paint && panel?.plan === plan.key) {
     if (panel.kind === 'task-view' && reading) root.append(taskViewPanel(paint));
     else if (panel.kind === 'document' && options.document === 'disclosure') root.append(plainPanel(paint, 'document', say('Plan document', env.locale), documentBlock(plan, env, 'inline', hooks.document)));
     else if (panel.kind === 'sessions') root.append(sessionsPanel(paint));
   }
-  if (paint) root.append(taskList(paint));
+  if (paint) root.append(listFilters(reading, env.locale), taskList(paint));
   else {
     // No task controls until complete matching detail exists: loading or failed is never "no matches".
     const tasks = el('section', 'ap-section ap-tasks');
@@ -1658,7 +1879,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     root.append(tasks);
   }
   // One compact session row; the Sessions panel holds every participant.
-  if (!(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
+  if (!options.shell && !(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
   if (options.document === 'inline') root.append(documentBlock(plan, env, 'inline', hooks.document));
   return root;
 }
@@ -1714,7 +1935,7 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   if (!value || value.state !== 'ready') { section.append(partState('history-loading', say('history', env.locale), value, undefined, env.locale)); return section; }
   const ul = el('ul', 'ap-history');
   const entries = value.value.entries;
-  const kind = (i: number) => say(i === 0 ? 'plan reported' : entries[i].structuralRevision !== entries[i - 1].structuralRevision ? 'tasks revised' : entries[i].lifecycle !== entries[i - 1].lifecycle ? 'outcome reported' : 'progress update', env.locale);
+  const kind = (i: number) => say(entries[i].revision === 1 ? 'plan reported' : i === 0 ? 'progress update' : entries[i].structuralRevision !== entries[i - 1].structuralRevision ? 'tasks revised' : entries[i].lifecycle !== entries[i - 1].lifecycle ? 'outcome reported' : 'progress update', env.locale);
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);
@@ -1770,17 +1991,47 @@ export function detailsBlock(read: StoreRead | null, plan: PlanView | null, extr
   return d;
 }
 
+/** Content of Troubleshooting's single Advanced details fold, not another disclosure.
+ * Keeps every former Details fact and the complete held report provenance; no new reads. */
+export function advancedDetails<U>(vc: ViewContext<U>, plan: PlanView | null, extra: [string, string][]) {
+  const legacy = detailsBlock(vc.read, plan, extra, vc.env);
+  const body = el('div'); body.append(...[...legacy.children].slice(1));
+  if (vc.read?.truncated) body.append(el('p', 'ap-note', `${say('Coverage', vc.env.locale)}: truncated`));
+  const value = plan ? vc.detail(plan) : null;
+  if (!plan || value?.state !== 'ready' || value.value.revision !== plan.revision) return body;
+  const detail = value.value;
+  const proj = progressProjection(plan, detail, vc.reading ?? { status: 'all', participant: ALL_PARTICIPANTS, cursor: { working: null, blocked: null } });
+  if (proj) body.append(qualifiers({ proj, plan, env: vc.env }));
+  const facts = testid(el('dl', 'ap-facts'), 'advanced-report-authorship');
+  const add = (label: string, value: string) => facts.append(el('dt', '', label), el('dd', '', value));
+  const label = recordedLabel(plan, vc.env);
+  for (const item of detail.items) {
+    if (item.assigneeSessionId) add(item.title, `${say('Assignee', vc.env.locale)}: ${label(item.assigneeSessionId)}`);
+    if (item.delegation) {
+      const b = item.delegation;
+      add(item.title, `${label(b.coordinatorSessionId)} → ${label(b.childSessionId)} · ${say('Revision', vc.env.locale)}: ${b.boundRevision}–${b.validAtRevision}`);
+    }
+    for (const link of detail.links.filter(link => link.itemIds.includes(item.id))) add(item.title, `${say('Linked to ', vc.env.locale)}${label(link.sessionId)}`);
+    if (item.reporterSessionId) add(item.title, `${say('Reported', vc.env.locale)}: ${label(item.reporterSessionId)}`);
+    const b = item.reportedBlocker;
+    if (b?.state === 'reported') add(item.title, `${say('Details', vc.env.locale)}: ${label(b.reporterSessionId)} · ${b.mode} · ${label(b.attributedSessionId)}`);
+  }
+  for (const report of detail.contributions) add(say('Reported', vc.env.locale), `${label(report.reporterSessionId)} · ${report.mode} · ${label(report.attributedSessionId)} · ${report.itemIds.join(', ')} · ${report.revision}${report.reportedAt ? ` · ${absoluteTime(report.reportedAt, vc.env.locale)}` : ''}`);
+  body.append(facts);
+  return body;
+}
+
 export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: string }> = {
   'not-approved': { title: 'Progress needs permission', body: 'Allow this extension in Settings → Extensions to show agent progress.' },
   paused: { title: 'Progress is paused', body: 'This extension is paused in Settings → Extensions.' },
   disconnected: { title: 'Lost connection to OpenChamber', body: 'Progress will update again when the connection returns.' },
-  unavailable: { title: 'Progress service is not responding', body: 'It may still be starting. Try again in a moment.' },
-  busy: { title: 'Progress store is busy', body: 'Another program is writing to it. This view retries shortly.' },
-  damaged: { title: 'Progress store is damaged', body: 'It was left untouched. See the setup guide for recovery; nothing was reset.' },
-  incompatible: { title: 'Progress data needs an update', body: 'The progress store uses a format this view does not support. Update the extension and its companion.' },
+  unavailable: { title: 'Progress is not responding', body: 'Try again in a moment.' },
+  busy: { title: 'Progress is busy', body: 'Try again shortly.' },
+  damaged: { title: 'Progress data is damaged', body: 'Nothing was reset; follow the setup guide to recover it.' },
+  incompatible: { title: 'Progress data needs an update', body: 'Update Agent Progress in OpenChamber.' },
   invalid: { title: 'Progress could not be read', body: 'The progress service sent a reply this view could not use.' },
-  'not-found': { title: 'That plan is no longer available', body: 'It may belong to a different store.' },
-  'setup-lost': { title: 'Progress setup can’t be read right now', body: 'The extension can no longer open its progress store. Check Setup; nothing was changed or deleted.' },
+  'not-found': { title: 'That plan is no longer available', body: 'Choose another plan.' },
+  'setup-lost': { title: 'Progress setup can’t be read right now', body: 'Check Setup; nothing was changed or deleted.' },
 };
 const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
   en: FAILURE_COPY,
@@ -1788,25 +2039,25 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     'not-approved': { title: 'Прогрессу нужно разрешение', body: 'Разрешите это расширение в Settings → Extensions, чтобы показать прогресс агентов.' },
     paused: { title: 'Прогресс приостановлен', body: 'Это расширение приостановлено в Settings → Extensions.' },
     disconnected: { title: 'Соединение с OpenChamber потеряно', body: 'Прогресс снова начнёт обновляться после восстановления соединения.' },
-    unavailable: { title: 'Сервис прогресса не отвечает', body: 'Возможно, он ещё запускается. Повторите попытку чуть позже.' },
-    busy: { title: 'Хранилище прогресса занято', body: 'Другая программа записывает данные. Представление скоро повторит попытку.' },
-    damaged: { title: 'Хранилище прогресса повреждено', body: 'Оно оставлено без изменений. См. руководство по восстановлению; ничего не сброшено.' },
-    incompatible: { title: 'Данные прогресса требуют обновления', body: 'Формат хранилища не поддерживается этим представлением. Обновите расширение и companion.' },
+    unavailable: { title: 'Прогресс не отвечает', body: 'Повторите попытку чуть позже.' },
+    busy: { title: 'Прогресс занят', body: 'Повторите попытку чуть позже.' },
+    damaged: { title: 'Данные прогресса повреждены', body: 'Ничего не сброшено; следуйте руководству по восстановлению.' },
+    incompatible: { title: 'Данные прогресса требуют обновления', body: 'Обновите Agent Progress в OpenChamber.' },
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
-    'not-found': { title: 'Этот план больше недоступен', body: 'Возможно, он относится к другому хранилищу.' },
-    'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Расширение больше не может открыть хранилище прогресса. Проверьте настройку; ничего не изменено и не удалено.' },
+    'not-found': { title: 'Этот план больше недоступен', body: 'Выберите другой план.' },
+    'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Проверьте настройку; ничего не изменено и не удалено.' },
   },
   'zh-CN': {
     'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
     paused: { title: '进度已暂停', body: '此扩展已在设置 → 扩展中暂停。' },
     disconnected: { title: '与 OpenChamber 的连接已断开', body: '连接恢复后进度会再次更新。' },
-    unavailable: { title: '进度服务未响应', body: '服务可能仍在启动，请稍后重试。' },
-    busy: { title: '进度存储忙碌', body: '另一个程序正在写入进度存储，此视图稍后会重试。' },
-    damaged: { title: '进度存储已损坏', body: '已保持原样。请参阅设置指南进行恢复；没有重置任何内容。' },
-    incompatible: { title: '进度数据需要更新', body: '进度存储使用的格式不受此视图支持，请更新扩展及其 companion。' },
+    unavailable: { title: '进度未响应', body: '请稍后重试。' },
+    busy: { title: '进度正忙', body: '请稍后重试。' },
+    damaged: { title: '进度数据已损坏', body: '未重置任何内容，请按照设置指南恢复。' },
+    incompatible: { title: '进度数据需要更新', body: '请在 OpenChamber 中更新 Agent Progress。' },
     invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
-    'not-found': { title: '该计划已不再可用', body: '该计划可能属于其他存储。' },
-    'setup-lost': { title: '暂时无法读取进度设置', body: '扩展无法再打开进度存储。请检查设置；没有更改或删除任何内容。' },
+    'not-found': { title: '该计划已不再可用', body: '请选择其他计划。' },
+    'setup-lost': { title: '暂时无法读取进度设置', body: '请检查设置，未更改或删除任何内容。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];
