@@ -2890,9 +2890,12 @@ try {
     // Unchanged Search polls: bounded freshness reads, stable results and no repeat announcement.
     // The source-wide inbox separately rechecks loaded continuation pages (inbox.ts adopt/readPage);
     // those authority transitions can repaint the shell without changing Search.
+    await guest('page', `w.__pageSearchAnnouncements=[];new w.MutationObserver(records=>{const n=d.querySelector('[data-testid="search-announcer"]');if(n?.textContent&&records.some(r=>r.target===n||n.contains(r.target)))w.__pageSearchAnnouncements.push(n.textContent)}).observe(d.body,{subtree:true,childList:true,characterData:true});return true`);
     await click('page', '[data-testid="search-next"] button'); await idle();
     // A reused page repaints once when its freshness check lands; the idle window starts after it.
     await wait('page', `!/Checking whether these results/.test(d.querySelector('[data-testid="search-coverage"]').textContent)`, 'reused page checked');
+    await frames2();
+    check('A11:next-page-and-freshness-do-not-repeat-outcome', await guest<boolean>('page', `return w.__pageSearchAnnouncements.length===0`));
     await sleep(300); await paints();
     const searchBeforeIdle = await guest<string>('page', `w.__idleSearchAnnouncements=[];new w.MutationObserver(records=>{const n=d.querySelector('[data-testid="search-announcer"]');if(n?.textContent&&records.some(r=>r.target===n||n.contains(r.target)))w.__idleSearchAnnouncements.push(n.textContent)}).observe(d.body,{subtree:true,childList:true,characterData:true});return d.querySelector('[data-testid="search-results"]').innerText`);
     let mark = (await reqs(`r.frame==='page'`)).length;

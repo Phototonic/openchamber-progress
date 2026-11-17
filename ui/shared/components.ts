@@ -290,7 +290,7 @@ const PLAIN_COPY: Partial<Record<CopyKey, MessageTranslations>> = {
   'No task rows are recorded in this plan, only groups.': { en: 'This plan has groups, but no tasks yet.', ru: 'В плане есть группы, но пока нет задач.', 'zh-CN': '此计划有分组，但还没有任务。' },
   'Revisions': { en: 'Updates', ru: 'Обновления', 'zh-CN': '更新' },
   'Revision {n}': { en: 'Update {n}', ru: 'Обновление {n}', 'zh-CN': '更新 {n}' },
-  'Only the first {n} revisions are shown.': { en: 'Earlier updates are not shown.', ru: 'Прежние обновления не показаны.', 'zh-CN': '未显示较早的更新。' },
+  'Only the first {n} revisions are shown.': { en: 'Newer updates are not shown.', ru: 'Более новые обновления не показаны.', 'zh-CN': '未显示较新的更新。' },
   'plan reported': { en: 'plan shared', ru: 'план добавлен', 'zh-CN': '已分享计划' },
   'outcome reported': { en: 'plan closed', ru: 'план закрыт', 'zh-CN': '计划已关闭' },
 };

@@ -468,8 +468,9 @@ export function statusLine(v: SearchViewState, locale = 'en') {
   const p = testid(el('p', 'ap-note ap-search-status'), 'search-status');
   p.dataset.stop = v.stop ?? 'none';
   const outcome = v.status.message?.kind === 'outcome';
-  const text = outcome ? [resultText(v, language), qualificationText(v, language)].filter(Boolean).join(' ')
-    : v.status.message ? searchStatusText(v.status.message, language) : v.status.text;
+  // Speak the explicit outcome, not mutable page/freshness state: paging rechecks
+  // keep this outcome ID and must not turn an ordinary poll into another announcement.
+  const text = v.status.message ? searchStatusText(v.status.message, language) : v.status.text;
   // The result count already appears beside the results; only the persistent live region
   // repeats it for an explicit search outcome, never as another visible notice.
   p.hidden = outcome || !text;

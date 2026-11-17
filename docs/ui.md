@@ -314,7 +314,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   - `checklistSynchronized` adds "task list was confirmed against this capture".
   - `currentFile` is always described as not rechecked; age never implies out-of-sync.
   - Continuation pages pin the first page's capture ID, so the text is always one capture. If any page answers `historical-capture` (a newer capture landed mid-read), the body says "A newer capture was recorded while this loaded. This is the earlier capture." The next refresh loads the new capture.
-- **History** (`/v1/history`, page tab): oldest-first pages, labelled plan reported / tasks revised / outcome reported / progress update. The page's History tab adds one pinned `/v1/change-digest` read above it (Change digests); legacy history pages are never fed into it.
+- **History** (`/v1/history`, More panel): oldest-first pages, labelled plan reported / tasks revised / outcome reported / progress update. Entries within the loaded pages display newest-first; if loading stops before the last page, **Newer updates are not shown** makes clear that newer history is missing. The History panel adds one pinned `/v1/change-digest` read above it (Change digests); legacy history pages are never fed into it.
 - **Health.**
   - `ready:false` is a setup state, never an empty success.
   - `503 {error}` maps to plain states: `corrupt` → damaged, `schema` → incompatible, `busy` → busy, others → service not responding.
@@ -510,6 +510,8 @@ couldn’t be compared**; a missing earlier plan separately says that totals
 cannot be compared. Neither case claims zero changes or displays limit numbers.
 Complete Search results use one count sentence, shared with the live announcement,
 without a separate completion notice or page/context explanation.
+The spoken outcome stays stable while Previous/Next and freshness checks update
+the visible qualification; an unchanged poll never repeats that outcome.
 Only incomplete or changed results have a short qualification, with the existing
 **Continue searching**, **Load more results** or **Refresh search** action;
 skipped-record counts and bounded-query explanations do not fill the results
