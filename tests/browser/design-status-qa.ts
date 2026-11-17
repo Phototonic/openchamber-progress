@@ -71,7 +71,7 @@ async function main() {
   const service = createProgressServer(f.store, 'status-fixture-only');
   await new Promise<void>(r => service.listen(0, '127.0.0.1', r));
   const origin = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
-  let empty = false, setup = false, partial = false, old = false;
+  let empty = false, setup = false, partial = false, partialZero = false, old = false;
   const fixture = await startLanguageFixture({ source: process.argv.includes('--source'), service: async q => {
     if (q.path === '/health' && setup) return { status: 200, body: JSON.stringify({ ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2 }) };
     const r = await fetch(`${origin}${q.path}?${new URLSearchParams(q.query)}`, {
@@ -84,6 +84,7 @@ async function main() {
       if (partial && body.needsYou) {
         body.needsYou.coverage.complete = false; body.needsYou.coverage.gapped = true;
         body.needsYou.coverage.skippedRecords = 1; body.needsYou.coverage.reasons = ['invalid-snapshot'];
+        if (partialZero) { body.needsYou.rows = []; body.needsYou.counts = { needsYou: 0, alsoBlocked: 0 }; }
       }
     }
     return { status: r.status, body: JSON.stringify(body) };
@@ -319,7 +320,19 @@ async function main() {
     f.store.setEnabled(true); await refresh(); await wait(`!d.querySelector('[data-testid="capture-off"]')`);
     partial = true; await refresh(); await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`);
     check('partial-plus-without-note', await guest(`return d.querySelector('[data-testid="needs-you-count"]').textContent.includes('1+')&&!d.querySelector('[data-testid="incomplete-counts"]')`));
-    await shot('status-partial'); partial = false;
+    await shot('status-partial');
+    partialZero = true; await refresh(); await wait(`!d.querySelector('[data-testid="needs-you-count"]')`);
+    for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [190, 280, 390]) {
+      await evaluate(`qa.show('status',${width});qa.ready('status',${javascriptLiteral({ locale })})`);
+      await wait(`d.documentElement.lang===${javascriptLiteral(locale)}`);
+      check(`incomplete-zero:${locale}:${width}:no-badge`, await guest(`return !d.querySelector('[data-testid="needs-you-count"]')&&!/\\b0\\+/.test(d.body.textContent)`));
+      const tree = await c.send('Accessibility.getFullAXTree', { frameId });
+      check(`incomplete-zero:${locale}:${width}:accessible-no-zero-plus`, !tree.nodes.some((n: any) => /\b0\+/.test(n.name?.value ?? '')));
+      await shot(`status-incomplete-zero-${locale}-${width}`);
+    }
+    partialZero = false; partial = false;
+    await evaluate(`qa.show('status',390);qa.ready('status',{locale:'en'})`);
+    await refresh(); await wait(`d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`);
     for (const lifecycle of ['finished', 'cancelled', 'failed', 'group', 'long']) {
       await click('[data-testid="status-plan-selector"] button'); await wait(`d.querySelector('[role="listbox"]')`);
       await click(`[role="option"][id$="/${lifecycle}"]`);

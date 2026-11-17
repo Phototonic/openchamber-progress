@@ -189,7 +189,7 @@ startView<Ui>({
     }
     const inbox = vc.inbox?.model ? scopeInbox(vc.inbox.model, new Set(scope.plans.map(p => p.key)), !failure && !read.truncated, vc.inbox.device, vc.inbox.storeId).model : null;
     const compact = compactMessages[resolveLanguage('auto', env.locale)];
-    if (inbox?.availability === 'ready' && (inbox.counts.needsYou || !inbox.complete)) {
+    if (inbox?.availability === 'ready' && inbox.counts.needsYou > 0) {
       if (activity.childNodes.length) activity.append(' · ');
       const count = testid(el('button', 'ap-link', compact.needs(`${formatCount(inbox.counts.needsYou, env.locale)}${inbox.complete ? '' : '+'}`)), 'needs-you-count');
       count.type = 'button';

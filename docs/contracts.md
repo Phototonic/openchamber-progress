@@ -2255,10 +2255,21 @@ potential `503 schema` health. Do not down-migrate to restore them.
 Rail and board combine incomplete-count reasons into one neutral, expandable
 “Counts may be incomplete.” note, last in the ordinary content. The reason set
 is derived from held list, inbox, run-history and host-census facts; it adds no
-request, timer, protocol revision or stored progress. Possibly low counts carry
-`+` directly after the number even when the note is dismissed. A complete
-recorded completed-run count is not qualified merely because the host census
-or a row page is incomplete; complete map/task counts remain exact.
+request, timer, protocol revision or stored progress. A positive count carries
+`+` directly after the number only when an active reason can raise that specific
+count, even when the note is dismissed. Zero never carries a plus or a badge;
+an incomplete zero has no number and is not presented as verified empty.
+Where the held facts cannot prove a count unaffected, a positive count stays
+qualified. Current running/waiting counts depend on host census completeness
+and loading every recorded child, not on recorded-history completeness alone.
+Positive finished/failed/interrupted/unknown and record totals remain qualified
+by incomplete recorded history or a recording gap. The gap is permanent and
+store-wide; its age or acknowledgement cannot establish unaffected history.
+A complete recorded completed-run count is not qualified merely because the
+host census or a row page is incomplete; complete map/task counts remain exact.
+Needs you remains qualified while its scope's traversal or session plan list
+is incomplete. The selected-plan inbox conservatively uses the source-wide
+traversal's completeness because independent per-plan coverage is unavailable.
 
 Dismissal uses only the existing bounded device view record, separately for rail
 and board, keyed by store, the canonical reason set and recording-gap detection

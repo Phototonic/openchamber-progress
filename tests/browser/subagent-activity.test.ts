@@ -1059,6 +1059,31 @@ test('lower-bound marks are count-specific in three languages; complete complete
   }
 });
 
+test('history-only gaps qualify positive history counts, not fully covered current activity', () => {
+  const rows = markLatest([
+    run('running', { childSessionId: 'K' }),
+    run('succeeded', { childSessionId: 'F' }),
+    run('failed', { childSessionId: 'E' }),
+    run('unknown', { childSessionId: 'U' }),
+  ]);
+  const census = censusFor('A', alpha.directory, snap([rec('A', null), rec('K', 'A', { activity: 'waiting-question' }), rec('H', 'A', { activity: 'running' })]));
+  for (const language of ['en', 'ru', 'zh-CN'] as const) {
+    for (const change of [
+      { recovery: { state: 'partial', token: 'next', reason: 'budget' }, coverage: { scope: 'retained', complete: false, reasons: ['partial-history'] } },
+      { capture: { enabled: true, state: 'last-known', loss: true }, coverage: { scope: 'retained', complete: false, reasons: ['capture-loss'] } },
+    ] as Partial<RunRead>[]) {
+      const r = rosterFor(input({ census, runs: panel(readOf(rows, {}, change)) }), language)!;
+      for (const kind of ['waiting', 'running', 'finished', 'failed', 'unknown']) {
+        const part = r.summary.find(s => s.kind === kind)!;
+        assert.ok(part, kind);
+        assert.equal(part.partial, kind !== 'waiting' && kind !== 'running', kind);
+        assert.equal(part.text.includes('+'), part.partial, kind);
+      }
+      assert.ok(r.summary.every(s => s.count > 0));
+    }
+  }
+});
+
 test('qualifications share the count indicator; read failures and recording off stay separate', () => {
   const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(n => !separateNote(n)).map((n) => n.kind);
   const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(separateNote).map((n) => n.kind);

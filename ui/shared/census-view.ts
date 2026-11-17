@@ -338,7 +338,7 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   if (!total && !label && !(v.surface === 'status' && runs?.pageError)) return null;
   const more = testid(el('details', 'ap-obs-more'), 'observed-more');
   const partial = !r.recorded || r.notes.some(n => !['capture-off', 'host-truncated', 'host-gaps', 'host-activity-unavailable'].includes(n.kind));
-  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records} · ${total}${partial ? '+' : ''}`));
+  more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records}${total > 0 ? ` · ${total}${partial ? '+' : ''}` : ''}`));
   const list = el('ul', 'ap-obs-list');
   list.setAttribute('aria-label', c.otherLabel);
   for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
