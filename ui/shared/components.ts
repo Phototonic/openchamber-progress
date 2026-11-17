@@ -290,7 +290,7 @@ const PLAIN_COPY: Partial<Record<CopyKey, MessageTranslations>> = {
   'No task rows are recorded in this plan, only groups.': { en: 'This plan has groups, but no tasks yet.', ru: 'В плане есть группы, но пока нет задач.', 'zh-CN': '此计划有分组，但还没有任务。' },
   'Revisions': { en: 'Updates', ru: 'Обновления', 'zh-CN': '更新' },
   'Revision {n}': { en: 'Update {n}', ru: 'Обновление {n}', 'zh-CN': '更新 {n}' },
-  'Only the first {n} revisions are shown.': { en: 'Newer updates are not shown.', ru: 'Более новые обновления не показаны.', 'zh-CN': '未显示较新的更新。' },
+  'Only the first {n} revisions are shown.': { en: 'Older updates are not shown.', ru: 'Более ранние обновления не показаны.', 'zh-CN': '未显示较早的更新。' },
   'plan reported': { en: 'plan shared', ru: 'план добавлен', 'zh-CN': '已分享计划' },
   'outcome reported': { en: 'plan closed', ru: 'план закрыт', 'zh-CN': '计划已关闭' },
 };
@@ -1935,7 +1935,7 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   if (!value || value.state !== 'ready') { section.append(partState('history-loading', say('history', env.locale), value, undefined, env.locale)); return section; }
   const ul = el('ul', 'ap-history');
   const entries = value.value.entries;
-  const kind = (i: number) => say(i === 0 ? 'plan reported' : entries[i].structuralRevision !== entries[i - 1].structuralRevision ? 'tasks revised' : entries[i].lifecycle !== entries[i - 1].lifecycle ? 'outcome reported' : 'progress update', env.locale);
+  const kind = (i: number) => say(entries[i].revision === 1 ? 'plan reported' : i === 0 ? 'progress update' : entries[i].structuralRevision !== entries[i - 1].structuralRevision ? 'tasks revised' : entries[i].lifecycle !== entries[i - 1].lifecycle ? 'outcome reported' : 'progress update', env.locale);
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);

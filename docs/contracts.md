@@ -791,6 +791,15 @@ except the bounded mention POST reads specified above:
   diagnostic, not a current-checklist claim. Unicode-character cursor; no files.
 - `/v1/history?source=ID&plan=ID&cursor=0&limit=20`: envelope/page of
   `{revision,structuralRevision,lifecycle,reportedAt}`. No full snapshot per row.
+  Rows are oldest-first; cursor is a row offset, not a revision. Committed plan
+  revisions start at 1 and append one retained row per revision atomically;
+  staging/replay create no revision, archive/restore preserve history, and
+  permanent deletion removes the whole plan rather than pruning older rows.
+  The UI reads the suffix ending at the listed plan revision, starting at
+  `max(0, revision - 250)`, within five 50-row pages, then displays newest-first.
+  It verifies the contiguous suffix through that boundary and shows a read
+  failure if rows/cursors disagree, never an older prefix labelled complete.
+  Later appends wait for the next listed revision; no new polling is added.
 
 Unknown routes/queries404; wrong method405; auth401; invalid parameters400;
 not-found404; unavailable/corrupt/schema/busy stores503 with fixed codes.
