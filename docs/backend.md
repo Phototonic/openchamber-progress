@@ -742,7 +742,7 @@ mixed-writer and independent claim/acceptance/task semantics.
 
 ## Storage and document consistency
 
-Closed-plan cleanup is the bounded exception to default history retention;
+Explicit plan cleanup is the bounded exception to default history retention;
 see the frozen API and fixture in `docs/contracts.md`. `shared/cleanup.ts` extends
 the existing Store owner, not a second storage engine. Cleanup format1 is additive
 to schema2 without changing legacy columns/order or stored snapshots. First-use
@@ -758,7 +758,20 @@ public ACLs and hard-linked Windows source state refuse without activating clean
 Archived directory filters retain the base's Windows separator/drive spelling
 equivalence without folding directory-name case or probing presentation paths.
 
-Archive/restore write only separate cleanup metadata; archive freezes progress.
+Ready health advertises `planCleanup:1` and the independent `planCleanupActive:1`
+fact. The latter permits archive/delete with literal `active:true` only for
+in-progress plans; omission preserves the earlier closed-plan eligibility.
+Restore refuses the field and accepts any archived lifecycle. The acknowledgement
+participates in replay identity without changing hashes for earlier requests that
+omitted it, receipt shape, error codes or cleanup format1.
+
+Archive/restore write only separate cleanup metadata; archive freezes progress
+regardless of lifecycle. Restore preserves that lifecycle and progress revision.
+An active archive also retires pending/reserved delegation authority in the same
+transaction without rewriting guarded report receipts. Deletion's existing intent
+trigger removes the same authority; session-owned runs are retained. Delegation
+checks cleanup before replay, and restored retries explain the consumed intent as
+retired rather than reviving it. No run or cleanup storage format changes.
 Delete removes the key's contributions/revisions/captures/chunks/receipts/plan in
 foreign-key-safe order and retains a minimal replay tombstone. Persistent main-DB
 INSERT/UPDATE guards cover plans, chunks, captures, revisions, contributions and
@@ -767,7 +780,9 @@ by SQLite itself; transaction rollback removes preceding partial capture writes.
 New writers check cleanup state before ordinary receipt replay. No normal GET,
 startup or report initializes this extension. Future/inconsistent extension formats
 are refused, not repaired. Rollback retains all guards/tombstones; old readers may
-show archived work, never deleted payloads. No secure-erasure claim is made for
+show archived work, never deleted payloads. A 1.5.0 service cannot restore an
+archived in-progress plan (`closed`); restore such plans before rollback when
+they must remain reportable. No secure-erasure claim is made for
 free pages, journals, recovery backups or filesystem snapshots. Original source
 files and unrelated records are never deleted.
 
@@ -776,6 +791,7 @@ Focused safety/API checks:
 ```sh
 node --experimental-strip-types --test tests/backend/plan-cleanup.test.ts tests/backend/production-storage.test.ts tests/backend/production-contract.test.ts
 node --experimental-strip-types --test tests/backend/plan-cleanup-service.test.ts tests/backend/production-service.test.ts tests/backend/service-recovery.test.ts tests/backend/task-timing.test.ts
+node --experimental-strip-types --test tests/backend/plan-cleanup-active-read.test.ts
 node --experimental-strip-types --test tests/backend/windows-platform.test.ts
 ```
 

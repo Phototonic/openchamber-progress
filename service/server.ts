@@ -178,7 +178,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
         const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
         const {subagentRuns,...health}=snapshot;
-        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1,managedFreshSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1,managedFreshSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planCleanupActive:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
           protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       }
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {

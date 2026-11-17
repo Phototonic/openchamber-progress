@@ -1102,8 +1102,11 @@ introduced. List/detail/history routes do not invoke digest comparison.
 ## Closed-plan cleanup (additive contract)
 
 This additive cleanup contract keeps protocol/base schema **2**. A ready capable
-service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
-not an empty archive. No report-tool operation is added.
+service adds `planCleanup:1` to `/health`. The independent additive
+`planCleanupActive:1` fact permits the in-progress acknowledgement described below;
+it does not change the meaning of `planCleanup:1`. Missing capability means
+unavailable, not an empty archive. Guests send the acknowledgement only when
+`planCleanupActive:1` is advertised. No report-tool operation is added.
 
 The rail and board's **Archive finished and cancelled plans…** action composes
 these per-plan routes; it adds no bulk service route or capability revision.
@@ -1135,16 +1138,27 @@ identifier rule; revisions are safe nonnegative integers, `rev` strictly positiv
 ```
 
 Delete additionally requires literal `"confirmed":true`; archive/restore refuse
-that extra field. Capture the actual store ID and progress/cleanup revisions from
+that extra field. Archive and delete optionally accept literal `"active":true`,
+acknowledging that the selected plan is in progress. Other values are invalid;
+restore refuses the field altogether. Capture the actual store ID and progress/cleanup revisions from
 the selected record, not these illustrative values. No paths, arrays, wildcard,
 session changes or unknown fields are accepted. Confirmation must remain bound to
 that captured key/revisions across context changes. Opening/cancelling sends nothing.
 
-Archive is the ordinary action; closed lifecycles `finished`, `cancelled` and `failed`
-are eligible. Restore requires an archived closed plan and preserves its lifecycle;
-deletion accepts visible or archived closed plans. Active plans are ineligible.
-Counts, report age and immutable progress history do not
-change on archive/restore. Cleanup works while capture is disabled without enabling it.
+Archive is the ordinary action. Eligibility depends on the acknowledgement:
+
+| Action | In progress (`active`) | Closed (`finished`, `cancelled`, `failed`) |
+| --- | --- | --- |
+| Archive or delete without `active` | `closed` refusal, as before | Accepted |
+| Archive or delete with `active:true` | Accepted | `closed` refusal |
+| Restore without `active` | Accepted when archived | Accepted when archived |
+
+Archive requires a visible plan; delete accepts visible or archived plans.
+Restore preserves lifecycle, so a restored in-progress plan is in progress again.
+Archive/restore leave tasks, counts, report age, progress revision and immutable
+history unchanged. Cleanup works while capture is disabled without enabling it.
+Finishing or reopening advances the progress revision: a request confirmed before
+that change refuses with `conflict`, never acting on the newly observed lifecycle.
 
 Success200 is a bounded receipt, not a plan or progress revision:
 
@@ -1156,7 +1170,10 @@ Restore with `cleanupRev:1`, a new oid and the same `rev` returns state `visible
 revision2. Delete with a fresh oid, `cleanupRev:2` and `confirmed:true` returns
 state `deleted`, revision3. Each transition increments the independent cleanup
 generation; progress revisions stay untouched. Only the latest identical request
-can replay its receipt (including delete after the plan is gone). Changed reuse
+can replay its receipt (including delete after the plan is gone). The acknowledgement
+is part of that identity; adding or removing it on the latest oid answers
+`operation-reused`. Earlier receipts for requests without the field still replay
+unchanged. Changed reuse
 of the latest oid refuses; older requests conflict, even after a restore. Do not
 blindly resubmit an ambiguous action: reconcile authoritative reads and show errors.
 
@@ -1164,9 +1181,9 @@ Errors are code-only; no submitted values or exception text is returned:
 
 | Status | Example / meaning |
 | --- | --- |
-|400|`{"error":"invalid"}` malformed, extra fields, missing/false confirmation|
+|400|`{"error":"invalid"}` malformed, extra fields, missing/false confirmation, nonliteral acknowledgement or acknowledgement on restore|
 |409|`{"error":"conflict"}` wrong store, stale progress revision or cleanup generation|
-|409|`{"error":"closed"}` active plan or ineligible state transition|
+|409|`{"error":"closed"}` lifecycle does not match acknowledgement, or ineligible state transition|
 |409|`{"error":"operation-reused"}` latest oid with altered semantic input/action|
 |404|`{"error":"not-found"}` missing/deleted key, unknown route or query|
 |401/405|`{"error":"unauthorized"}` / `{"error":"method-not-allowed"}`|
@@ -1208,11 +1225,34 @@ The first-use recovery backup may contain the deleted plan. Do not imply an undo
 button or silently purge those files.
 
 Persistent guards fence both already-loaded and newly opened older schema2
-writers. New writers refuse archived work with `closed`, deleted identities with
-`not-found`, before report receipt replay. Older writers may return generic storage
-errors; their old readers can show archived plans again. Restoring permits normal
-explicit reopen of a still-finished plan; deletion never frees its ID for reuse.
-Use a new plan ID for genuinely new work. Application rollback must retain guards,
+writers regardless of lifecycle. While archived, every report operation (start,
+change, revise including reopen, stage, commit, link, bind, finish, delegation and
+handoff with a plan task update) refuses with `closed` before receipt replay,
+including retries acknowledged before archive. Nothing is stored and reads still
+work. Reports never restore a plan automatically; after explicit restore, reports
+are accepted again at the unchanged progress revision. Session-only handoff claims
+are independent of plans and do not restore or update one.
+
+Deleted identities answer `not-found` for reports, including start with the same
+identifier and commit of a removed staged upload. Deletion never frees its ID for
+reuse. Archived/deleted in-progress plans leave ordinary and session lists,
+featured-plan choices, Needs you, resume briefs and waiting-delegation views.
+A pending or reserved declaration cannot bind afterwards. Archiving in-progress
+work retires its intent in the same cleanup transaction without rewriting the
+guarded plan receipts; deletion already removes intents with the plan. Retrying
+the declaration while archived answers `closed`, or `not-found` after deletion,
+before replay. Waiting-delegation notes disappear and recorded session runs remain.
+After restore, replay of a retired intent explains `retired`/`closed` without
+rewriting the earlier receipt or re-arming authority; a fresh declaration works.
+
+Older writers may return generic storage errors; their old readers can show
+archived plans again. A 1.5.0 guest never sends the acknowledgement and its request
+behaviour is unchanged; it can read an archived in-progress plan but offers no
+Restore action. A newer guest on a service without the fact omits in-progress
+targets and explains how many were omitted. A 1.5.0 service leaves archived
+in-progress plans readable but refuses restore with `closed`; restore them before
+rolling back if they must stay reportable. Restoring a closed plan permits normal
+explicit reopen. Use a new plan ID for genuinely new work. Application rollback must retain guards,
 tombstones and cleanup tables. Never downgrade by resetting the store or restoring
 the first-use backup automatically: that would lose later acknowledged reports.
 
@@ -1953,6 +1993,15 @@ dispatch first, then explicitly link each verified returned child session to its
 tasks; or delegate one at a time and wait for binding before declaring the next.
 The second-nonempty-declaration conflict includes this fixed recipe in `hint`;
 ordinary revision conflicts do not.
+
+Cleanup fences declarations before receipt replay. Archiving in-progress work
+removes its pending/reserved intent atomically, leaving the plan payload and
+earlier receipts unchanged; deletion also removes the intent. A returning child
+is still recorded as a session run, but cannot bind tasks. The coordinator gets
+`closed` on declaration retries while archived (`not-found` after deletion),
+and no waiting-delegation note is shown. Restore does not revive that authority:
+an old pending/reserved receipt is explained as `retired` with reason `closed`
+without a stored rewrite; a fresh declaration can reserve the next dispatch.
 
 One intent per source/parent (128/store) reserves the first subsequently admitted
 supported `subagent` dispatch atomically in database order, not result-arrival

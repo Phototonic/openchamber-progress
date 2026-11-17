@@ -59,7 +59,7 @@ export function parseHealth(body: string): HealthView & { planComposerHandoff?: 
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
   const state = v.state === 'starting' || v.state === 'unconfigured' || v.state === 'ready' || v.state === 'refused' ? v.state : undefined;
-  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
 }
 
 /**
@@ -773,10 +773,10 @@ export function setupBody(targets: { configRoot: string; dataRoot: string; store
 }
 
 export type CleanupAction = 'archive' | 'restore' | 'delete';
-export interface CleanupRequest { storeId: string; source: string; plan: string; rev: number; cleanupRev: number; oid: string }
+export interface CleanupRequest { storeId: string; source: string; plan: string; rev: number; cleanupRev: number; oid: string; active?: true }
 export function cleanupBody(request: CleanupRequest, action: CleanupAction) {
   const { storeId, source, plan, rev, cleanupRev, oid } = request;
-  return JSON.stringify({ storeId, source, plan, rev, cleanupRev, oid, ...(action === 'delete' ? { confirmed: true } : {}) });
+  return JSON.stringify({ storeId, source, plan, rev, cleanupRev, oid, ...(action !== 'restore' && request.active === true ? { active: true } : {}), ...(action === 'delete' ? { confirmed: true } : {}) });
 }
 export function parseCleanupReceipt(body: string, request: CleanupRequest, action: CleanupAction) {
   const v: unknown = JSON.parse(body);
