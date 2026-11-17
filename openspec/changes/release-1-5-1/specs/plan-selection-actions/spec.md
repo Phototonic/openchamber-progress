@@ -81,7 +81,7 @@ With at least one plan selected, the full page SHALL offer Archive and Delete pe
 
 ### Requirement: In-progress plans in a selection are acknowledged explicitly
 
-When a selection includes in-progress plans, the confirmation's one line SHALL state how many and what follows. Each request for an in-progress plan SHALL carry the in-progress acknowledgement, and no other request SHALL carry it. Without the service capability, in-progress plans SHALL be left out and the line SHALL say how many.
+When a selection includes in-progress plans, the confirmation's one line SHALL state how many and what follows. Each Archive or Delete permanently request for an in-progress plan SHALL carry the in-progress acknowledgement, and no other request SHALL carry it. Restore requests, including Undo of an archive, SHALL never carry it, whatever the plan's lifecycle. Without the service capability, in-progress plans SHALL be left out and the line SHALL say how many.
 
 #### Scenario: Archive warning
 - **WHEN** three of 14 selected plans are in progress and the user chooses Archive
@@ -94,6 +94,10 @@ When a selection includes in-progress plans, the confirmation's one line SHALL s
 #### Scenario: Acknowledgement only where needed
 - **WHEN** the run sends its requests
 - **THEN** the three requests for in-progress plans carry the acknowledgement and the eleven for closed plans do not
+
+#### Scenario: Restore never acknowledges
+- **WHEN** the user restores a selection, or uses Undo after archiving, and it includes plans that were in progress
+- **THEN** no restore request carries the acknowledgement, and each is restored with its lifecycle unchanged
 
 #### Scenario: Service without in-progress cleanup
 - **WHEN** the service does not advertise in-progress cleanup and the selection includes three in-progress plans

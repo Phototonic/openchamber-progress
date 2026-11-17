@@ -91,8 +91,12 @@ Opening Tidy SHALL show an inline panel, not a modal, whose one short line state
 - **THEN** the panel shows that it is counting, sends only reads, and can be cancelled before the count arrives
 
 #### Scenario: More than one run covers
-- **WHEN** more plans are in scope than one confirmation covers
+- **WHEN** at least 1,000 matching plans are collected and more remain
 - **THEN** the line says it covers the first 1,000 of more, and the rest can be done by using Tidy again
+
+#### Scenario: Scan limit reached first
+- **WHEN** the scan reaches its 2,000-plan limit having collected fewer than 1,000 matching plans
+- **THEN** the line states the number actually found and that more plans weren't checked, without claiming more matches exist, and the rest can be checked by using Tidy again
 
 #### Scenario: Deletion details
 - **WHEN** the user expands the disclosure in the deletion step
