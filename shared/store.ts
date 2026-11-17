@@ -168,6 +168,10 @@ export class Store {
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
   delegationRefusals(sourceId:string,sessionId:string) {return this.transaction(false,()=>runs.delegationRefusals(this.db,this.readBinding,sourceId,sessionId));}
+  /** Early refusal for a plan cleanup has fenced, so a companion never asks for document access a write cannot use. The write path still checks inside its transaction. */
+  assertReportable(sourceId:string,plan:string) {
+    this.transaction(false,()=>{const state=cleanupInstalled(this.db)?cleanupState(this.db,sourceId,plan):undefined;need(state?.state!=='deleted','not-found');need(state?.state!=='archived','closed');});
+  }
   handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number,capture?:Capture) {
     const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');
     const result=this.transaction(true,()=>{

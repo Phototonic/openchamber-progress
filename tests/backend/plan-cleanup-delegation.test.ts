@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanupFixture } from '../fixtures/cleanup.ts';
+import { delegationView } from '../../service/delegation-view.ts';
 
 test('archive then restore before dispatch cannot revive an unreserved delegation',()=>{
   const f=cleanupFixture();
@@ -58,3 +59,38 @@ for(const action of ['archive','delete'] as const){
     }finally{f.cleanup();}
   });
 }
+
+for(const state of ['pending','reserved'] as const)
+test(`restore after active archive shows a ${state} delegation as retired in both readers`,()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.bindReads(f.source.id,true);f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'declare',assign:['A']},f.actor);
+    if(state==='reserved')f.store.beforeRun({source:f.source.id,parent:'M',message:'message',call:'call'},f.actor,'subagent',{},1000);
+    f.store.cleanup('archive',{...f.body('P-active',0,'cleanup',1),active:true});
+    f.store.cleanup('restore',f.body('P-active',1,'restore',1));
+    const receipt=()=>f.store.db.prepare("SELECT receipt FROM receipts WHERE plan='P-active' AND oid='declare'").get()!.receipt;
+    const before=receipt();
+    const detail=f.store.detail(f.source.id,'P-active');
+    const result=delegationView(f.store,detail,detail.plan).view!.result as any;
+    assert.equal(result.availability,'ready');
+    assert.equal(result.disposition.state,'refused');assert.equal(result.disposition.reason,'closed');assert.equal(result.disposition.recovery,'redeclare-or-link');
+    const guidance=f.store.delegationRefusals(f.source.id,'M');
+    assert.equal(guidance.complete,true);assert.deepEqual(guidance.refusals.map(r=>[r.plan,r.reason,r.declaration.oid]),[['P-active','closed','declare']]);
+    assert.equal(receipt(),before,'the guarded receipt is not rewritten');
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM runs_intents').get()!.n,0,'the intent stays inactive');
+  }finally{f.cleanup();}
+});
+
+test('an unlinked dispatch keeps its visible plan when other active plans are archived',()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.bindReads(f.source.id,true);f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.seed('P-active-b');f.seed('P-active-c');
+    f.store.cleanup('archive',{...f.body('P-active',0,'archive-a',1),active:true});
+    f.store.cleanup('archive',{...f.body('P-active-b',0,'archive-b',1),active:true});
+    f.store.beforeRun({source:f.source.id,parent:'M',message:'message',call:'call'},f.actor,'subagent',{},1000);
+    const row=f.store.db.prepare("SELECT payload FROM runs_rows WHERE call='call'").get()!;
+    assert.equal(JSON.parse(String(row.payload)).planContext?.plan,'P-active-c');
+  }finally{f.cleanup();}
+});

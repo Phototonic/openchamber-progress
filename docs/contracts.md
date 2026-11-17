@@ -1279,9 +1279,15 @@ A pending or reserved declaration cannot bind afterwards. Archiving in-progress
 work retires its intent in the same cleanup transaction without rewriting the
 guarded plan receipts; deletion already removes intents with the plan. Retrying
 the declaration while archived answers `closed`, or `not-found` after deletion,
-before replay. Waiting-delegation notes disappear and recorded session runs remain.
-After restore, replay of a retired intent explains `retired`/`closed` without
-rewriting the earlier receipt or re-arming authority; a fresh declaration works.
+before replay. The companion makes the same check before it asks for document
+read permission or captures the bound document, so an archived plan never causes a
+permission prompt for a write that cannot succeed; the transaction still decides.
+Waiting-delegation notes disappear and recorded session runs remain.
+After restore, the guarded receipt stays untouched and the intent stays inactive:
+replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
+`retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
+a fresh declaration works. A new unlinked dispatch ignores archived plans when it
+looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
 archived plans again. A 1.5.0 guest never sends the acknowledgement and its request
@@ -1889,9 +1895,11 @@ below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The inline and packaged skill explain that `closed` while a reported plan was
-in progress, a refused reopen, or `not-found` for a plan the agent started means
+in progress or on a reopen, or `not-found` for a plan the agent started, means
 the user archived or deleted it: stop reporting, do not retry, and do not recreate
-it (including under another identifier) unless the user specifically asks.
+it (including under another identifier) unless the user specifically asks. A
+reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
+and is not user cleanup: read the plan and retry.
 Ordinary continuation of an agent-finished plan still uses the coordinator's
 explicit `revise`/`commit` with `reopen:true`. This is advisory guidance only;
 tool inputs, validation, replies and size limits are unchanged.

@@ -56,10 +56,11 @@ Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
 
 Closed plans require explicit coordinator `revise`/`commit` with `reopen=true`.
-If a plan you were reporting returns `closed` while in progress or refuses a reopen,
+If a plan you were reporting returns `closed` while in progress or on a reopen,
 or a plan you started returns `not-found`, the user archived or deleted it; stop
 reporting to it, do not retry, and don't recreate it unless the user specifically
-asks for it.
+asks for it. A reopen that returns `conflict` or `stage-incomplete` is recoverable:
+read the plan and retry.
 
 Coordinator `finish` optionally accepts `changes` for 1–50 unique existing task
 IDs with ordinary status/blocker validation. At the expected revision, explicit

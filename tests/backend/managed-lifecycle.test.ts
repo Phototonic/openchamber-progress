@@ -86,6 +86,31 @@ test('retirement before a held document permission completes prevents late repor
   }finally{held.resolve();await dispose?.();f.cleanup();}
 });
 
+test('a report to an archived plan is refused before any document permission request',async()=>{
+  const f=fixture();let dispose:any;
+  try{
+    f.configure();fs.writeFileSync(`${f.root}/project/plan.md`,'# Synthetic plan');
+    let asked=0;f.ctx.permission.assert=async()=>{asked++;};
+    dispose=await plugin.setup(f.ctx);
+    assert.equal((await f.report({...start(),source:'plan.md'})).rev,1);
+    const b=readManagedBinding(f.env)!,store=new Store(b.database);
+    try{store.cleanup('archive',{storeId:store.list().storeId,source:b.source.id,plan:'P-managed',rev:1,cleanupRev:0,oid:'archive',active:true});}finally{store.close();}
+    asked=0;
+    assert.equal((await f.report({op:'change',plan:'P-managed',oid:'late',rev:1,changes:[{id:'work',status:'done'}]})).error,'closed');
+    assert.equal((await f.report({op:'revise',plan:'P-managed',oid:'late-reopen',rev:1,title:'Synthetic',reopen:true})).error,'closed');
+    assert.equal(asked,0,'an archived plan never prompts for document access');
+  }finally{await dispose?.();f.cleanup();}
+});
+
+test('the reopen guidance limits the stop-reporting rule to closed and not-found',()=>{
+  for(const file of ['plugin/SKILL.md','plugin/index.ts']){
+    const text=fs.readFileSync(file,'utf8').replace(/\s+/g,' ');
+    assert.match(text,/`?closed`? while in progress or on a reopen/,file);
+    assert.match(text,/`?conflict`? or `?stage-incomplete`?/,file);
+    assert.doesNotMatch(text,/refuses a reopen/,file);
+  }
+});
+
 test('disposal while deferred initialization awaits registration cannot publish loaded observation or report',async()=>{
   const f=fixture(),held=deferred(),entered=deferred();let dispose:any;
   try{
