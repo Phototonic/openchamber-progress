@@ -38,7 +38,7 @@ export const PHONE_ITEMS: BlockerItemInput[] = [
   ...Array.from({ length: 6 }, (_, i) => ({ id: `extra-${i}`, title: `Follow-up check ${i + 1}`, kind: 'task' as const, status: (i < 2 ? 'done' : 'pending') as 'done' | 'pending' })),
 ];
 
-export function phoneFixture() {
+export function phoneFixture(documentation = false) {
   const f = productionFixture();
   const c2 = { ...f.child, sessionId: 'C2' };
   let oid = 0;
@@ -46,7 +46,17 @@ export function phoneFixture() {
   apply({ op: 'start', plan: 'P-second', title: 'Второй план: проверка длинных русских подписей', items: [{ id: 'r1', title: 'Проверить перенос строк', kind: 'task', status: 'working' }, { id: 'r2', title: 'Сверить переводы', kind: 'task', status: 'pending', dependencies: ['r1'] }] });
   apply({ op: 'start', plan: 'P-done', title: 'Finished warm-up plan', items: [{ id: 'd1', title: 'Warm up', kind: 'task', status: 'done' }] });
   apply({ op: 'finish', plan: 'P-done', outcome: 'finished' });
-  apply({ op: 'start', title: 'Phone layout for the progress rail and the full board on a 390 pixel screen', items: PHONE_ITEMS });
+  const documentationTitles: Record<string, string> = {
+    'task-a': 'Agree on the page structure', 'task-b': 'Build the new pages',
+    'task-c': 'Choose the launch date', 'task-d': 'Check the contact form',
+    'task-e': 'Test on a phone', 'task-f': 'Review the new illustrations',
+    'task-g': 'Publish the site', 'task-h': 'Optional animations',
+  };
+  const items = documentation ? PHONE_ITEMS.map(item => ({
+    ...item, title: documentationTitles[item.id] ?? item.title,
+    ...(item.id === 'task-c' ? { blocker: { category: 'decision' as const, reason: 'The pages are ready for a launch date.', nextAction: 'Choose Tuesday or Thursday.' } } : {}),
+  })) : PHONE_ITEMS;
+  apply({ op: 'start', title: documentation ? 'Refresh the studio website' : 'Phone layout for the progress rail and the full board on a 390 pixel screen', items });
   apply({ op: 'link', child: 'C1', assign: ['task-b', 'task-c'] }, f.actor, f.child);
   apply({ op: 'link', child: 'C2', assign: ['task-f'] }, f.actor, c2);
   apply({ op: 'change', changes: [{ id: 'task-b', status: 'working' }] }, f.child);
@@ -90,8 +100,8 @@ addEventListener('message',async e=>{
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Phone layout QA</title><style>html,body{margin:0;background:#fafafa}section{display:none;margin:0}iframe{display:block;width:100%;height:844px;border:0}</style></head><body><script>${script}</script>${FRAMES.map((f) => `<section data-frame="${f}"><iframe data-frame="${f}" data-surface="${f}" title="${f}" src="/ui/${f}/index.html"></iframe></section>`).join('')}</body></html>`;
 
-export async function startPhoneShell(options: { source?: boolean } = {}) {
-  const f = phoneFixture();
+export async function startPhoneShell(options: { source?: boolean; documentation?: boolean } = {}) {
+  const f = phoneFixture(options.documentation);
   const assets = createGuestAssets({ source: options.source, surfaces: ['panel', 'page'] });
   let service: Server | undefined, server: Server | undefined;
   const stop = async () => {

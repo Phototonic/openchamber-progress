@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-17
+
+Simple-by-default progress surfaces, session-scoped Needs you and source-only development builds. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- Tidy bulk-archives up to 50 finished or cancelled plans from the current surface list, with confirmation, sequential revision-checked requests and receipt-bound Undo. Failed and active plans are excluded; no delete route is used (#130).
+- Needs you offers in-place details, Open session, Copy reply and device-local Hide with Undo. It defaults to the selected session's plans, offers other-plan navigation and shares counts with board rows and Work Status (#131).
+
+### Changed
+
+- Needs you includes decision/review details only when reported by the plan's top-level main session. Unknown or sub-agent main sessions are excluded without rewriting stored reports or hiding task blockers; reads add an optional main-session fact (#127).
+- Rail and board use one More menu, in-place panels with Back, and Troubleshooting with Advanced details (#126). Plans open on a measured, readable map focused on current work when fit-all would be too small; Map | List, help, filters and cards are simplified (#133).
+- One dismissible incomplete-counts indicator replaces coverage notices; affected counts retain `+`, with reasons and limits in Advanced details and the support summary (#135).
+- Work Status uses a five-line layout with scoped activity counts, compact read failures and no task or sub-agent roster (#136).
+- Fresh Setup groups existing resumable steps into four display steps without changing consent, routes or the journal; technical facts move into one disclosure (#125, #137).
+- Plain-language English, Russian and Simplified Chinese copy covers default surfaces and accessible names; complete search results are announced once, with technical limits retained in Advanced details (#137). Possibly-low counts and waits use a trailing `+` instead of "at least", Needs you details read "Why" and "Asks you to", and a guard keeps "at least" out of default-state text (#140).
+- Companion guidance leads with a plan-mirroring checklist and survives system-text-dropping providers through bounded tool descriptions and advisory notes on eligible direct tool results. Plan recognition covers OpenSpec change files and host-listed sibling worktrees; hints remain observational, not automatic reports (#128).
+- Nine generated runtime outputs are no longer tracked on `dev`. Source checks build before tests and verify reproducibility; local promotion creates a two-parent commit containing accepted source plus built outputs for `main`, with strict distribution parity. `#dev` is no longer an installable Git ref (#132).
+- Documentation-only PRs skip inapplicable CI and CodeQL checks (#124). Windows selection skips interface-only PRs and reserves slow released-migration and delayed-fresh journeys for promotion, `main`, weekly and manual runs; publication still requires full Windows checks (#134).
+- The `release-1-5-0` OpenSpec change records the proposal, implementation and deferred acceptance (#123).
+
+### Fixed
+
+- Cancelled and failed plans support individual archive, restore and permanent deletion with the existing revision and confirmation checks; restoring preserves the lifecycle outcome (#122).
+- Closing Setup retires its step presentation without cancelling an in-flight request; same-reading capture changes keep Setup open (#129).
+- History loads the newest 250 revisions within its existing five-page budget and displays newest first, checking a contiguous tail before claiming success. The history route and cursor remain unchanged (#138).
+
 ## [1.4.1] - 2026-11-16
 
 Short-step fresh Windows setup and clearer visibility for running sub-agents. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -291,7 +319,9 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.1...v1.5.0
+[1.4.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...v1.2.0

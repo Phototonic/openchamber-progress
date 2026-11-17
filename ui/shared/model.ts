@@ -1,5 +1,6 @@
 // View model shared by all three surfaces. The wire format lives only in adapter.ts.
 import { countItems } from '../../shared/progress.ts';
+import { isNeedsYou, type MainSessionKind } from '../../shared/needs-you.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
 import type { InterfaceLanguage } from './i18n.ts';
@@ -21,8 +22,10 @@ export interface InboxTaskTarget { storeId: string; source: string; plan: string
 export interface InboxRowView {
   rowKey: string; planKey: string; source: string; plan: string; planTitle: string; revision: number; structuralRevision: number; cleanupRev: number;
   coordinatorSessionId: string; task: { id: string; title: string }; ancestors: { id: string; title: string }[]; omittedAncestors: number;
+  mainSessionKind?: MainSessionKind;
+  /** Category-only compatibility wire group; use inboxGroup for presentation membership. */
   group: 'needs-you' | 'also-blocked';
-  blocker: { state: 'reported'; category: BlockerCategory | 'unclassified' | null; reason: string | null; nextAction: string | null } | { state: 'absent' | 'invalid' };
+  blocker: { state: 'reported'; category: BlockerCategory | 'unclassified' | null; reason: string | null; nextAction: string | null; reporterSessionId: string; reportedRevision: number } | { state: 'absent' | 'invalid' };
   wait: ElapsedAnchor | null;
 }
 /** One validated inbox window. Counts are cumulative through this window; exact only when complete. */
@@ -106,6 +109,7 @@ export interface PlanView {
   sourceId: string;
   title: string;
   ownerSessionId: string;
+  mainSessionKind?: MainSessionKind;
   revision: number;
   structuralRevision: number;
   lifecycle: Lifecycle;
@@ -316,9 +320,9 @@ export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'workin
   lifecycle === 'active' && s.working > 0 && view.fresh && view.captureEnabled;
 
 const SUMMARY_TEXT = {
-  en: { empty: 'No tasks reported', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
-  ru: { empty: 'Нет зарегистрированных задач', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
-  'zh-CN': { empty: '尚未报告任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
+  en: { empty: 'No tasks yet', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
+  ru: { empty: 'Задач пока нет', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
+  'zh-CN': { empty: '还没有任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
 } satisfies Record<InterfaceLanguage, { empty: string; uncounted: string; done: (done: string, total: string) => string; remaining: (n: string) => string; skipped: (n: string) => string }>;
 
 export function summaryText(s: Counts, locale: InterfaceLanguage = 'en') {
@@ -344,6 +348,12 @@ export function itemTree(items: ItemView[]): ItemNode[] {
 
 export const currentWork = (detail: PlanDetail) => detail.items.filter((i) => i.kind === 'task' && i.status === 'working');
 export const blockedWork = (detail: PlanDetail) => detail.items.filter((i) => i.kind === 'task' && i.status === 'blocked');
+/** Shared List/Map membership; never hides a blocked task or its literal details. */
+export function itemNeedsYou(plan: Pick<PlanView, 'ownerSessionId' | 'mainSessionKind'>, item: ItemView): boolean {
+  const b = item.reportedBlocker;
+  return item.kind === 'task' && item.status === 'blocked' && b?.state === 'reported'
+    && isNeedsYou(b.category, b.reporterSessionId, plan.ownerSessionId, plan.mainSessionKind);
+}
 
 /** Task view filter: every row, or only unfinished tasks (pending, working, blocked). */
 export type StatusFilter = 'all' | 'unfinished';

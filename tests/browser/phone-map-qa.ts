@@ -142,18 +142,36 @@ try {
   const smallTargets = (f: string) => guest<string[]>(f, `return [...d.querySelectorAll('${region} :is(.ap-map-tool,.ap-map-select,.oc-sdk-btn,.ap-map-help-trigger,.ap-map-rel-item),.ap-map-switch .oc-sdk-btn')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return [n.dataset.testid??n.closest('[data-testid]')?.dataset.testid??n.className,Math.round(r.width),Math.round(r.height)]}).filter(([,w,h])=>w<44||h<44).map(x=>x.join(':'))`);
 
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fx.port}/` });
-  await wait('page', `d.querySelector('[data-testid="detail-tabs"]')`, 'board loaded');
+  await wait('page', `d.querySelector('[data-testid="plan-view"]')`, 'board loaded');
+  // Host-fixture chrome only: do not let the legacy 980px mobile viewport shrink a 390px guest.
+  await evaluate(`(()=>{const n=document.createElement('meta');n.name='viewport';n.content='width=device-width,initial-scale=1';document.head.append(n);document.querySelectorAll('section').forEach(n=>n.style.margin='0');return true})()`);
 
   // ── Board at 390 with touch emulation and a simulated phone device hint.
   await phone('page');
   facts.coarseMedia = await guest('page', `return w.matchMedia('(pointer: coarse)').matches`);
   await withDevice('page', DEVICE);
-  await wait('page', `d.querySelector('[data-testid="plan-row-P-map"][data-source="source-alpha"]')`, 'map plan row');
-  await tap(await need('page', '[data-testid="plan-row-P-map"][data-source="source-alpha"]'));
-  await wait('page', `d.querySelector('[data-testid="detail-tabs"] [data-id="map"]')`, 'Map tab');
-  await guest('page', `d.querySelector('[data-testid="detail-tabs"] [data-id="map"]').scrollIntoView({block:'center'});return true`); await frames2();
-  await tap(await need('page', '[data-testid="detail-tabs"] [data-id="map"]'));
+  // Narrow boards hide desktop rows. Select through the visible phone picker, not a zero-size row.
+  await wait('page', `d.querySelector('.ap-board-picker .oc-sdk-trigger')`, 'phone plan picker');
+  await tap(await need('page', '.ap-board-picker .oc-sdk-trigger'));
+  await wait('page', `[...d.querySelectorAll('.oc-sdk-option-label')].some(n=>n.textContent==='Dependency map fixture')`, 'map plan option');
+  await guest('page', `[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent==='Dependency map fixture').scrollIntoView({block:'nearest'});return true`);await frames2();
+  await tap(await guest<[number, number]>('page', `const n=[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent==='Dependency map fixture'),r=n.getBoundingClientRect(),o=w.frameElement.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]`));
+  await wait('page', `d.querySelector('[data-testid="plan-view-map"] button')`, 'Map switch');
+  await guest('page', `d.querySelector('[data-testid="plan-view-map"] button').scrollIntoView({block:'center'});return true`); await frames2();
+  await tap(await need('page', '[data-testid="plan-view-map"] button'));
   await ready('page');
+  await wait('page', `d.querySelector('[data-testid="map-title"]')?.textContent==='Dependency map fixture'`, 'source-qualified phone selection');
+  await tap(await need('page', '[data-testid="plan-view-list"] button'));
+  await wait('page', `!d.querySelector('${viewport}')`, 'coarse List tap');
+  await tap(await need('page', '[data-testid="plan-view-map"] button'));
+  await ready('page');check('board-switch-native-taps', true);
+  await guest('page', `d.querySelector('${hook('map-help-trigger')}').scrollIntoView({block:'center'});return true`);await settle('page');
+  await tap(await need('page', hook('map-help-trigger')));
+  await wait('page', `d.querySelector('${hook('map-help')}').open`, 'first coarse Help tap');
+  check('board-help-touch-wording', await guest('page', `return d.querySelector('${hook('map-help')}').open&&!!d.querySelector('${hook('map-touch-help')}')`));
+  await tap(await need('page', hook('map-help-trigger')));
+  await wait('page', `!d.querySelector('${hook('map-help')}').open`, 'coarse Help close tap');
+  check('board-help-native-first-tap', true);
   await guest('page', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await frames2();
   check('board-coarse-flag', await guest('page', `return d.querySelector('${region}').dataset.pointer==='coarse'`), { coarseMedia: facts.coarseMedia });
   // The phone layout's root hook comes from the same ready.device through the guest's own host-ready path.
@@ -205,28 +223,56 @@ try {
   check('board-zoom-button-tap', (await transform('page')).zoom > z);
   await tap(await need('page', hook('map-fit-all')));
   // Page scroll: a swipe outside the canvas scrolls the guest page; on the canvas it pans instead.
-  // Content above the board (the Needs you inbox) can push the tabs below the first screen at 390 px,
-  // so place them 200 px from the top of the frame first; the swipe stays outside the canvas.
-  await guest('page', `const s=d.scrollingElement,t=d.querySelector('[data-testid="detail-tabs"]');s.scrollTop=Math.max(0,s.scrollTop+t.getBoundingClientRect().top-200);return true`); await settle('page');
+  // A short host frame makes the compact map's surrounding content scrollable. Swipe the progress
+  // bar, not the Map|List toolbar: that toolbar now sits directly above the gesture-owning canvas.
+  await evaluate(`frame('page').style.height='600px';true`); await wait('page','w.innerHeight===600');
+  await guest('page', `w.scrollTo(0,0);return true`); await settle('page');
   const top0 = await scrollTop('page');
-  const header = await need('page', '[data-testid="detail-tabs"]');
-  await swipe([header[0], header[1] + 120], [header[0], header[1] - 120], 10);
+  const header = await need('page', '[data-testid="progress-bar"]');
+  await swipe(header, [header[0], Math.max(10,header[1] - 120)], 10);
   const scrolled = await scrollTop('page') - top0;
   check('board-page-scrolls-outside-canvas', scrolled > 0, { top0, scrolled });
   // A touch fling keeps scrolling after the finger lifts: let it come to rest first.
   await settle('page');
+  await evaluate(`frame('page').style.height='844px';true`); await wait('page','w.innerHeight===844');
   await guest('page', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await settle('page');
   const s1 = await scrollTop('page'), tc = await transform('page');
   const mid = await need('page', viewport);
   await swipe([mid[0], mid[1] + 60], [mid[0], mid[1] - 60], 10);
   const s2 = await scrollTop('page'), tm = await transform('page');
   check('board-canvas-swipe-pans-not-scrolls', s2 === s1 && tm.y < tc.y - 100, { s1, s2, tc, tm });
-  // Help: the touch wording is present and the disclosure opens by tap.
-  await guest('page', `d.querySelector('${hook('map-help-trigger')}').scrollIntoView({block:'center'});return true`); await settle('page');
-  await tap(await need('page', hook('map-help-trigger')));
-  const help = await guest<{ open: boolean; touch: boolean }>('page', `return {open:d.querySelector('${hook('map-help')}').open,touch:!!d.querySelector('${hook('map-touch-help')}')}`);
-  check('board-help-touch-wording', help.open && help.touch, help);
-  await tap(await need('page', hook('map-help-trigger')));
+  // CDP touch emulation can suppress the first tap after a pan, including on independent native
+  // controls. Compare that boundary, without retries; first-tap product acceptance is above.
+  {
+    const comparison: { control: string; activated: boolean; events: unknown }[] = [];
+    for (const control of ['help', 'native-summary', 'native-button']) {
+      await guest('page', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`);await settle('page');
+      const middle = await need('page', viewport);
+      await swipe([middle[0], middle[1] + 60], [middle[0], middle[1] - 60], 10);
+      await guest('page', `d.querySelector('${hook('map-help-trigger')}').scrollIntoView({block:'center'});return true`);await settle('page');
+      const selector = control === 'help' ? hook('map-help-trigger') : '[data-testid="post-pan-native-control"]';
+      await guest('page', `w.__postPanEvents=[];w.__postPanClicks=0;
+        if(${literal(control)}!=='help'){
+          const r=d.querySelector('${hook('map-help-trigger')}').getBoundingClientRect(),host=d.createElement('div');
+          host.dataset.testid='post-pan-native-host';host.style.cssText='position:fixed;z-index:99999;background:white;color:black';
+          Object.assign(host.style,{left:r.x+'px',top:r.y+'px',width:r.width+'px',height:r.height+'px'});
+          const n=d.createElement(${literal(control)}==='native-summary'?'details':'button');
+          if(${literal(control)}==='native-summary'){const s=d.createElement('summary');s.textContent='Native';s.dataset.testid='post-pan-native-control';Object.assign(s.style,{width:r.width+'px',height:r.height+'px'});n.append(s);}
+          else{n.type='button';n.textContent='Native';n.dataset.testid='post-pan-native-control';Object.assign(n.style,{width:r.width+'px',height:r.height+'px'});n.onclick=()=>w.__postPanClicks++;}
+          host.append(n);d.body.append(host);
+        }
+        w.__postPanListeners=['pointerdown','pointerup','touchstart','touchend','mousedown','mouseup','click'].map(type=>{const fn=e=>w.__postPanEvents.push({type,target:e.target?.dataset?.testid,prevented:e.defaultPrevented});d.addEventListener(type,fn,true);return[type,fn]});return true`);
+      await tap(await need('page', selector));
+      let activated = true;
+      const condition = control === 'help' ? `d.querySelector('${hook('map-help')}').open` : control === 'native-summary' ? `d.querySelector('${selector}').parentElement.open` : 'w.__postPanClicks>0';
+      try { await wait('page', condition, `${control} first post-pan tap`, 1500); } catch { activated = false; }
+      comparison.push({control,activated,events:await guest('page','return w.__postPanEvents')});
+      await guest('page', `for(const[type,fn]of w.__postPanListeners)d.removeEventListener(type,fn,true);d.querySelector('[data-testid="post-pan-native-host"]')?.remove();d.querySelector('${hook('map-help')}').open=false;return true`);
+    }
+    writeFileSync(join(artifacts, 'post-pan-controls.json'), JSON.stringify({sameRawTap:true,samePrecedingPan:true,nativeControlsOutsideMap:true,physicalPhoneVerified:false,comparison},null,2));
+    check('board-post-pan-tap-matches-native-controls', comparison.every(row=>row.activated===comparison[0].activated), comparison.map(({control,activated})=>({control,activated})));
+  }
+  check('board-help-touch-wording', await guest('page', `return !!d.querySelector('${hook('map-touch-help')}')`));
   // Reduced motion: no running animation or transition anywhere in the map after gestures.
   check('board-reduced-motion-still', await guest('page', `return d.getAnimations().filter(a=>a.playState==='running').length===0&&getComputedStyle(d.querySelector('${hook('map-world')}')).transitionDuration==='0s'`));
   // Device hint absent and no coarse media: plain responsive layout, no fabricated phone presentation.
@@ -238,19 +284,19 @@ try {
   // ── Dark theme and Russian long labels on the phone board.
   await withDevice('page', DEVICE); await phone('page');
   await evaluate(`qa.theme('dark');true`); await ready('page'); await frames2();
-  // Focus current work (after Fit all's overview) returns to full-size, readable cards on a coarse pointer.
-  await guest('page', `d.querySelector('${hook('map-focus-current')}').scrollIntoView({block:'center'});return true`); await settle('page');
-  await tap(await need('page', hook('map-focus-current')));
-  check('board-focus-current-readable', (await transform('page')).zoom >= 1, await transform('page'));
+  // Zoom buttons provide a gesture-free return from Fit's overview to readable cards.
+  await guest('page', `d.querySelector('${hook('map-zoom-in')}').scrollIntoView({block:'center'});return true`); await settle('page');
+  for (let step = 0; step < 30 && (await transform('page')).zoom < 1; step++) await tap(await need('page', hook('map-zoom-in')));
+  check('board-zoom-buttons-readable', (await transform('page')).zoom >= 1, await transform('page'));
   check('board-dark-no-overflow', await noOverflow('page'));
   await shot('map-dark', 'page');
   await evaluate(`qa.theme('light');qa.locale='ru';qa.ready();true`);
-  await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.textContent!=='Map help and definitions'`, 'Russian map');
+  await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Справка и фильтры'`, 'Russian map');
   await ready('page');
   check('board-russian-no-overflow', await noOverflow('page') && (await smallTargets('page')).length === 0, await smallTargets('page'));
   check('board-russian-touch-help', await guest('page', `return (d.querySelector('${hook('map-touch-help')}')?.textContent??'').startsWith('Касание')`));
   await shot('map-ru', 'page');
-  await evaluate(`qa.locale='en';qa.ready();true`); await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.textContent==='Map help and definitions'`, 'English map');
+  await evaluate(`qa.locale='en';qa.ready();true`); await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Help and filters'`, 'English map');
 
   // ── Rail Map at 390 with touch.
   await phone('panel'); await withDevice('panel', DEVICE);
@@ -271,16 +317,17 @@ try {
   check('rail-coarse-and-targets', await guest('panel', `return d.querySelector('${region}').dataset.pointer==='coarse'`) && (await smallTargets('panel')).length === 0 && await noOverflow('panel'), await smallTargets('panel'));
   await tap(await need('panel', hook('map-card-B')));
   await wait('panel', `d.querySelector('${inspector}')?.dataset.selected==='B'`, 'rail tap selected');
+  // Native switch acceptance precedes pan; post-pan tap suppression is compared to native controls above.
+  await guest('panel', `d.querySelector('${hook('plan-view-list')} button').scrollIntoView({block:'center'});return true`); await frames2();
+  await tap(await need('panel', `${hook('plan-view-list')} button`));
+  await wait('panel', `d.querySelector('${hook('item-B')}')&&!d.querySelector('${region}')`, 'rail list after map');
+  check('rail-view-as-list-tap', true);
+  await tap(await need('panel', `${hook('plan-view-map')} button`)); await ready('panel');
+  await guest('panel', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`);await frames2();
   const r0 = await transform('panel'), railCard = await need('panel', hook('map-card-B'));
   await swipe(railCard, [railCard[0] + 40, railCard[1] + 30]);
   const r1 = await transform('panel');
   check('rail-finger-pan-keeps-selection', Math.abs(r1.x - r0.x - 40) < 2 && Math.abs(r1.y - r0.y - 30) < 2 && await selected('panel') === 'B', { r0, r1 });
-  // View as list by tap returns to the list with the selected task revealed (existing handoff).
-  await guest('panel', `d.querySelector('${hook('map-list')}').scrollIntoView({block:'center'});return true`); await frames2();
-  await tap(await need('panel', `${hook('map-list')}`));
-  await wait('panel', `d.querySelector('${hook('item-B')}')&&!d.querySelector('${region}')`, 'rail list after map');
-  check('rail-view-as-list-tap', true);
-  await tap(await need('panel', `${hook('plan-view-map')} button`)); await ready('panel');
   await shot('map-rail', 'panel');
 
   // ── Desktop: mouse and keyboard behaviour unchanged (fine pointer, no touch).

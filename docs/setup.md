@@ -62,6 +62,38 @@ expectation bytes or package consent refuse rather than being silently refreshed
 The card shows real steps and on/off/unknown capture, not a percentage. Pause or
 Stop waits for the active request and retains work, without undoing it. Reopening
 requires explicit continuation. Before storage exists, capture is unknown, not off.
+Fresh setup presents these internal steps in at most four groups: create a private
+progress folder, connect it to OpenCode, turn on recording, and check that it works.
+The frozen plan alone determines membership and order. An existing folder is named
+as existing; groups without internal steps are omitted (retained storage has no
+turn-on group). A group completes only after its last internal step is durably
+complete. Pausing or failing inside a group leaves that group paused or failed,
+not complete. Migration keeps its separate internal sequence with plain labels.
+
+The fresh review shows its purpose, grouped steps and one unchecked consent line:
+the progress service runs with your account's access. Canonical paths, proposed
+identities, package and delivery facts, recording consequences and internal steps
+are in one disclosure that can be opened before confirmation. Consent remains
+bound to the same reviewed facts whether or not the disclosure was opened; changed
+facts still refuse stale consent. Running fresh setup shows a plain recording line;
+pause, failure, close/reopen and completion with recording off or unknown keep a
+conspicuous warning and the applicable recovery action. Retained recording stays
+unchanged. This is presentation only: step requests, journal, deadlines, budgets
+and platform checks are unchanged.
+
+Fresh Setup uses **recording** and **progress folder**. Before its first review,
+installation/load facts and the account-access, delivery and lifecycle explanations
+are in one keyboard-operable **What Setup changes on this computer** disclosure;
+recording state stays visible outside it. Review still shows the same bound facts
+and visible consent line, whether or not the disclosure was opened.
+**More → Setup** opens it without leaving the current session;
+**Back** returns to the plan and the More button. Language follows **More →
+Language**, including before setup is complete; changing it never confirms a
+Setup action. Troubleshooting's Advanced details and copied support summary
+retain the diagnostic vocabulary needed for support.
+
+![Fresh Setup with the recording state, optional progress folder and collapsed technical disclosure (synthetic example)](images/setup-fresh.png)
+
 Each request has at most six security launches, a 17-second work deadline and an
 18-second response deadline below the host's 20-second limit. Health remains cheap
 while workers run. Portable counters measure six launches for prepare, folder and
@@ -442,9 +474,13 @@ determine committed bytes:
 
 - No fragment follows the remote default branch (`main` for this distribution).
 - `https://github.com/Phototonic/openchamber-progress.git#main` selects main explicitly.
-- `https://github.com/Phototonic/openchamber-progress.git#dev` follows development builds.
 - A published tag, for example `https://github.com/Phototonic/openchamber-progress.git#v1.1.1`,
   stays at that tag; it does not follow later release tags.
+
+`dev` is source only and is not an installable ref. A host refuses a package
+without built entries, preserving an existing installation's files/state.
+An older `#dev` installation can still see a higher-version offer, but that
+update is refused: replace it with a default-branch or fixed-tag installation.
 
 Branches are not immutable commit pins. OpenChamber compares the selected ref's
 package version, not commit IDs or changed bytes. A new same-version commit does
@@ -458,14 +494,25 @@ Git, folder and ZIP packages carry the declared companion folder plus service,
 setup, background and all three guests. No consumer compilation/dependency fetch.
 Standalone release assets remain compatible legacy/recovery transports.
 
-Develop on `dev`, target `dev`, and promote accepted matching built entries only
-with maintainer approval. No routine version bump or automatic release is implied.
+Develop on `dev`, target `dev`, and commit no generated outputs. Build locally with
+`bun run build:all` before standalone tests/drivers. With maintainer approval,
+`bun run promote main dev promote/<version>` creates a local two-parent commit
+whose tree is accepted `dev` plus the nine reproducible outputs. It never pushes,
+tags, publishes or moves either input branch. A failure creates no promotion
+branch; fix the cause and retry. Bring any main-only source change to `dev` in a
+separate source-only PR first, never by merging `main`.
+Run host gates on a checkout of that promotion commit, then propose that branch
+to `main`; do not merge `dev` directly or merge the release back into `dev`.
+Rehearsals use only disposable clones with their remote removed.
+No routine version bump or automatic release is implied.
 Follow [CONTRIBUTING](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md)
 for full-history disposable CI, nine-entry parity, SDK validation and release policy.
 Never clear existing archives to make CI run. Actual host folder/ZIP/Git and native
 runtime gates remain separate from portable checks.
 
 ```sh
+# From the promotion checkout, not source-only dev:
+node --experimental-strip-types scripts/project-git-package.ts <candidate-Git-tree-projection>
 AGENT_PROGRESS_HOST_MODULE=<isolated-host-install.js> \
   node --experimental-strip-types scripts/verify-git-package.ts <candidate-Git-tree-projection>
 ```

@@ -22,24 +22,24 @@ export interface LanguageMessages {
 }
 const catalogs: Readonly<Record<InterfaceLanguage, LanguageMessages>> = Object.freeze({
   en: Object.freeze({
-    label: 'Language', automatic: 'OpenChamber language',
-    unsupported: 'This host does not support device storage. The interface follows the OpenChamber language; manual selection is unavailable.',
-    readFailed: 'The saved language could not be read. The last confirmed choice is still in use.',
-    saveFailed: 'The language could not be saved. The last confirmed choice is still in use. Try again.',
+    label: 'Language', automatic: 'Automatic (OpenChamber)',
+    unsupported: 'Follows OpenChamber’s language on this version.',
+    readFailed: 'Couldn’t read your language choice; keeping the last choice.',
+    saveFailed: 'Couldn’t save your language choice; try again.',
     saving: 'Saving language…', saved: 'Language saved.',
   }),
   ru: Object.freeze({
-    label: 'Язык', automatic: 'Язык OpenChamber',
-    unsupported: 'Этот хост не поддерживает хранилище устройства. Интерфейс следует языку OpenChamber; ручной выбор недоступен.',
-    readFailed: 'Не удалось прочитать сохранённый язык. Действует последний подтверждённый выбор.',
-    saveFailed: 'Не удалось сохранить язык. Действует последний подтверждённый выбор. Попробуйте снова.',
+    label: 'Язык', automatic: 'Автоматически (OpenChamber)',
+    unsupported: 'В этой версии используется язык OpenChamber.',
+    readFailed: 'Не удалось прочитать выбор языка; остаётся прежний.',
+    saveFailed: 'Не удалось сохранить язык; попробуйте снова.',
     saving: 'Сохранение языка…', saved: 'Язык сохранён.',
   }),
   'zh-CN': Object.freeze({
     label: '语言', automatic: '跟随 OpenChamber 语言',
-    unsupported: '此主机不支持设备存储。界面将跟随 OpenChamber 语言，无法手动选择。',
+    unsupported: '此版本跟随 OpenChamber 的语言。',
     readFailed: '无法读取已保存的语言，仍使用上次确认的选择。',
-    saveFailed: '无法保存语言，仍使用上次确认的选择。请重试。',
+    saveFailed: '无法保存语言，仍使用上次确认的选择，请重试。',
     saving: '正在保存语言…', saved: '语言已保存。',
   }),
 });

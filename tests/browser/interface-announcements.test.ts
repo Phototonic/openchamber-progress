@@ -5,9 +5,10 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { failureCopy, FAILURE_COPY } from '../../ui/shared/components.ts';
 import { resolveLanguage } from '../../ui/shared/i18n.ts';
-import { narrowed } from '../../ui/shared/search.ts';
+import * as searchModel from '../../ui/shared/search.ts';
 import { formatCount, plural } from '../../ui/shared/format.ts';
 import { readChangeDigest, readSearchWindow } from '../../ui/shared/source.ts';
+import { searchBackend, until, workspace } from './plan-task-search-fixture.ts';
 
 function harness(file: string) {
   const frames: (() => void)[] = [], nodes: any[] = [];
@@ -16,10 +17,45 @@ function harness(file: string) {
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/shared/${file}.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   runInNewContext(`${js}\n${file === 'change-digest-view' ? 'exports.unavailableText = unavailableText;' : ''}`, {
     exports, document: { body: { append: (node: any) => nodes.push(node) } }, requestAnimationFrame: (fn: () => void) => frames.push(fn),
-    require: (path: string) => path === './components.ts' ? { el, testid: (node: any) => node, failureCopy, FAILURE_COPY, button() {} } : path === './i18n.ts' ? { resolveLanguage } : path === './search.ts' ? { narrowed } : path === './format.ts' ? { formatCount, plural } : {},
+    require: (path: string) => path === './components.ts' ? { el, testid: (node: any) => node, failureCopy, FAILURE_COPY, button() {} } : path === './i18n.ts' ? { resolveLanguage } : path === './search.ts' ? searchModel : path === './format.ts' ? { formatCount, plural } : {},
   });
   return { exports, frames, nodes };
 }
+
+test('Next retained page and unchanged freshness poll never repeat the spoken outcome', async () => {
+  const backend = await searchBackend(false);
+  const controller = new searchModel.SearchController({ service: () => ({ serviceRequest: backend.relay }), changed() {}, visible: () => true });
+  try {
+    for (let i = 0; i < 60; i++) backend.f.seedPlan(`paging-${i}`, 'Paging plan', [{ id: 'T', title: 'Task', kind: 'task', status: 'pending' }]);
+    controller.submit('paging', { q: 'Paging', source: 'all', lifecycle: 'all', status: 'all', project: 'all', worktree: 'all', session: 'all', archived: false, labels: {} },
+      { storeId: backend.f.storeId, binding: { sourceId: backend.f.alpha.id, verified: true } }, workspace());
+    await until(() => !controller.view()!.busy, 'first search page');
+    controller.more();
+    await until(() => !controller.view()!.busy, 'second retained search page');
+    for (const language of ['en', 'ru', 'zh-CN']) {
+      controller.showPage(-1);
+      await controller.revalidate({ serviceRequest: backend.relay });
+      const h = harness('search-view');
+      const before = controller.view()!;
+      assert.equal(before.hasNext, true);
+      h.exports.statusLine(before, language);
+      while (h.frames.length) h.frames.shift()!();
+      const spoken = h.nodes[0].textContent;
+      controller.showPage(1);
+      assert.equal(controller.view()!.page.checked, false);
+      assert.ok(h.exports.qualificationText(controller.view()!, language), 'visible freshness qualification remains available');
+      h.exports.statusLine(controller.view()!, language);
+      assert.equal((await controller.revalidate({ serviceRequest: backend.relay })).state, 'fresh');
+      const after = controller.view()!;
+      assert.equal(after.page.checked, true);
+      assert.equal(after.status.id, before.status.id);
+      assert.equal(h.exports.qualificationText(after, language), '');
+      h.exports.statusLine(after, language);
+      assert.equal(h.frames.length, 0, `${language}: paging and polling must schedule zero repeat announcements`);
+      assert.equal(h.nodes[0].textContent, spoken);
+    }
+  } finally { controller.dispose(); await backend.stop(); }
+});
 
 for (const [file, name] of [['search-view', 'announceSearch'], ['change-digest-view', 'announceDigest']]) {
   test(`${name}: held frames use latest language for the same outcome, without repeat writes`, () => {

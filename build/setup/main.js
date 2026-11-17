@@ -746,7 +746,7 @@ function preflight(db, action, r, installed) {
     throw new ProgressError("corrupt");
   }
   requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
-  requireProgress(p.lifecycle === "finished", "closed");
+  requireProgress(["finished", "cancelled", "failed"].includes(p.lifecycle), "closed");
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
@@ -3645,10 +3645,23 @@ class Store {
       throw storageError(e);
     }
   }
+  mainSessionKind(source, session) {
+    const row2 = this.db.prepare("SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?").get(source, session);
+    try {
+      const a = JSON.parse(String(row2?.actor));
+      if (!a || a.sourceId !== source || a.sessionId !== session)
+        return "unknown";
+      if (a.parentId === null)
+        return "top-level";
+      return identifier(a.parentId) ? "subagent" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
   summary(p) {
     const { items, links: _links, boundCanonicalPath: _bound, ...rest } = p;
     const state = cleanupInstalled(this.db) ? cleanupState(this.db, p.sourceId, p.id) : undefined;
-    return { ...rest, ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
+    return { ...rest, mainSessionKind: this.mainSessionKind(p.sourceId, p.sessionId), ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
   }
   metadata() {
     const meta = this.db.prepare("SELECT * FROM meta WHERE singleton=1").get();
@@ -4471,7 +4484,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.4.1";
+var RELEASE = "1.5.0";
 
 // setup/cli.ts
 try {

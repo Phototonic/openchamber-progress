@@ -3,12 +3,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRow } from '../../shared/needs-you.ts';
-import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY } from '../fixtures/attention-contracts.ts';
+import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY, INBOX_MEMBERSHIP, INBOX_LEGACY } from '../fixtures/attention-contracts.ts';
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
 import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, readingRequest, ReadingFocus, type InboxReading } from '../../ui/shared/inbox-view.ts';
-import type { InboxWindowView, PlanDetail } from '../../ui/shared/model.ts';
+import { checkReading, CompactInbox, inboxSummary, openReading, readingRequest, ReadingFocus, revealInboxTask, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { itemNeedsYou, type InboxWindowView, type PlanDetail, type ItemView } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
 
@@ -68,6 +68,32 @@ function wire(rows: [string, string, string | null][], extra: Rec = {}): Rec {
   return { ...base, storeId: STORE, sourceBinding: { sourceId: SRC, verified: true }, rows: built, counts, ...extra };
 }
 const partial = (cursor: string) => ({ nextCursor: cursor, coverage: { kind: 'observed-current', complete: false, exhausted: false, gapped: false, skippedRecords: 0, reasons: [] } });
+
+test('reply-copy state belongs only to the opened row and unchanged reply text', () => {
+  const state = new CompactInbox();
+  state.reconcile('scope-example');
+  state.opened = 'row-a';
+  const first = state.replyCopy('row-a', 'Reply A')!;
+  first.pending = true;
+  assert.equal(state.replyCopy('row-a', 'Reply A'), first, 'background paints retain the pending operation');
+  first.result = 'fallback'; first.pending = false;
+  first.selection = { start: 1, end: 4, direction: 'backward', top: 0 };
+  assert.equal(state.replyCopy('row-a', 'Reply A')?.selection?.start, 1);
+  assert.equal(state.replyCopy('row-b', 'Reply B'), null, 'unopened rows do not own copy state');
+  state.opened = null;
+  state.opened = 'row-a';
+  assert.equal(state.currentCopy(first), false, 'closing and reopening retires pending completions');
+  const reopened = state.replyCopy('row-a', 'Reply A')!;
+  assert.equal(reopened.result, 'idle');
+  reopened.pending = true;
+  const changed = state.replyCopy('row-a', 'Changed reply')!;
+  assert.equal(state.currentCopy(reopened), false, 'a text change retires the earlier request');
+  assert.equal(changed.result, 'idle');
+  assert.equal(changed.pending, false);
+  assert.equal(changed.selection, null);
+  state.reconcile('another-scope');
+  assert.equal(state.currentCopy(changed), false);
+});
 const parse = (v: Rec, previous: InboxWindowView['counts'] | null = null, timing = true) => parseNeedsYouWindow(v, PIN, previous, timing, 1000);
 
 test('inbox windows are re-validated: identity, category grouping, counts, coverage and timing anchors', () => {
@@ -149,6 +175,47 @@ test('the first window rides on the first list page only when advertised; it nev
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise<void>((r) => setImmediate(r)); };
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
 const first = (v: Rec) => ({ state: 'ready' as const, window: parse(v) });
+test('main-session membership uses held rows and provenance, never category-only wire counts', () => {
+  const c = new InboxController({ service: () => service(() => ok({})).host, visible: () => true, changed() {} });
+  const fixture = structuredClone(INBOX_MEMBERSHIP);
+  const pin = { storeId: fixture.storeId, binding: fixture.sourceBinding };
+  const adopt = () => c.adopt('fixture', { state: 'ready', window: parseNeedsYouWindow(fixture, pin, null, false, 0) });
+  adopt();
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['main', 'relay']);
+  assert.deepEqual(c.model()!.counts, { needsYou: 2, alsoBlocked: 4 });
+  assert.equal(openReading(c.model()!.alsoBlocked[0], fixture.storeId).group, 'also-blocked', 'navigation never promotes an excluded wire-group row');
+  const b = c.model()!.needsYou[1].blocker;
+  assert.ok(b.state === 'reported' && b.reporterSessionId === 'coordinator-alpha' && b.reportedRevision === 2);
+  const changed = fixture.rows[0].blocker;
+  assert.equal(changed.state, 'reported');
+  if (changed.state !== 'reported') throw new Error('annotation');
+  changed.annotation.reporterSessionId = 'child-alpha'; changed.annotation.attributedSessionId = 'child-alpha';
+  adopt();
+  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 5 }, 'details change hands without changing category or row identity');
+  changed.annotation.reporterSessionId = 'coordinator-alpha'; changed.annotation.attributedSessionId = 'coordinator-alpha';
+  adopt();
+  assert.equal(c.model()!.counts.needsYou, 2);
+  c.adopt('fixture', { state: 'ready', window: parseNeedsYouWindow(INBOX_LEGACY, pin, null, false, 0) });
+  assert.equal(c.model()!.availability, 'unsupported', '1.4.x-shaped reply never becomes a false empty');
+  assert.equal(c.model()!.complete, false);
+});
+
+test('plan-task membership agrees with the inbox for direct, handoff, relay and unknown identities', () => {
+  for (const row of INBOX_MEMBERSHIP.rows) {
+    if (row.blocker.state !== 'reported') throw new Error('annotation');
+    const a = row.blocker.annotation;
+    const item: ItemView = { ...row.task, reportedBlocker: {
+      state: 'reported', category: a.category ?? null, reason: a.reason ?? null, nextAction: a.nextAction ?? null,
+      reporterSessionId: a.reporterSessionId, attributedSessionId: a.attributedSessionId, mode: a.mode, reportedRevision: a.reportedRevision, reportedAt: a.reportedAt,
+    } };
+    const plan = { ownerSessionId: row.coordinatorSessionId, mainSessionKind: row.mainSessionKind };
+    assert.equal(itemNeedsYou(plan, item), ['main','relay'].includes(item.id), item.id);
+    assert.equal(itemNeedsYou(plan, { ...item, status: 'pending' }), false);
+    assert.equal(itemNeedsYou(plan, { ...item, kind: 'group' }), false);
+    assert.equal(itemNeedsYou({ ...plan, mainSessionKind: undefined }, item), false);
+    assert.equal(item.status, 'blocked', 'membership never rewrites blocked tasks');
+  }
+});
 
 test('search freshness carries an optional inbox without making its absence fail freshness', async () => {
   const keys = [{ source: SRC, plan: 'p' }];
@@ -175,7 +242,7 @@ test('a cursor-only first-window change retires held continuation and uses the n
   assert.equal(s.calls.at(-1)?.query?.cursor, 'new-cursor');
 });
 
-test('continuation is explicit, pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
+test('continuation on refresh is pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
   let held: ReturnType<typeof deferred<GuestRequestResult>> | null = null;
   const s = service((q) => (held = deferred<GuestRequestResult>(), held.promise));
   let visible = true, changes = 0;
@@ -183,12 +250,12 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   const owner = JSON.stringify(['acct', 'store-1|src-local|true']);
   const w1 = wire([['plan-alpha', 'a', 'decision'], ['plan-beta', 'c', 'external']], partial('cursor-1'));
   assert.equal(c.adopt(owner, first(w1)), true);
-  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), false, 'a new read time alone repaints nothing');
+  assert.equal(c.adopt(owner, first({ ...structuredClone(w1), readAt: '2026-01-01T00:00:09.000Z', rows: w1.rows.map((r: Rec) => ({ ...r, timing: { ...r.timing, readAt: '2026-01-01T00:00:09.000Z' } })) })), true, 'the ordinary refresh admits one automatic continuation');
   let m = c.model()!;
   assert.equal(m.complete, false); assert.equal(m.canContinue, true);
-  assert.equal(inboxSummary(m, 'en'), 'At least 1 task needs you');
-  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: не менее 1 задачи');
-  assert.equal(s.calls.length, 0, 'nothing loads more on its own');
+  assert.equal(inboxSummary(m, 'en'), '1+ tasks need you');
+  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: 1+');
+  assert.equal(s.calls.length, 1, 'one window on the ordinary refresh');
   c.panel()!.more();
   assert.equal(s.calls.length, 1);
   const q = s.calls[0];
@@ -202,10 +269,10 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   await settle();
   m = c.model()!;
   assert.deepEqual(m.needsYou.map((r) => r.task.id), ['a', 'e']);
-  assert.deepEqual(m.counts, { needsYou: 3, alsoBlocked: 1 });
+  assert.deepEqual(m.counts, { needsYou: 2, alsoBlocked: 1 });
   assert.equal(m.complete, true);
-  assert.equal(inboxSummary(m, 'en'), '3 tasks need you');
-  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: 3 задачи');
+  assert.equal(inboxSummary(m, 'en'), '2 tasks need you');
+  assert.equal(inboxSummary(m, 'ru'), 'Нужно ваше участие: 2 задачи');
   // A different first window never splices with pages from the old traversal.
   const w2 = wire([['plan-alpha', 'a', 'decision'], ['plan-beta', 'c', 'external'], ['plan-beta', 'd', 'other']], partial('cursor-2'));
   assert.equal(c.adopt(owner, first(w2)), true);
@@ -232,6 +299,89 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   assert.equal(s.calls.length, 4); assert.equal(c.model()!.availability, 'unsupported');
 });
 
+test('review regression: explicit retry recovers a failed first continuation with an unchanged first window', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let fail = true;
+  const s = service(() => fail ? { status: 503, body: JSON.stringify({ error: 'busy' }) }
+    : ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed() {} });
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(c.model()!.moreFailed?.kind, 'busy');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 1, 'ordinary refresh does not retry a failed first append');
+  fail = false;
+  // Optional access also exercises the pre-fix facade, where the retry path is absent.
+  (c.panel() as ReturnType<InboxController['panel']> & { retry?: () => void })?.retry?.();
+  await settle();
+  assert.equal(s.calls.length, 2, 'Try again must directly admit the failed continuation');
+  assert.equal(s.calls[1].query?.cursor, 'cursor-1');
+  assert.equal(c.model()!.moreFailed, null);
+  assert.equal(c.model()!.complete, true);
+});
+
+test('review regression: inbox selection delegates to map reveal without needing a rendered card', () => {
+  const row = parse(wire([['plan-alpha', 'task-a', 'decision']])).rows[0];
+  const plan = inboxRequest({ storeId: STORE, source: row.source, plan: row.plan, task: row.task.id, revision: row.revision, cleanupRev: row.cleanupRev }, row.planTitle, row.coordinatorSessionId);
+  const revealed: string[] = [];
+  revealInboxTask(null, plan, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'a filtered-out card must reach the controller reveal path');
+  revealInboxTask(null, { ...plan, key: 'another/plan' }, row, id => { revealed.push(id); return true; });
+  assert.deepEqual(revealed, [row.task.id], 'another plan must not acquire the inbox selection');
+});
+
+test('automatic continuation stops at eight windows and completion never chains another request', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  let visible = true;
+  const s = service(q => {
+    const n = Number(q.query!.cursor!.slice('cursor-'.length));
+    return ok(wire([['p', `t-${n}`, 'review']], { ...partial(`cursor-${n + 1}`), counts: { needsYou: n + 1, alsoBlocked: 0 } }));
+  });
+  const c = new InboxController({ service: () => s.host, visible: () => visible, changed: () => {} });
+  c.adopt('owner', top);
+  for (let n = 1; n <= 7; n++) {
+    c.adopt('owner', top);
+    assert.equal(s.calls.length, n, 'one request on this ordinary refresh');
+    await settle();
+    assert.equal(s.calls.length, n, 'completion never chains another request');
+  }
+  assert.equal(c.model()!.needsYou.length, 8);
+  c.more(); await settle();
+  assert.equal(s.calls.length, 8, 'explicit activation admits the ninth window');
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-8');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.at(-1)!.query!.cursor, 'cursor-1', 'refresh rechecks instead of automatically extending past the cap');
+  visible = false; c.retire('hidden');
+  const calls = s.calls.length;
+  c.adopt('owner', top); c.more(); await settle();
+  assert.equal(s.calls.length, calls, 'hidden frames request nothing');
+});
+
+test('inbox automatic reads and completions stay background while direct actions remain immediate', async () => {
+  const lanes: string[] = [];
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  const s = service(() => ok(wire([['p', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: action => lanes.push(action ? 'action' : 'background') });
+  c.adopt('owner', top);
+  c.adopt('owner', top);
+  await settle();
+  assert.ok(lanes.length > 0);
+  assert.ok(lanes.every(lane => lane === 'background'), 'automatic continuation and its reply must not bypass popup/press guards');
+  lanes.length = 0;
+  c.adopt('owner', top);
+  await settle();
+  assert.ok(lanes.every(lane => lane === 'background'), 'ordinary rechecks stay on the same data lane');
+  lanes.length = 0;
+  c.panel()!.expand(true);
+  assert.equal(lanes.at(-1), 'action');
+  c.retire('reset');
+  c.adopt('owner', top);
+  lanes.length = 0;
+  c.more();
+  assert.equal(lanes[0], 'action', 'explicit Load more starts immediately');
+  await settle();
+  assert.equal(lanes.at(-1), 'background', 'its asynchronous completion is still background');
+});
+
 test('unchanged first windows recheck loaded pages one per refresh and remove resolved later tasks', async () => {
   const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
   let resolved = false;
@@ -244,13 +394,13 @@ test('unchanged first windows recheck loaded pages one per refresh and remove re
   assert.equal(c.model()!.complete, true);
   resolved = true; // No first-window row, count or cursor changes.
   c.adopt('owner', first(top));
-  assert.equal(c.model()!.complete, false, 'old later-page counts are not exact during rechecking');
-  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.equal(c.model()!.complete, true, 'a completed traversal retains authority until a reread actually differs');
+  assert.deepEqual(c.model()!.counts, { needsYou: 3, alsoBlocked: 0 });
   assert.equal(c.model()!.rechecking, true);
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b', 'c'], 'rows remain readable under the rechecking notice');
   await settle();
   assert.equal(s.calls.length, 3, 'one continuation reread in the first refresh');
-  assert.equal(c.model()!.complete, false);
+  assert.equal(c.model()!.complete, true, 'the first continuation reread is unchanged');
   c.adopt('owner', first(top)); await settle();
   assert.equal(s.calls.length, 4, 'one continuation reread in the second refresh');
   assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b']);
@@ -421,7 +571,7 @@ test('opening a row revalidates the current plan and task before any reveal; not
   const newer = wire([['plan-alpha', 'other', 'review']]); newer.rows[0].revision = 5; newer.rows[0].blocker.annotation.validAtRevision = 5;
   c.adopt('o', first(newer));
   assert.equal(readingRequest(reading, c.model()).revision, 5);
-  const plan = { ...inboxRequest(reading.target, 'Plan plan-alpha', 'coordinator-alpha'), directory: '/fixture/Alpha' };
+  const plan = { ...inboxRequest(reading.target, 'Plan plan-alpha', 'coordinator-alpha'), directory: '/fixture/Alpha', mainSessionKind: 'top-level' as const };
   const archived = { ...plan, revision: 6, cleanup: { state: 'archived' as const, revision: 1 } };
   assert.equal(readingRequest(reading, null, archived), archived, 'latest detail remains authoritative after the plan leaves the inbox');
   assert.equal(readingRequest(reading, null, { ...archived, key: `${SRC}/another-plan` }).key, plan.key, 'another plan cannot replace this target');
@@ -431,8 +581,17 @@ test('opening a row revalidates the current plan and task before any reveal; not
   assert.equal(checkReading(reading, { state: 'error', failure: { kind: 'not-found', code: 'not-found', message: '' } }, null, ctx, 'en').kind, 'gone');
   assert.equal(checkReading(reading, { state: 'error', failure: { kind: 'busy', code: 'busy', message: '' } }, null, ctx, 'en').kind, 'failed');
   assert.equal(checkReading(reading, detail([]), plan, { storeId: 'store-2', boundSource: SRC }, 'en').kind, 'other-setup');
-  const blocked = checkReading(reading, detail([{ id: 'task-a', title: 'Task task-a', kind: 'task', status: 'blocked' }]), plan, ctx, 'en');
+  const item: ItemView = { id: 'task-a', title: 'Task task-a', kind: 'task', status: 'blocked', reportedBlocker: {
+    state: 'reported', category: 'decision', reason: 'Choose a direction', nextAction: null, reporterSessionId: plan.ownerSessionId,
+    attributedSessionId: plan.ownerSessionId, mode: 'direct', reportedRevision: 3, reportedAt: '2026-01-01T00:00:00.000Z',
+  } };
+  const blocked = checkReading(reading, detail([item]), plan, ctx, 'en');
   assert.ok(blocked.kind === 'ready' && blocked.reveal && blocked.notice === null && blocked.message === 'Needs you: Task task-a');
+  const childReported = structuredClone(item);
+  if (childReported.reportedBlocker?.state !== 'reported') throw new Error('annotation');
+  childReported.reportedBlocker.reporterSessionId = 'child-alpha';
+  const excluded = checkReading(reading, detail([childReported]), plan, ctx, 'en');
+  assert.ok(excluded.kind === 'ready' && excluded.message === 'Also blocked: Task task-a', 'an open reading follows who currently reported details, not the old wire group');
   const resolved = checkReading(reading, detail([{ id: 'task-a', title: 'Task task-a', kind: 'task', status: 'done' }]), plan, ctx, 'ru');
   assert.ok(resolved.kind === 'ready' && resolved.reveal && resolved.notice === 'Задача «Task task-a» больше не заблокирована. Сейчас: выполнена.');
   const gone = checkReading(reading, detail([{ id: 'task-a', title: 'Group', kind: 'group', status: 'pending' }]), { ...plan, lifecycle: 'completed' }, ctx, 'en');

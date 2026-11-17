@@ -21,7 +21,7 @@
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
-import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
+import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, runTidy, tidyConfirmation, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, projectFor, type LiveSnapshot } from './live.ts';
 import { progressItem, progressTargetState, progressTargetRead, type ProgressItem, type ProgressContextState } from './session-context.ts';
@@ -32,6 +32,10 @@ import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
 import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
+import { DeviceViewState } from './device-view-state.ts';
+import { countFacts, type CountFacts } from './incomplete-counts.ts';
+import { COUNT_CSS, IncompleteCounts } from './incomplete-counts-view.ts';
+import { censusFor, type Census } from './census.ts';
 import { INBOX_CSS } from './inbox-style.ts';
 import { INTENT_CSS } from './intent.ts';
 import { applyDeviceHooks } from './phone-layout.ts';
@@ -109,6 +113,7 @@ export interface ViewContext<U> {
   health: HealthView | null;
   /** Data for the current scope only (null while that scope is loading or not configured). */
   read: StoreRead | null;
+  countFacts: CountFacts;
   failure: ReadFailure | null;
   lastGoodAt: number | null;
   live: LiveSnapshot;
@@ -116,6 +121,8 @@ export interface ViewContext<U> {
   language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
   ui: U;
   setUi: (patch: Partial<U>) => void;
+  /** Background data/presentation changed; preserves open pickers and active presses. */
+  invalidate: () => void;
   /** Functional update against the latest UI state (safe after an await). */
   updateUi: (fn: (ui: U) => Partial<U>) => void;
   retry: () => void;
@@ -135,6 +142,11 @@ export interface ViewContext<U> {
   cancelCleanup: () => void;
   confirmDelete: () => void;
   runCleanup: (action: 'archive' | 'restore', plan: PlanView) => void;
+  tidyPlans: () => PlanView[];
+  requestTidy: () => void;
+  cancelTidy: () => void;
+  confirmTidy: () => void;
+  undoTidy: () => void;
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
   /**
@@ -160,7 +172,7 @@ export interface ViewContext<U> {
    * Sub-agent runs of one root with a plan in scope (runs.ts). Call it only while painting an eligible
    * section; a paint without a call retires the visit and any held reply. Null without a store read.
    */
-  runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
+  runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>, census?: Census) => RunsPanel | null;
   /**
    * Source-wide Needs you inbox of the current read (inbox.ts), for surfaces that ask for it
    * (spec.needsYou). Null without a current read; its controls are bound to that store/binding.
@@ -220,6 +232,9 @@ export interface ViewSpec<U> {
   onContext?: (vc: ViewContext<U>) => void;
   /** Only rail/page expose cleanup; the selected plan, including document/history tabs. */
   actionPlan?: (vc: ViewContext<U>) => PlanView | null;
+  /** Already listed surface plans, not a broader library. Absent on Work Status. */
+  tidyPlans?: (vc: ViewContext<U>) => PlanView[];
+  tidyScope?: (vc: ViewContext<U>) => string;
   forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
   /**
    * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
@@ -269,23 +284,16 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
   return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
 };
 
-/**
- * Sub-agents coverage controls (census-view.ts): the Partial cue, Load more / Retry history and
- * Dismiss warning. Any update (this frame's history request or dismissal, history completed or a
- * gap dismissed elsewhere, a host census back under its limit) can remove one from the next paint.
- * Focus that was on it goes to the surviving cue (from a control inside its notes), else to the
- * section heading, only in a section of the same scope (plan and selected session); otherwise
- * nothing is moved. Nothing else falls back here.
- */
-const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"],[data-testid="subagent-dismiss-loss"]';
+/** Count controls removed by a successful read/dismissal hand focus on within the same scope only. */
+const COVERAGE_CONTROL = '[data-testid="incomplete-counts-toggle"],[data-testid="incomplete-counts-more"],[data-testid="incomplete-counts-dismiss"],[data-testid="incomplete-counts-retry"],[data-testid="incomplete-counts-reopen"]';
 const coverageFocus = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
-  const scope = active.closest<HTMLElement>('[data-testid="subagent-activity"]')?.dataset.scope;
-  return scope ? { scope, inNotes: !!active.closest('[data-testid="subagent-coverage-notes"]') } : null;
+  const scope = active.closest<HTMLElement>('main')?.dataset.countScope;
+  return scope ? { scope } : null;
 };
 function coverageLanding(root: HTMLElement, from: NonNullable<ReturnType<typeof coverageFocus>>) {
-  const section = [...root.querySelectorAll<HTMLElement>('[data-testid="subagent-activity"]')].find((s) => s.dataset.scope === from.scope);
-  return (from.inNotes ? section?.querySelector<HTMLElement>('[data-testid="subagent-coverage-cue"]') : null) ?? section?.querySelector<HTMLElement>('[data-testid="subagent-heading"]') ?? null;
+  if (root.dataset.countScope !== from.scope) return null;
+  return root.querySelector<HTMLElement>('[data-testid="incomplete-counts-toggle"]') ?? root.querySelector<HTMLElement>('[data-testid="incomplete-counts-reopen"]') ?? root.querySelector<HTMLElement>('[data-testid="more-trigger"]');
 }
 
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
@@ -541,16 +549,23 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanup = initialCleanup();
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
+  let tidyReconcile = false;
   let handoff: (Handoff & { from: FocusKey }) | null = null;
   /** The hand-off's short notice, kept while focus stays on that heading (repaints rebuild the root). */
   let handoffNote: { hook: string; notice: NonNullable<Handoff['notice']> } | null = null;
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
+  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.data++; schedule(); }) : null;
+  const incomplete = new IncompleteCounts(() => bump());
+  let paintedRuns: RunsPanel | null = null;
+  let paintedCensus: Census | null = null;
+  let paintedRunScope = '';
   const inbox = spec.needsYou ? new InboxController({
+    device: deviceView ?? undefined,
     service: (current) => guardedHost(current),
     visible: () => document.visibilityState !== 'hidden',
-    changed: () => { versions.ui++; schedule(); },
+    changed: (action) => { if (action) versions.ui++; else versions.data++; schedule(); },
   }) : null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
@@ -777,8 +792,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     return true;
   }
   function applyUi(patch: Partial<U>) {
+    if (!cleanupBusy && cleanup.tidy?.result && Object.keys(patch).length) cleanup = initialCleanup();
     const next = { ...ui, ...patch }; spec.beforeUiChange?.(ui, next);
     ui = next; versions.ui++; schedule();
+    // Retire synchronously, including while busy: away → back before a paint or
+    // receipt must never revive the captured state object used by current().
+    if (cleanup.tidy && cleanup.tidy.context !== tidyContext()) cleanup = { ...initialCleanup(), pending: cleanupBusy };
     if (scopeMoved()) retry();
     reconcilePreview();
     reconcileParts();
@@ -804,7 +823,14 @@ export function startView<U>(spec: ViewSpec<U>) {
     // Visibility can arrive before SDK ready. No consumer context or read belongs to that phase;
     // onReady requests the initial refresh once account/locale/surface authority is available.
     if (!ctx || disposed) return;
+    // The sequence owns one final invalidation/re-read, never one per plan.
+    if (cleanupBusy && cleanup.tidy) { plan(REFRESH_MS); return; }
+    if (cleanup.tidy?.result) {
+      if (tidyReconcile) tidyReconcile = false;
+      else { cleanup = initialCleanup(); versions.ui++; schedule(); }
+    }
     language.refresh();
+    void deviceView?.refresh(ctx.features?.deviceStorage === true);
     const scope = currentScope();
     const key = scopeKey(scope);
     const fresh = read && identity && readScope === key ? spec.freshness?.(context()) ?? null : null;
@@ -937,6 +963,37 @@ export function startView<U>(spec: ViewSpec<U>) {
   const retry = () => { if (timer) clearTimeout(timer); gate.request(); };
 
   const cleanupContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, session?.id ?? null, directory, scopeKey(currentScope())]);
+  // Board bulk actions follow its own filters, not host-session notifications.
+  const tidyContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface === 'page' ? null : session?.id ?? null, scopeKey(currentScope()), spec.tidyScope?.(context())]);
+  function requestTidy() {
+    if (cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
+    const confirmation = tidyConfirmation(spec.tidyPlans?.(context()) ?? [], read.storeId, tidyContext());
+    if (!confirmation.targets.length) return;
+    cleanup = { ...initialCleanup(), tidy: { context: confirmation.context, confirmation } };
+    cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
+  }
+  function cancelTidy() {
+    if (cleanupBusy) return;
+    cleanup = initialCleanup(); cleanupFocus = 'more-trigger'; versions.ui++; schedule();
+  }
+  async function executeTidy(undo: boolean) {
+    const state = cleanup.tidy;
+    if (cleanupBusy || !state || state.context !== tidyContext() || failure || health?.planCleanup !== 1) return;
+    const targets = undo ? state.result?.action === 'archive' ? state.result.succeeded : state.result?.remaining ?? [] : state.confirmation?.targets ?? [];
+    if (!targets.length) return;
+    const current = () => !disposed && cleanup.tidy === state && state.context === tidyContext() && health?.planCleanup === 1;
+    cleanupBusy = true; cleanup = { ...cleanup, pending: true }; versions.ui++; gate.retire(); schedule();
+    const result = await runTidy(host, undo ? 'restore' : 'archive', targets, current);
+    cleanupBusy = false;
+    if (disposed) return;
+    const same = cleanup.tidy === state && state.context === tidyContext();
+    // Reconcile once, including uncertain requests; never retry a refused plan automatically.
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)));
+    read = null; readScope = ''; readSig = ''; failure = null;
+    cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result } : undefined };
+    tidyReconcile = same;
+    versions.ui++; versions.data++; schedule(); retry();
+  }
   function validTarget(target: CleanupTarget) {
     return !disposed && !failure && health?.planCleanup === 1 && cleanupMatches(target, spec.actionPlan?.(context()) ?? null, read?.storeId, cleanupContext());
   }
@@ -1149,6 +1206,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   function context(): ViewContext<U> {
     const actionContext = cleanupContext();
     const confirmation = cleanup.target;
+    const tidyState = cleanup.tidy;
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
@@ -1162,7 +1220,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,
+      get countFacts() { return countFacts(this.read, this.inbox, paintedRuns, paintedCensus); },
+      failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1170,6 +1230,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         localLanguageAction = false;
       } },
       setUi: (patch) => applyUi(patch),
+      invalidate: bump,
       updateUi: (fn) => applyUi(fn(ui)),
       retry, sessionSubscriptions: live.sessionSubscriptionCount,
       handoff: (h) => { const from = focusKey(mount!); handoff = from ? { ...h, from } : null; },
@@ -1234,6 +1295,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       storage: host.storage,
       identity,
       cleanup,
+      tidyPlans: () => spec.tidyPlans?.(context()) ?? [],
+      requestTidy: () => { if (actionContext === cleanupContext()) requestTidy(); },
+      cancelTidy: () => { if (tidyState === cleanup.tidy) cancelTidy(); },
+      confirmTidy: () => { if (tidyState === cleanup.tidy) void executeTidy(false); },
+      undoTidy: () => { if (tidyState === cleanup.tidy) void executeTidy(true); },
       requestDelete: (plan) => { if (actionContext === cleanupContext()) requestDelete(plan); },
       cancelCleanup: () => { if (confirmation === cleanup.target) cancelCleanup(); },
       // A retired button must never confirm a newer dialog's target.
@@ -1259,14 +1325,17 @@ export function startView<U>(spec: ViewSpec<U>) {
         return c?.result ? { result: c.result, current: () => canReadPart() && details.get(p.key) === c && generation === cacheGeneration && document.visibilityState !== 'hidden' } : null;
       },
       refreshSerial: listReads,
-      runs: (claim) => {
+      runs: (claim, census) => {
         if (disposed || !read || !identity) return null;
         runs ??= new RunsController({
           service: (current) => guardedHost(current),
           visible: () => document.visibilityState !== 'hidden',
-          changed: () => { versions.ui++; schedule(); },
+          changed: bump,
         });
-        return runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
+        paintedCensus = census ?? censusFor(claim.request.root, directory, live.snapshot);
+        paintedRunScope = JSON.stringify([claim.request.source, claim.request.root, claim.request.plan]);
+        paintedRuns = runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
+        return paintedRuns;
       },
       inbox: inbox && read && identity && readScope === scopeKey(currentScope()) ? inbox.panel() : null,
     };
@@ -1301,6 +1370,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
+    if (cleanup.tidy && cleanup.tidy.context !== tidyContext()) cleanup = { ...initialCleanup(), pending: cleanupBusy };
     preparePreview();
     let vc = context();
     languagePaint = paintedLanguage !== null && paintedLanguageSignature !== languageSignature;
@@ -1350,7 +1420,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!sameReading) {
       if (reading || readingKey) retireReadingUi();
       reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
-      vc = { ...vc, reading: readingView() };
+      vc.reading = readingView();
     }
 
     const root = el('main', 'ap');
@@ -1359,7 +1429,17 @@ export function startView<U>(spec: ViewSpec<U>) {
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
     digests?.beginPaint(); runs?.beginPaint();
     beginInfoPaint(root);
+    paintedRuns = null; paintedCensus = null; paintedRunScope = '';
     spec.paint(root, vc);
+    if (spec.surface !== 'status' && !root.querySelector('.ap-surface-panel')) {
+      incomplete.paint(root, {
+        facts: vc.countFacts, store: vc.read?.storeId ?? '',
+        surface: spec.surface, device: deviceView, runs: paintedRuns, inbox: vc.inbox, locale: vc.env.locale,
+        lastGoodAt: vc.lastGoodAt,
+        refresh: vc.refreshSerial,
+      });
+      root.dataset.countScope = JSON.stringify([identity, vc.session?.id, scopeKey(currentScope()), paintedRunScope]);
+    }
     document.documentElement.lang = vc.env.locale;
     digests?.endPaint(); runs?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
@@ -1536,7 +1616,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     deferredFocus = null;
     contextGeneration++;
     versions.ctx++;
-    cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
+    // Board Tidy belongs to its filtered scope, not the host's current session.
+    // A genuine scope/authority transition still drops the captured state forever.
+    const tidy = cleanup.tidy?.context === tidyContext() ? cleanup.tidy : undefined;
+    cleanup = { ...initialCleanup(), pending: cleanupBusy, tidy }; cleanupFocus = null; handoff = null; handoffNote = null;
     live.restart();
     // A full snapshot or incremental event can move context. Duplicate follow-up events
     // are idempotent; directory-only enrichment does not change a session list scope.
@@ -1614,7 +1697,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     applyHostReady(next, document.documentElement);
     applyDeviceHooks(document.documentElement, next.device);
     if (!document.getElementById('ap-style')) {
-      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS);
+      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS + COUNT_CSS);
       style.id = 'ap-style';
       document.head.append(style);
     }
@@ -1631,6 +1714,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else applyItem(next.item);
     ctx = next;
     language.ready(next.locale, next.features?.deviceStorage === true);
+    void deviceView?.refresh(next.features?.deviceStorage === true);
     document.documentElement.lang = paintedLanguage ?? language.snapshot().language;
     // Ready is authoritative, not just a theme notification. Adopt both fields before
     // any refresh/onContext callback; later directory/session events repeat this state.
@@ -1708,6 +1792,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     language.dispose();
     digests?.dispose();
     runs?.retire();
+    incomplete.dispose();
     inbox?.retire('dispose');
     spec.retire?.('dispose');
     html.dataset.apHidden = '';

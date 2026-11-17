@@ -97,11 +97,33 @@ evaluate('location.reload();true');
 revealPagePlan('P-done');
 assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
 const before = await state(); const secondBefore = await state('P-done', 1);
-for (const id of ['P-active', 'P-cancelled', 'P-failed']) {
+for (const id of ['P-active']) {
   choosePage(id); click('page', '[data-testid="plan-actions"] button');
   wait('page', `d.querySelector('[role="menu"]')`);
   assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-archive"],[role="menuitem"][id$="-cleanup-delete"]');`), false);
   key('Escape');
+}
+evaluate('qa.dark();true');
+for (const id of ['P-cancelled', 'P-failed']) {
+  for (const width of [900, 390]) {
+    show('page', width); choosePage(id);
+    click('page', '[data-testid="plan-actions"] button');
+    wait('page', `d.querySelector('[role="menuitem"][id$="-cleanup-archive"]')`);
+    assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-delete"]')`), true);
+    noOverflow('page'); shot(`${id}-${width}-dark-actions`, 'page');
+    key('Escape');
+    button('page', 'cleanup-delete');
+    wait('page', `d.activeElement?.closest('[data-testid="cleanup-cancel"]')`);
+    noOverflow('page'); shot(`${id}-${width}-dark-confirm`, 'page', '[data-testid="cleanup-confirm"]');
+    button('page', 'cleanup-cancel');
+  }
+  button('page', 'cleanup-archive');
+  wait('page', `!d.querySelector('[data-testid="plan-row-${id}"]')`);
+  button('page', 'cleanup-archived'); choosePage(id);
+  button('page', 'cleanup-restore');
+  wait('page', `!d.querySelector('[data-testid="plan-row-${id}"]')`);
+  assert.equal((await state(id)).lifecycle, id === 'P-cancelled' ? 'cancelled' : 'failed');
+  button('page', 'cleanup-visible');
 }
 // Session-local manual choice survives a temporary no-session state. Directory
 // context alone must not display plans or create a second featured-choice scope.

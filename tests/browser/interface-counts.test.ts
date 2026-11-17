@@ -18,8 +18,8 @@ function harness() {
 
 test('search outcomes localize quantities without rewriting literal messages', () => {
   const message = { kind: 'outcome', matchedPlans: 1000, matchingTasks: 2030, exhausted: true, shown: 50 } as const;
-  assert.equal(search.searchStatusText(message, 'ru'), 'Поиск завершён: найдено планов: 1\u00a0000, подходящих задач: 2\u00a0030 на момент поиска.');
-  assert.equal(search.searchStatusText(message, 'en'), 'Search finished: 1000 plans and 2030 matching tasks found, as searched.');
+  assert.equal(search.searchStatusText(message, 'ru'), 'Найдено планов: 1\u00a0000, подходящих задач: 2\u00a0030.');
+  assert.equal(search.searchStatusText(message, 'en'), 'Found 1000 plans, 2030 matching tasks.');
   assert.match(search.searchStatusText({ kind: 'removed', count: 1000 }, 'ru'), /1\u00a0000/);
   assert.match(search.searchStatusText({ ...message, exhausted: false }, 'ru'), /1\u00a0000.*2\u00a0030/);
   assert.equal(search.searchStatusText({ kind: 'message', en: 'literal 1000', ru: 'буквально 1000' }, 'ru'), 'буквально 1000');
@@ -33,11 +33,10 @@ test('search counts, coverage and whole-plan quantities localize only presentati
     h.nodes.length = 0;
     const box = h.exports.countsBlock(v, language);
     h.exports.coverageBlock(v, language);
-    assert.ok(h.text().includes(language === 'ru' ? `Планов: ${n} · подходящих задач: 2\u00a0030` : '1000 plans · 2030 matching tasks'));
-    assert.ok(h.text().includes(language === 'ru' ? `страница ${n} · строк групп или родителей для контекста: ${n}` : 'on page 1000 · 1000 group or parent rows'));
-    assert.ok(h.text().includes(language === 'ru' ? `(пока: ${n})` : '(1000 so far)'));
-    assert.ok(h.text().includes(language === 'ru' ? `Планов изменилось после поиска: ${n}` : '1000 plans have changed'));
-    assert.ok(h.text().includes(language === 'ru' ? `удаления планов: ${n}` : '1000 results were removed'));
+    assert.ok(h.text().includes(language === 'ru' ? `планов: ${n}, подходящих задач: 2\u00a0030` : '1000 plans, 2030 matching tasks'));
+    assert.doesNotMatch(h.text(), /страница|для контекста|on page|parent row/);
+    assert.ok(h.text().includes(language === 'ru' ? 'Поиск может быть неполным.' : 'Some search results may be missing.'));
+    assert.doesNotMatch(h.text(), /пока:|so far|skipped records|Планов изменилось|results were removed/);
     assert.equal(box.dataset.matchedPlans, '1000');
     assert.equal(box.dataset.matchingTasks, '2030');
     assert.equal(box.dataset.context, '1000');
@@ -47,4 +46,30 @@ test('search counts, coverage and whole-plan quantities localize only presentati
     assert.ok(meta.includes('S1000'));
   }
   assert.equal(JSON.stringify(v), before);
+});
+
+test('complete search has one count sentence and no completeness notice in every language', () => {
+  const h = harness();
+  const v: any = { exhausted: true, countsCurrent: true, counts: { matchedPlans: 1, matchingTasks: 1 },
+    coverage: { gapped: false }, page: { hits: [{}], number: 1, contextRows: 1, checked: true },
+    criteria: { project: 'all', worktree: 'all', session: 'all' }, removed: 0, changedKeys: 0 };
+  for (const [language, expected] of [
+    ['en', 'Found 1 plan, 1 matching task.'],
+    ['ru', 'Найдено планов: 1, подходящих задач: 1.'],
+    ['zh-CN', '找到 1 个计划和 1 个匹配任务。'],
+  ]) {
+    h.nodes.length = 0;
+    h.exports.countsBlock(v, language);
+    const coverage = h.exports.coverageBlock(v, language);
+    assert.equal(h.text(), expected);
+    assert.equal(coverage.hidden, true);
+    assert.equal(h.exports.qualificationText(v, language), '');
+    assert.equal(h.exports.resultText(v, language), search.searchStatusText({
+      kind: 'outcome', matchedPlans: 1, matchingTasks: 1, exhausted: true, shown: 1,
+    }, language as any));
+    for (const patch of [{ exhausted: false }, { coverage: { gapped: true } },
+      { discoveryIncomplete: true, criteria: { project: 'Alpha', worktree: 'all', session: 'all' } }]) {
+      assert.ok(h.exports.qualificationText({ ...v, ...patch }, language), `${language}: incomplete results stay qualified`);
+    }
+  }
 });

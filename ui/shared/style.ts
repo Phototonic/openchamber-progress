@@ -97,7 +97,7 @@ button{font:inherit}
 .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted)}
 
 /* Section heading */
-.ap-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
+.ap-h{font-size:11px;font-weight:600;color:var(--oc-muted)}
 .ap-section{display:flex;flex-direction:column;gap:8px;min-width:0}
 
 /* Item hierarchy */
@@ -402,7 +402,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;margin-top:8px}
 .ap-facts dt{color:var(--oc-muted)}
 .ap-facts dd{color:var(--oc-fg);min-width:0;overflow-wrap:anywhere}
-.ap-facts .ap-mono{font-family:var(--oc-mono);font-size:11px}
+.ap-facts .ap-mono{font-family:inherit;font-size:11px}
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
 
 /* Calm progress (rail and board Progress): one header, one bar, state chips, one grouped list.
@@ -446,7 +446,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Task list */
 .ap-tasks{position:relative;gap:4px}
 /* Tasks heading: a programmatic focus fallback only; it shows itself while it has focus */
-.ap-tasks-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);width:fit-content;padding:0 4px}
+.ap-tasks-h{font-size:11px;font-weight:600;color:var(--oc-muted);width:fit-content;padding:0 4px}
 .ap-tasks-h:not(:focus){position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .ap-tasks-h:focus{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 .ap-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--oc-muted-surface);font-size:12px}
@@ -456,7 +456,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-filter-line .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-pgroup+.ap-pgroup{margin-top:8px}
 .ap-pgroup-box{display:flex;flex-direction:column;min-width:0}
-.ap-pgroup-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);padding:2px 0}
+.ap-pgroup-h{font-size:11px;font-weight:600;color:var(--oc-muted);padding:2px 0}
 .ap-pgroup-rows{display:flex;flex-direction:column}
 .ap-fold>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:28px;padding:0 6px;margin-left:-6px;border-radius:6px;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none}
 .ap-fold>summary::-webkit-details-marker{display:none}
@@ -578,9 +578,8 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
 html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
-/* Compact Work Status: one title (the featured-plan picker beside it), the whole-plan bar, "3/8"
-   with informational chips, at most two focus rows, a compact meta line and "+N more plans".
-   Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
+/* Work Status base primitives. The surface-scoped five-row rules below put the
+   position picker beside the title and the fraction beside the bar. */
 .ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
 /* A short title shares its line with the picker and badge; a long title takes the full width,
    with the remaining controls wrapping below rather than reserving a column. */
@@ -614,6 +613,19 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 /* A wrapped title keeps its mark on the first line */
 .ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
+/* Five-row Work Status only; rail and board keep their existing layout. */
+.ap[data-surface="status"] .ap-status-head{flex-wrap:nowrap;align-items:start}
+.ap[data-surface="status"] .ap-status-title{flex:1;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.ap[data-surface="status"] .ap-status-pick{flex:none}
+.ap[data-surface="status"] .ap-status-progress{flex-direction:row;align-items:center;gap:8px}
+.ap[data-surface="status"] .ap-status-progress>.ap-seg{flex:1;min-width:0}
+/* Text ink can overhang its advance box: reserve an end inset inside the
+   iframe rather than clipping the last digit against its viewport edge. */
+.ap[data-surface="status"] .ap-status-counts{flex:0 1 auto;padding-inline-end:4px}
+.ap[data-surface="status"] .ap-status-fraction:not([data-total="0"]){white-space:nowrap}
+.ap[data-surface="status"] .ap-status-activity{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.ap[data-surface="status"] .ap-status-activity button{font:inherit;min-height:24px}
+.ap[data-surface="status"] .ap-note{margin:0}
 /* Page */
 /* Wide board on every tab: the plan list and detail tabs keep one position; Progress, Document and
    History hold their reading width while the Map tab uses the full detail column. */
@@ -718,4 +730,40 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 @media(forced-colors:active){.ap-fold-toggle{border:1px solid CanvasText}}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
-${PHONE_CSS}`;
+${PHONE_CSS}
+/* Surface shell: one menu and one view switch, independent of the Map/List owner. */
+.ap-more{position:relative;flex:none}
+.ap-more button{color:var(--oc-fg);font:inherit}
+.ap-more .ap-actions-btn{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;border:0;border-radius:4px;background:transparent;cursor:pointer}
+.ap-more .ap-actions-btn:hover{background:var(--oc-hover)}
+.ap-more-popup[hidden]{display:none}
+.ap-more-popup{position:absolute;z-index:100;right:0;top:calc(100% + 4px);display:flex;flex-direction:column;width:max-content;min-width:220px;max-width:min(320px,calc(100vw - 32px));max-height:min(640px,70vh);overflow:auto;padding:6px;background:var(--oc-elevated,var(--oc-bg));border:1px solid var(--oc-border);border-radius:8px;box-shadow:0 8px 24px #0002}
+.ap-more-row{border:0;border-radius:4px;background:none;text-align:start;padding:8px 12px;min-height:36px;white-space:normal;cursor:pointer}
+.ap-more-row:hover,.ap-more-row:focus{background:var(--oc-hover);outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-more-row:disabled{opacity:.55;cursor:default}
+.ap-more-row[data-destructive]{color:var(--oc-error-text,var(--oc-error))}
+.ap-more-row[aria-checked="true"]::before{content:'✓ ';color:var(--oc-primary-text,var(--oc-primary))}
+.ap-more-separator{height:1px;background:var(--oc-border);margin:5px 4px}
+.ap-more-popup .ap-note{padding:8px 12px;max-width:28ch}
+.ap-surface-settings{display:flex;justify-content:flex-end}
+.ap-surface-panel{display:flex;flex-direction:column;gap:14px}
+.ap-surface-panel>.ap-h{text-transform:none;letter-spacing:0;font-size:15px}
+.ap-surface-view-switch{display:flex;gap:2px;align-items:center}
+.ap-surface-view-switch button:focus-visible,.ap-more .ap-actions-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5}
+.ap-progress-line .ap-seg{order:0}
+.ap-progress-line .ap-fraction{order:1}
+.ap-progress-line .ap-fraction strong{font-size:15px;letter-spacing:0}
+.ap-history-dot{display:block;width:6px;height:6px;border-radius:50%;background:var(--oc-primary);position:absolute;right:3px;top:3px}
+.ap-list-help>summary{cursor:pointer;color:var(--oc-muted);min-height:32px}
+.ap-board-picker{display:none}
+.ap-plan-list>[data-testid="plan-list-heading"]{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+/* The shell supplies the plan header, counts and single view switch. The map owner retains
+   its region label and unavailable/error states; its controls are simplified separately. */
+.ap-map-host .ap-map[data-tasks]:not([data-tasks="0"]) .ap-map-top,
+.ap-map-host .ap-map-summary{display:none}
+@media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,300px) minmax(0,1fr)}}
+@media(max-width:819px){.ap-board-picker{display:block}.ap-board>.ap-plan-list>.ap-board-project{display:none}}
+@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary{min-height:44px;min-width:44px}}
+[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary){min-height:44px;min-width:44px}
+}`;

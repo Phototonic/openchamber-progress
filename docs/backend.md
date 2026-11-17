@@ -14,8 +14,18 @@ list/freshness response; the directly pinned inbox route still returns 409.
 The reader uses the current verified store/source binding and existing snapshots,
 not source-root discovery or new durable storage. A transaction walks bounded
 plan-ID keyset candidates, validating snapshots before emitting tasks in stored
-order. Decision/review annotations enter Needs you; other, absent and unreadable
-categories remain Also blocked. Unknown categories never become decisions.
+order. Wire decision/review annotations keep the `needs-you` group; other, absent
+and unreadable categories keep `also-blocked`. Wire groups and cumulative counts
+are category-only compatibility facts, not the person-facing classification.
+Each row and list/detail summary supplies `mainSessionKind` from one bounded
+recorded-session lookup per plan in `Store.mainSessionKind`: `top-level` requires
+an explicit null parent, `subagent` a valid parent, otherwise `unknown`.
+The guest's shared predicate counts only current decision/review details reported
+by that top-level main session, including its relays. Sub-agent direct/handoff
+reports and sub-agent-owned plans stay blocked but outside Needs you.
+No live host lookup, snapshot rewrite, migration or capability revision change
+is involved. Missing identity fails closed; old guests ignore the additive fact.
+Unknown categories never become decisions.
 All prose is validated, bounded reported text, not permission or inference.
 
 Bounds are 64 plan slots, 8 MiB input, 50 rows and 256 KiB output per window.
@@ -32,7 +42,10 @@ continuation, timing and read-only behavior. The rendered integration driver is
 `tests/browser/needs-you-inbox-qa.ts --source --real-service --artifacts <dir>`:
 three source-built guests, real HTTP service and disposable synthetic SQLite
 store, with a synthetic SDK host and an explicitly stripped older-capability
-seam. It exercises real bounded continuation, cumulative counts and a real 409
+seam. Its membership fixture also serves the pre-rule guest from public history
+and the new guest against the same unchanged stored blockers: category-only
+count four becomes two person-facing items, with both excluded tasks retained
+in List and Map. It exercises real bounded continuation, cumulative counts and a real 409
 restart as well as keyboard/pointer reading. Not native-host certification.
 
 ## Deterministic large-plan QA fixture
@@ -602,7 +615,8 @@ observation into authority and performs no migration effect.
   are required for guidance. Generic guidance/file hints need only the current
   authoritative session for delivery. A qualifying plan write can also flag its
   exact verified direct parent in the same project and lexically normalized
-  absolute directory, excluding immediately visible cycles. This relay performs
+  absolute directory, or another host-listed directory of that project,
+  excluding immediately visible cycles. This relay performs
   no session listing, grandparent traversal, plan scan or tool/authority change.
   The first primary attempt after an observed successful
   compaction may additionally resolve bounded ancestry and read `Store.resumePlans`.
@@ -728,7 +742,7 @@ mixed-writer and independent claim/acceptance/task semantics.
 
 ## Storage and document consistency
 
-Finished-plan cleanup is the bounded exception to default history retention;
+Closed-plan cleanup is the bounded exception to default history retention;
 see the frozen API and fixture in `docs/contracts.md`. `shared/cleanup.ts` extends
 the existing Store owner, not a second storage engine. Cleanup format1 is additive
 to schema2 without changing legacy columns/order or stored snapshots. First-use
@@ -962,7 +976,13 @@ tuning estimates only; see evidence/backend/token-budget.md. No extra LLM calls.
 Activation keeps at most128 pending source/session flags and256 recent qualifying
 source/session/message/call IDs per loaded instance; host IDs are bounded512
 characters and lexical path metadata4096. Only native2.1.4 successful single-file
-`write`/`edit` operations on conventional plan paths qualify. No document paths,
+`write`/`edit` operations on conventional plan paths or one spec change's
+`tasks.md`/`proposal.md` qualify (not archives, spec deltas or design notes).
+Paths outside the writer's directory require a host-listed root/worktree of
+the writer's project. The host list is requested only for a plan-shaped candidate,
+at most once per observation, with a one-second deadline; failures stay silent.
+Cross-directory parent relay uses the same list and same-project check.
+No document paths,
 bodies/diffs, plan/receipt state or inferred progress are retained. A hint is
 conditional and consumed on its next eligible delivery, independent of receipts.
 Each event flags the writer and at most its verified direct parent (two keys),
@@ -1013,6 +1033,22 @@ Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
 closing Store; setup failures roll back partial registrations and close Store.
 No persistent reminder, new RPC or automatic progress/capture write exists.
+
+The same reason bitset keeps independent context/result consumption bits.
+A latest-context inventory (128 sessions) gates result notes; 256 model-message
+identities bound step deduplication. Disable, source rebinding and disposal clear
+that evidence. Completed directly exposed calls with native-proven string or
+content-array results append fixed advisory text after original content; structured
+output/metadata are never changed. Structured-only/unknown results stay untouched.
+Code Mode inner calls are not directly exposed and get no note: native proof
+shows their modified content does not reach the model. Parent plan reasons wait
+for the parent's next observed qualifying call, not an inserted message or turn.
+No hook performs a missing-plan query, document read or progress mutation.
+Both system-forwarding and system-dropping providers get the checklist via the
+short report description; result notes do not depend on plugin system text.
+The context section and inline/packaged skill share that checklist. The listing
+line names the plan/dispatch load boundary; detailed operation help stays in the
+skill. Description budgets are 4,096 overall and 2,048 through the first example.
 
 Progress resume separately retains at most128 session compaction records and256
 event identities, never plan titles/revisions/assignments between requests. It

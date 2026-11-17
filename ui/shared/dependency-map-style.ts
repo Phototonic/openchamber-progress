@@ -12,6 +12,7 @@ export const MAP_CSS = `
    from the full-plan layout, so filters hide cards in place and status never changes card size. */
 .ap-map{container:ap-map/inline-size;display:flex;flex-direction:column;gap:12px;min-width:0}
 .ap-map-head{display:flex;flex-direction:column;gap:8px;min-width:0}
+.ap-map-head[hidden]{display:none}
 .ap-map-top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:8px 16px;min-width:0}
 .ap-map-titles{display:flex;flex-direction:column;gap:3px;flex:1 1 16rem;min-width:0}
 .ap-map-titles .ap-plan-title{overflow-wrap:anywhere}
@@ -65,8 +66,8 @@ export const MAP_CSS = `
 .ap-map-inspector[data-placement="over"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-map-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 .ap-map-inspector-head .ap-h{margin:0}
-.ap-map-viewport{position:relative;min-width:0;min-height:180px;max-height:clamp(300px,64vh,600px);overflow:auto;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background-color:color-mix(in srgb,var(--oc-fg) 2.5%,var(--oc-bg));background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--oc-fg) 14%,transparent) 1px,transparent 1.5px);background-size:20px 20px;background-attachment:local}
-.ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
+.ap-map-viewport{position:relative;min-width:0;min-height:0;max-height:64vh;overflow:auto;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background-color:color-mix(in srgb,var(--oc-fg) 2.5%,var(--oc-bg));background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--oc-fg) 14%,transparent) 1px,transparent 1.5px);background-size:20px 20px;background-attachment:local}
+.ap-map[data-frame="rail"] .ap-map-viewport{max-height:300px}
 .ap-map-world{position:relative}
 /* Interactive canvas: a fixed-height clipped viewport; the world is transformed, never scrolled */
 .ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;overscroll-behavior:contain}
@@ -91,7 +92,11 @@ export const MAP_CSS = `
 .ap-map-viewport[data-dragging]{cursor:grabbing}
 .ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .ap-map-viewport[data-interactive]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-3px}
-.ap-map-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0;padding:6px 8px;border:1px solid var(--oc-border);border-bottom:0;border-radius:var(--oc-radius,10px) var(--oc-radius,10px) 0 0;background:var(--oc-muted-surface)}
+.ap-map-toolbar{position:relative;display:flex;flex-wrap:nowrap;align-items:center;gap:4px;min-width:0;padding:4px;border:1px solid var(--oc-border);border-bottom:0;border-radius:var(--oc-radius,10px) var(--oc-radius,10px) 0 0;background:var(--oc-muted-surface)}
+.ap-map-toolbar>[data-testid="plan-view"]{display:flex;flex-wrap:nowrap;gap:0;margin-right:auto;min-width:0}
+.ap-map-toolbar>[data-testid="plan-view"] .oc-sdk-btn{padding-inline:6px}
+.ap-map-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:12px;color:var(--oc-muted)}
+.ap-map-opening-hint{padding-top:6px}
 .ap-map-tool-set{display:flex;flex-wrap:wrap;align-items:center;gap:3px;min-width:0;max-width:100%}
 .ap-map-pan{margin-left:auto}
 .ap-map-tool{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:28px;height:28px;padding:0 6px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12px;line-height:1;white-space:nowrap;cursor:pointer}
@@ -101,11 +106,26 @@ export const MAP_CSS = `
 .ap-map-tool:focus{outline:none}
 .ap-map-tool:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-icon{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.ap-map-zoom{min-width:3.6em;text-align:center;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
-.ap-map-help{min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
-.ap-map-help-trigger{cursor:pointer;width:fit-content;color:var(--oc-fg);font-weight:600}
+.ap-map-zoom{position:absolute;z-index:4;right:8px;top:calc(100% + 6px);padding:4px 8px;border-radius:4px;background:var(--oc-bg);color:var(--oc-fg);font-size:11.5px;font-variant-numeric:tabular-nums;pointer-events:none}
+.ap-map-zoom[hidden]{display:none}
+.ap-map-help{min-width:0;font-size:12px;color:var(--oc-muted)}
+.ap-map-help-trigger{position:relative;display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;width:28px;height:28px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font-weight:600;list-style:none}
+.ap-map-help-trigger::-webkit-details-marker{display:none}
+.ap-map-help-trigger[data-filtered]::after{content:"";position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--oc-primary)}
+.ap-map-help[open]>.ap-map-help-body{position:absolute;z-index:6;top:calc(100% + 4px);right:0;box-sizing:border-box;width:min(34rem,100%);max-height:min(65vh,32rem);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);box-shadow:0 6px 18px color-mix(in srgb,var(--oc-fg) 14%,transparent)}
+.ap-map-help-body .ap-map-controls{padding-top:0;border:0;align-items:flex-start}
+.ap-map[data-pointer="coarse"] .ap-map-help-trigger{width:44px;height:44px;min-width:44px;padding:0}
+.ap-map[data-pointer="coarse"] .ap-map-toolbar{gap:3px}
+.ap-map[data-pointer="coarse"] .ap-map-tool-set{gap:3px}
+.ap-map-inspector{max-height:340px;overflow:auto;overscroll-behavior:contain}
+.ap-map-inspector[hidden]{display:none}
 .ap-map-help-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
 .ap-map-help-body{display:flex;flex-direction:column;gap:4px;padding:8px 0}
+.ap-map-help:not([open])>.ap-map-help-body{display:none}
+@container ap-map (max-width:319px){
+  .ap-map-toolbar{flex-wrap:wrap}
+  .ap-map-toolbar>[data-testid="plan-view"]{flex:1 1 100%;flex-wrap:wrap;margin-right:0}
+}
 .ap-map-help strong{color:var(--oc-fg);font-weight:600}
 .ap-map-keys{line-height:1.9}
 .ap-map-keys .ap-map-nowrap{white-space:nowrap}
@@ -183,7 +203,7 @@ export const MAP_CSS = `
 /* Four rows need 77px; tighter padding/gaps leave room for the thickest selection/chain borders
    (forced colours, zoomed-out rings) so the one-line title is never squeezed mid-glyph. */
 .ap-map-card[data-who]{gap:4px;padding-top:7px;padding-bottom:6px}
-.ap-map-card[data-who] .ap-map-card-title{flex:none;-webkit-line-clamp:1;max-height:calc(1em * 1.35)}
+.ap-map-card[data-who] .ap-map-card-title{flex:none;-webkit-line-clamp:2;max-height:calc(2em * 1.35)}
 .ap-map-card[data-who] .ap-map-card-status{flex:none}
 .ap-map-card-who{display:flex;align-items:center;min-width:0;font-size:11px;line-height:16px;color:var(--oc-muted)}
 .ap-map-card-who-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

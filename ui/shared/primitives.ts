@@ -41,22 +41,22 @@ const MARK_SHAPES: Record<MarkStatus, Part[]> = {
 };
 
 /**
- * Spoken name of a mark that has no adjacent equivalent text. A task is "Reported working", never
+ * Spoken name of a mark that has no adjacent equivalent text. A task is "In progress", never
  * "Running": only sessions and sub-agents are observed running.
  */
 export const MARK_LABEL: Record<MarkStatus, string> = {
   pending: 'Pending',
-  working: 'Reported working',
+  working: 'In progress',
   blocked: 'Blocked',
   done: 'Done',
   skipped: 'Skipped',
   ready: 'Ready to start',
-  waiting: 'Waiting on prerequisites',
+  waiting: 'Waiting on earlier tasks',
 };
 const LABELS: Record<InterfaceLanguage, { marks: Record<MarkStatus, string>; actions: string }> = {
   en: { marks: MARK_LABEL, actions: 'Plan actions' },
-  ru: { marks: { pending: 'Ожидает', working: 'По отчёту в работе', blocked: 'Заблокирована', done: 'Выполнена', skipped: 'Пропущена', ready: 'Готова к началу', waiting: 'Ожидает предпосылок' }, actions: 'Действия с планом' },
-  'zh-CN': { marks: { pending: '未开始', working: '报告为进行中', blocked: '受阻', done: '已完成', skipped: '已跳过', ready: '已就绪', waiting: '等待前置任务' }, actions: '计划操作' },
+  ru: { marks: { pending: 'Не начата', working: 'В работе', blocked: 'Заблокирована', done: 'Выполнена', skipped: 'Пропущена', ready: 'Готова к началу', waiting: 'Ждёт предыдущие задачи' }, actions: 'Действия с планом' },
+  'zh-CN': { marks: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过', ready: '已就绪', waiting: '等待前置任务' }, actions: '计划操作' },
 };
 
 /** Plain interface icons (never status). Decorative unless given a name. */
@@ -385,6 +385,92 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
   trigger?.setAttribute('aria-label', options.label ?? LABELS[resolveLanguage('auto', options.locale ?? 'en')].actions);
   trigger?.classList.add('ap-actions-btn');
   return { root, menu, trigger, dispose: () => menu.dispose() };
+}
+
+/** Surface-owned More menu. Native rows, roving focus, type-ahead and a radio submenu.
+ * It owns no reads or persistence; the caller supplies the device-language controller. */
+export function moreMenu(options: {
+  label: string; items: MenuItem[]; onSelect: (id: string) => void;
+  languageLabel: string; automatic: string; unsupported: string; languageStatus?: string;
+  language: { preference: string; supported: boolean; pending: boolean; choose: (value: 'auto' | 'en' | 'ru' | 'zh-CN') => void };
+}) {
+  const root = node('div', 'ap-more');
+  root.dataset.testid = 'more-menu';
+  // Keep the old focus seam for summary and cleanup controllers.
+  const holder = node('div');
+  holder.dataset.testid = 'plan-actions';
+  const trigger = node('button', 'ap-actions-btn');
+  trigger.type = 'button';
+  trigger.dataset.testid = 'more-trigger';
+  trigger.setAttribute('aria-label', options.label);
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.append(icon('more'));
+  const popup = node('div', 'ap-more-popup');
+  popup.dataset.testid = 'more-popup';
+  popup.setAttribute('role', 'menu');
+  popup.setAttribute('aria-label', options.label);
+  popup.hidden = true;
+  holder.append(trigger, popup); root.append(holder);
+  let items = options.items, submenu = false, prefix = '', typedAt = 0, painting = false;
+  const rows = () => [...popup.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not(:disabled)')];
+  const focus = (index: number) => { const all = rows(); if (!all.length) return; const row = all[(index + all.length) % all.length]; all.forEach(r => r.tabIndex = r === row ? 0 : -1); row.focus(); };
+  const close = (restore = false) => {
+    popup.hidden = true; trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+    if (restore) trigger.focus({ preventScroll: true });
+  };
+  const outside = (e: Event) => { if (!(e.target instanceof Node) || !root.contains(e.target)) close(); };
+  const paint = () => {
+    // Removing the focused parent row while entering the submenu fires focusout
+    // synchronously. That is internal navigation, not departure from the menu.
+    painting = true;
+    popup.setAttribute('aria-label', submenu ? options.languageLabel : options.label);
+    popup.replaceChildren();
+    const row = (id: string, label: string, run: () => void, disabled = false, checked?: boolean) => {
+      const b = node('button', 'ap-more-row', label); b.type = 'button'; b.tabIndex = -1;
+      b.dataset.menuId = id; b.dataset.testid = `more-${id}`; b.disabled = disabled;
+      b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemradio');
+      if (checked !== undefined) b.setAttribute('aria-checked', String(checked));
+      b.addEventListener('click', run); popup.append(b);
+      return b;
+    };
+    if (submenu) {
+      row('language-back', '‹ ' + options.label, () => { submenu = false; paint(); focus(rows().findIndex(r => r.dataset.menuId === 'language')); });
+      for (const [id, label] of [['auto', options.automatic], ['en', 'English'], ['ru', 'Русский'], ['zh-CN', '简体中文']] as const) {
+        row(`language-${id}`, label, () => { close(true); options.language.choose(id); }, !options.language.supported || options.language.pending, options.language.preference === id);
+      }
+      if (!options.language.supported) popup.append(node('p', 'ap-note', options.unsupported));
+      if (options.languageStatus) { const status = node('p', 'ap-note', options.languageStatus); status.setAttribute('role', 'status'); popup.append(status); }
+    } else for (const item of items) {
+      if ('separator' in item) { const line = node('div', 'ap-more-separator'); line.setAttribute('role', 'separator'); popup.append(line); continue; }
+      const b = row(item.id, item.label, () => {
+        if (item.id === 'language') { submenu = true; paint(); focus(0); }
+        else { close(true); options.onSelect(item.id); }
+      }, item.disabled);
+      if (item.id === 'language') b.setAttribute('aria-haspopup', 'menu');
+      if (item.destructive) b.dataset.destructive = '';
+    }
+    painting = false;
+  };
+  const open = (last = false) => { submenu = false; prefix = ''; paint(); popup.hidden = false; trigger.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); focus(last ? rows().length - 1 : 0); };
+  trigger.addEventListener('click', () => popup.hidden ? open() : close());
+  trigger.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(e.key === 'ArrowUp'); } });
+  root.addEventListener('focusout', e => { if (painting || (e.relatedTarget instanceof Node && root.contains(e.relatedTarget))) return; close(); });
+  popup.addEventListener('keydown', e => {
+    const all = rows(), index = all.indexOf(document.activeElement as HTMLButtonElement);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) { e.preventDefault(); focus(e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : index + (e.key === 'ArrowDown' ? 1 : -1)); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === 'ArrowLeft' && submenu) { e.preventDefault(); submenu = false; paint(); focus(rows().findIndex(r => r.dataset.menuId === 'language')); }
+    else if (e.key === 'ArrowRight' && all[index]?.dataset.menuId === 'language') { e.preventDefault(); submenu = true; paint(); focus(0); }
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') {
+      e.preventDefault(); const now = performance.now(); prefix = (now - typedAt > 700 ? '' : prefix) + e.key.toLocaleLowerCase(); typedAt = now;
+      const ordered = [...all.slice(index + 1), ...all.slice(0, index + 1)];
+      const match = ordered.find(r => r.textContent?.toLocaleLowerCase().startsWith(prefix));
+      if (match) focus(all.indexOf(match));
+    }
+  });
+  return { root, trigger, update: (next: MenuItem[]) => { items = next; if (!popup.hidden) paint(); }, dispose: () => close() };
 }
 
 /** `neutral`: a muted ⓘ mark, for a qualification that is routine rather than a warning. */

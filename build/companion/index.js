@@ -24888,7 +24888,7 @@ function readManagedBindingInner(env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.4.1";
+var RELEASE = "1.5.0";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -25024,7 +25024,7 @@ function preflight(db, action, r, installed) {
     throw new ProgressError("corrupt");
   }
   requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
-  requireProgress(p.lifecycle === "finished", "closed");
+  requireProgress(["finished", "cancelled", "failed"].includes(p.lifecycle), "closed");
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
@@ -27923,10 +27923,23 @@ class Store {
       throw storageError(e);
     }
   }
+  mainSessionKind(source, session) {
+    const row2 = this.db.prepare("SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?").get(source, session);
+    try {
+      const a = JSON.parse(String(row2?.actor));
+      if (!a || a.sourceId !== source || a.sessionId !== session)
+        return "unknown";
+      if (a.parentId === null)
+        return "top-level";
+      return identifier2(a.parentId) ? "subagent" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
   summary(p) {
     const { items, links: _links, boundCanonicalPath: _bound, ...rest } = p;
     const state = cleanupInstalled(this.db) ? cleanupState(this.db, p.sourceId, p.id) : undefined;
-    return { ...rest, ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
+    return { ...rest, mainSessionKind: this.mainSessionKind(p.sourceId, p.sessionId), ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
   }
   metadata() {
     const meta = this.db.prepare("SELECT * FROM meta WHERE singleton=1").get();
@@ -28874,13 +28887,16 @@ async function registerDelegation(ctx, options2) {
 
 // plugin/activation.ts
 var REPORT_TOOL = "agent_progress_report";
+var REPORT_CHECKLIST = `1. Start the mirror when a plan is ready for execution: op=start with its real tasks and prerequisites.
+2. Declare or link sub-agent tasks before dispatch: op=delegate before a supported dispatch, or op=link for verified returned children.
+3. Mark actual work start: op=change with status=working.
+4. Finish, cancel or fail explicitly: op=finish with outcome=finished, cancelled or failed.`;
 var ACTIVATION_GUIDANCE = `# Agent progress (companion)
-Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
-Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
-For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
-For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. Optional finish changes atomically commit final task statuses with the outcome at the expected revision; refusal applies neither. Read after conflict; retry only identical full input with the same oid. Older tools reject finish changes: inspect state before deliberately reporting separately, never silently strip changes. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
-For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. ${PARALLEL_DELEGATION_HINT} IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
+${REPORT_CHECKLIST}
+Use agent_progress_report alongside your canonical planner. Read an existing plan first; mirror only meaningful unreported canonical state, using stable IDs, fresh oid and expected rev. Batch changes; retry only identical input with the same oid. Load the agent-progress skill for examples, staging, delegation, handoff and blocker rules.
+At PLAN_READY handoff mirror the actionable structure, not completion or approval. Review approval and owner approval are separate: reflect existing canonical gates only. Tracker updates are not Agent Progress reports. Repeated guidance and already-current state need no report.
+${PARALLEL_DELEGATION_HINT} Include plan/task IDs and reporting expectations in assignments; IDs alone grant no authority. Assigned children report only their verified scope on naturally occurring contexts, after binding. Restricted children stay restricted; a permitted parent may explicitly relay without impersonating them. A first-turn-only child may have no reports.
+Structured plans need no source; never manufacture a file. Document capture still requires read permission. Needs-input keeps work pending/blocked. A write is not readiness, dispatch is not work start, Ready is not approval and worker completion is not accepted handoff. Hints never report, assign or infer progress. Never invent review work, report automatically per turn or repeat state already current.`;
 var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
 var DISPATCH_OBSERVATION = "A dispatch ran.";
 var DISPATCH_HINT = `If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. ${PARALLEL_DELEGATION_HINT} Do not repeat reports or declarations that are already current.`;
@@ -28890,6 +28906,20 @@ var ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
 var PLAN = 1;
 var DISPATCH = 2;
 var TRACKER = 4;
+var NOTE_TOOLS = ["write", "edit", "subagent", "linear_save_issue", "linear_save_comment"];
+function noteText(reasons) {
+  return reasons & PLAN ? "Agent Progress note (agent_progress_report): If this canonical plan is ready and not mirrored, start its real tasks and prerequisites with op=start; otherwise mirror only meaningful unreported state you own. This observation is not readiness, approval or a report." : reasons & DISPATCH ? "Agent Progress note (agent_progress_report): If you coordinate planned work without a mirror, start one with op=start; declare op=delegate before the next dispatch, or op=link for verified returned children. Already-current state needs no report; dispatch is not work start or assignment." : "Agent Progress note (agent_progress_report): If this is tracked plan work with meaningful unreported canonical state, mirror only work you own or are authorized to coordinate. A tracker update is not a progress report or evidence of work start, approval or completion.";
+}
+function notedResult(result3, text) {
+  const content = result3.content;
+  if (typeof content === "string")
+    return { ...result3, content: `${content}
+
+${text}` };
+  if (Array.isArray(content) && content.every((part) => record2(part) && (part.type === "text" && typeof part.text === "string" || part.type === "file" && typeof part.uri === "string" && typeof part.mime === "string"))) {
+    return { ...result3, content: [...content, { type: "text", text }] };
+  }
+}
 function hintText(reasons) {
   return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
 }
@@ -28926,14 +28956,21 @@ function possiblePath(value3) {
   const name2 = path7.basename(value3).toLowerCase();
   if (!/\.(md|markdown)$/.test(name2) || /^(readme|todo)\.(md|markdown)$/.test(name2))
     return false;
-  return /^plan\.(md|markdown)$/.test(name2) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+  return shapedPath(path7.normalize(value3).split(path7.sep));
+}
+function shapedPath(parts2) {
+  const spec = parts2.lastIndexOf("openspec");
+  if (spec !== -1 && parts2[spec + 1] === "changes") {
+    return parts2.length === spec + 4 && parts2[spec + 2] !== "archive" && /^(tasks|proposal)\.md$/i.test(parts2.at(-1));
+  }
+  return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function planPath(value3, directory) {
   const relative = path7.relative(directory, path7.resolve(directory, value3));
   if (!relative || relative === ".." || relative.startsWith(`..${path7.sep}`) || path7.isAbsolute(relative))
     return false;
   const parts2 = relative.split(path7.sep);
-  return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
+  return shapedPath(parts2);
 }
 function successfulPath(event) {
   if (event.tool !== "write" && event.tool !== "edit")
@@ -28942,7 +28979,7 @@ function successfulPath(event) {
     return;
   const result3 = event.result;
   const output = result3.output;
-  if (!record2(output) || output.partial === true || result3.metadata?.partial === true)
+  if (!record2(output) || [event, result3, result3.metadata, output].some(failureMarker))
     return;
   if (event.tool === "write") {
     if (output.operation === "write" && typeof output.existed === "boolean" && typeof output.target === "string" && typeof output.resource === "string")
@@ -29022,6 +29059,8 @@ function resumeText(selection, assignedOnly = false) {
 async function registerActivation(ctx, source, enabled, recovery, onContext) {
   const pending = new Map;
   const recent = new Set;
+  const eligibility = new Map;
+  const noted = new Set;
   const owned = Symbol("agent-progress-section");
   function section(hint, capsule = "", refusal = "") {
     const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
@@ -29057,6 +29096,8 @@ ${refusal}` : "") };
       binding = current;
       retireRecovery();
       pending.clear();
+      eligibility.clear();
+      noted.clear();
       disableEpoch++;
     }
     try {
@@ -29064,6 +29105,8 @@ ${refusal}` : "") };
         return true;
     } catch {}
     pending.clear();
+    eligibility.clear();
+    noted.clear();
     retireRecovery();
     disableEpoch++;
     return false;
@@ -29074,7 +29117,7 @@ ${refusal}` : "") };
       set3.delete(set3.values().next().value);
   }
   function flag(recipient, reason) {
-    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason | reason << 3);
     if (pending.size > 128)
       pending.delete(pending.keys().next().value);
   }
@@ -29098,10 +29141,26 @@ ${refusal}` : "") };
     const value3 = await ctx.session.get({ sessionID });
     return value3.id === sessionID && path7.isAbsolute(value3.location.directory) ? value3 : undefined;
   }
+  async function projectDirectories(projectID) {
+    let timer;
+    try {
+      const list = await Promise.race([ctx.worktree.list({ projectID }), new Promise((resolve3) => {
+        timer = setTimeout(() => resolve3(undefined), 1000);
+      })]);
+      return Array.isArray(list) && list.every((entry2) => record2(entry2) && typeof entry2.directory === "string" && path7.isAbsolute(entry2.directory)) ? list.map((entry2) => path7.resolve(entry2.directory)) : [];
+    } catch {
+      return [];
+    } finally {
+      if (timer !== undefined)
+        clearTimeout(timer);
+    }
+  }
   async function dispose() {
     disposed = true;
     pending.clear();
     recent.clear();
+    eligibility.clear();
+    noted.clear();
     retireRecovery();
     replay.clear();
     await stopRecovery?.();
@@ -29125,13 +29184,17 @@ ${refusal}` : "") };
           return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate2 && !planPath(candidate2, caller.location.directory) || recent.has(call))
+        if (disposed || epoch !== disableEpoch || !control() || !caller || recent.has(call))
+          return;
+        let directories;
+        const listedDirectories = async () => directories ??= boundedID(caller.projectID) ? await projectDirectories(caller.projectID) : [];
+        if (candidate2 && !planPath(candidate2, caller.location.directory) && !(await listedDirectories()).some((directory) => planPath(path7.resolve(caller.location.directory, candidate2), directory)))
           return;
         let parentID;
         if (candidate2 && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
-            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path7.resolve(parent.location.directory) === path7.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
+            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && (path7.resolve(parent.location.directory) === path7.resolve(caller.location.directory) || (await listedDirectories()).includes(path7.resolve(parent.location.directory))) && parent.parentID !== parent.id && parent.parentID !== caller.id)
               parentID = parent.id;
           } catch {}
         }
@@ -29141,6 +29204,15 @@ ${refusal}` : "") };
         flag(key(event.sessionID), candidate2 ? PLAN : proxy);
         if (parentID)
           flag(key(parentID), PLAN);
+        const sessionKey = key(event.sessionID), step = JSON.stringify([source.id, event.sessionID, event.messageID]);
+        if (event.status === "completed" && eligibility.get(sessionKey)?.has(event.tool) && !noted.has(step)) {
+          const replacement = notedResult(event.result, noteText((pending.get(sessionKey) ?? 0) >> 3));
+          if (replacement) {
+            event.result = replacement;
+            remember(noted, step, 256);
+            pending.set(sessionKey, (pending.get(sessionKey) ?? 0) & 7);
+          }
+        }
       } catch {}
     }));
     const context4 = async (event) => {
@@ -29161,6 +29233,10 @@ ${refusal}` : "") };
         if (!boundedID(event.sessionID))
           return;
         const sessionKey = key(event.sessionID);
+        const effective = new Set;
+        eligibility.set(sessionKey, effective);
+        if (eligibility.size > 128)
+          eligibility.delete(eligibility.keys().next().value);
         const active = control();
         const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
         const armed = attempt?.pending === true;
@@ -29241,16 +29317,26 @@ ${refusal}` : "") };
           removeOwned();
           return;
         }
+        if (eligibility.get(sessionKey) === effective)
+          for (const tool of NOTE_TOOLS) {
+            if (Object.prototype.hasOwnProperty.call(event.tools, tool))
+              effective.add(tool);
+          }
         const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
         if (existing !== -1) {
           event.system[existing] = section(event.system[existing][owned].hint, capsule, refusal);
           return;
         }
-        const hint = pending.get(sessionKey) ?? 0;
+        const hint = (pending.get(sessionKey) ?? 0) & 7;
         event.system.push(section(hint, capsule, refusal));
-        pending.delete(sessionKey);
+        const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+        if (remaining)
+          pending.set(sessionKey, remaining);
+        else
+          pending.delete(sessionKey);
       } catch {
         pending.delete(key(event.sessionID));
+        eligibility.delete(key(event.sessionID));
         try {
           removeOwned();
         } catch {}
@@ -29474,7 +29560,7 @@ async function setupCompanion(ctx, read, managed) {
           requireProgress(alive(), "storage");
           requireProgress(canonical(read()) === canonical(b), "binding");
         };
-        await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
+        await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Load when writing, receiving or coordinating a plan, and before dispatching sub-agents.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
         check2();
         const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
         deactivate = await registerActivation(ctx, b.source, () => {
@@ -29532,7 +29618,7 @@ async function setupCompanion(ctx, read, managed) {
       editor.namespace({ name: "agent_progress", description: "Deliberate plan progress; never inferred from activity." });
       editor.add({
         name: "report",
-        description: `Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,
+        description: REPORT_DESCRIPTION,
         input: REPORT_SCHEMA,
         options: { namespace: "agent_progress", codemode: false },
         execute: async (value3, caller) => {
@@ -29614,7 +29700,18 @@ Valid start with a prerequisite (replace synthetic IDs, title and items with the
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully. Coordinator finish may include changes for 1–50 unique existing tasks, committed atomically with the outcome at rev; refusal applies neither. Finished still requires all actionable work resolved after changes. Retry only identical full input with the same oid; read after conflict. Older tools reject finish changes: inspect state before deliberately reporting separately, never silently strip changes.
 For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. ${PARALLEL_DELEGATION_HINT} Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required for automatic binding; an unconfirmed reserved call consumes intent instead of transferring it. Binding can tolerate intervening unrelated reports or assignments only with complete retained proof; relevant changes or incomplete proof refuse. Read a refusal before deliberately re-declaring or explicitly linking. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
 A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. No top-level plan/rev, child, attributed identity or source is accepted. Optional taskUpdate:{plan,rev,changes} atomically commits explicit changes for 1–50 unique currently assigned tasks with the claim, returning taskReceipt. Read current state first; report actual working, blocked with safe reason/nextAction when known, and final done/blocked changes. Never change siblings, structure or plan lifecycle. Bare handoff is claim-only; outcome never selects task status or acceptance. Host completion is independent and absence is normal. Identical full-input retries use the same oid; altered reuse or another claim for that execution conflicts. Older tools reject taskUpdate; inspect state before deliberately using separate reports, never strip fields automatically. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
-var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
+var REPORT_DESCRIPTION = `${REPORT_CHECKLIST}
+Use agent_progress_report alongside your canonical planner. Read an existing plan first and mirror only state not already current. Every plan mutation needs a fresh oid and expected rev; retry only identical full input with the same oid. A new start needs plan, title, complete items and rev:0.
+Valid start (replace synthetic values with the real plan; task-2 requires task-1):
+\`\`\`json
+{"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
+\`\`\`
+Load the agent-progress skill when writing, receiving or coordinating plans and before dispatching sub-agents: it has delegation, staging, handoff and blocker rules.
+Tracker updates are not Agent Progress reports. Mirror actionable structure at PLAN_READY handoff; review approval and owner approval are separate, existing canonical gates only. A write is not readiness, dispatch is not work start, and worker completion is not accepted handoff. Repeated guidance or already-current state needs no report. Never invent review tasks, infer progress or report automatically per turn.
+Read uses only op=read, one concrete plan ID and optional 0-based page; no oid/rev. Read current revision before updating and after compaction/conflict. Batch changes. Report only real same-plan prerequisites; omit dependencies when none are known, and retain still-needed links in full structural replacements. Source is optional; never manufacture a file; document capture still needs read permission.
+For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. Finish successfully only when all actionable work is resolved.`;
+var GUIDANCE = `${REPORT_CHECKLIST}
+Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}

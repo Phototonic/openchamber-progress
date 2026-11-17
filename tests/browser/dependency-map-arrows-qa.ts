@@ -124,7 +124,9 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   check('arrows:forced-colours-shapes', forced.forced && forced.bead[1] === 'round' && /^0(px)?,? 10(px)?$/.test(forced.bead[2].replace(/\s+/g, ' ').replace(', ', ' ')) && forced.bead[0] !== forced.off && parseFloat(forced.blocked[1]) > parseFloat(forced.plain) && forced.chainBlocked[0] === forced.bead[0] && forced.bar && forced.skipped !== 'none' && forced.animations === 0, undefined, forced);
   await d.shot('motion-forced-selected', '[data-testid="map-viewport"]', 0, 1100, 'page');
   await media(); await guest('page', `d.querySelector('[data-testid="map-card-T8"]').focus();return true`); await key('Escape'); await frames2();
-  await wide(false); await h.activate('page', 'map-focus-current'); await moving('page', 3);
+  await wide(false);
+  for (let step = 0; step < 40 && (await state('page')).zoom < 80; step++) await h.activate('page', 'map-zoom-in');
+  await moving('page', 3);
   // 200%/400% reflow (CSS zoom of the embedding section, as the accessibility mode does).
   for (const factor of [2, 4]) {
     await evaluate(`(()=>{const n=document.querySelector('section[data-frame=page]');n.style.width='${1100 / factor}px';n.style.zoom='${factor}';frame('page').style.height='${850 / factor}px';return true})()`);

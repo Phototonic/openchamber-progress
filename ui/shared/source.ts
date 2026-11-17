@@ -187,11 +187,10 @@ export async function readNeedsYou(host: ServiceHost, request: NeedsYouRequest, 
   }
 }
 
-export async function cleanupCall(host: ServiceHost, action: CleanupAction, request: CleanupRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {
+export async function cleanupCall(host: ServiceHost, action: CleanupAction, request: CleanupRequest): Promise<{ ok: true; cleanup: ReturnType<typeof parseCleanupReceipt> } | { ok: false; failure: ReadFailure }> {
   try {
     const body = await call(host, `${ROUTES.plan}/${action}`, undefined, 'POST', cleanupBody(request, action));
-    parseCleanupReceipt(body, request, action);
-    return { ok: true };
+    return { ok: true, cleanup: parseCleanupReceipt(body, request, action) };
   } catch (error) { return { ok: false, failure: classify(error) }; }
 }
 
@@ -312,18 +311,32 @@ export async function readDocument(host: ServiceHost, plan: Pick<PlanView, 'sour
 
 export type HistoryResult = { ok: true; entries: HistoryEntry[]; truncated: boolean } | { ok: false; failure: ReadFailure };
 
-export async function readHistory(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, maxPages = 5): Promise<HistoryResult> {
+/** Read a suffix through the listed revision; keep wire order for transition labels in historyBlock. */
+export async function readHistory(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id' | 'revision'>, maxPages = 5): Promise<HistoryResult> {
   try {
+    if (!Number.isSafeInteger(plan.revision) || plan.revision < 1 || !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 5) throw new ContractError('Invalid history read boundary.');
+    // Committed revisions start at 1 and append atomically, without per-row retention.
+    // The route cursor remains a row offset, NOT a revision. Verify the suffix rather
+    // than trusting that equivalence for a damaged, imported or future sparse store.
+    const start = Math.max(0, plan.revision - maxPages * LIST_LIMIT);
     const entries: HistoryEntry[] = [];
-    let cursor: string | null = null;
+    let cursor: string | null = start ? String(start) : null;
     let pages = 0;
     do {
       const page = parseHistoryPage(await call(host, ROUTES.history, query({ source: plan.sourceId, plan: plan.id, cursor, limit: LIST_LIMIT })));
-      entries.push(...page.data);
+      for (const entry of page.data) {
+        if (entries.at(-1)?.revision === plan.revision) break;
+        if (entry.revision !== start + entries.length + 1) throw new ContractError('The recorded history is incomplete.');
+        entries.push(entry);
+      }
+      // Reports appended during the read belong to the next listed revision, not this visit.
+      if (entries.at(-1)?.revision === plan.revision) break;
       cursor = page.nextCursor;
+      if (cursor !== null && cursor !== String(start + entries.length)) throw new ContractError('The recorded history cursor changed.');
       pages++;
     } while (cursor && pages < maxPages);
-    return { ok: true, entries, truncated: Boolean(cursor) };
+    if (entries.at(-1)?.revision !== plan.revision) throw new ContractError('The recorded history is incomplete.');
+    return { ok: true, entries, truncated: start > 0 };
   } catch (error) {
     return { ok: false, failure: classify(error) };
   }

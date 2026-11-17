@@ -5,6 +5,42 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { backendTestCommands } from '../../scripts/ci-backend.ts';
+import { outputs } from '../../scripts/build-all.ts';
+
+test('package scripts that consume runtime entries build before invoking their readers',()=>{
+  const {scripts}=JSON.parse(readFileSync('package.json','utf8'));
+  for(const name of ['test:backend','package','verify:package','prepare:probe','setup','check'])
+    assert.equal(scripts[name].split('&&')[0].trim(),'bun run build:all',`${name} must build before its readers`);
+});
+
+test('portable CLI names misplaced output paths before notes, eligibility, builds or tests',()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-ci-kind-'));
+  const git=(...args:string[])=>{const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
+  try {
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    writeFileSync(join(root,'package.json'),JSON.stringify({version:'invalid'}));git('add','.');git('commit','-qm','Source fixture');
+    const event=join(root,'event.json');
+    writeFileSync(event,JSON.stringify({ref:'refs/heads/main',before:'0'.repeat(40)}));
+    const run=(withEvent:boolean)=>spawnSync(process.execPath,['--experimental-strip-types',resolve('scripts/ci.ts')],{
+      cwd:root,encoding:'utf8',timeout:10000,
+      env:{...process.env,GITHUB_EVENT_PATH:withEvent?event:'',GITHUB_SHA:git('rev-parse','HEAD'),GITHUB_EVENT_NAME:'push'},
+    });
+    const missing=run(true);
+    assert.equal(missing.status,1);assert.match(missing.stderr,/Distribution revision is missing generated outputs/);
+    for(const file of outputs)assert.ok(missing.stderr.includes(file));
+    mkdirSync(join(root,'build/service'),{recursive:true});writeFileSync(join(root,outputs[0]),'accidental output');
+    git('add','build');git('commit','-qm','Partly tracked fixture');
+    const tracked=run(false);
+    assert.equal(tracked.status,1);assert.match(tracked.stderr,/Source revision tracks generated outputs: build\/service\/main.js/);
+    for(const result of [missing,tracked]){assert.equal(result.stdout,'');assert.doesNotMatch(result.stderr,/Release notes validation failed/);}
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('Windows service tests have an explicit same-job backend build prerequisite',()=>{
+  const workflow=readFileSync('.github/workflows/ci.yml','utf8').split('\n  windows-native:\n')[1].split('\n  publish:\n')[0];
+  const build=workflow.indexOf('run: bun run build:backend'),tests=workflow.indexOf('- name: Test Windows setup, storage and capture');
+  assert.ok(build>0&&build<tests);
+});
 
 test('portable backend groups isolate coordination ports without omitting or repeating tests',()=>{
   const files=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
