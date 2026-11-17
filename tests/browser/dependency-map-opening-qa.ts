@@ -75,7 +75,7 @@ try {
     await wait('panel', `d.querySelector('[data-testid="map-title"]')?.textContent==='Opening packed'&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&d.querySelector('[data-testid="map-viewport"]')?.clientWidth>0`);
     await guest('panel', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
     const packed = await guest('panel', `const n=d.querySelector('[data-testid="map-viewport"]'),v=n.getBoundingClientRect(),m=new w.DOMMatrix(w.getComputedStyle(d.querySelector('[data-testid="map-world"]')).transform);return {width:n.clientWidth,height:v.height,zoom:m.a,cards:[...d.querySelectorAll('.ap-map-card')].map(n=>{const r=n.getBoundingClientRect();return {top:r.top-v.top,bottom:r.bottom-v.top,left:r.left-v.left,right:r.right-v.left}})}`);
-    regressions.push({id:'opening:four-pending-538px-final-height',pass:packed.cards.length===4&&packed.width===538&&packed.height>=210&&packed.height<=214&&packed.cards.every((r:any)=>r.top>=0&&r.bottom<=packed.height&&r.left>=0&&r.right<=540),facts:packed});
+    regressions.push({id:'opening:four-pending-538px-final-height',pass:packed.cards.length===4&&packed.width===538&&packed.height===320&&packed.cards.every((r:any)=>r.top>=0&&r.bottom<=packed.height&&r.left>=0&&r.right<=540),facts:packed});
     for (const [surface,width] of [['panel',574],['page',700]] as const) {
       await evaluate(`qa.show([${js(surface)}],${width});frame(${js(surface)}).style.height='950px';true`);
       if (surface==='panel') await pickRailPlan('Opening scroll');
@@ -147,7 +147,7 @@ try {
         const png = await c.send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(join(artifacts, `opening-${surface}-${width}-${id}.png`), Buffer.from(png.data, 'base64'));
         check(`${surface}-${width}-${id}:no-opening-selection`, opening.selected === '');
-        check(`${surface}-${width}-${id}:frame-cap`, opening.height <= (surface === 'panel' ? 300 : 950 * .64));
+        check(`${surface}-${width}-${id}:frame-cap`, opening.height <= (surface === 'panel' ? 950 * .6 : 950 * .64) && (surface !== 'panel' || opening.height >= 318));
       }
       await guest(surface, `d.querySelector('[data-testid="map-fit-all"]').click();return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
       measurements.push(await guest(surface, `const v=d.querySelector('.ap-map-viewport'),world=d.querySelector('.ap-map-world'),title=d.querySelector('.ap-map-card-title'),m=new w.DOMMatrix(w.getComputedStyle(world).transform),font=parseFloat(w.getComputedStyle(title).fontSize);return {surface:${js(surface)},width:${width},plan:${js(id)},canvas:{width:v.clientWidth,height:v.clientHeight},fitAllScale:m.a,titleCssPx:font,renderedTitlePx:font*m.a,thresholdTitlePx:font*.7,readableTitlePx:font*.8,branch:m.a>=.7?'all':'current'}`));
@@ -192,13 +192,15 @@ try {
       await wait(surface, `d.querySelector('[data-testid="map-inspector"]')?.dataset.selected===''`);
       const toolbar = await guest(surface, `const n=[...d.querySelectorAll('[data-testid="map-toolbar"] :is(.oc-sdk-btn,.ap-map-tool,summary)')].filter(x=>x.getClientRects().length);return {boxes:n.map(x=>({id:x.dataset.testid??x.closest('[data-testid]')?.dataset.testid,y:x.getBoundingClientRect().y,width:x.getBoundingClientRect().width})),overflow:d.documentElement.scrollWidth>w.innerWidth}`);
       check(`${name}:one-toolbar-row`, toolbar.boxes.every((x:any)=>Math.abs(x.y-toolbar.boxes[0].y)<6)&&!toolbar.overflow, toolbar);
-      check(`${name}:no-redundant-rows`, await guest(surface, `return !d.querySelector('.ap-map-card-foot')&&!d.querySelector('[data-testid="map-summary"]')&&!d.querySelector('[data-testid="map-focus-current"]')&&!d.querySelector('[data-testid="map-pan-right"]')`));
+      check(`${name}:no-redundant-rows`, await guest(surface, `return !d.querySelector('.ap-map-card-foot')&&!d.querySelector('[data-testid="map-summary"]')&&!!d.querySelector('[data-testid="map-focus-current"]')&&!d.querySelector('[data-testid="map-pan-right"]')`));
       await activate(surface, '[data-testid="map-help-trigger"]');
       await wait(surface, `d.querySelector('[data-testid="map-help"]').open`);
+      check(`${name}:help-without-scrollbar`, await guest(surface, `const n=d.querySelector('.ap-map-help-body');return n.scrollHeight<=n.clientHeight`));
       const tree = await c.send('Page.getFrameTree');
       const frameId = tree.frameTree.childFrames.find((f: any) => f.frame.url.includes(`/ui/${surface}/`)).frame.id;
       const ax = await c.send('Accessibility.getFullAXTree', { frameId });
-      check(`${name}:accessible-help`, ax.nodes.some((n:any) => !n.ignored && n.name?.value === {en:'Help and filters',ru:'Справка и фильтры','zh-CN':'帮助和筛选'}[locale]));
+      check(`${name}:accessible-help`, ax.nodes.some((n:any) => !n.ignored && n.name?.value === {en:'Map help and filters',ru:'Справка и фильтры карты','zh-CN':'依赖图帮助和筛选'}[locale]));
+      check(`${name}:accessible-current`, ax.nodes.some((n:any) => !n.ignored && n.role?.value==='button' && n.name?.value === {en:'Focus current work',ru:'Показать текущую работу','zh-CN':'聚焦当前工作'}[locale]));
       await key('Tab');
       check(`${name}:filters-in-tab-order`, await guest(surface, `return d.activeElement?.closest('[data-testid="map-status"]')!==null`));
       await key('Escape');
