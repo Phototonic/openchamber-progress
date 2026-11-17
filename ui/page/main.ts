@@ -17,7 +17,9 @@ import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import {
   ALL, BoardDerivation, coverageGap, NO_FILTERS, pageListScope, placeOf, projectsFor, searchFilterOptions, type Filters, type Option, type Place,
 } from '../shared/scope.ts';
-import { criteriaKey, queryProblem, searchable, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
+import { criteriaKey, freezeLive, inPlace, queryProblem, searchable, scopeAvailability, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
+import { CleanupScan, tidyCopy } from '../shared/cleanup.ts';
+import { cleanupSearchReader, readCleanupListPage, type ServiceHost } from '../shared/source.ts';
 import {
   announceSearch, boardBar, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, statusLine, unavailableNote, type ChipKind, type SearchDraft,
 } from '../shared/search-view.ts';
@@ -253,8 +255,33 @@ startView<Ui>({
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
-  tidyPlans: (vc) => isSearching(vc) ? [] : visiblePlans(vc),
-  tidyScope: readingScope,
+  tidyPlans: visiblePlans,
+  tidyArchived: vc => vc.ui.archived,
+  tidyMatching: vc => isSearching(vc) || Object.values(vc.ui.filters).some(v => v !== ALL),
+  tidyScan: (vc, key) => {
+    const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
+    if (!criteria && !vc.read?.truncated) return null;
+    const live = freezeLive(vc.live), filters = criteria ?? vc.ui.filters;
+    const matching = !!criteria || Object.values(vc.ui.filters).some(v => v !== ALL);
+    const identity = vc.read!;
+    const bound = vc.env.boundSource ?? null;
+    let active = () => true;
+    const host: ServiceHost = { serviceRequest: q => vc.service(() => active()).serviceRequest(q) };
+    const searchRead = criteria ? cleanupSearchReader(host, {
+      q: criteria.q.trim(), source: criteria.source === ALL ? null : criteria.source,
+      session: criteria.session === ALL ? null : criteria.session, lifecycle: criteria.lifecycle === ALL ? null : criteria.lifecycle,
+      status: criteria.status === ALL ? null : criteria.status, archived: vc.ui.archived ? 'only' : 'exclude', limit: 50,
+    }, identity) : null;
+    return new CleanupScan(key, identity.storeId, vc.ui.archived, async (cursor, current) => {
+      active = current;
+      if (scopeAvailability(filters, live) !== 'ok') throw new Error('The selected locations are unavailable.');
+      const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
+        { ...pageListScope(vc.ui.filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
+      return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
+    }, matching, criteria ? 64 : 50);
+  },
+  // Stable through the run's own reconciliation (which temporarily clears read).
+  tidyScope: vc => JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null]),
   forgetPlans: (keys, ui) => {
     if (!keys.has(ui.selected ?? '')) return {};
     captures.retire(); reporting.retire(); search.select(null); return { selected: null };
@@ -349,7 +376,7 @@ startView<Ui>({
     // The bar first (Current / Archived, search, Filters); concrete states right below it.
     const controls = boardTop(vc, v, modes, locations, capable);
     root.append(controls);
-    if (notice) root.append(notice);
+    if (notice) controls.append(notice);
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
@@ -564,6 +591,7 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
   area.append(boardBar({
     current: () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch,
     modes, locations, active, open: b.filtersOpen, setOpen,
+    tidy: vc.health?.planCleanup === 1 && vc.read ? { label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure } : null,
     scope: capable ? scopeLine(submitted, vc.ui.archived, vc.env.locale) : null,
     search: capable ? {
       text: () => draftText(vc), setText: (q) => setText(vc, q),

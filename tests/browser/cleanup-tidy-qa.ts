@@ -1,5 +1,5 @@
 // Synthetic SDK host, real disposable cleanup service; no native-host/physical-phone claim.
-// Usage: node --experimental-strip-types tests/browser/cleanup-tidy-qa.ts --source --chromium <binary> --artifacts <dir>
+// Usage: node --experimental-strip-types tests/browser/cleanup-tidy-qa.ts --source [--bar-only] --chromium <binary> --artifacts <dir>
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
@@ -13,6 +13,8 @@ const artifacts = arg('--artifacts');
 if (!artifacts) throw Error('Pass --artifacts <dir>');
 mkdirSync(artifacts, { recursive: true });
 const checks: string[] = [];
+const barOnly = process.argv.includes('--bar-only');
+const barMetrics: object[] = [];
 const check = (name: string, pass: boolean) => { if (!pass) throw Error(name); checks.push(name); };
 let browser: Awaited<ReturnType<typeof launchChromium>> | undefined;
 let fixture: Awaited<ReturnType<typeof startLanguageFixture>> | undefined;
@@ -20,6 +22,7 @@ const service = await launchCleanupService(false, false);
 let failure: string | null = null;
 let old = false;
 let oldHealthReads = 0;
+let run500Ms: number | null = null;
 try {
   // A separate finished-only session lets the board's actual filter prove it never widens.
   const actor = { ...service.actor, sessionId: 'F' };
@@ -43,8 +46,8 @@ try {
     return r.result.value as T;
   };
   const guest = <T = any>(s: string, code: string) => evaluate<T>(`(()=>{const w=frame(${js(s)}).contentWindow,d=w.document;${code}})()`);
-  const wait = async (s: string, condition: string) => {
-    const ok = await evaluate(`(async()=>{const end=performance.now()+12000;while(performance.now()<end){try{const w=frame(${js(s)}).contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
+  const wait = async (s: string, condition: string, timeout = 12000) => {
+    const ok = await evaluate(`(async()=>{const end=performance.now()+${timeout};while(performance.now()<end){try{const w=frame(${js(s)}).contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
     if (!ok) throw Error(`Timeout ${s}: ${condition}; ` + await guest(s, 'return d.body.innerText.slice(0,700)'));
   };
   let width = 390;
@@ -55,6 +58,7 @@ try {
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', ...data });
   };
   const click = async (s: string, selector: string) => {
+    await wait(s, `!!d.querySelector(${js(selector)})`);
     await guest(s, `d.querySelector(${js(selector)})?.scrollIntoView({block:'center'});return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
     const [x, y] = await guest<[number, number]>(s, `const n=d.querySelector(${js(selector)});if(!n)throw Error('Missing control '+${js(selector)});const r=n.getBoundingClientRect(),o=w.frameElement.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]`);
     if (width === 390) {
@@ -79,10 +83,8 @@ try {
   };
   const before = state('P-done'), cancelled = state('P-cancelled');
   const open = async (s: string) => {
-    await wait(s, `!!d.querySelector('[data-testid="surface-header"]')`);
-    await click(s, '[data-testid="more-trigger"]');
-    await wait(s, `!!d.querySelector('[data-testid="more-tidy"]')`);
-    await click(s, '[data-testid="more-tidy"]');
+    await wait(s, `!!d.querySelector('[data-testid="tidy-open"] button')`);
+    await click(s, '[data-testid="tidy-open"] button');
     await wait(s, `!!d.querySelector('[data-testid="tidy-confirm"]') && !!d.activeElement?.closest('[data-testid="tidy-cancel"]')`);
   };
   const shot = async (name: string) => {
@@ -92,7 +94,7 @@ try {
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture.port}/` });
   await evaluate(`document.querySelector('#outside').hidden=true;document.querySelectorAll('section').forEach(n=>n.style.margin='0');qa.context('M');true`);
   await wait('panel', `!!d.querySelector('[data-testid="surface-header"]')`);
-  for (const size of [390, 1280]) for (const locale of ['en', 'ru', 'zh-CN']) for (const mode of ['light', 'dark']) for (const s of ['panel', 'page']) {
+  for (const size of [390, 1280]) for (const locale of ['en', 'ru', 'zh-CN']) for (const mode of ['light', 'dark']) for (const s of ['page']) {
     width = size;
     await c.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 });
     await c.send('Emulation.setTouchEmulationEnabled', { enabled: width === 390 });
@@ -102,25 +104,37 @@ try {
     await evaluate(`frame(${js(s)}).contentWindow.postMessage({channel:'openchamber.sdk',v:1,type:'ready',payload:{...qa.ctx,surface:${js(s)},settings:{},item:null,theme:${js(theme)}}},location.origin);true`);
     await wait(s, `d.documentElement.lang===${js(locale)}`);
     const count = await posts();
+    const metrics = await guest<{ placeholder: string; fits: boolean; inputWidth: number; name: string }>(s, `const input=d.querySelector('[data-testid="search-query"] input'),style=w.getComputedStyle(input),canvas=d.createElement('canvas'),ctx=canvas.getContext('2d');ctx.font=style.font;const inputWidth=input.getBoundingClientRect().width,textWidth=ctx.measureText(input.placeholder).width,contentWidth=inputWidth-parseFloat(style.borderLeftWidth)-parseFloat(style.borderRightWidth)-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight);return {placeholder:input.placeholder,fits:textWidth<=contentWidth,textWidth,contentWidth,inputWidth,name:input.getAttribute('aria-label')??input.labels?.[0]?.textContent}`);
+    barMetrics.push({ width, locale, mode, ...metrics });
+    check(id + '-placeholder-fits', metrics.fits);
+    check(id + '-search-name-preserved', metrics.name === (({ en: 'Search titles and IDs', ru: 'Поиск по названиям и ID', 'zh-CN': '搜索标题和 ID' } as Record<string, string>)[locale]));
+    check(id + '-bar-reflow', await guest(s, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
+    await shot(id + '-bar');
+    if (barOnly) continue;
     await open(s);
-    const targetCount = await guest<number>(s, `return d.querySelectorAll('[data-testid="tidy-confirm"] li').length`);
+    const targetCount = 6;
     check(id + '-label', await guest(s, `return d.querySelector('#tidy-heading').textContent===${js(t.heading(targetCount))}&&d.querySelector('[data-testid="tidy-confirm-archive"] button').textContent===${js(t.confirm(targetCount))}`));
-    check(id + '-failed-kept', await guest(s, `return d.querySelector('[data-testid="tidy-confirm"]').textContent.includes(${js(t.failed)}) && ![...d.querySelectorAll('[data-testid="tidy-confirm"] li')].some(n=>n.textContent.includes('P-failed'))`));
+    check(id + '-one-line-no-titles', await guest(s, `return d.querySelectorAll('[data-testid="tidy-confirm"] p').length===1 && !d.querySelector('[data-testid="tidy-confirm"] li') && !d.querySelector('[data-testid="tidy-confirm"]').textContent.includes('P-failed')`));
+    if (width === 390) check(id + '-touch-target', await guest(s, `const r=d.querySelector('[data-testid="tidy-open"] button').getBoundingClientRect();return r.width>=44 && r.height>=44`));
     check(id + '-reflow', await guest(s, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
     await shot(id + '-confirm');
     await key('Enter');
-    await wait(s, `!d.querySelector('[data-testid="tidy-confirm"]') && d.activeElement?.dataset.testid==='more-trigger'`);
+    await wait(s, `!d.querySelector('[data-testid="tidy-confirm"]') && !!d.activeElement?.closest('[data-testid="tidy-open"]')`);
     check(id + '-cancel-sends-nothing', await posts() === count);
     await open(s); await key('Escape');
-    await wait(s, `!d.querySelector('[data-testid="tidy-confirm"]') && d.activeElement?.dataset.testid==='more-trigger'`);
-    await open(s);
+    await wait(s, `!d.querySelector('[data-testid="tidy-confirm"]') && !!d.activeElement?.closest('[data-testid="tidy-open"]')`);
+    // From Tidy after Escape: open, archive and Undo using only the keyboard.
+    await key('Enter');
+    await wait(s, `!!d.querySelector('[data-testid="tidy-confirm"]') && !!d.activeElement?.closest('[data-testid="tidy-cancel"]')`);
+    await guest(s, `w.__tidyObserver?.disconnect();w.__tidyAnnouncements=[];const live=d.querySelector('[data-testid="tidy-result"]');w.__tidyObserver=new w.MutationObserver(()=>{w.__tidyAnnouncements.push(live.textContent)});w.__tidyObserver.observe(live,{childList:true,characterData:true,subtree:true});return true`);
     // Cancel → Tab → Archive → Enter: genuine keyboard activation, no default submission.
     await key('Tab'); await key('Enter');
     await wait(s, `!!d.querySelector('[data-testid="tidy-undo"] button') && !d.querySelector('[data-testid="tidy-confirm"]')`);
     const resultText = await guest<string>(s, `return d.querySelector('[data-testid="tidy-result"]').textContent`);
     check(id + '-result', targetCount > 0 && resultText === t.result(targetCount, targetCount, false));
+    check(id + '-announced-once', await guest(s, `return JSON.stringify(w.__tidyAnnouncements)===JSON.stringify(${js([t.progress(0, targetCount, 'archive'), t.result(targetCount, targetCount, 'archive')])})`));
     check(id + '-history', JSON.stringify(state('P-done')) === JSON.stringify(before) && JSON.stringify(state('P-cancelled')) === JSON.stringify(cancelled));
-    check(id + '-failed-visible', service.store.detail('source-fixture', 'P-failed').plan.cleanup?.state !== 'archived');
+    check(id + '-failed-archived', service.store.detail('source-fixture', 'P-failed').plan.cleanup?.state === 'archived');
     // AX names/roles are checked against the actual browser tree, not a string-only DOM model.
     const tree = await c.send('Page.getFrameTree');
     const frameId = tree.frameTree.childFrames.find((f: any) => f.frame.url.includes(`/ui/${s}/`)).frame.id;
@@ -128,7 +142,8 @@ try {
     check(id + '-undo-accessible', ax.nodes.some((n: any) => n.role?.value === 'button' && n.name?.value === t.undo));
     check(id + '-result-status', await guest(s, `return d.querySelector('[data-testid="tidy-result"]').getAttribute('role')==='status'`));
     await shot(id + '-result');
-    await click(s, '[data-testid="tidy-undo"] button');
+    await wait(s, `!!d.activeElement?.closest('[data-testid="tidy-open"]')`);
+    await key('Tab'); await key('Enter');
     await wait(s, `d.querySelector('[data-testid="tidy-result"]')?.textContent===${js(t.result(targetCount, targetCount, true))}`);
     check(id + '-restored', service.store.detail('source-fixture', 'P-done').plan.cleanup?.state === 'visible' && JSON.stringify(state('P-done')) === JSON.stringify(before));
     await refresh(s);
@@ -136,6 +151,7 @@ try {
     // Bring the other frame's list up to date before the next run.
     await refresh();
   }
+  if (!barOnly) {
   // The actual board session filter: its Tidy must not include any filtered-out plan.
   await evaluate(`qa.show('page',1280);qa.ready('page',{locale:'en'});true`);
   await refresh('page');
@@ -151,7 +167,7 @@ try {
   await key('Home'); for (let n = 0; n < index; n++) await key('ArrowDown'); await key('Enter');
   await wait('page', `!!d.querySelector('[data-testid="plan-row-P-filtered"]') && !d.querySelector('[data-testid="plan-row-P-done"]')`);
   await open('page');
-  check('filtered-confirmation', await guest('page', `return d.querySelectorAll('[data-testid="tidy-confirm"] li').length===1 && d.querySelector('[data-testid="tidy-confirm"] li').textContent.includes('Filtered finished plan')`));
+  check('filtered-confirmation', await guest('page', `return d.querySelector('#tidy-heading').textContent===${js(tidyCopy('en').matching(1))} && !!d.querySelector('[data-testid="tidy-open"]')`));
   await key('Tab'); await key('Enter');
   await wait('page', `!!d.querySelector('[data-testid="tidy-undo"]')`);
   check('filtered-out-untouched', service.store.detail('source-fixture', 'P-done').plan.cleanup?.state === 'visible');
@@ -169,53 +185,92 @@ try {
   await wait('page', `!!d.querySelector('[data-testid="tidy-retry"] button') && d.querySelector('[data-testid="tidy-result"]').textContent.includes('0 of 1')`);
   check('changed-plan-not-retried', await posts() === conflictPosts + 1);
   check('unconfirmed-archive-no-undo', await guest('page', `return !d.querySelector('[data-testid="tidy-undo"]')`));
-  // A held request has already left the guest. Switching session permits that one
-  // receipt to complete but must stop every subsequent request in the sequence.
-  await evaluate(`qa.show('panel',1280);qa.context('M');true`);
-  await refresh('panel');
-  await wait('panel', `!!d.querySelector('[data-testid="surface-header"]')`);
-  await open('panel');
-  const stopPosts = await posts();
-  await evaluate(`qa.holds.push({tag:'tidy-context',kind:'service',surface:'panel',path:'/v1/plan/archive'});true`);
-  await key('Tab'); await key('Enter');
-  await wait('panel', `qa.held.some(h=>h.tag==='tidy-context')`);
-  await evaluate(`qa.context('F');qa.release('tidy-context');true`);
-  await wait('panel', `!d.querySelector('[data-testid="tidy-confirm"]') && !!d.querySelector('[data-testid="surface-header"]')`);
-  check('context-stop', await posts() === stopPosts + 1);
-  // The already-dispatched request is reconciled; no Undo can leak to the new scope.
-  check('context-undo-retired', await guest('panel', `return !d.querySelector('[data-testid="tidy-undo"]')`));
-  // The maximum confirmation still keeps both action buttons within a phone frame.
-  for (let n = 0; n < 55; n++) service.seed(`P-cap-${n}`, 'finished');
-  width = 390;
-  await c.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
-  await c.send('Emulation.setTouchEmulationEnabled', { enabled: true });
-  await evaluate(`qa.show('panel',390);qa.context('M');true`);
-  await refresh('panel');
-  await open('panel');
-  check('cap-confirmation', await guest('panel', `return d.querySelectorAll('[data-testid="tidy-confirm"] li').length===50`));
-  check('cap-scroll-region', await guest('panel', `const n=d.querySelector('[data-testid="tidy-confirm"] ul');return n.tabIndex===0 && !!n.getAttribute('aria-labelledby') && n.scrollHeight>n.clientHeight`));
-  check('cap-actions-visible', await guest('panel', `return ['tidy-cancel','tidy-confirm-archive'].every(id=>{const r=d.querySelector('[data-testid="'+id+'"] button').getBoundingClientRect();return r.top>=0 && r.bottom<=w.innerHeight})`));
-  await shot('panel-390-cap-confirm');
-  await key('Escape');
-  width = 1280;
-  await c.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
-  await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  // Delete has a separate one-line confirmation, collapsed disclosure and no Undo.
+  await open('page');
+  const deletePosts = await posts();
+  await click('page', '[data-testid="tidy-delete"] button');
+  await wait('page', `!!d.querySelector('[data-testid="tidy-confirm-delete"] button') && !!d.activeElement?.closest('[data-testid="tidy-cancel"]')`);
+  check('delete-second-step', await posts() === deletePosts);
+  check('delete-collapsed-disclosure', await guest('page', `return !!d.querySelector('[data-testid="tidy-confirm"] details:not([open])') && d.querySelector('#tidy-heading').textContent.includes('cannot be undone')`));
+  await key('Enter');
+  check('delete-no-default-submit', await posts() === deletePosts);
+  await wait('page', `!d.querySelector('[data-testid="tidy-confirm"]')`);
+  await open('page');
+  await click('page', '[data-testid="tidy-delete"] button');
+  await wait('page', `!!d.querySelector('[data-testid="tidy-confirm-delete"] button')`);
+  await click('page', '[data-testid="tidy-confirm"] summary');
+  check('delete-details-reachable', await guest('page', `return d.querySelector('[data-testid="tidy-confirm"] details').open && d.querySelector('[data-testid="tidy-confirm"] details').textContent.includes('original file')`));
+  await shot('delete-confirm');
+  await click('page', '[data-testid="tidy-confirm-delete"] button');
+  await wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('deleted')`);
+  check('delete-no-undo', await guest('page', `return !d.querySelector('[data-testid="tidy-undo"]')`));
+  // Neither rail nor either More menu offers bulk cleanup.
+  for (const s of ['page', 'panel']) {
+    await evaluate(`qa.show(${js(s)},1280);true`);
+    await wait(s, `!!d.querySelector('[data-testid="more-trigger"]')`);
+    await click(s, '[data-testid="more-trigger"]');
+    check(s + '-no-more-bulk-entry', await guest(s, `return !d.querySelector('[data-testid="more-tidy"]')`));
+    if (s === 'panel') check('no-rail-tidy', await guest(s, `return !d.querySelector('[data-testid="tidy-open"]')`));
+    await key('Escape');
+  }
+  // An independent search scan includes matches beyond the displayed search page.
+  for (let n = 0; n < 500; n++) service.seed(`P-bulk-${String(n).padStart(3, '0')}`, 'finished');
   await evaluate(`qa.show('page',1280);true`);
   await refresh('page');
+  await click('page', '[data-testid="search-clear"] button');
+  await wait('page', `!!d.querySelector('[data-testid="search-query"] input')`);
+  await click('page', '[data-testid="search-query"] input');
+  await c.send('Input.insertText', { text: 'P-bulk-' });
+  await key('Enter');
+  await wait('page', `!!d.querySelector('[data-testid="tidy-open"] button') && !!d.querySelector('[data-testid="search-results"]')`);
+  await open('page');
+  check('search-includes-unloaded-matches', await guest('page', `return d.querySelector('#tidy-heading').textContent===${js(tidyCopy('en').matching(500))}`));
+  const started500 = performance.now();
+  await click('page', '[data-testid="tidy-confirm-archive"] button');
+  await wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent===${js(tidyCopy('en').result(500, 500, 'archive'))}`, 60000);
+  run500Ms = Math.round(performance.now() - started500);
+  await shot('search-500-result');
+  await click('page', '[data-testid="tidy-undo"] button');
+  await wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent===${js(tidyCopy('en').result(500, 500, 'restore'))}`, 60000);
+  check('undo-exact-500', Array.from({ length: 500 }, (_, n) => `P-bulk-${String(n).padStart(3, '0')}`).every(id => service.store.detail('source-fixture', id).plan.cleanup?.state === 'visible'));
+  // Stop can be reached without stealing focus on every progress repaint.
+  await open('page');
+  const stopPosts = await posts();
+  await evaluate(`qa.holds.push({tag:'tidy-stop',kind:'service',surface:'page',path:'/v1/plan/archive'});true`);
+  await click('page', '[data-testid="tidy-confirm-archive"] button');
+  await wait('page', `qa.held.some(h=>h.tag==='tidy-stop') && !!d.querySelector('[data-testid="tidy-stop"] button')`);
+  await click('page', '[data-testid="tidy-stop"] button');
+  await evaluate(`qa.release('tidy-stop');true`);
+  await wait('page', `!!d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('skipped')`);
+  check('stop-after-inflight-only', await posts() === stopPosts + 1);
+  // Archived Tidy has Delete only; no eligible targets leaves just the empty line and Cancel.
+  await wait('page', `!!d.querySelector('[data-testid="board-filters-trigger"]')`);
+  await click('page', '[data-testid="board-filters-trigger"]');
+  await click('page', '[data-testid="cleanup-archived"] button');
+  await wait('page', `!!d.querySelector('[data-testid="tidy-open"] button') && d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'`);
+  await open('page');
+  check('archived-delete-only', await guest('page', `return !!d.querySelector('[data-testid="tidy-delete"]') && !d.querySelector('[data-testid="tidy-confirm-archive"]')`));
+  await click('page', '[data-testid="tidy-delete"] button');
+  await wait('page', `!!d.querySelector('[data-testid="tidy-confirm-delete"] button')`);
+  await click('page', '[data-testid="tidy-confirm-delete"] button');
+  await wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('deleted')`);
+  await open('page');
+  check('empty-no-action', await guest('page', `return d.querySelector('#tidy-heading').textContent===${js(tidyCopy('en').empty)} && !d.querySelector('[data-testid="tidy-delete"]') && !d.querySelector('[data-testid="tidy-confirm-archive"]')`));
+  await key('Escape');
   // Capability absence uses an actual health refresh and leaves no bulk entry.
   old = true;
-  await refresh('page');
+  await evaluate(`qa.show('page',1280);true`); await refresh('page');
   check('capability-health-read', oldHealthReads > 0);
-  await click('page', '[data-testid="more-trigger"]');
-  check('capability-absent', await guest('page', `return !d.querySelector('[data-testid="more-tidy"]')`));
-  check('no-delete-request', await evaluate(`qa.requests.filter(q=>q.method==='POST').every(q=>['/v1/plan/archive','/v1/plan/restore'].includes(q.path))`));
+  check('capability-absent', await guest('page', `return !d.querySelector('[data-testid="tidy-open"]')`));
+  check('no-active-request', await evaluate(`qa.requests.filter(q=>q.method==='POST'&&q.path.startsWith('/v1/plan/')).every(q=>{const b=JSON.parse(q.body);return b.plan!=='P-active'&&!('active' in b)})`));
+  }
   check('no-browser-errors', browser.page.errors.length === 0);
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
   process.exitCode = 1;
 } finally {
-  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: !failure, failure, checks, realService: true, sourceGuests: process.argv.includes('--source'), browserErrors: browser?.page.errors ?? [] }, null, 2) + '\n');
+  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: !failure, failure, checks, barMetrics, run500Ms, realService: true, sourceGuests: process.argv.includes('--source'), browserErrors: browser?.page.errors ?? [] }, null, 2) + '\n');
   await browser?.stop(); await fixture?.stop(); await service.stop();
 }
 if (failure) console.error(failure);
-else console.log(JSON.stringify({ passed: true, checks: checks.length }));
+else console.log(JSON.stringify({ passed: true, checks: checks.length, run500Ms }));

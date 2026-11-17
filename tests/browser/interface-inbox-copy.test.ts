@@ -24,12 +24,12 @@ test('Needs you labels and uncertain counts follow the guide in all three langua
 
 test('Tidy names the confirmed count and does not repeat totals after complete success', () => {
   const en = tidyCopy('en');
-  assert.equal(en.heading(4), 'Archive 4 closed plans?');
+  assert.equal(en.heading(4), '4 closed plans here.');
   assert.equal(en.confirm(4), 'Archive 4 plans');
   assert.equal(en.result(4, 4, false), '4 plans archived.');
-  assert.match(en.result(0, 4, false), /0 of 4.*could not be confirmed/);
-  assert.equal(tidyCopy('ru').heading(1), 'Архивировать 1 закрытый план?');
-  assert.equal(tidyCopy('ru').heading(2), 'Архивировать 2 закрытых плана?');
-  assert.equal(tidyCopy('ru').heading(5), 'Архивировать 5 закрытых планов?');
+  assert.match(en.result(0, 4, false), /0 of 4.*4 skipped/);
+  assert.equal(tidyCopy('ru').heading(1), 'Здесь 1 закрытый план.');
+  assert.equal(tidyCopy('ru').heading(2), 'Здесь 2 закрытых плана.');
+  assert.equal(tidyCopy('ru').heading(5), 'Здесь 5 закрытых планов.');
   assert.equal(tidyCopy('zh-CN').confirm(4), '归档 4 个计划');
 });

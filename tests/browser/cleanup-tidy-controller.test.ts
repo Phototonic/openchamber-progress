@@ -21,7 +21,7 @@ async function until(check: () => boolean) {
   for (let n = 0; n < 100; n++) { if (check()) return; await drain(); }
   assert.fail('Controller did not reach the expected state');
 }
-function frame(surface: 'page' | 'panel') {
+function frame(surface: 'page' | 'panel', scan = false) {
   const listeners: Record<string, (v?: any) => void> = {};
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
@@ -43,11 +43,11 @@ function frame(surface: 'page' | 'panel') {
     async serviceRequest(q: { path: string; body?: string }) {
       if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, planCleanup: 1 }) };
       if (q.path === '/v1/plans') return { status: 200, body: JSON.stringify(plansPage(plans)) };
-      if (q.path === '/v1/plan/archive' || q.path === '/v1/plan/restore') {
+       if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
         if (hold) { hold = false; await new Promise<void>(r => { release = r; }); }
-        return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : 'visible', revision: request.cleanupRev + 1 } }) };
+         return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : q.path.endsWith('delete') ? 'deleted' : 'visible', revision: request.cleanupRev + 1 } }) };
       }
       return { status: 404, body: '{"error":"not-found"}' };
     },
@@ -73,7 +73,12 @@ function frame(surface: 'page' | 'panel') {
   const spec: ViewSpec<{ filter: string }> = {
     surface, maxSessionSubscriptions: 0, initialUi: () => ({ filter: 'all' }),
     scope: c => surface === 'page' ? {} : { session: c.session?.id },
-    tidyScope: c => c.ui.filter, tidyPlans: c => c.read?.plans ?? [],
+     tidyScope: c => c.ui.filter, tidyPlans: c => c.read?.plans ?? [],
+     tidyScan: scan ? (c, key) => new cleanup.CleanupScan(key, c.read!.storeId, false, async cursor => {
+       const offset = Number(cursor ?? 0);
+       return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
+         visited: 50, nextCursor: offset === 2000 ? null : String(offset + 50) };
+     }) : undefined,
     wantProjects: () => [], wantDetails: () => [], paint: (_root, c) => { vc = c; },
   };
   exports.startView(spec);
@@ -101,6 +106,22 @@ test('board keeps a pending batch and receipt-bound Undo across a host-session-o
     assert.equal(f.vc.cleanup.tidy?.result, result, 'completed Undo survives another host-session switch');
     f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
     assert.equal(f.posts.filter(p => p.endsWith('/restore')).length, 2);
+  } finally { f.stop(); }
+});
+
+test('a retired confirmation cannot approve targets added by Check more', async () => {
+  const f = frame('page', true);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy();
+    await until(() => f.vc.cleanup.tidy?.confirmation?.targets.length === 1);
+    const previous = f.vc;
+    f.vc.moreTidy();
+    await until(() => f.vc.cleanup.tidy?.confirmation?.targets.length === 2);
+    previous.confirmTidy(); await drain();
+    assert.equal(f.posts.length, 0, 'the one-plan confirmation cannot authorize the new two-plan count');
+    f.vc.confirmTidy();
+    await until(() => f.vc.cleanup.tidy?.result?.succeeded.length === 2);
   } finally { f.stop(); }
 });
 test('board scope away and back permanently retires a pending batch before its receipt arrives', async () => {
@@ -137,5 +158,29 @@ test('board account changes still retire the pending batch and its receipts', as
     f.account(); f.release(); await until(() => !f.vc.cleanup.pending);
     assert.equal(f.posts.length, 1);
     assert.equal(f.vc.cleanup.tidy, undefined);
+  } finally { f.stop(); }
+});
+
+test('Delete requires its own step; archive cannot confirm it, and Stop ends after the held delete receipt', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain();
+    f.vc.confirmTidyDelete(); await drain();
+    assert.equal(f.posts.length, 0, 'delete cannot bypass its second step');
+    f.vc.deleteTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.deleting, true);
+    assert.equal(f.posts.length, 0);
+    f.vc.confirmTidy(); await drain();
+    assert.equal(f.posts.length, 0, 'old Archive callback cannot confirm deletion');
+    f.hold(); f.vc.confirmTidyDelete();
+    await until(() => f.posts.length === 1);
+    f.vc.stopTidy(); f.release();
+    await until(() => !f.vc.cleanup.pending);
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.vc.cleanup.tidy?.result?.action, 'delete');
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 1);
+    f.vc.undoTidy(); await drain();
+    assert.equal(f.posts.length, 1, 'delete has no Undo path');
   } finally { f.stop(); }
 });
