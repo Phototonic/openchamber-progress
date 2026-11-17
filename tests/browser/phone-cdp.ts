@@ -29,10 +29,10 @@ export function chromiumPath(arg?: string) {
   return path;
 }
 
-export async function launchChromium(binary: string) {
+export async function launchChromium(binary: string, nativeScrollbar = false) {
   mkdirSync('/tmp/opencode', { recursive: true });
   const profile = mkdtempSync('/tmp/opencode/phone-layout-qa-');
-  const chrome = spawn(binary, ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1000', 'about:blank'], { stdio: 'ignore', detached: true });
+  const chrome = spawn(binary, ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', ...(nativeScrollbar ? ['--disable-features=OverlayScrollbar,FluentOverlayScrollbar'] : ['--hide-scrollbars']), '--window-size=1280,1000', 'about:blank'], { stdio: 'ignore', detached: true });
   let page: Cdp | null = null;
   const stop = async () => {
     page?.close();

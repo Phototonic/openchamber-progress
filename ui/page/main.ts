@@ -15,7 +15,7 @@ import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { lifecycleLabel, summarize, type PlanView, type SearchHitView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import {
-  ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, partitionBoardPlans, pickPlan, placeOf, projectsFor, searchFilterOptions, type Filters, type Option,
+  ALL, BoardDerivation, coverageGap, NO_FILTERS, pageListScope, placeOf, projectsFor, searchFilterOptions, type Filters, type Option, type Place,
 } from '../shared/scope.ts';
 import { criteriaKey, queryProblem, searchable, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
 import {
@@ -30,7 +30,7 @@ import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared
 import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '../shared/primitives.ts';
 import { CompactInbox, hiddenInboxAction, inboxCopy, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
-import { scopeInbox } from '../shared/inbox.ts';
+import { InboxPartition, partitionInbox, planInboxComplete, scopeInbox } from '../shared/inbox.ts';
 
 type Tab = 'progress' | 'document' | 'history' | 'map';
 const messages = {
@@ -74,11 +74,22 @@ type Submitted = { key: string; owner: string; criteria: SearchCriteria };
  */
 type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean; search: Submitted | null; draft: SearchDraft; problem: Problem | null };
 
-const visiblePlans = (vc: ViewContext<Ui>) => {
-  if (!vc.read) return [];
-  const filters = normalizeFilters(vc.read.plans, vc.env.live, vc.ui.filters, vc.env.boundSource);
-  return applyFilters(vc.read.plans, vc.env.live, filters, vc.env.boundSource);
-};
+const boardDerivation = new BoardDerivation();
+const derivedBoard = (vc: ViewContext<Ui>) => boardDerivation.get({
+  plans: vc.read?.plans ?? [], live: vc.env.live, filters: vc.ui.filters,
+  bound: vc.env.boundSource, locale: resolveLanguage('auto', vc.env.locale), archived: vc.ui.archived,
+  reading: JSON.stringify([vc.identity, vc.ctx.connection?.account, vc.ui.search?.key, [...vc.env.unverifiedSources]]),
+});
+const visiblePlans = (vc: ViewContext<Ui>) => vc.read ? derivedBoard(vc).plans : [];
+let rowInbox: ReturnType<typeof partitionInbox> = new Map();
+let rowPlaces = new Map<string, Place>();
+let rowPlans = new Map<string, PlanView>();
+const inboxPartition = new InboxPartition();
+function rowAttention(p: PlanView) {
+  const inbox = frame?.inbox, part = rowInbox.get(p.key);
+  const detail = frame?.detail(p);
+  return { count: part?.counts.needsYou ?? 0, complete: !!inbox && planInboxComplete(inbox.model, p, part, detail?.state === 'ready' ? detail.value : null, inbox.device, inbox.storeId) };
+}
 let reveals = 0;
 let revealed = 0;
 /**
@@ -95,7 +106,7 @@ let shownDigest: DigestPanel | null = null;
 let frame: ViewContext<Ui> | null = null;
 const search = new SearchController({
   service: (current) => (frame ? frame.service(current) : { serviceRequest: () => Promise.reject(new Error('Retired read')) }),
-  changed: () => frame?.updateUi(() => ({})),
+  changed: () => frame?.invalidate(),
   visible: () => document.visibilityState !== 'hidden',
 });
 let submits = 0;
@@ -112,7 +123,7 @@ const RECENT_OPENED = 3;
 let opened: string[] = [];
 
 const ownerOf = (vc: ViewContext<Ui>) => JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]);
-const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}) });
+const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.invalidate() });
 const reporting = new ReportingHealth({service:current=>frame!.service(current),visible:()=>document.visibilityState!=='hidden',changed:()=>frame?.invalidate(),copy:async text=>{if(!navigator.clipboard?.writeText)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(text);}});
 const shell = new ProgressShell();
 function draftText(vc: ViewContext<Ui>) {
@@ -152,7 +163,7 @@ function searchPlan(vc: ViewContext<Ui>, v: SearchViewState): PlanView | null {
 }
 function selectedPlan(vc: ViewContext<Ui>) {
   const v = searching(vc);
-  return v ? searchPlan(vc, v) : pickPlan(visiblePlans(vc), vc.ui.selected);
+  return v ? searchPlan(vc, v) : vc.read ? derivedBoard(vc).select(vc.ui.selected) : null;
 }
 /** The board's own reading scope (filters or search run; never the host session). */
 function readingScope(vc: ViewContext<Ui>) {
@@ -177,6 +188,8 @@ const progressTab = (root: HTMLElement) => root.querySelector<HTMLElement>('[dat
  * `reveal`: the last explicit selection already given a chance to open its fold.
  */
 const board = { key: '', finished: new Map<string, boolean>(), filtersKey: '', filtersOpen: false, reveal: 0 };
+const rowCache = new Map<string, { signature: string; holder: HTMLElement }>();
+let rowReading = '';
 let boardEpoch = 0;
 /** Where focus goes once after the next paint (the control that acted was replaced). */
 let boardFocus: { to: 'trigger' | 'panel' } | { to: 'fold'; project: string; notice?: 'regrouped' } | null = null;
@@ -256,8 +269,9 @@ startView<Ui>({
   wantProjects: (vc) => {
     if (!vc.read) return [];
     const p = selectedPlan(vc);
-    const own = p && trusted(p, vc.env) ? planProject(p.ownerSessionId, p.directory, vc.live) : undefined;
-    return [...new Set([...(own ? [own.id] : []), ...projectsFor(vc.read.plans, vc.live, vc.directory, vc.env.boundSource)])];
+    const live = derivedBoard(vc).live;
+    const own = p && trusted(p, vc.env) ? planProject(p.ownerSessionId, p.directory, live) : undefined;
+    return [...new Set([...(own ? [own.id] : []), ...projectsFor(vc.read.plans, live, vc.directory, vc.env.boundSource)])];
   },
   wantDetails: (vc) => {
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
@@ -286,7 +300,11 @@ startView<Ui>({
   paint(root, vc) {
     frame = vc;
     captures.beginPaint();
-    const { read, failure, env, ui } = vc;
+    const { read, failure, ui } = vc;
+    const env = read ? { ...vc.env, live: derivedBoard(vc).live } : vc.env;
+    rowPlaces = read ? derivedBoard(vc).places : new Map();
+    rowPlans = new Map(read?.plans.map(p => [p.key, p]) ?? []);
+    rowInbox = vc.inbox ? inboxPartition.get(vc.inbox.model, vc.inbox.device, vc.inbox.storeId, ownerOf(vc)) : new Map();
     const t = copy(env.locale);
     const old = document.getElementById('ap-search-q') as HTMLInputElement | null;
     caret = old && document.activeElement === old ? [old.selectionStart, old.selectionEnd] : null;
@@ -317,16 +335,16 @@ startView<Ui>({
     const empty = !v && !read.plans.length && ui.filters.session === ALL;
     // Location selects live in Filters: browsing applies them on choice, a search reruns with them.
     let locations: HTMLElement | null = null;
-    const filters = normalizeFilters(read.plans, env.live, ui.filters, env.boundSource);
-    if (v) {
+    const filters = derivedBoard(vc).filters;
+    if (v && boardFor(vc).filtersOpen) {
       const c = v.criteria;
       const f = { project: c.project, worktree: c.worktree, session: c.session };
       // Choices: live locations plus those this frame has seen; never a full-library census.
       const options = searchFilterOptions([...read.plans, ...v.page.hits.map((h) => h.plan)], env.live, f, c.labels, env.boundSource, env.locale);
       locations = filterBar(f, options, (patch) => { const next = { ...f, ...patch }; runSearch(vc, { ...c, ...next, labels: labelsFor(vc, next, c.labels, options.sessions.find(o => o.id === next.session)) }); }, env.locale);
-    } else if (!empty) {
+    } else if (!v && !empty && boardFor(vc).filtersOpen) {
       const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: 0 });
-      locations = filterBar(filters, filterOptions(read.plans, env.live, filters, read.plans, env.boundSource, env.locale), setFilter, env.locale);
+      locations = filterBar(filters, derivedBoard(vc).options(), setFilter, env.locale);
     }
     // The bar first (Current / Archived, search, Filters); concrete states right below it.
     const controls = boardTop(vc, v, modes, locations, capable);
@@ -353,8 +371,8 @@ startView<Ui>({
       root.append(row);
     }
 
-    const visible = applyFilters(read.plans, env.live, filters, env.boundSource);
-    const plan = pickPlan(visible, ui.selected);
+    const visible = derivedBoard(vc).plans;
+    const plan = derivedBoard(vc).select(ui.selected);
     const b = boardFor(vc);
     // An explicit selection of a plan inside a closed Finished fold opens that fold once (never on polls).
     if (ui.reveal && ui.reveal !== b.reveal) {
@@ -362,6 +380,7 @@ startView<Ui>({
       if (plan && !ui.archived && (plan.lifecycle === 'completed' || plan.lifecycle === 'cancelled')) b.finished.set(placeOf(plan, env.live, env.boundSource).projectKey, true);
     }
     const board = el('div', 'ap-board');
+    board.dataset.retainKey = 'board';
     const list = planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: ++reveals }), ui.archived, b);
     list.prepend(controls);
     board.append(list);
@@ -399,6 +418,7 @@ startView<Ui>({
     root.querySelector('[data-testid="plan-detail"]')?.scrollIntoView({ block: 'start' });
   },
   preserveFocus: (previous, next) => { preserveMapFocus(previous, next); preserveLiveSelects(previous, next); focusRegroupedPlan(previous, next); },
+  reconcilePaint: retainBoardList,
 });
 
 /** A poll may move a pointer-focused active row into a closed Finished fold.
@@ -464,7 +484,7 @@ function runSearch(vc: ViewContext<Ui>, criteria: SearchCriteria) {
 function boardFilters(vc: ViewContext<Ui>): Filters {
   const s = searching(vc)?.criteria;
   if (s) return { project: s.project, worktree: s.worktree, session: s.session };
-  return vc.read ? normalizeFilters(vc.read.plans, vc.env.live, vc.ui.filters, vc.env.boundSource) : NO_FILTERS;
+  return vc.read ? derivedBoard(vc).filters : NO_FILTERS;
 }
 function labelsFor(vc: ViewContext<Ui>, f: Filters, previous: SearchCriteria['labels'] = {}, selectedSession?: Option): SearchCriteria['labels'] {
   // Location names omit unavailable decoration; session names retain the selected option's origin.
@@ -767,7 +787,7 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
       if (kind === 'troubleshooting') {
         const p = claim(); if (!p.open) p.toggle();
         const body = advancedDetails(vc, plan, [[t.loaded, String(vc.read?.plans.length ?? 0)], [t.watched, String(vc.sessionSubscriptions)], ...failureFacts(vc.failure, vc.env.locale)]);
-        const gap = coverageGap(visiblePlans(vc), vc.env.live, vc.env.boundSource);
+        const gap = coverageGap(visiblePlans(vc), derivedBoard(vc).live, vc.env.boundSource);
         if (gap.missing) body.append(el('p', 'ap-note', t.missing(gap.missing)));
         if (gap.otherSource) body.append(el('p', 'ap-note', t.otherSource(gap.otherSource)));
         if (gap.capped) body.append(el('p', 'ap-note', t.capped(gap.capped)));
@@ -819,7 +839,19 @@ function planMark(p: PlanView, locale: string) {
  */
 function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSelect: (key: string) => void, label: string) {
   const t = copy(env.locale);
+  if (rowReading !== board.key) { rowCache.clear(); rowReading = board.key; }
+  const key = `rows:${label}:${plans[0]?.key ?? ''}`;
+  const signature = JSON.stringify([plans, selected && plans.includes(selected) ? selected.key : null, env.locale, env.boundSource, [...env.unverifiedSources],
+    plans.map(p => [rowPlaces.get(p.key), trusted(p, env) ? coverageFor(p.ownerSessionId, p.directory, env.live) : null])]);
+  const cached = rowCache.get(key);
+  if (cached?.signature === signature && cached.holder.isConnected) {
+    const placeholder = cached.holder.cloneNode(false) as HTMLElement;
+    placeholder.dataset.unchangedRows = 'true';
+    return placeholder;
+  }
   const holder = el('div', 'ap-plan-rows');
+  holder.dataset.retainKey = key;
+  rowCache.set(key, { signature, holder });
   mountList(holder, {
     ariaLabel: label,
     // Partitions retain this scoped read's objects. A matching key from another
@@ -842,16 +874,11 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
     if (!row) return;
     row.dataset.testid = `plan-row-${p.id}`;
     row.dataset.source = p.sourceId;
+    row.dataset.planKey = p.key;
+    row.dataset.revision = String(p.revision);
     row.dataset.lifecycle = p.lifecycle;
     row.prepend(planMark(p, env.locale));
-    if (frame?.inbox) {
-      const m = scopeInbox(frame.inbox.model, new Set([p.key]), !frame.failure, frame.inbox.device, frame.inbox.storeId).model;
-      if (m.availability === 'ready' && (m.counts.needsYou || !m.complete)) {
-        const n = testid(el('span', 'ap-inbox-count', `${m.counts.needsYou}${m.complete ? '' : '+'}`), 'plan-needs-you-count');
-        n.setAttribute('aria-label', `${inboxCopy(env.locale).heading}: ${n.textContent}`);
-        row.append(n);
-      }
-    }
+    paintRowAttention(row, p, env.locale);
     const main = row.querySelector<HTMLElement>('.oc-sdk-row-main');
     if (!main) return;
     const s = summarize(p);
@@ -865,12 +892,24 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
       bar.classList.add('ap-mini-bar');
       main.append(bar);
     }
-    const place = placeOf(p, env.live, env.boundSource, env.locale);
+    const place = rowPlaces.get(p.key) ?? placeOf(p, env.live, env.boundSource, env.locale);
     const trustedPlan = trusted(p, env);
     const live = trustedPlan ? liveLabel(coverageFor(p.ownerSessionId, p.directory, env.live), env.locale).label : t.fromOther;
     main.append(el('span', 'ap-sr', `, ${place.worktreeLabel}, ${recordedLabel(p, env)(p.ownerSessionId)}, ${live}`));
   });
   return holder;
+}
+
+/** Inbox authority/busy changes do not rebuild a listbox or any unchanged row. */
+function paintRowAttention(row: HTMLElement, plan: PlanView, locale: string) {
+  const { count, complete } = rowAttention(plan);
+  let badge = row.querySelector<HTMLElement>('[data-testid="plan-needs-you-count"]');
+  if (frame?.inbox?.model.availability !== 'ready' || count === 0) { badge?.remove(); return; }
+  if (!badge) { badge = testid(el('span', 'ap-inbox-count'), 'plan-needs-you-count'); row.append(badge); }
+  const text = `${count}${complete ? '' : '+'}`;
+  if (badge.textContent !== text) badge.textContent = text;
+  const name = `${inboxCopy(locale).heading}: ${text}`;
+  if (badge.getAttribute('aria-label') !== name) badge.setAttribute('aria-label', name);
 }
 
 /**
@@ -881,28 +920,25 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
 function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSelect: (key: string) => void, archived: boolean, b: typeof board) {
   const t = copy(env.locale);
   const wrap = testid(el('nav', 'ap-plan-list'), 'plan-list');
+  wrap.dataset.retainKey = 'plan-list';
   wrap.setAttribute('aria-label', t.plans);
   wrap.dataset.scrollKey = 'plan-list';
   // Owning heading of the list region (focus target after Clear all and similar; never a Tab stop).
   const heading = testid(el('h2', 'ap-region-h', t.plans), 'plan-list-heading');
   heading.tabIndex = -1;
   wrap.append(heading);
-  const groups = new Map<string, { label: string; plans: PlanView[] }>();
-  for (const p of plans) {
-    const place = placeOf(p, env.live, env.boundSource, env.locale);
-    const g = groups.get(place.projectKey) ?? { label: place.projectLabel, plans: [] };
-    g.plans.push(p);
-    groups.set(place.projectKey, g);
-  }
+  const groups = derivedBoard(frame!).groups;
   const boardKey = b.key;
   wrap.dataset.boardReading = boardKey;
   let index = 0;
-  for (const [key, g] of groups) {
+  for (const g of groups) {
+    const key = g.key;
     const n = index++;
     const section = testid(el('section', 'ap-section ap-board-project'), 'board-project');
     section.dataset.project = key;
+    section.dataset.retainKey = `project:${key}`;
     section.append(el('h3', 'ap-h', g.label));
-    const { current, finished } = partitionBoardPlans(g.plans, archived);
+    const { current, finished } = g;
     if (current.length) section.append(planRows(current, selected, env, onSelect, t.plansIn(g.label)));
     if (finished.length) {
       const open = b.finished.get(key) ?? false;
@@ -925,6 +961,7 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
       const fold = testid(el('div', 'ap-board-fold'), 'board-finished');
       fold.id = id;
       fold.dataset.project = key;
+      fold.dataset.retainKey = `finished:${key}`;
       fold.hidden = !open;
       fold.append(planRows(finished, selected, env, onSelect, t.finishedIn(g.label)));
       section.append(toggle, note, fold);
@@ -933,4 +970,65 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   }
   if (!plans.length) wrap.append(testid(el('p', 'ap-note', t.listEmpty), 'list-empty'));
   return wrap;
+}
+
+/** Retain the container AND its ancestor chain. Moving a nav into a new root, even
+ * with scrollTop restored, loses native thumb ownership on engines without moveBefore.
+ * Only same-reading lists opt in: account/store/binding/filter/mode/search changes replace.
+ */
+function retainBoardList(previous: HTMLElement, next: HTMLElement): HTMLElement {
+  const before = previous.querySelector<HTMLElement>('.ap-plan-list');
+  const after = next.querySelector<HTMLElement>('.ap-plan-list');
+  if (!before?.dataset.boardReading || !after?.dataset.boardReading || before.dataset.boardReading !== after.dataset.boardReading) return next;
+  const reconcile = (target: HTMLElement, template: HTMLElement) => {
+    if (template.dataset.unchangedRows === 'true') {
+      for (const row of target.querySelectorAll<HTMLElement>('[data-plan-key]')) {
+        const plan = rowPlans.get(row.dataset.planKey!);
+        if (plan) paintRowAttention(row, plan, frame!.env.locale);
+      }
+      return;
+    }
+    for (const attr of [...target.attributes]) if (!template.hasAttribute(attr.name)) target.removeAttribute(attr.name);
+    for (const attr of [...template.attributes]) if (target.getAttribute(attr.name) !== attr.value) target.setAttribute(attr.name, attr.value);
+    const keyed = new Map([...target.children].filter((n): n is HTMLElement => n instanceof HTMLElement && !!n.dataset.retainKey).map(n => [n.dataset.retainKey!, n]));
+    const wanted = new Set([...template.children].filter((n): n is HTMLElement => n instanceof HTMLElement && !!n.dataset.retainKey).map(n => n.dataset.retainKey!));
+    const retained = (n: ChildNode) => n instanceof HTMLElement && !!n.dataset.retainKey && wanted.has(n.dataset.retainKey);
+    let cursor = target.firstChild;
+    for (const child of [...template.childNodes]) {
+      const held = child instanceof HTMLElement && child.dataset.retainKey ? keyed.get(child.dataset.retainKey) : undefined;
+      const node = held ?? child;
+      if (held) reconcile(held, child as HTMLElement);
+      // Retire obsolete siblings BEFORE a retained ancestor. Otherwise inserting a
+      // fresh heading ahead of its old copy would make us detach/reinsert the board
+      // and nav merely to step over that old heading on engines without moveBefore.
+      if (held) while (cursor && cursor !== held && !retained(cursor)) {
+        const next = cursor.nextSibling; cursor.remove(); cursor = next;
+      }
+      if (!held && cursor && !retained(cursor)) {
+        const old = cursor;
+        if ('moveBefore' in target && typeof target.moveBefore === 'function' && node.isConnected) {
+          target.moveBefore(node, old); old.remove();
+        } else target.replaceChild(node, old);
+        cursor = node.nextSibling;
+        continue;
+      }
+      if (node !== cursor) {
+        if ('moveBefore' in target && typeof target.moveBefore === 'function' && node.isConnected) target.moveBefore(node, cursor);
+        else target.insertBefore(node, cursor);
+      }
+      cursor = node.nextSibling;
+    }
+    while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+  };
+  reconcile(previous, next);
+  // Changed listbox contents were moved into the connected holder, not vice versa.
+  // Cache the committed holder rather than the discarded paint's template.
+  const used = new Set<string>();
+  for (const holder of previous.querySelectorAll<HTMLElement>('.ap-plan-rows[data-retain-key]')) {
+    used.add(holder.dataset.retainKey!);
+    const cached = rowCache.get(holder.dataset.retainKey!);
+    if (cached) cached.holder = holder;
+  }
+  for (const key of rowCache.keys()) if (!used.has(key)) rowCache.delete(key);
+  return previous;
 }

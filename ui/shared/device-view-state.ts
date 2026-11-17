@@ -11,7 +11,7 @@ export interface DeviceViewRecord {
   dismissed: Partial<Record<ViewSurface, string>>;
 }
 const empty = (): DeviceViewRecord => ({ v: 1, hidden: [], expanded: {}, dismissed: {} });
-export function hiddenItemKey(store: string, row: InboxRowView): string {
+export function hiddenItemKey<T extends Pick<InboxRowView, 'source' | 'plan' | 'blocker'> & { task: Pick<InboxRowView['task'], 'id'> }>(store: string, row: T): string {
   return JSON.stringify([store, row.source, row.plan, row.task.id, row.blocker.state === 'reported' ? row.blocker.reportedRevision : null]);
 }
 function parse(value: LanguageStorageValue | undefined): DeviceViewRecord {
@@ -48,6 +48,8 @@ export class DeviceViewState {
   get canHide() { return this.supported && this.loaded && this.error !== 'read'; }
   get pending() { return this.busy; }
   hidden(key: string) { return this.record.hidden.includes(key); }
+  /** Read-only input identity for bounded inbox derivations; never persisted by the caller. */
+  get hiddenKeys(): readonly string[] { return this.record.hidden; }
   expanded(surface: ViewSurface) { return this.record.expanded[surface] ?? surface === 'page'; }
   dismissed(surface: ViewSurface, identity: string) { return this.record.dismissed[surface] === identity; }
   async refresh(supported: boolean) {
