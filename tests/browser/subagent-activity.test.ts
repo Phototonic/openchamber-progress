@@ -1084,6 +1084,21 @@ test('history-only gaps qualify positive history counts, not fully covered curre
   }
 });
 
+test('a truncated run traversal qualifies Running and Waiting even with every child loaded', () => {
+  const rows = markLatest([run('running', { childSessionId: 'K' })]);
+  const census = censusFor('A', alpha.directory, snap([rec('A', null), rec('K', 'A', { activity: 'waiting-question' }), rec('H', 'A', { activity: 'running' })]));
+  for (const language of ['en', 'ru', 'zh-CN'] as const) {
+    const r = rosterFor(input({ census, runs: panel(readOf(rows, {}, { coverage: { scope: 'retained', complete: false, reasons: ['traversal-limit'] } })) }), language)!;
+    for (const kind of ['waiting', 'running']) {
+      const part = r.summary.find(s => s.kind === kind)!;
+      assert.ok(part, kind);
+      assert.equal(part.partial, true, kind);
+      assert.ok(part.text.includes(`${part.count}+`), kind);
+    }
+    assert.ok(r.summary.every(s => s.count > 0), 'never a zero count');
+  }
+});
+
 test('qualifications share the count indicator; read failures and recording off stay separate', () => {
   const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(n => !separateNote(n)).map((n) => n.kind);
   const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(separateNote).map((n) => n.kind);

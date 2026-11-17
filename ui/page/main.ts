@@ -98,7 +98,7 @@ const inboxPartition = new InboxPartition();
 function rowAttention(p: PlanView) {
   const inbox = frame?.inbox, part = rowInbox.get(p.key);
   const detail = frame?.detail(p);
-  return { count: part?.counts.needsYou ?? 0, complete: !!inbox && planInboxComplete(inbox.model, p, part, detail?.state === 'ready' ? detail.value : null, inbox.device, inbox.storeId) };
+  return { count: part?.counts.needsYou ?? 0, complete: !!inbox && !frame?.failure && planInboxComplete(inbox.model, p, part, detail?.state === 'ready' ? detail.value : null, inbox.device, inbox.storeId) };
 }
 let reveals = 0;
 let revealed = 0;
