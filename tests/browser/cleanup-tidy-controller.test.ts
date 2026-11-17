@@ -22,7 +22,7 @@ async function until(check: () => boolean) {
   for (let n = 0; n < 100; n++) { if (check()) return; await drain(); }
   assert.fail('Controller did not reach the expected state');
 }
-function frame(surface: 'page' | 'panel', scan = false) {
+function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true) {
   const listeners: Record<string, (v?: any) => void> = {};
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
@@ -35,8 +35,9 @@ function frame(surface: 'page' | 'panel', scan = false) {
   }
   const mount = new Node();
   const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', activeElement: null, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {} };
-  const plans = [summary('one', [], { lifecycle: 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
+  const plans = [summary('one', [], { lifecycle: active ? 'active' : 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
   const posts: string[] = [];
+  const bodies: any[] = [];
   let release: (() => void) | undefined;
   let hold = false;
   let refused: string | null = null;
@@ -44,11 +45,12 @@ function frame(surface: 'page' | 'panel', scan = false) {
   let vc!: ViewContext<{ filter: string }>;
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
-      if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, planCleanup: 1 }) };
+      if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, planCleanup: 1, ...(activeCapability ? { planCleanupActive: 1 } : {}) }) };
       if (q.path === '/v1/plans') return { status: 200, body: JSON.stringify(plansPage(plans)) };
        if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
+        bodies.push(request);
         if (request.plan === refused) return { status: 409, body: '{"error":"conflict"}' };
         if (hold) { hold = false; await new Promise<void>(r => { release = r; }); }
          return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : q.path.endsWith('delete') ? 'deleted' : 'visible', revision: request.cleanupRev + 1 } }) };
@@ -90,7 +92,7 @@ function frame(surface: 'page' | 'panel', scan = false) {
   exports.startView(spec);
   listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: null, theme: {} });
   return {
-    get vc() { return vc; }, posts, markers,
+    get vc() { return vc; }, posts, markers, bodies,
     refuse(plan: string) { refused = plan; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
     session(id: string) { listeners.session({ id }); },
@@ -122,6 +124,72 @@ for (const switchAccount of [false, true]) test(`Tidy delete retires only confir
     await drain();
     assert.equal(f.markers.has(keys[0]), false, 'validated deletion retires the original account marker');
     assert.ok(keys.slice(1).every(key => f.markers.has(key)), 'refused/unsent plans and other contexts keep their markers');
+  } finally { f.stop(); }
+});
+
+test('selection controller shares confirmation binding, active acknowledgements and receipt-bound Undo', async () => {
+  const f = frame('page', false, true);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestSelection('archive', { all: false, plans: f.vc.read!.plans, includes: () => true });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.activeCount, 1);
+    f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.deepEqual(f.bodies.map(b => b.active), [true, undefined]);
+    f.vc.undoTidy();
+    await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
+    assert.equal(f.bodies.length, 4);
+    assert(f.bodies.slice(2).every(b => !('active' in b)));
+  } finally { f.stop(); }
+});
+
+for (const switchAccount of [false, true]) test(`selection delete retires only receipt-confirmed checkpoints (account switch: ${switchAccount})`, async () => {
+  const f = frame('page', false, true);
+  try {
+    await until(() => !!f.vc?.read);
+    const identity = (plan: string, account = 'example'): checkpoints.CheckpointIdentity => ({
+      integrationAccount: account, storeId: f.vc.read!.storeId, binding: { ...f.vc.read!.binding },
+      source: f.vc.read!.plans[0].sourceId, plan,
+    });
+    const keys = [identity('one'), identity('two'), identity('one', 'other-account'), identity('unrelated')].map(id => {
+      const key = checkpoints.checkpointKey(id, 1);
+      f.markers.set(key, checkpoints.checkpointValue(id, 1)); return key;
+    });
+    f.vc.requestSelection('delete', { all: true, plans: f.vc.read!.plans, includes: () => true });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    if (switchAccount) f.hold(); else f.refuse('two');
+    f.vc.confirmTidyDelete();
+    if (switchAccount) {
+      await until(() => f.posts.length === 1);
+      f.account(); await drain(); f.release();
+    }
+    await until(() => !f.vc.cleanup.pending);
+    await drain();
+    assert.equal(f.bodies[0].active, true);
+    assert.equal(f.markers.has(keys[0]), false);
+    assert.ok(keys.slice(1).every(key => f.markers.has(key)), 'refused, unsent and other-account checkpoints survive');
+  } finally { f.stop(); }
+});
+
+test('selection without active capability leaves active targets out before requests', async () => {
+  const f = frame('page', false, true, false);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestSelection('delete', { all: false, plans: f.vc.read!.plans, includes: () => true });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.excludedActive, 1);
+    const stale = f.vc;
+    f.vc.cancelTidy(); await drain();
+    stale.confirmTidyDelete(); await drain();
+    assert.equal(f.bodies.length, 0);
+    f.vc.requestSelection('delete', { all: false, plans: f.vc.read!.plans, includes: () => true });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidyDelete();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.bodies.length, 1);
+    assert.equal(f.bodies[0].plan, 'two');
+    assert(!('active' in f.bodies[0]));
   } finally { f.stop(); }
 });
 test('board keeps a pending batch and receipt-bound Undo across a host-session-only switch', async () => {

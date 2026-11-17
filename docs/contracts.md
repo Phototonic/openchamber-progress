@@ -1116,6 +1116,18 @@ plan or sends the active acknowledgement. Neither the rail nor More has a bulk
 entry. Current plans offers Archive and Delete permanently; Archived plans offers
 Delete permanently only.
 
+Full-page **Select** composes the same bounded scan, confirmation and run engine
+for plans of any lifecycle. Select all is a rule over the current search/filters
+and view, including unloaded plans, with explicit row exclusions. Current plans
+offers Archive/Delete; Archived plans offers Restore/Delete. Selection is
+frame-local, survives refreshes and is cleared by a change of board reading.
+An incomplete selected count is qualified until the panel counts its targets.
+The confirmation line counts in-progress targets and states that Archive stops
+updates until Restore, or that deletion cannot be undone. Only in-progress
+Archive/Delete requests carry `active:true`, and only with
+`planCleanupActive:1`; without it those targets are left out and counted in the
+line. Restore and receipt-bound Undo never carry it.
+
 One confirmation covers at most 1,000 targets. A complete loaded scope needs no
 read; otherwise a separate traversal of existing list/search reads checks at most
 2,000 plans or 40 request windows per explicit scan, whichever is reached first.

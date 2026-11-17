@@ -1,7 +1,7 @@
 import { button, el, offerPlanActions, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
 import type { PlanView } from './model.ts';
-import { cleanupClosed, cleanupFeedback, tidyCopy, type TidyState } from './cleanup.ts';
+import { cleanupClosed, cleanupFeedback, tidyCopy, selectionCopy, type PlanSelection, type TidyState } from './cleanup.ts';
 import { resolveLanguage } from './i18n.ts';
 
 const en = {
@@ -37,7 +37,7 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
   const language = resolveLanguage('auto', vc.env.locale);
   const text = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
   const box = testid(el('section', 'ap-cleanup'), 'cleanup-actions');
-  if (!vc.health?.planCleanup || !cleanupClosed(plan)) return box;
+  if (!vc.health?.planCleanup || !cleanupClosed(plan) && plan.cleanup?.state !== 'archived') return box;
   const state = vc.cleanup;
   const disabled = state.pending || !!vc.failure;
   if (state.target?.key === plan.key) {
@@ -65,7 +65,7 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
     // the `cleanup-delete` hook, so a cancelled confirmation returns focus to the surviving opener.
     const inMenu = offerPlanActions(vc.reading, plan, [
       { id: archived ? 'cleanup-restore' : 'cleanup-archive', label: archived ? text.restorePlan : text.archivePlan, run, disabled },
-      { id: 'cleanup-delete', label: text.deleteMenu, run: () => vc.requestDelete(plan), disabled, destructive: true },
+      { id: 'cleanup-delete', label: text.deleteMenu, run: () => vc.requestDelete(plan), disabled: disabled || !cleanupClosed(plan) && vc.health.planCleanupActive !== 1, destructive: true },
     ], 'cleanup-delete');
     if (!inMenu) {
       // A view without the plan's ⋯ (Map, Document, History) keeps the visible buttons.
@@ -109,7 +109,7 @@ export interface TidyControls {
 }
 function tidyBlock<U>(vc: ViewContext<U>) {
   return tidyPanel(vc.cleanup.tidy, vc.env.locale, {
-    cancel: vc.cancelTidy, archive: vc.confirmTidy, undo: vc.undoTidy, retry: vc.requestTidy,
+    cancel: vc.cancelTidy, archive: vc.confirmTidy, undo: vc.undoTidy, retry: vc.retryTidy,
     deleteStep: vc.deleteTidy, delete: vc.confirmTidyDelete, more: vc.moreTidy, stop: vc.stopTidy,
   }, vc.cleanup.pending || !!vc.failure);
 }
@@ -117,6 +117,7 @@ function tidyBlock<U>(vc: ViewContext<U>) {
 export function tidyPanel(state: TidyState | undefined, locale: string, controls: TidyControls, disabled = false) {
   const box = testid(el('section', 'ap-cleanup'), 'tidy-actions');
   const text = tidyCopy(locale);
+  const selection = selectionCopy(locale);
   const language = resolveLanguage('auto', locale);
   const deletion = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
   box.addEventListener('keydown', event => {
@@ -136,7 +137,7 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
     box.append(testid(el('p', '', text.progress(state.progress.done, state.progress.total, state.progress.action)), 'tidy-progress'));
     if (controls.stop) button(box, 'tidy-stop', text.stop, controls.stop, 'outline');
   } else if (state?.counting) {
-    box.append(testid(el('p', '', text.counting), 'tidy-counting'));
+    box.append(testid(el('p', '', state.selection ? selection.counting : text.counting), 'tidy-counting'));
     button(box, 'tidy-cancel', text.cancel, controls.cancel, 'outline');
   } else if (state?.countFailed) {
     box.append(el('p', '', text.countFailed));
@@ -146,7 +147,9 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
     const c = state.confirmation;
     const confirm = testid(el('div', 'ap-cleanup-confirm'), 'tidy-confirm');
     confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-labelledby', 'tidy-heading');
-    const line = c.deleting ? text.deleteHeading(c.targets.length)
+    const line = c.selection ? c.deleting ? selection.deleteHeading(c.targets.length, c.activeCount ?? 0, !!c.excludedActive)
+      : selection.scope(c.targets.length, c.limited, c.unchecked, c.selection === 'restore' ? 0 : c.activeCount, !!c.excludedActive)
+      : c.deleting ? text.deleteHeading(c.targets.length)
       : c.limited ? text.limited(c.targets.length, c.matching) : c.unchecked ? text.unchecked(c.targets.length, c.matching)
       : !c.targets.length ? text.empty : c.matching ? text.matching(c.targets.length) : text.heading(c.targets.length);
     const heading = el('p', '', line); heading.id = 'tidy-heading';
@@ -162,11 +165,11 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
       if (c.deleting) {
         if (controls.delete) button(actions, 'tidy-confirm-delete', text.deleteConfirm(c.targets.length), controls.delete, 'destructive', disabled);
       } else {
-        if (!c.archived) button(actions, 'tidy-confirm-archive', text.confirm(c.targets.length), controls.archive, 'outline', disabled);
-        if (controls.deleteStep) button(actions, 'tidy-delete', text.deleteMenu, controls.deleteStep, 'outline', disabled);
+        if (c.selection || !c.archived) button(actions, 'tidy-confirm-archive', c.selection ? selection.confirm(c.targets.length, c.selection === 'restore' ? 'restore' : 'archive') : text.confirm(c.targets.length), controls.archive, 'outline', disabled);
+        if (!c.selection && controls.deleteStep) button(actions, 'tidy-delete', text.deleteMenu, controls.deleteStep, 'outline', disabled);
       }
     }
-    if (c.unchecked && !c.deleting && controls.more) button(actions, 'tidy-check-more', text.checkMore, controls.more, 'outline', disabled);
+    if (c.unchecked && (!c.deleting || c.selection) && controls.more) button(actions, 'tidy-check-more', text.checkMore, controls.more, 'outline', disabled);
     confirm.append(actions);
     confirm.addEventListener('keydown', event => {
       if (event.key === 'Escape') { event.preventDefault(); controls.cancel(); }
@@ -181,8 +184,33 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
   } else if (result) {
     const actions = el('div', 'ap-row');
     if (result.action === 'archive' && result.succeeded.length) button(actions, 'tidy-undo', text.undo, controls.undo, 'outline', disabled);
-    if (result.succeeded.length < result.total) button(actions, 'tidy-retry', text.retry, result.action === 'restore' ? controls.undo : controls.retry, 'outline', disabled);
+    if (result.succeeded.length < result.total) button(actions, 'tidy-retry', text.retry, result.action === 'restore' && state.selection !== 'restore' ? controls.undo : controls.retry, 'outline', disabled);
     box.append(actions);
   }
   return box;
+}
+
+let selectionLive: HTMLElement | null = null;
+/** The count region survives paint; changing a row mutates its text just once. */
+export function selectionBar(selection: PlanSelection, locale: string, archived: boolean, changed: () => void,
+  action: (action: 'archive' | 'restore' | 'delete') => void, disabled = false) {
+  const text = selectionCopy(locale), tidy = tidyCopy(locale);
+  const bar = testid(el('div', 'ap-row ap-selection-bar'), 'selection-bar');
+  button(bar, 'selection-mode', selection.mode ? text.done : text.select, () => {
+    selection.clear(); selection.mode = !selection.mode; changed();
+  }, 'outline', disabled);
+  if (!selection.mode) return bar;
+  button(bar, 'selection-all', text.all, () => { selection.selectAll(); changed(); }, 'outline', disabled);
+  selectionLive ??= testid(el('span', 'ap-note'), 'selection-count');
+  selectionLive.setAttribute('role', 'status'); selectionLive.setAttribute('aria-atomic', 'true');
+  const count = text.count(selection.count, selection.incomplete);
+  if (selectionLive.textContent !== count) selectionLive.textContent = count;
+  bar.append(selectionLive);
+  if (selection.count || selection.incomplete) {
+    const primary = archived ? 'restore' : 'archive';
+    button(bar, `selection-${primary}`, text[primary], () => action(primary), 'outline', disabled);
+    button(bar, 'selection-delete', tidy.deleteMenu, () => action('delete'), 'outline', disabled);
+    button(bar, 'selection-clear', text.clear, () => { selection.clear(); changed(); }, 'ghost', disabled);
+  }
+  return bar;
 }
