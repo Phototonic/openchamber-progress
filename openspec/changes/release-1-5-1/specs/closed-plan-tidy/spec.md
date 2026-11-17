@@ -96,7 +96,12 @@ Opening Tidy SHALL show an inline panel, not a modal, whose one short line state
 
 #### Scenario: Scan limit reached first
 - **WHEN** the scan reaches its 2,000-plan limit having collected fewer than 1,000 matching plans
-- **THEN** the line states the number actually found and that more plans weren't checked, without claiming more matches exist, and the rest can be checked by using Tidy again
+- **THEN** the line states the number actually found and that more plans weren't checked, without claiming more matches exist, and offers Check more
+
+#### Scenario: Check more continues past checked plans
+- **WHEN** the user chooses Check more after the scan limit
+- **THEN** the scan continues from where it stopped in the same reading, reading up to 2,000 further plans and adding their matches to the count, never re-reading plans it already checked
+- **AND** a change of store, account, binding, view, search or filters discards the continuation, so the next scan starts from the beginning
 
 #### Scenario: Deletion details
 - **WHEN** the user expands the disclosure in the deletion step
