@@ -1118,8 +1118,11 @@ Delete permanently only.
 
 One confirmation covers at most 1,000 targets. A complete loaded scope needs no
 read; otherwise a separate traversal of existing list/search reads checks at most
-2,000 plans per explicit scan. Check more continues from the same cursor, adding
-matches without restarting the traversal. Its cursor and targets belong to one
+2,000 plans or 40 request windows per explicit scan, whichever is reached first.
+The window bound matches 40 ordinary 50-plan list pages, and also bounds search
+round trips when one task-heavy plan spans many hit windows. Check more continues
+from the same cursor with fresh per-action budgets, adding matches without
+restarting the traversal. Its cursor and targets belong to one
 account, store/binding and board reading, and are discarded when that changes.
 The count distinguishes a target ceiling with more remaining from unchecked plans
 that may or may not match. No scan changes ordinary list/search caches or refresh

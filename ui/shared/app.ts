@@ -1020,13 +1020,19 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!targets.length) return;
     if (!undo && (deleting !== !!state.confirmation?.deleting || !deleting && state.confirmation?.archived)) return;
     const action = undo ? 'restore' : deleting ? 'delete' : 'archive';
+    const deleted = new Map<string, CheckpointIdentity>();
+    if (action === 'delete' && read) for (const target of targets) {
+      deleted.set(target.key, digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }));
+    }
     tidyStopped = false;
     const current = () => !tidyStopped && !disposed && cleanup.tidy === state && state.context === tidyContext() && health?.planCleanup === 1;
     state.scan?.cancel(); state.confirmation = undefined;
     state.progress = { action, done: 0, total: targets.length };
     cleanupFocus = 'tidy-stop';
     cleanupBusy = true; cleanup = { ...cleanup, pending: true }; versions.ui++; gate.retire(); schedule();
-    const result = await runTidy(guardedHost(current), action, targets, current, (done, total) => {
+    const result = await runTidy(guardedHost(current), action, targets, current, (done, total, confirmed) => {
+      const checkpoint = confirmed && deleted.get(confirmed.key);
+      if (checkpoint) { if (digests) digests.forget(checkpoint); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(checkpoint); }
       if (cleanup.tidy === state && state.context === tidyContext()) { state.progress = { action, done, total }; versions.ui++; schedule(); }
     });
     cleanupBusy = false;

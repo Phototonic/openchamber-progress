@@ -68,6 +68,8 @@ export function cleanupError(code: string, locale = 'en') {
 
 export const TIDY_LIMIT = 1000;
 export const TIDY_SCAN_LIMIT = 2000;
+/** Network round trips per explicit action, even when search continues one task-heavy plan. */
+export const TIDY_SCAN_WINDOWS = 40;
 export interface TidyConfirmation {
   context: string;
   targets: CleanupTarget[];
@@ -140,10 +142,11 @@ export class CleanupScan {
     if (this.busy || this.retired || !current()) return null;
     this.busy = true;
     const active = () => !this.retired && current();
-    let visited = 0;
+    let visited = 0, windows = 0;
     try {
-      while (!this.exhausted && this.targets.size < TIDY_LIMIT && visited + this.windowBound <= TIDY_SCAN_LIMIT) {
+      while (!this.exhausted && this.targets.size < TIDY_LIMIT && visited + this.windowBound <= TIDY_SCAN_LIMIT && windows < TIDY_SCAN_WINDOWS) {
         if (!active()) return null;
+        windows++;
         const page = await this.read(this.cursor, active);
         if (!active()) return null;
         if (!Number.isSafeInteger(page.visited) || page.visited < 1 || page.visited > this.windowBound ||
@@ -167,7 +170,7 @@ export class CleanupScan {
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
  * Selection explicitly opts into active targets; Tidy never does. */
 export async function runTidy(host: ServiceHost, action: CleanupAction, targets: CleanupTarget[], current: () => boolean,
-  progress?: (done: number, total: number) => void, allowActive = false): Promise<TidyResult> {
+  progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false): Promise<TidyResult> {
   const succeeded: CleanupTarget[] = [];
   let attempted = 0;
   for (const target of targets.slice(0, TIDY_LIMIT)) {
@@ -181,7 +184,8 @@ export async function runTidy(host: ServiceHost, action: CleanupAction, targets:
       ...target,
       request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
     });
-    progress?.(succeeded.length, targets.length);
+    // Receipt-dependent side effects belong to this validated target, even if context moved.
+    progress?.(succeeded.length, targets.length, result.ok ? succeeded.at(-1) : undefined);
   }
   const keys = new Set(succeeded.map(t => t.key));
   return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)) };

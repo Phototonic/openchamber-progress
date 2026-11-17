@@ -257,12 +257,12 @@ startView<Ui>({
   actionPlan: selectedPlan,
   tidyPlans: visiblePlans,
   tidyArchived: vc => vc.ui.archived,
-  tidyMatching: vc => isSearching(vc) || Object.values(vc.ui.filters).some(v => v !== ALL),
+  tidyMatching: vc => isSearching(vc) || Object.values(derivedBoard(vc).filters).some(v => v !== ALL),
   tidyScan: (vc, key) => {
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
-    const live = freezeLive(vc.live), filters = criteria ?? vc.ui.filters;
-    const matching = !!criteria || Object.values(vc.ui.filters).some(v => v !== ALL);
+    const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
+    const matching = !!criteria || Object.values(filters).some(v => v !== ALL);
     const identity = vc.read!;
     const bound = vc.env.boundSource ?? null;
     let active = () => true;
@@ -276,7 +276,7 @@ startView<Ui>({
       active = current;
       if (scopeAvailability(filters, live) !== 'ok') throw new Error('The selected locations are unavailable.');
       const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
-        { ...pageListScope(vc.ui.filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
+        { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
       return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
     }, matching, criteria ? 64 : 50);
   },

@@ -52,6 +52,27 @@ test('retirement discards held scans; collecting targets stops at the confirmati
   assert.equal(reads, 20);
 });
 
+test('task-heavy search pauses after 40 windows and Check more resumes without repeating windows', async () => {
+  const candidates = plans(3);
+  const cursors: (string | null)[] = [];
+  const scan = new CleanupScan('search', 'store', false, async cursor => {
+    cursors.push(cursor);
+    const window = Number(cursor ?? 0);
+    // Twenty task-hit windows for each plan, each using only one backend plan slot.
+    return { plans: [candidates[Math.floor(window / 20)]], visited: 1,
+      nextCursor: window === 59 ? null : String(window + 1) };
+  }, true, 64);
+  const first = await scan.more(() => true);
+  assert.equal(cursors.length, 40);
+  assert.equal(first?.targets.length, 2);
+  assert.equal(first?.unchecked, true);
+  const second = await scan.more(() => true);
+  assert.equal(second?.targets.length, 3);
+  assert.equal(second?.unchecked, false);
+  assert.equal(cursors[40], '40');
+  assert.equal(new Set(cursors).size, 60);
+});
+
 test('shared run engine strips acknowledgement for closed targets, skips active Tidy targets and stops after in-flight receipt', async () => {
   const targets = tidyConfirmation(plans(3), 'store', 'reading').targets;
   let current = true;
