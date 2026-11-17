@@ -72,6 +72,38 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
 
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
+/** Panel-owned list traversal: no health/setup read, refresh budget, inbox or cache writes. */
+export async function readCleanupListPage(host: ServiceHost, scope: ListScope, cursor: string | null,
+  expected: Pick<StoreRead, 'storeId' | 'binding' | 'sources'>) {
+  const page = parsePlansPage(await call(host, ROUTES.plans, query({
+    limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null,
+    archived: scope.archived ?? 'exclude', cursor,
+  })));
+  const e = page.envelope;
+  const verification = (sources: StoreRead['sources']) => JSON.stringify(sources.map(s => [s.id, s.verified]).sort());
+  if (e.storeId !== expected.storeId || e.binding.sourceId !== expected.binding.sourceId ||
+    e.binding.verified !== expected.binding.verified || verification(e.sources) !== verification(expected.sources)) {
+    throw new ContractError('The progress store or binding changed during cleanup counting.');
+  }
+  return { plans: page.data, visited: Math.max(1, page.data.length), nextCursor: page.nextCursor };
+}
+
+/** A separate search traversal, never the board search's cursor, pages or counts. */
+export function cleanupSearchReader(host: ServiceHost, request: Omit<SearchRequest, 'cursor'>,
+  identity: { storeId: string; binding: { sourceId: string | null; verified: boolean } }) {
+  let fingerprint: string | null = null;
+  return async (cursor: string | null) => {
+    const r = { ...request, cursor };
+    const body = await call(host, ROUTES.search, searchQuery(r));
+    const window = parseSearchWindow(body, r, { ...identity, fingerprint });
+    const work = JSON.parse(body).work;
+    if (!Number.isSafeInteger(work.planSlots) || work.planSlots < 1 || work.planSlots > 64) throw new ContractError('The search has unreadable scan work.');
+    if (window.coverage.gapped) throw new ContractError('Some recorded plans could not be checked.');
+    fingerprint = window.fingerprint;
+    return { plans: window.hits.map(h => h.plan), visited: work.planSlots as number, nextCursor: window.nextCursor };
+  };
+}
+
 /**
  * The optional first Needs you window of a list read. `unsupported`: the service does not advertise
  * the capability (never an empty inbox); `unverified`: no verified binding to pin it to; `missing`:

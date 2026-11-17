@@ -37,6 +37,7 @@ export function cleanupFeedback(message: CleanupMessage, locale = 'en') {
 export interface CleanupTarget {
   key: string; title: string; lifecycle: PlanView['lifecycle']; context: string; request: CleanupRequest;
 }
+export type CleanupPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'>;
 export interface CleanupState {
   target: CleanupTarget | null;
   pending: boolean;
@@ -45,10 +46,10 @@ export interface CleanupState {
   tidy?: TidyState;
 }
 export const initialCleanup = (): CleanupState => ({ target: null, pending: false, message: null, error: false });
-export function cleanupTarget(plan: PlanView, storeId: string, context: string): CleanupTarget {
+export function cleanupTarget(plan: CleanupPlan, storeId: string, context: string): CleanupTarget {
   return { key: plan.key, title: plan.title, lifecycle: plan.lifecycle, context, request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
 }
-export function cleanupClosed(plan: PlanView) {
+export function cleanupClosed(plan: Pick<PlanView, 'lifecycle'>) {
   return ['completed', 'cancelled', 'failed'].includes(plan.lifecycle);
 }
 export function cleanupMatches(target: CleanupTarget, plan: PlanView | null, storeId: string | undefined, context: string) {
@@ -65,14 +66,22 @@ export function cleanupError(code: string, locale = 'en') {
   return text.uncertain;
 }
 
-export const TIDY_LIMIT = 50;
+export const TIDY_LIMIT = 1000;
+export const TIDY_SCAN_LIMIT = 2000;
+/** Network round trips per explicit action, even when search continues one task-heavy plan. */
+export const TIDY_SCAN_WINDOWS = 40;
 export interface TidyConfirmation {
   context: string;
   targets: CleanupTarget[];
   total: number;
+  archived?: boolean;
+  matching?: boolean;
+  limited?: boolean;
+  unchecked?: boolean;
+  deleting?: boolean;
 }
 export interface TidyResult {
-  action: 'archive' | 'restore';
+  action: CleanupAction;
   attempted: number;
   total: number;
   succeeded: CleanupTarget[];
@@ -82,40 +91,120 @@ export interface TidyState {
   context: string;
   confirmation?: TidyConfirmation;
   result?: TidyResult;
+  counting?: boolean;
+  countFailed?: boolean;
+  progress?: { action: CleanupAction; done: number; total: number };
+  scan?: CleanupScan;
 }
-export function tidyEligible(plan: PlanView) {
-  return (plan.lifecycle === 'completed' || plan.lifecycle === 'cancelled') && cleanupEligible('archive', plan);
+export function tidyEligible(plan: CleanupPlan, archived = false) {
+  return cleanupClosed(plan) && (plan.cleanup?.state === 'archived') === archived;
 }
-/** Only the surface's already listed plans, never a wider library or search. */
-export function tidyConfirmation(plans: PlanView[], storeId: string, context: string): TidyConfirmation {
-  const eligible = plans.filter(tidyEligible);
-  return { context, total: eligible.length, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)) };
+/** Use a loaded list only when its scope is complete; otherwise use CleanupScan. */
+export function tidyConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived = false): TidyConfirmation {
+  const eligible = plans.filter(p => tidyEligible(p, archived));
+  return { context, archived, total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT,
+    targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)) };
 }
-/** No delete path, no blind retries, and a context check before every request. */
-export async function runTidy(host: ServiceHost, action: 'archive' | 'restore', targets: CleanupTarget[], current: () => boolean): Promise<TidyResult> {
+export interface CleanupScanPage {
+  plans: CleanupPlan[];
+  /** Work visited by the service, including nonmatches, not the number of hits. */
+  visited: number;
+  nextCursor: string | null;
+}
+/** A panel-local traversal. It never mutates the ordinary list or its caches. */
+export class CleanupScan {
+  private cursor: string | null = null;
+  private exhausted = false;
+  private overflow = false;
+  private busy = false;
+  private retired = false;
+  private targets = new Map<string, CleanupTarget>();
+  readonly context: string;
+  private storeId: string;
+  private archived: boolean;
+  private read: (cursor: string | null, current: () => boolean) => Promise<CleanupScanPage>;
+  private matching: boolean;
+  private windowBound: number;
+  constructor(
+    context: string,
+    storeId: string,
+    archived: boolean,
+    read: (cursor: string | null, current: () => boolean) => Promise<CleanupScanPage>,
+    matching = false,
+    /** Search windows visit at most 64 plans; reserve that before issuing one. */
+    windowBound = 50,
+  ) {
+    this.context = context; this.storeId = storeId; this.archived = archived;
+    this.read = read; this.matching = matching; this.windowBound = windowBound;
+  }
+  cancel() { this.retired = true; }
+  async more(current: () => boolean): Promise<TidyConfirmation | null> {
+    if (this.busy || this.retired || !current()) return null;
+    this.busy = true;
+    const active = () => !this.retired && current();
+    let visited = 0, windows = 0;
+    try {
+      while (!this.exhausted && this.targets.size < TIDY_LIMIT && visited + this.windowBound <= TIDY_SCAN_LIMIT && windows < TIDY_SCAN_WINDOWS) {
+        if (!active()) return null;
+        windows++;
+        const page = await this.read(this.cursor, active);
+        if (!active()) return null;
+        if (!Number.isSafeInteger(page.visited) || page.visited < 1 || page.visited > this.windowBound ||
+          (page.nextCursor !== null && page.nextCursor === this.cursor)) throw new Error('Invalid cleanup scan continuation.');
+        visited += page.visited;
+        for (const p of page.plans) {
+          if (!tidyEligible(p, this.archived) || this.targets.has(p.key)) continue;
+          if (this.targets.size >= TIDY_LIMIT) { this.overflow = true; break; }
+          this.targets.set(p.key, cleanupTarget(p, this.storeId, this.context));
+        }
+        this.cursor = page.nextCursor;
+        this.exhausted = this.cursor === null;
+      }
+      return { context: this.context, targets: [...this.targets.values()], total: this.targets.size,
+        archived: this.archived, matching: this.matching,
+        limited: this.overflow || this.targets.size === TIDY_LIMIT && !this.exhausted,
+        unchecked: this.targets.size < TIDY_LIMIT && !this.exhausted };
+    } finally { this.busy = false; }
+  }
+}
+/** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
+ * Selection explicitly opts into active targets; Tidy never does. */
+export async function runTidy(host: ServiceHost, action: CleanupAction, targets: CleanupTarget[], current: () => boolean,
+  progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false): Promise<TidyResult> {
   const succeeded: CleanupTarget[] = [];
   let attempted = 0;
   for (const target of targets.slice(0, TIDY_LIMIT)) {
     if (!current()) break;
+    if (!cleanupClosed(target) && !allowActive) continue;
     attempted++;
-    const result = await cleanupCall(host, action, target.request);
+    const { active: _active, ...request } = target.request;
+    const result = await cleanupCall(host, action, { ...request,
+      ...(!cleanupClosed(target) && allowActive && action !== 'restore' ? { active: true as const } : {}) });
     if (result.ok) succeeded.push({
       ...target,
       request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
     });
+    // Receipt-dependent side effects belong to this validated target, even if context moved.
+    progress?.(succeeded.length, targets.length, result.ok ? succeeded.at(-1) : undefined);
   }
   const keys = new Set(succeeded.map(t => t.key));
   return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)) };
 }
 
 const tidyEn = {
-  menu: 'Archive closed plans…',
-  heading: (n: number) => `Archive ${plural(n, 'closed plan', 'closed plans')}?`,
-  failed: 'Failed plans are kept. You can archive them one at a time.',
-  effect: 'You can restore them at any time; their status and history stay unchanged.',
+  menu: 'Tidy', heading: (n: number) => `${plural(n, 'closed plan', 'closed plans')} here.`,
+  empty: 'No closed plans here.', counting: 'Counting closed plans…', countFailed: 'Could not count plans. Try again.',
+  matching: (n: number) => `${plural(n, 'matching closed plan', 'matching closed plans')}.`,
+  limited: (n: number, matching = false) => `First ${n} ${matching ? 'matching ' : ''}closed plans; more remain.`,
+  unchecked: (n: number, matching = false) => `${plural(n, matching ? 'matching closed plan found' : 'closed plan found', matching ? 'matching closed plans found' : 'closed plans found')}; more plans weren’t checked.`,
+  checkMore: 'Check more', stop: 'Stop', details: 'What deletion removes',
+  deleteMenu: 'Delete permanently…',
+  deleteHeading: (n: number) => `Delete ${plural(n, 'plan', 'plans')}? This cannot be undone.`,
+  deleteConfirm: (n: number) => `Delete ${plural(n, 'plan', 'plans')} permanently`,
   cancel: 'Cancel', confirm: (n: number) => `Archive ${plural(n, 'plan', 'plans')}`, pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
-  count: (n: number, total: number) => `They move to Archived plans on the board${n < total ? `; this batch includes ${n} of ${total} closed plans` : ''}.`,
-  result: (n: number, total: number, restore: boolean) => `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${restore ? 'restored' : 'archived'}.${n < total ? ` ${total - n} could not be confirmed; check the plans before trying again.` : ''}`,
+  progress: (n: number, total: number, action: CleanupAction) => `${action === 'archive' ? 'Archiving' : action === 'restore' ? 'Restoring' : 'Deleting'}: ${n} of ${total}.`,
+  count: (n: number, total: number) => `${n} of ${total} closed plans.`,
+  result: (n: number, total: number, action: CleanupAction | boolean) => `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${action === true || action === 'restore' ? 'restored' : action === 'delete' ? 'deleted' : 'archived'}${n < total ? `; ${total - n} skipped` : ''}.`,
 };
 const russianPlans = (n: number, closed = false) => {
   const form = new Intl.PluralRules('ru').select(n);
@@ -123,21 +212,34 @@ const russianPlans = (n: number, closed = false) => {
     : form === 'one' ? 'план' : form === 'few' ? 'плана' : 'планов';
 };
 const tidyRu: typeof tidyEn = {
-  menu: 'Архивировать закрытые планы…',
-  heading: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n, true)}?`,
-  failed: 'Планы с ошибкой останутся. Их можно архивировать по одному.',
-  effect: 'Их можно восстановить в любое время; статус и история не изменятся.',
+  menu: 'Убрать', heading: n => `Здесь ${formatCount(n, 'ru')} ${russianPlans(n, true)}.`,
+  empty: 'Здесь нет закрытых планов.', counting: 'Считаем закрытые планы…', countFailed: 'Не удалось посчитать планы. Повторите попытку.',
+  matching: n => `Подходящих закрытых планов: ${formatCount(n, 'ru')}.`,
+  limited: (n, matching) => `Первые ${formatCount(n, 'ru')} ${matching ? 'подходящих ' : ''}закрытых планов; есть ещё.`,
+  unchecked: (n, matching) => `Найдено ${matching ? 'подходящих ' : ''}закрытых планов: ${formatCount(n, 'ru')}; остальные ещё не проверены.`,
+  checkMore: 'Проверить ещё', stop: 'Остановить', details: 'Что удаляется',
+  deleteMenu: 'Удалить навсегда…',
+  deleteHeading: n => `Удалить ${formatCount(n, 'ru')} ${russianPlans(n)}? Это нельзя отменить.`,
+  deleteConfirm: n => `Удалить ${formatCount(n, 'ru')} ${russianPlans(n)} навсегда`,
   cancel: 'Отмена', confirm: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n)}`, pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
-  count: (n, total) => `Они переместятся в архивные планы на доске${n < total ? `; в этой группе ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов` : ''}.`,
-  result: (n, total, restore) => `${restore ? 'Восстановлено' : 'Архивировано'} ${n < total ? `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} планов` : `${formatCount(n, 'ru')} ${russianPlans(n)}`}.${n < total ? ` Не удалось подтвердить результат для ${formatCount(total - n, 'ru')}; проверьте планы перед повторной попыткой.` : ''}`,
+  progress: (n, total, action) => `${action === 'archive' ? 'Архивируем' : action === 'restore' ? 'Восстанавливаем' : 'Удаляем'}: ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}.`,
+  count: (n, total) => `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов.`,
+  result: (n, total, action) => `${action === true || action === 'restore' ? 'Восстановлено' : action === 'delete' ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${n < total ? `; пропущено: ${formatCount(total - n, 'ru')}` : ''}.`,
 };
 const tidyZh: typeof tidyEn = {
-  menu: '归档已关闭的计划…', heading: n => `归档 ${formatCount(n, 'zh-CN')} 个已关闭的计划？`,
-  failed: '失败的计划会保留，可逐个归档。',
-  effect: '你可以随时恢复，计划状态和历史记录保持不变。',
+  menu: '整理', heading: n => `此处有 ${formatCount(n, 'zh-CN')} 个已关闭的计划。`,
+  empty: '此处没有已关闭的计划。', counting: '正在统计已关闭的计划…', countFailed: '无法统计计划，请重试。',
+  matching: n => `${formatCount(n, 'zh-CN')} 个匹配的已关闭计划。`,
+  limited: (n, matching) => `前 ${formatCount(n, 'zh-CN')} 个${matching ? '匹配的' : ''}已关闭的计划；还有更多。`,
+  unchecked: (n, matching) => `找到 ${formatCount(n, 'zh-CN')} 个${matching ? '匹配的' : ''}已关闭的计划；更多计划尚未检查。`,
+  checkMore: '检查更多', stop: '停止', details: '删除的内容',
+  deleteMenu: '永久删除…',
+  deleteHeading: n => `删除 ${formatCount(n, 'zh-CN')} 个计划？此操作无法撤销。`,
+  deleteConfirm: n => `永久删除 ${formatCount(n, 'zh-CN')} 个计划`,
   cancel: '取消', confirm: n => `归档 ${formatCount(n, 'zh-CN')} 个计划`, pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
-  count: (n, total) => `它们将移至看板上的已归档计划${n < total ? `，本批处理 ${formatCount(total, 'zh-CN')} 个已关闭计划中的 ${formatCount(n, 'zh-CN')} 个` : ''}。`,
-  result: (n, total, restore) => `已${restore ? '恢复' : '归档'} ${n < total ? `${formatCount(total, 'zh-CN')} 个计划中的 ${formatCount(n, 'zh-CN')} 个` : `${formatCount(n, 'zh-CN')} 个计划`}。${n < total ? `有 ${formatCount(total - n, 'zh-CN')} 个计划的操作结果无法确认，请检查后再试。` : ''}`,
+  progress: (n, total, action) => `正在${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}：${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')}。`,
+  count: (n, total) => `${formatCount(total, 'zh-CN')} 个已关闭计划中的 ${formatCount(n, 'zh-CN')} 个。`,
+  result: (n, total, action) => `已${action === true || action === 'restore' ? '恢复' : action === 'delete' ? '删除' : '归档'} ${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')} 个计划${n < total ? `；跳过 ${formatCount(total - n, 'zh-CN')} 个` : ''}。`,
 };
 export function tidyCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);

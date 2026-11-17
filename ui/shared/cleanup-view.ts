@@ -1,8 +1,7 @@
 import { button, el, offerPlanActions, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
 import type { PlanView } from './model.ts';
-import { cleanupClosed, cleanupFeedback, tidyCopy } from './cleanup.ts';
-import { lifecycleLabel } from './model.ts';
+import { cleanupClosed, cleanupFeedback, tidyCopy, type TidyState } from './cleanup.ts';
 import { resolveLanguage } from './i18n.ts';
 
 const en = {
@@ -98,40 +97,82 @@ export function cleanupNotice<U>(vc: ViewContext<U>) {
 // Keep the polite live region across root replacement. Only new result text mutates it,
 // so ordinary paints do not re-announce the same action.
 let tidyLive: HTMLElement | null = null;
+export interface TidyControls {
+  cancel: () => void;
+  archive: () => void;
+  deleteStep?: () => void;
+  delete?: () => void;
+  more?: () => void;
+  stop?: () => void;
+  undo: () => void;
+  retry: () => void;
+}
 function tidyBlock<U>(vc: ViewContext<U>) {
+  return tidyPanel(vc.cleanup.tidy, vc.env.locale, {
+    cancel: vc.cancelTidy, archive: vc.confirmTidy, undo: vc.undoTidy, retry: vc.requestTidy,
+    deleteStep: vc.deleteTidy, delete: vc.confirmTidyDelete, more: vc.moreTidy, stop: vc.stopTidy,
+  }, vc.cleanup.pending || !!vc.failure);
+}
+/** Panel rendering is independent of the board's controller and paint path. */
+export function tidyPanel(state: TidyState | undefined, locale: string, controls: TidyControls, disabled = false) {
   const box = testid(el('section', 'ap-cleanup'), 'tidy-actions');
-  const text = tidyCopy(vc.env.locale), state = vc.cleanup.tidy;
+  const text = tidyCopy(locale);
+  const language = resolveLanguage('auto', locale);
+  const deletion = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
+  box.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && (state?.counting || state?.countFailed)) { event.preventDefault(); controls.cancel(); }
+  });
   tidyLive ??= testid(el('p', 'ap-note'), 'tidy-result');
   tidyLive.setAttribute('role', 'status');
   tidyLive.setAttribute('aria-atomic', 'true');
   const result = state?.result;
-  const message = result ? text.result(result.succeeded.length, result.total, result.action === 'restore') : '';
+  // Progress is visible but not live: only start/result are announced, never each plan.
+  const message = state?.progress ? text.progress(0, state.progress.total, state.progress.action)
+    : result ? text.result(result.succeeded.length, result.total, result.action) : '';
   if (tidyLive.textContent !== message) tidyLive.textContent = message;
+  tidyLive.className = state?.progress ? 'ap-sr' : 'ap-note';
   box.append(tidyLive);
-  if (state?.confirmation) {
+  if (state?.progress) {
+    box.append(testid(el('p', '', text.progress(state.progress.done, state.progress.total, state.progress.action)), 'tidy-progress'));
+    if (controls.stop) button(box, 'tidy-stop', text.stop, controls.stop, 'outline');
+  } else if (state?.counting) {
+    box.append(testid(el('p', '', text.counting), 'tidy-counting'));
+    button(box, 'tidy-cancel', text.cancel, controls.cancel, 'outline');
+  } else if (state?.countFailed) {
+    box.append(el('p', '', text.countFailed));
+    button(box, 'tidy-cancel', text.cancel, controls.cancel, 'outline');
+    button(box, 'tidy-retry', text.retry, controls.retry, 'outline', disabled);
+  } else if (state?.confirmation) {
     const c = state.confirmation;
     const confirm = testid(el('div', 'ap-cleanup-confirm'), 'tidy-confirm');
     confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-labelledby', 'tidy-heading');
-    const heading = el('h3', '', text.heading(c.targets.length)); heading.id = 'tidy-heading';
-    confirm.append(heading, el('p', '', text.count(c.targets.length, c.total)), el('p', '', text.effect), el('p', 'ap-note', text.failed));
-    const list = el('ul');
-    // Fifty literal titles must not push confirmation controls out of a phone frame.
-    list.style.maxHeight = 'min(40vh, 20rem)';
-    list.style.overflowY = 'auto';
-    list.tabIndex = 0;
-    list.setAttribute('aria-labelledby', 'tidy-heading');
-    for (const target of c.targets) {
-      // Titles are literal text, not markup. The captured outcome cannot change at confirmation.
-      const row = el('li', 'ap-cleanup-title', target.title);
-      row.append(el('span', 'ap-note', ` — ${lifecycleLabel(target.lifecycle, vc.env.locale)}`));
-      list.append(row);
+    const line = c.deleting ? text.deleteHeading(c.targets.length)
+      : c.limited ? text.limited(c.targets.length, c.matching) : c.unchecked ? text.unchecked(c.targets.length, c.matching)
+      : !c.targets.length ? text.empty : c.matching ? text.matching(c.targets.length) : text.heading(c.targets.length);
+    const heading = el('p', '', line); heading.id = 'tidy-heading';
+    confirm.append(heading);
+    if (c.deleting) {
+      const details = el('details');
+      details.append(el('summary', '', text.details), el('p', '', deletion.effect), el('p', 'ap-note', deletion.privacy));
+      confirm.append(details);
     }
-    confirm.append(list);
     const actions = el('div', 'ap-row');
-    button(actions, 'tidy-cancel', text.cancel, vc.cancelTidy, 'outline', vc.cleanup.pending);
-    button(actions, 'tidy-confirm-archive', vc.cleanup.pending ? text.pending : text.confirm(c.targets.length), () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.confirmTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
+    button(actions, 'tidy-cancel', text.cancel, controls.cancel, 'outline');
+    if (c.targets.length) {
+      if (c.deleting) {
+        if (controls.delete) button(actions, 'tidy-confirm-delete', text.deleteConfirm(c.targets.length), controls.delete, 'destructive', disabled);
+      } else {
+        if (!c.archived) button(actions, 'tidy-confirm-archive', text.confirm(c.targets.length), controls.archive, 'outline', disabled);
+        if (controls.deleteStep) button(actions, 'tidy-delete', text.deleteMenu, controls.deleteStep, 'outline', disabled);
+      }
+    }
+    if (c.unchecked && !c.deleting && controls.more) button(actions, 'tidy-check-more', text.checkMore, controls.more, 'outline', disabled);
     confirm.append(actions);
-    confirm.addEventListener('keydown', event => { if (event.key === 'Escape' && !vc.cleanup.pending) { event.preventDefault(); vc.cancelTidy(); } });
+    confirm.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); controls.cancel(); }
+      // Native buttons still activate when explicitly focused; no default form action.
+      if (event.key === 'Enter' && event.target === confirm) event.preventDefault();
+    });
     box.append(confirm);
     if (!shown.has(c)) {
       shown.add(c);
@@ -139,8 +180,8 @@ function tidyBlock<U>(vc: ViewContext<U>) {
     }
   } else if (result) {
     const actions = el('div', 'ap-row');
-    if (result.action === 'archive' && result.succeeded.length) button(actions, 'tidy-undo', vc.cleanup.pending ? text.restoring : text.undo, () => { vc.handoff({ heading: root => root.querySelector<HTMLElement>('[data-testid="more-trigger"]') }); vc.undoTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
-    if (result.succeeded.length < result.total) button(actions, 'tidy-retry', text.retry, result.action === 'restore' ? vc.undoTidy : vc.requestTidy, 'outline', vc.cleanup.pending || !!vc.failure);
+    if (result.action === 'archive' && result.succeeded.length) button(actions, 'tidy-undo', text.undo, controls.undo, 'outline', disabled);
+    if (result.succeeded.length < result.total) button(actions, 'tidy-retry', text.retry, result.action === 'restore' ? controls.undo : controls.retry, 'outline', disabled);
     box.append(actions);
   }
   return box;

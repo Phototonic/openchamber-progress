@@ -12,6 +12,7 @@ import * as refresh from '../../ui/shared/refresh.ts';
 import * as language from '../../ui/shared/language.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as sessionContext from '../../ui/shared/session-context.ts';
+import * as checkpoints from '../../ui/shared/change-digest-checkpoint.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { HEALTH, plansPage, summary, S } from './fixtures.ts';
 
@@ -21,7 +22,7 @@ async function until(check: () => boolean) {
   for (let n = 0; n < 100; n++) { if (check()) return; await drain(); }
   assert.fail('Controller did not reach the expected state');
 }
-function frame(surface: 'page' | 'panel') {
+function frame(surface: 'page' | 'panel', scan = false) {
   const listeners: Record<string, (v?: any) => void> = {};
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
@@ -38,20 +39,24 @@ function frame(surface: 'page' | 'panel') {
   const posts: string[] = [];
   let release: (() => void) | undefined;
   let hold = false;
+  let refused: string | null = null;
+  const markers = new Map<string, unknown>();
   let vc!: ViewContext<{ filter: string }>;
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
       if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, planCleanup: 1 }) };
       if (q.path === '/v1/plans') return { status: 200, body: JSON.stringify(plansPage(plans)) };
-      if (q.path === '/v1/plan/archive' || q.path === '/v1/plan/restore') {
+       if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
+        if (request.plan === refused) return { status: 409, body: '{"error":"conflict"}' };
         if (hold) { hold = false; await new Promise<void>(r => { release = r; }); }
-        return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : 'visible', revision: request.cleanupRev + 1 } }) };
+         return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : q.path.endsWith('delete') ? 'deleted' : 'visible', revision: request.cleanupRev + 1 } }) };
       }
       return { status: 404, body: '{"error":"not-found"}' };
     },
-    storage: { get: async () => undefined, set: async () => {} },
+    storage: { get: async (key: string) => markers.get(key), set: async (key: string, value: unknown) => { markers.set(key, value); },
+      keys: async () => [...markers.keys()], delete: async (key: string) => { markers.delete(key); } },
     onReady(fn: any) { listeners.ready = fn; }, onSession(fn: any) { listeners.session = fn; },
     onDirectory(fn: any) { listeners.directory = fn; }, onItem() {}, onConnection() {},
   };
@@ -63,7 +68,8 @@ function frame(surface: 'page' | 'panel') {
     require: (name: string) => ({
       ...appCountsModules,
       '@openchamber/sdk': { connectHost: () => host }, '@openchamber/sdk/ui': { applyHostReady() {} },
-      './source.ts': source, './cleanup.ts': cleanup, './refresh.ts': refresh, './language.ts': language, './session-context.ts': sessionContext, './path.ts': path,
+       './source.ts': source, './cleanup.ts': cleanup, './refresh.ts': refresh, './language.ts': language, './session-context.ts': sessionContext, './path.ts': path,
+       './change-digest-checkpoint.ts': checkpoints,
       './phone-layout.ts': { applyDeviceHooks() {} }, './setup.ts': { retireSetupSteps() {} },
       './components.ts': { el: () => new Node(), refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} },
       './live.ts': { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } },
@@ -73,19 +79,51 @@ function frame(surface: 'page' | 'panel') {
   const spec: ViewSpec<{ filter: string }> = {
     surface, maxSessionSubscriptions: 0, initialUi: () => ({ filter: 'all' }),
     scope: c => surface === 'page' ? {} : { session: c.session?.id },
-    tidyScope: c => c.ui.filter, tidyPlans: c => c.read?.plans ?? [],
+     tidyScope: c => c.ui.filter, tidyPlans: c => c.read?.plans ?? [],
+     tidyScan: scan ? (c, key) => new cleanup.CleanupScan(key, c.read!.storeId, false, async cursor => {
+       const offset = Number(cursor ?? 0);
+       return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
+         visited: 50, nextCursor: offset === 2000 ? null : String(offset + 50) };
+     }) : undefined,
     wantProjects: () => [], wantDetails: () => [], paint: (_root, c) => { vc = c; },
   };
   exports.startView(spec);
-  listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, locale: 'en', surface, settings: {}, item: null, theme: {} });
+  listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: null, theme: {} });
   return {
-    get vc() { return vc; }, posts,
+    get vc() { return vc; }, posts, markers,
+    refuse(plan: string) { refused = plan; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
     session(id: string) { listeners.session({ id }); },
     account() { listeners.ready({ ...vc.ctx, connection: { connected: true, account: 'other-account' } }); },
     stop() { listeners.pagehide(); },
   };
 }
+
+for (const switchAccount of [false, true]) test(`Tidy delete retires only confirmed checkpoints in the captured account (switch: ${switchAccount})`, async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    const identity = (plan: string, account = 'example'): checkpoints.CheckpointIdentity => ({
+      integrationAccount: account, storeId: f.vc.read!.storeId, binding: { ...f.vc.read!.binding },
+      source: f.vc.read!.plans[0].sourceId, plan,
+    });
+    const keys = [identity('one'), identity('two'), identity('one', 'other-account'), identity('unrelated')].map(id => {
+      const key = checkpoints.checkpointKey(id, 1);
+      f.markers.set(key, checkpoints.checkpointValue(id, 1)); return key;
+    });
+    f.vc.requestTidy(); await drain(); f.vc.deleteTidy(); await drain();
+    if (switchAccount) f.hold(); else f.refuse('two');
+    f.vc.confirmTidyDelete();
+    if (switchAccount) {
+      await until(() => f.posts.length === 1);
+      f.account(); await drain(); f.release();
+    }
+    await until(() => !f.vc.cleanup.pending);
+    await drain();
+    assert.equal(f.markers.has(keys[0]), false, 'validated deletion retires the original account marker');
+    assert.ok(keys.slice(1).every(key => f.markers.has(key)), 'refused/unsent plans and other contexts keep their markers');
+  } finally { f.stop(); }
+});
 test('board keeps a pending batch and receipt-bound Undo across a host-session-only switch', async () => {
   const f = frame('page');
   try {
@@ -101,6 +139,22 @@ test('board keeps a pending batch and receipt-bound Undo across a host-session-o
     assert.equal(f.vc.cleanup.tidy?.result, result, 'completed Undo survives another host-session switch');
     f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
     assert.equal(f.posts.filter(p => p.endsWith('/restore')).length, 2);
+  } finally { f.stop(); }
+});
+
+test('a retired confirmation cannot approve targets added by Check more', async () => {
+  const f = frame('page', true);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy();
+    await until(() => f.vc.cleanup.tidy?.confirmation?.targets.length === 1);
+    const previous = f.vc;
+    f.vc.moreTidy();
+    await until(() => f.vc.cleanup.tidy?.confirmation?.targets.length === 2);
+    previous.confirmTidy(); await drain();
+    assert.equal(f.posts.length, 0, 'the one-plan confirmation cannot authorize the new two-plan count');
+    f.vc.confirmTidy();
+    await until(() => f.vc.cleanup.tidy?.result?.succeeded.length === 2);
   } finally { f.stop(); }
 });
 test('board scope away and back permanently retires a pending batch before its receipt arrives', async () => {
@@ -137,5 +191,29 @@ test('board account changes still retire the pending batch and its receipts', as
     f.account(); f.release(); await until(() => !f.vc.cleanup.pending);
     assert.equal(f.posts.length, 1);
     assert.equal(f.vc.cleanup.tidy, undefined);
+  } finally { f.stop(); }
+});
+
+test('Delete requires its own step; archive cannot confirm it, and Stop ends after the held delete receipt', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain();
+    f.vc.confirmTidyDelete(); await drain();
+    assert.equal(f.posts.length, 0, 'delete cannot bypass its second step');
+    f.vc.deleteTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.deleting, true);
+    assert.equal(f.posts.length, 0);
+    f.vc.confirmTidy(); await drain();
+    assert.equal(f.posts.length, 0, 'old Archive callback cannot confirm deletion');
+    f.hold(); f.vc.confirmTidyDelete();
+    await until(() => f.posts.length === 1);
+    f.vc.stopTidy(); f.release();
+    await until(() => !f.vc.cleanup.pending);
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.vc.cleanup.tidy?.result?.action, 'delete');
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 1);
+    f.vc.undoTidy(); await drain();
+    assert.equal(f.posts.length, 1, 'delete has no Undo path');
   } finally { f.stop(); }
 });

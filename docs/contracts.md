@@ -1108,23 +1108,42 @@ it does not change the meaning of `planCleanup:1`. Missing capability means
 unavailable, not an empty archive. Guests send the acknowledgement only when
 `planCleanupActive:1` is advertised. No report-tool operation is added.
 
-The rail and board's **Archive finished and cancelled plans…** action composes
-these per-plan routes; it adds no bulk service route or capability revision.
-Only already listed, unarchived finished and cancelled plans are eligible, at most
-50 per explicit inline confirmation. Failed plans are kept and may be archived
-one at a time; active plans are never eligible. The confirmation captures every
-target's store/source/plan, progress revision and cleanup generation, lists its
-title and outcome, and gives Cancel initial focus. Opening, Cancel and Escape
-send nothing. Requests run sequentially; a refused/changed plan is not retried
-automatically, and account, store/binding or surface-scope changes stop further
-requests. One final invalidation/re-read reconciles the result, including
-uncertain failures. Only validated archive receipts count as archived.
+The full page's **Tidy** action composes these per-plan routes; it adds no bulk
+service route or capability revision. It covers finished, cancelled and failed
+plans matching the current search and filters, including unloaded plans, or all
+closed plans in the current view with no narrowing. It never targets an active
+plan or sends the active acknowledgement. Neither the rail nor More has a bulk
+entry. Current plans offers Archive and Delete permanently; Archived plans offers
+Delete permanently only.
+
+One confirmation covers at most 1,000 targets. A complete loaded scope needs no
+read; otherwise a separate traversal of existing list/search reads checks at most
+2,000 plans or 40 request windows per explicit scan, whichever is reached first.
+The window bound matches 40 ordinary 50-plan list pages, and also bounds search
+round trips when one task-heavy plan spans many hit windows. Check more continues
+from the same cursor with fresh per-action budgets, adding matches without
+restarting the traversal. Its cursor and targets belong to one
+account, store/binding and board reading, and are discarded when that changes.
+The count distinguishes a target ceiling with more remaining from unchecked plans
+that may or may not match. No scan changes ordinary list/search caches or refresh
+budgets. The confirmation captures every target's store/source/plan, progress
+revision and cleanup generation. One short line names the count, not plan titles;
+Cancel gets initial focus. Opening, Cancel and Escape send no cleanup request.
+Deletion requires its own second step saying it cannot be undone, with the
+deletion/non-erasure disclosure collapsed but reachable.
+
+Requests run sequentially; a refused/changed or unconfirmed plan is not retried
+automatically. Stop and a change of account, store/binding or board reading end
+the run after the in-flight request. One progress line shows completed/total
+counts; start and result are announced once, not per plan. One final
+invalidation/re-read reconciles the result, including uncertain failures. Only
+validated receipts count as completed; all other targets are reported as skipped.
 
 Undo restores exactly the successful archive receipts of that action through
 the restore route, each bound to the generation returned by its receipt and a
 fresh operation ID. It never widens to other archived plans. Changed or refused
 restores are reported, not treated as success. Archive and Undo preserve lifecycle,
-counts, report history and copied documents. There is no bulk delete path.
+counts, report history and copied documents. Delete offers no Undo.
 The result and Undo survive the action's reconciliation read and remain until
 the next action or refresh, not a timer. Other surfaces converge through their
 existing refresh cadence; no polling loop or new stored state is introduced.

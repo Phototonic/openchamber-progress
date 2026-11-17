@@ -195,7 +195,7 @@ export function scopeAvailability(c: Pick<SearchCriteria, 'project' | 'worktree'
   const a = locationAvailability(c, live);
   return SEVERITY[Math.max(SEVERITY.indexOf(a.project), SEVERITY.indexOf(a.worktree))];
 }
-const inPlace = (c: SearchCriteria, plan: SearchPlanView, live: LiveSnapshot, bound: string | null) => {
+export const inPlace = (c: Pick<SearchCriteria, 'project' | 'worktree'>, plan: Pick<SearchPlanView, 'ownerSessionId' | 'directory' | 'sourceId'>, live: LiveSnapshot, bound: string | null) => {
   if (!narrowed(c)) return true;
   const place = placeOf(plan, live, bound);
   return (c.project === ALL || place.projectKey === c.project) && (c.worktree === ALL || place.worktreeKey === c.worktree);
