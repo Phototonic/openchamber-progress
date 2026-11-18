@@ -54,11 +54,11 @@ test('run reads are counted once per window, whichever refresh preceded them, an
     plans('page'), // closes the second refresh
     other('page', '/v1/subagent-runs'), // sent after the last list start, with the refresh still open
   ]);
+  assert.equal(complete.page.refreshes, 2);
+  assert.deepEqual(complete.page.traffic, { '/v1/plans': 4 });
   assert.equal(listStarts.page, 3);
   assert.equal(runReads.page, 3);
   assert.equal(runReads.panel, 0);
-  assert.equal(complete.page.refreshes, 2);
-  assert.deepEqual(complete.page.traffic, { '/v1/plans': 4 });
 });
 
 test('a health read sent before its refresh\'s first page is not added to the previous refresh', () => {

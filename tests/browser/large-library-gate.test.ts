@@ -190,6 +190,18 @@ test('an artifact whose driver bucketed replies is named and not used as an equi
   assert.ok(candidate.rows.some(r => /run 3/.test(r.name + (r.note ?? '')) && /attribution method not recorded/.test(r.name + (r.note ?? ''))), JSON.stringify(candidate.rows.filter(r => r.status !== 'pass')));
 });
 
+test('one candidate that cannot be compared is named and left out; two such candidates leave the budget unverified', () => {
+  const one = gate([{}, {}, { format: 'unlabelled' }]);
+  assert.equal(one.status, 0, `${one.error}${one.failed.join('\n')}`);
+  assert.deepEqual(one.unverified, []);
+  const plans = one.rows.find(r => r.name === PLANS);
+  assert.equal(plans?.status, 'pass');
+  assert.match(plans?.note ?? '', /run 3: attribution method not recorded/);
+  const two = gate([{}, { format: 'unlabelled' }, { format: 'unlabelled' }]);
+  assert.equal(two.status, 2, `${two.error}${two.failed.join('\n')}`);
+  assert.deepEqual(two.unverified.sort(), [...perRefresh].sort());
+});
+
 test('a baseline with one list start is unverified for the per-refresh budgets, not compared by its wall-clock count', () => {
   // Nineteen pages over one list start: a candidate at eleven pages per refresh must not pass a ten-page contract against it.
   const run = gate([{}, {}, { pagesPerRefresh: 11 }], { page: 1, pageStarts: 1, pagePlans: 19 });
