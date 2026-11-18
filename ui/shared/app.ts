@@ -564,6 +564,23 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cacheGeneration = 0;
   let cleanup = initialCleanup();
   let cleanupBusy = false;
+  /**
+   * The request that holds the busy state; 0 when none. A cleanup request, bulk or single-plan, completes
+   * only while it still holds it: an account, store or binding change the frame observed releases it (and
+   * clears it for good, also after a switch away and back), so a late answer can neither release nor wipe
+   * a newer request.
+   */
+  let cleanupToken = 0;
+  let cleanupSeq = 0;
+  const claimCleanup = () => { cleanupBusy = true; return cleanupToken = ++cleanupSeq; };
+  /** True when `token` still held the busy state, which is released with it. */
+  const releaseCleanup = (token: number) => {
+    if (cleanupToken !== token) return false;
+    cleanupBusy = false; cleanupToken = 0;
+    return true;
+  };
+  /** An account change the host announced, or a store or binding change a list reply showed. */
+  const observeSwitch = () => { cleanupBusy = false; cleanupToken = 0; };
   let cleanupFocus: string | null = null;
   let tidyReconcile = false;
   let handoff: (Handoff & { from: FocusKey }) | null = null;
@@ -776,12 +793,26 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) }; versions.ui++; }
   };
 
+  /**
+   * Cleanup support is what the service last said, whichever list is shown: `latest` (the health reply
+   * accepted last) decides both facts, in either direction. `base` is returned itself when they agree.
+   */
+  const withCleanupFacts = (base: HealthView, latest: HealthView | null): HealthView => {
+    if (!latest || base.planCleanup === latest.planCleanup && base.planCleanupActive === latest.planCleanupActive) return base;
+    const { planCleanup: _support, planCleanupActive: _active, ...rest } = base;
+    return { ...rest, ...(latest.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(latest.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}) };
+  };
+
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
   function adoptScope(key: string) {
     if (key === readScope || !identity) return;
     const hit = memory.get(memoryKey(key));
     if (!hit) return; // unknown scope: loading, never another scope's data
-    read = hit.read; readScope = key; readSig = hit.sig; health = hit.health; lastGoodAt = hit.at;
+    // The remembered list is shown; the cleanup facts stay those of the latest accepted health reply.
+    const shown = withCleanupFacts(hit.health, health);
+    // The remembered signature describes the remembered health. With other facts it is recomputed, so a
+    // read equal to the remembered one still replaces them when the service says something else.
+    read = hit.read; readScope = key; readSig = shown === hit.health ? hit.sig : JSON.stringify([key, shown, hit.read]); health = shown; lastGoodAt = hit.at;
     versions.data++;
   }
 
@@ -937,7 +968,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         authorityChanged = nextIdentity !== identity;
         if (authorityChanged) { setup = null; setupSerial++; }
         // A hand-off belongs to the old store/binding: it never focuses or announces in the new one.
-        if (identity && authorityChanged) { ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
+        if (identity && authorityChanged) { ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); observeSwitch(); cleanup = initialCleanup(); handoff = null; handoffNote = null; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
         // Evict all remembered scopes/parts so another session cannot resurrect removed data.
         const previous = memory.get(memoryKey(key))?.read;
@@ -978,7 +1009,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       failure = result.failure;
       // The health reply read before the failure still says what the service offers: the page learns a loss too.
       if (result.health) {
-        if (result.health.planCleanup !== 1 && health?.planCleanup === 1) { const { planCleanup: _lost, planCleanupActive: _active, ...kept } = health; health = kept; versions.data++; }
+        if (health) { const next = withCleanupFacts(health, result.health); if (next !== health) { health = next; versions.data++; } }
         retirePendingTidy(result.health);
       }
     }
@@ -1092,7 +1123,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     state.scan?.cancel(); state.confirmation = undefined;
     state.progress = { action, done: 0, total: targets.length };
     cleanupFocus = 'tidy-stop';
-    cleanupBusy = true; cleanup = { ...cleanup, pending: true }; versions.ui++; gate.retire(); schedule();
+    const token = claimCleanup();
+    cleanup = { ...cleanup, pending: true }; versions.ui++; gate.retire(); schedule();
     const result = await runTidy(guardedHost(current), action, targets, current, (done, total, confirmed) => {
       const checkpoint = confirmed && deleted.get(confirmed.key);
       if (checkpoint) { if (digests) digests.forget(checkpoint); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(checkpoint); }
@@ -1100,8 +1132,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     }, !!state.selection && (action === 'restore' || health?.planCleanupActive === 1) || undo,
     // Undo restores exactly the receipts; everything else must still be in the displayed scope when sent.
     undo || !spec.tidyMember ? undefined : t => spec.tidyMember!(context(), t));
-    cleanupBusy = false;
+    const mine = releaseCleanup(token);
     if (disposed) return;
+    // An observed account, store or binding change released the busy state and dropped this run's panel:
+    // what is shown now belongs to a board this run never saw, so nothing of it is touched, also after a
+    // switch away and back (its Delete receipts already retired their review markers above).
+    if (!mine) return;
     const same = cleanup.tidy === state && state.context === tidyContext();
     if (same && document.activeElement?.closest('[data-testid="tidy-stop"]')) cleanupFocus = 'tidy-open';
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
@@ -1132,19 +1168,17 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (cleanupBusy || !validTarget(target)) { if (!cleanupBusy) cancelCleanup(); return; }
     const selected = spec.actionPlan?.(context());
     if (!selected || !cleanupEligible(action, selected)) return;
-    const actionIdentity = identity;
-    const actionIntegrationAccount = ctx?.connection?.account;
     const deleted = action === 'delete' && read ? digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }) : null;
-    cleanupBusy = true; cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
+    const token = claimCleanup();
+    cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
     const result = await cleanupCall(host, action, { ...target.request,
       ...(!cleanupClosed(target) && action === 'delete' && health?.planCleanupActive === 1 ? { active: true as const } : {}) });
-    cleanupBusy = false;
+    const mine = releaseCleanup(token);
     // A confirmed deletion is authoritative for its captured context: retire its review markers.
     if (result.ok && deleted) { if (digests) digests.forget(deleted); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(deleted); }
     if (disposed) return;
-    if (identity !== actionIdentity || ctx?.connection?.account !== actionIntegrationAccount) {
-      cleanup = initialCleanup(); versions.ui++; schedule(); return;
-    }
+    // An observed switch already released the busy state and reset the panel; a newer request owns both now.
+    if (!mine) return;
     const sameContext = target.context === cleanupContext();
     // Also reconcile ambiguous failures. Never replay an action automatically or retain
     // pre-action data as a fresh success; every part/list reply from before this is retired.
@@ -1842,7 +1876,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   host.onConnection((next) => {
     if (!ctx || disposed || item.kind === 'ordinary' || next.account === ctx.connection?.account) return;
     ctx = { ...ctx, connection: next };
-    identity = ''; ui = spec.initialUi(); revalidateAction(); spec.onContext?.(context());
+    identity = ''; ui = spec.initialUi(); observeSwitch(); cleanup = initialCleanup(); revalidateAction(); spec.onContext?.(context());
   });
 
   host.onReady((next) => {
@@ -1876,7 +1910,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       contextGeneration++;
       gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
       failure = null; lastGoodAt = null;
-      cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
+      observeSwitch(); cleanup = initialCleanup(); cleanupFocus = null; handoff = null; handoffNote = null;
       session = nextSession; directory = nextDirectory;
       requestedScope = scopeKey(currentScope());
       versions.ctx++; live.restart(); spec.onContext?.(context()); gate.request();

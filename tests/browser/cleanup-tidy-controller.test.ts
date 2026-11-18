@@ -71,22 +71,32 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   const docListeners: Record<string, (e: unknown) => void> = {};
   const posts: string[] = [];
   const bodies: any[] = [];
-  let release: (() => void) | undefined;
-  let hold = false;
+  // Held cleanup requests answer in the order they are released; a held health reply waits for `releaseHealth`.
+  const waiting: (() => void)[] = [];
+  let holds = 0;
+  const healthWaiting: (() => void)[] = [];
+  let healthHolds = 0;
+  let storeId: string | null = null;
+  let lists = 0;
   let refused: string | null = null;
   const markers = new Map<string, unknown>();
   let effectiveScope = 'initial';
   let vc!: ViewContext<{ filter: string }>;
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
-      if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) }) };
-      if (q.path === '/v1/plans') return plansFail ? { status: 500, body: '{"error":"storage"}' } : { status: 200, body: JSON.stringify(plansPage(plans)) };
+      if (q.path === '/health') {
+        // The reply is decided when the request arrives, as at a real service.
+        const body = JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) });
+        if (healthHolds > 0) { healthHolds--; await new Promise<void>(r => { healthWaiting.push(r); }); }
+        return { status: 200, body };
+      }
+      if (q.path === '/v1/plans') { lists++; return plansFail ? { status: 500, body: '{"error":"storage"}' } : { status: 200, body: JSON.stringify(plansPage(plans, null, storeId ? { storeId } : {})) }; }
        if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
         bodies.push(request);
         if (request.plan === refused) return { status: 409, body: '{"error":"conflict"}' };
-        if (hold) { hold = false; await new Promise<void>(r => { release = r; }); }
+        if (holds > 0) { holds--; await new Promise<void>(r => { waiting.push(r); }); }
          return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : q.path.endsWith('delete') ? 'deleted' : 'visible', revision: request.cleanupRev + 1 } }) };
       }
       return { status: 404, body: '{"error":"not-found"}' };
@@ -142,9 +152,15 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     focusAt(element: unknown) { focused = element; },
     ownsFocus(on: boolean) { ownsFrame = on; },
     normalizeScope(value: string) { effectiveScope = value; },
-    hold() { hold = true; }, release() { assert.ok(release); release(); },
+    hold() { holds++; },
+    release(index = 0) { const answer = waiting.splice(index, 1)[0]; assert.ok(answer, 'a held request is waiting'); answer(); },
+    holdHealth() { healthHolds++; },
+    releaseHealth() { const answer = healthWaiting.shift(); assert.ok(answer, 'a health reply is held'); answer(); },
+    /** The store the service reports from the next list reply on. */
+    store(id: string) { storeId = id; },
+    get lists() { return lists; },
     session(id: string) { listeners.session({ id }); },
-    account() { listeners.ready({ ...vc.ctx, connection: { connected: true, account: 'other-account' } }); },
+    account(name = 'other-account') { listeners.ready({ ...vc.ctx, connection: { connected: true, account: name } }); },
     stop() { listeners.pagehide(); },
   };
 }
@@ -842,5 +858,286 @@ test('retrying a partial Undo returns the restored plans to the Select all rule'
     f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.succeeded[0]?.request.plan === 'two');
     assert.equal(selection.has(plans[0].key), true);
     assert.equal(selection.has(plans[1].key), true, 'restored by the retry: back under the rule');
+  } finally { f.stop(); }
+});
+
+// Account, store and capability: what a request answered late may touch, and what the controls follow.
+type Held = ReturnType<typeof frame>;
+/** A board whose selection and cache retirements are observable: a late run must leave them alone. */
+function boardSpy() {
+  const forgotten: string[][] = [];
+  const retires: string[] = [];
+  const extra = {
+    initialUi: () => ({ filter: 'all', selected: [] as string[] }),
+    forgetPlans: (keys: Set<string>, ui: { selected: string[] }) => { forgotten.push([...keys]); return { selected: ui.selected.filter(k => !keys.has(k)) }; },
+    retire: (reason: string) => { retires.push(reason); },
+    // Single-plan actions run on the closed plan the board shows.
+    actionPlan: (c: ViewContext<any>) => c.read?.plans.find(p => p.id === 'two') ?? null,
+  } as Partial<ViewSpec<any>>;
+  return { forgotten, retires, extra };
+}
+/** Hold the first request of a bulk run, then let the test observe an account or store switch. */
+async function heldBulkRun(f: Held) {
+  await until(() => !!f.vc?.read);
+  f.vc.requestTidy(); await drain(); f.hold(); f.vc.confirmTidy();
+  await until(() => f.posts.length === 1);
+}
+/** Run `change`, then wait until the board it caused has been read and painted. */
+async function boardReloaded(f: Held, change: () => void) {
+  const before = f.lists;
+  change();
+  await until(() => f.lists > before && !!f.vc.read);
+  await drain();
+}
+/** The board shown must be exactly what it was: the late answer reached nothing on it. */
+function untouched(f: Held, spy: ReturnType<typeof boardSpy>, board: unknown, selected: string[], lists: number, retires: number) {
+  assert.equal(f.vc.read, board, 'the loaded list is the one that was shown');
+  assert.deepEqual((f.vc.ui as { selected?: string[] }).selected, selected, 'the selection on the board shown is unchanged');
+  assert.deepEqual(spy.forgotten, [], 'no plan of the late run is forgotten on the board shown');
+  assert.equal(spy.retires.length, retires, 'no cache is reset on the board shown');
+  assert.equal(f.lists, lists, 'no reconciliation read is sent');
+  assert.equal(f.vc.cleanup.tidy, undefined, 'no result line');
+  assert.equal(f.vc.cleanup.pending, false);
+}
+
+test('a bulk run ending after an account switch touches nothing on the board shown then', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await heldBulkRun(f);
+    await boardReloaded(f, () => f.account());
+    const board = f.vc.read!;
+    // The new board has a plan with the same key; the person selects it.
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    const retires = spy.retires.length, lists = f.lists;
+    f.release(); await drain();
+    assert.equal(f.posts.length, 1, 'the retired run sends nothing more');
+    untouched(f, spy, board, [board.plans[0].key], lists, retires);
+  } finally { f.stop(); }
+});
+
+test('a bulk run ending after a switch away and back, with no newer run, touches nothing on the reloaded board', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await heldBulkRun(f);
+    await boardReloaded(f, () => f.account());
+    await boardReloaded(f, () => f.account('example'));
+    const board = f.vc.read!;
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    const retires = spy.retires.length, lists = f.lists;
+    f.release(); await drain();
+    assert.equal(f.posts.length, 1);
+    untouched(f, spy, board, [board.plans[0].key], lists, retires);
+  } finally { f.stop(); }
+});
+
+test('a bulk run ending after a store change that a list reply showed during a filter change touches nothing', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await heldBulkRun(f);
+    // The filter change ends the run's panel, so list reads resume while its request is still held.
+    f.vc.setUi({ filter: 'other' });
+    f.store('store-b');
+    await boardReloaded(f, () => f.vc.retry());
+    assert.equal(f.vc.read!.storeId, 'store-b');
+    const board = f.vc.read!;
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    const retires = spy.retires.length, lists = f.lists;
+    f.release(); await drain();
+    untouched(f, spy, board, [board.plans[0].key], lists, retires);
+  } finally { f.stop(); }
+});
+
+test('a bulk run ending after a filter change alone keeps no result and sends its one reconciliation read', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await heldBulkRun(f);
+    f.vc.setUi({ filter: 'other' });
+    const lists = f.lists;
+    f.release(); await until(() => f.lists > lists); await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the shipped outcome: no result line');
+    assert.equal(f.lists, lists + 1, 'one reconciliation read');
+    assert.equal(spy.forgotten.length, 1, 'the run reconciled the board it ended on');
+  } finally { f.stop(); }
+});
+
+test('a store change that no list read shows before the run ends is adopted by the read that follows the run', async () => {
+  const f = frame('page');
+  try {
+    await heldBulkRun(f);
+    f.store('store-b');
+    f.release();
+    await until(() => f.vc.read?.storeId === 'store-b');
+    await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the new board starts clean');
+    assert.equal(f.vc.cleanup.pending, false);
+  } finally { f.stop(); }
+});
+
+test('Tidy opens on the new board while a request sent before an account switch is still held', async () => {
+  const f = frame('page');
+  try {
+    await heldBulkRun(f);
+    await boardReloaded(f, () => f.account());
+    assert.equal(f.vc.cleanup.pending, false, 'the switch released the busy state');
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+  } finally { f.stop(); }
+});
+
+test('the late answer of a bulk run cannot complete, release or reset a newer run', async () => {
+  const f = frame('page');
+  try {
+    await heldBulkRun(f);
+    await boardReloaded(f, () => f.account());
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.hold(); f.vc.confirmTidy();
+    await until(() => f.posts.length === 2);
+    const newer = f.vc.cleanup.tidy;
+    f.release(0); await drain();
+    assert.equal(f.vc.cleanup.pending, true, 'the newer run is still pending');
+    assert.equal(f.vc.cleanup.tidy, newer, 'and keeps its state');
+    f.release(0);
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the newer run completes and shows its result');
+  } finally { f.stop(); }
+});
+
+test('the late answer of a bulk run cannot reset a newer run after a switch away and back', async () => {
+  const f = frame('page');
+  try {
+    await heldBulkRun(f);
+    await boardReloaded(f, () => f.account());
+    await boardReloaded(f, () => f.account('example'));
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.hold(); f.vc.confirmTidy();
+    await until(() => f.posts.length === 2);
+    const newer = f.vc.cleanup.tidy;
+    f.release(0); await drain();
+    assert.equal(f.vc.cleanup.pending, true);
+    assert.equal(f.vc.cleanup.tidy, newer, 'the same account and store again: only the request identity tells the runs apart');
+    f.release(0);
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2);
+  } finally { f.stop(); }
+});
+
+for (const away of [false, true]) test(`the late answer of a single-plan action cannot wipe a newer Tidy run (switch away and back: ${away})`, async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestDelete(f.vc.read!.plans[1]); await until(() => !!f.vc.cleanup.target);
+    f.hold(); f.vc.confirmDelete();
+    await until(() => f.posts.length === 1);
+    await boardReloaded(f, () => f.account());
+    if (away) await boardReloaded(f, () => f.account('example'));
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.hold(); f.vc.confirmTidy();
+    await until(() => f.posts.length === 2);
+    const newer = f.vc.cleanup.tidy;
+    f.release(0); await drain();
+    assert.equal(f.vc.cleanup.pending, true, 'the single-plan answer does not release the run');
+    assert.equal(f.vc.cleanup.tidy, newer);
+    f.release(0);
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the run completes and shows its result');
+  } finally { f.stop(); }
+});
+
+test('a store change shown by a list reply frees the cleanup controls before a held single-plan request answers', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestDelete(f.vc.read!.plans[1]); await until(() => !!f.vc.cleanup.target);
+    f.hold(); f.vc.confirmDelete();
+    await until(() => f.posts.length === 1);
+    f.store('store-b');
+    await boardReloaded(f, () => f.vc.retry());
+    assert.equal(f.vc.read!.storeId, 'store-b');
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    const opened = f.vc.cleanup.tidy;
+    f.release(); await drain();
+    assert.equal(f.vc.cleanup.tidy, opened, 'the old answer leaves the new board\'s panel alone');
+  } finally { f.stop(); }
+});
+
+// Cleanup facts of the latest accepted health reply, whichever remembered list is shown.
+const factScopes = { scope: (_context: unknown, ui: { filter: string }) => ui.filter === 'archived' ? { archived: 'only' as const } : ui.filter === 'session' ? { session: S.U } : {} } as Partial<ViewSpec<any>>;
+const offered = (f: Held) => f.vc.health?.planCleanup === 1;
+/** Neither Tidy nor Select may open: the press is a no-op. */
+async function refusesCleanup(f: Held) {
+  f.vc.requestTidy(); await drain();
+  if (f.vc.cleanup.tidy) return false;
+  f.vc.requestSelection('archive', { all: true, plans: f.vc.read?.plans ?? [], includes: () => true }); await drain();
+  return f.vc.cleanup.tidy === undefined;
+}
+
+test('Current plans remembered with support do not bring it back after an Archived read observed none, and the next read restores it', async () => {
+  const f = frame('page', false, false, true, factScopes);
+  try {
+    await until(() => !!f.vc?.read);
+    f.capability(false); f.vc.setUi({ filter: 'archived' });
+    await until(() => !offered(f)); await drain();
+    f.capability(true); f.holdHealth();
+    f.vc.setUi({ filter: 'all' }); await drain();
+    assert.ok(f.vc.read, 'the remembered list is shown');
+    assert.equal(offered(f), false, 'the withdrawn support does not return with the remembered list');
+    assert.equal(await refusesCleanup(f), true);
+    f.releaseHealth();
+    await until(() => offered(f));
+    f.vc.requestTidy(); await drain();
+    assert.ok(f.vc.cleanup.tidy, 'an unchanged list with newly offered support brings the controls back');
+  } finally { f.stop(); }
+});
+
+test('Current plans remembered with support stay without it after a failed list read saw none', async () => {
+  const f = frame('page', false, false, true, factScopes);
+  try {
+    await until(() => !!f.vc?.read);
+    f.capability(false); f.failPlans(true); f.vc.setUi({ filter: 'session' });
+    await until(() => !!f.vc.failure); await drain();
+    assert.equal(offered(f), false);
+    f.failPlans(false); f.holdHealth();
+    f.vc.setUi({ filter: 'all' }); await drain();
+    assert.ok(f.vc.read);
+    assert.equal(offered(f), false, 'the remembered list does not restore the withdrawn support');
+    assert.equal(await refusesCleanup(f), true);
+  } finally { f.stop(); }
+});
+
+/** Current plans read with no support (remembered so), a session filter accepted with support, the filter cleared with its read held. */
+async function grantedElsewhere(f: Held) {
+  await until(() => !!f.vc?.read);
+  f.capability(false); f.vc.retry();
+  await until(() => !offered(f)); await drain();
+  f.capability(true); f.vc.setUi({ filter: 'session' });
+  await until(() => offered(f)); await drain();
+  f.capability(false); f.holdHealth();
+  f.vc.setUi({ filter: 'all' }); await drain();
+}
+
+test('support granted since a remembered view of Current plans was kept is not hidden by switching back to it', async () => {
+  const f = frame('page', false, false, true, factScopes);
+  try {
+    await grantedElsewhere(f);
+    assert.ok(f.vc.read);
+    assert.equal(offered(f), true, 'the latest accepted health reply granted it');
+    f.vc.requestTidy(); await drain();
+    assert.ok(f.vc.cleanup.tidy, 'Tidy opens');
+  } finally { f.stop(); }
+});
+
+test('a held read equal to the remembered one, without support, takes the controls away again', async () => {
+  const f = frame('page', false, false, true, factScopes);
+  try {
+    await grantedElsewhere(f);
+    assert.equal(offered(f), true);
+    f.releaseHealth();
+    await until(() => !offered(f));
+    assert.equal(await refusesCleanup(f), true);
   } finally { f.stop(); }
 });
