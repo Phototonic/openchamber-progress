@@ -2,7 +2,7 @@
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import fs from 'node:fs';
 import { identifier } from '../../shared/progress.ts';
-import { latestMessageTexts } from './latest-message-text.ts';
+import { allMessageTexts } from './latest-message-text.ts';
 
 export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
   const root = process.env.ACTIVITY_ROOT!;
@@ -125,8 +125,8 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
       if (!seen.has(key) && session.agent === 'nested-worker') calls = [{ id: 'nested', input: { agent: 'restricted-worker', description: 'Synthetic nested child', prompt: 'Synthetic fixed probe.' } }];
       if(!seen.has(key)&&!job&&session.agent==='reporting-worker')calls=jobs.firstReportingCall?[jobs.firstReportingCall]:[{id:'child-handoff',tool:'agent_progress_report',input:{op:'handoff',oid:'native-claim',summary:'Synthetic child reports its bounded work complete.',outcome:'done'}}];
       seen.add(key);
-      // Request-only notes ride the latest message; the system section stays fixed.
-      const system=[...options.prompt.filter((m:any)=>m.role==='system'&&typeof m.content==='string').map((m:any)=>m.content),...latestMessageTexts(options.prompt)].join('\n');
+      // Context notes ride the message they were delivered on and stay there on later requests; the system section stays fixed.
+      const system=[...options.prompt.filter((m:any)=>m.role==='system'&&typeof m.content==='string').map((m:any)=>m.content),...allMessageTexts(options.prompt)].join('\n');
       const assignedBrief=system.includes('Assigned-only scope:');
       record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], assignedBrief, waitingForReport:job?.waitForReport, refusalHint:system.includes('## Delegation not applied'), refusalIdentity:system.includes('Plan "parallel-reporting", declaration "native-conflict"')&&system.includes('tasks ["task-c"]: not applied because'), refusalRecovery:system.includes('re-declare at the current revision')&&system.includes('explicitly link'), hold: job?.hold === true, fault: job?.fault === true });
       if(job?.waitForReport){

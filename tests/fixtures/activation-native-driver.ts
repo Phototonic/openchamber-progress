@@ -130,8 +130,12 @@ try {
     const last = outgoing[index].prompt.at(-1);
     assert.equal(last.role, 'tool', `continuation ${index} ends with the tool message`);
     assert.ok(latestMessageTexts(outgoing[index].prompt).at(-1)!.endsWith(ACTIVATION_HINT), `hint is the end of the last tool result: ${index}`);
-    assert.equal(JSON.stringify(outgoing[index + 1].prompt.slice(0, outgoing[index].prompt.length)).includes(ACTIVATION_HINT), false, `the next request, rebuilt from history, no longer carries it: ${index}`);
   }
+  // A delivered note stays in place: each primary request begins with the previous one, byte for byte, notes included.
+  const encoded = (request: any) => request.prompt.map((message: any) => JSON.stringify(message));
+  for (const index of [0, 1, 2, 3, 4]) assert.deepEqual(encoded(outgoing[index + 1]).slice(0, outgoing[index].prompt.length), encoded(outgoing[index]), `request ${index + 1} repeats request ${index} exactly`);
+  const hintedResults = (request: any) => request.prompt.filter((m: any) => m.role === 'tool' && JSON.stringify(m).includes(ACTIVATION_HINT)).length;
+  assert.deepEqual(outgoing.slice(0, 6).map(hintedResults), [0, 1, 2, 3, 3, 3], 'every hinted tool result is repeated on later requests; the failed write and the later continuation add none');
   for (const request of childOutgoing) assert.equal(systemText(request).includes('# Agent progress (companion)'), false, 'hidden report tool receives no production instruction');
   const parentContinuation = outgoing.slice(8);
   for (const text of parentContinuation.map(systemText)) {
@@ -140,6 +144,10 @@ try {
     assert.equal(text, primary[0], 'the parent section is the same bytes after the child write');
   }
   assert.deepEqual(parentContinuation.map(carried), [true, false], 'direct parent receives child write hint exactly once, on its next user message');
+  assert.deepEqual(encoded(parentContinuation[1]).slice(0, parentContinuation[0].prompt.length), encoded(parentContinuation[0]), 'the next parent request repeats the user message with its hint');
+  // The host's user messages: does each carry a message identifier, so a note on one keeps that key when the history shifts?
+  const hostUserMessagesCarryId = contexts.flatMap(e => e.messageIds).filter(([role]: [string, boolean]) => role === 'user').every(([, hasId]: [string, boolean]) => hasId);
+  console.log('host-user-message-ids', hostUserMessagesCarryId);
   assert.equal((await client.session.get({sessionID:childSession.id})).parentID, session.id);
   console.log('native-shapes', JSON.stringify([...after, ...childAfter].map(e => ({ tool: e.tool, status: e.status }))));
   console.log('effective-tools', JSON.stringify({primary:contexts[0].tools, restrictedChild:hidden.tools}));

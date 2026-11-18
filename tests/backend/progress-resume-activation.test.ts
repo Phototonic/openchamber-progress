@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { Effect, DateTime, Stream } from 'effect';
 import { fromPromise } from '@opencode/plugin/promise/adapter';
 import plugin from '../../plugin/index.ts';
-import { registerActivation, ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HINT } from '../../plugin/activation.ts';
+import { registerActivation, delegationRefusalText, ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HINT } from '../../plugin/activation.ts';
 import { Store } from '../../shared/store.ts';
 import { activationContext as context, requestNote, writeEvent } from '../fixtures/activation-production.ts';
 import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
@@ -21,6 +21,7 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Synthetic fixture wait timed out')), 3000); })]); }
   finally { clearTimeout(timer); }
 }
+const CLEARED = 'Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.';
 const parts = (c: any) => c.system.filter((p: any) => p.text?.startsWith('# Agent progress (companion)'));
 const capsule = (c: any): string => { const note = requestNote(c), at = note.indexOf('## Progress resume'); return at < 0 ? '' : note.slice(at); };
 const samples: Record<string, string> = {};
@@ -160,7 +161,9 @@ test('ordinary child contexts deliver only current verified assignments without 
   assert.ok(text(c).includes('last-known revision 2'));assert.equal(f.store.get(child.sourceId,'P-alpha').revision,2);
   assert.equal(parts(await f.next('ses_C',false)).length,0);
   f.store.apply({op:'link',plan:'P-alpha',oid:'unlink-child',rev:2,child:'ses_C',assign:[]},parent,undefined,child);
-  await f.context(c);assert.equal(text(c).includes('Assigned-only scope:'),false);
+  // The delivered brief stays where it was put on a rebuilt request; only a new turn after the unlink has none.
+  await f.context(c);assert.equal(text(c).includes('Assigned-only scope:'),true);
+  assert.equal(text(await f.next('ses_C')).includes('Assigned-only scope:'),false);
   assert.equal(f.store.get(child.sourceId,'P-alpha').items[0].status,'pending');
 }));
 
@@ -245,7 +248,10 @@ test(`durable refusal is refreshed after ${recovery} recovery on eligible coordi
   if(recovery==='redeclare')await f.report({op:'delegate',plan:'P-alpha',oid:'new-declaration',rev:2,assign:['I1']});
   else f.store.apply({op:'link',plan:'P-alpha',oid:'recovered-link',rev:2,child:'ses_C',assign:['I1']},actor,undefined,
     {...actor,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M']},recovery==='binding'?{generation:0,messageId:key.message,callId:key.call,observedAt:new Date(1000).toISOString()}:undefined);
-  await f.context(context);assert.ok(!requestNote(context).includes('## Delegation not applied'),'reused context removes obsolete refusal');
+  // The delivered refusal stays in place; the fixed cleared line follows it once the read is complete and finds none.
+  await f.context(context);assert.equal(requestNote(context),`${text}\n\n${CLEARED}`,'delivered refusal stays, then the cleared line');
+  await f.context(context);assert.equal(requestNote(context),`${text}\n\n${CLEARED}`,'the cleared line is delivered once');
+  assert.equal(requestNote(await f.next()),'','a new turn has nothing to clear');
   f.store.setEnabled(false);assert.equal(parts(await f.next()).length,0);
 }));
 
@@ -524,59 +530,294 @@ test('V6/V8 held ancestry retires on disable/disposal, no next hop or late injec
   });
 });
 
-test('V8 reused context strips consumed recovery, hint and note, and preserves unrelated context', async () => {
+test('V8 reused context keeps delivered notes in place once and preserves unrelated context', async () => {
   await fixture(async f => {
     f.seed(); await f.after(writeEvent()); await f.compact();
     const c = await f.next(); assert.ok(capsule(c)); assert.ok(requestNote(c).includes(HINT)); assert.equal(parts(c)[0].text, BASE);
     const other = c.system[0], messages = c.messages, tools = c.tools, settings = c.options;
-    // A reused event keeps neither the consumed capsule nor the consumed hint: they were for one request.
-    await f.context(c); assert.equal(requestNote(c), ''); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE);
+    // A rebuilt request keeps the delivered note exactly where it was, once, and never adds the section twice.
+    const delivered = requestNote(c);
+    await f.context(c); assert.equal(requestNote(c), delivered); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE);
     assert.equal(c.system[0], other); assert.equal(c.messages, messages); assert.equal(c.tools, tools); assert.equal(c.options, settings);
     assert.equal(parts(await f.next())[0].text, BASE);
     await f.compact(); await f.context(c); assert.ok(capsule(c)); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE);
   });
 });
 
-test('system section is byte-identical across hint, refusal, capsule revision and lookup timeout; request-only text rides the latest message once', async () => {
+// ---- Delivered context notes: stable system section, notes kept in place on later requests ----
+// The cleared line is the one fixed text this behaviour adds; the tests spell it out.
+const textPart = (value: string) => ({ type: 'text', text: value });
+/**
+ * A stored conversation that only grows, from which the host rebuilds each request.
+ * Every request checks that the stored objects never carry a note, that the system
+ * array never changes and that its messages begin with the previous request's messages
+ * byte for byte. `added` lists every note on a request as [index, text].
+ */
+let conversationTurns = 0; // distinct text for every message of every conversation
+function conversation(f: any, withId = false, sessionID = 'ses_M') {
+  const history: any[] = [], sent: string[][] = [], systems: string[] = [];
+  const t = {
+    history, systems,
+    user: (value = `turn ${++conversationTurns}`) => { history.push({ role: 'user', ...(withId ? { id: `msg_${sessionID}_${++conversationTurns}` } : {}), content: [textPart(value)] }); },
+    tool: (name = 'write', value = 'Created file', callId = `call_${++conversationTurns}`) => {
+      history.push({ role: 'assistant', content: [{ type: 'tool-call', id: callId, name, input: {} }] },
+        { role: 'tool', content: [{ type: 'tool-result', id: callId, name, result: { type: 'content', value: [textPart(value)] } }] });
+    },
+    get last() { return history.length - 1; },
+    async request(available = true, check = true, messages: any[] = history) {
+      const stored = JSON.stringify(messages);
+      const c = context(sessionID, available); c.messages = [...messages]; f.tick();
+      await f.context(c);
+      assert.equal(JSON.stringify(messages), stored, 'the stored conversation never carries a note');
+      if (check) {
+        const previous = sent.at(-1);
+        if (previous) assert.deepEqual(c.messages.slice(0, previous.length).map((m: any) => JSON.stringify(m)), previous, 'messages begin with the previous request\'s, notes included');
+        systems.push(JSON.stringify(c.system));
+        sent.push(c.messages.map((m: any) => JSON.stringify(m)));
+      }
+      return c;
+    },
+    added(c: any, messages: any[] = history): Array<[number, string]> {
+      return c.messages.flatMap((m: any, i: number): Array<[number, string]> => {
+        if (JSON.stringify(m) === JSON.stringify(messages[i])) return [];
+        const parts = m.role === 'user' ? m.content.slice(1) : m.content.at(-1).result.value.slice(1);
+        return [[i, parts.map((p: any) => p.text).join('\n\n')]];
+      });
+    },
+  };
+  return t;
+}
+/** Controls what the production refusal read returns, per request. */
+function refusalReads() {
+  let state: any = { complete: true, refusals: [] };
+  const read = mock.method(Store.prototype, 'delegationRefusals', function (sourceId: string, sessionId: string) {
+    if (state === 'fail') throw new Error('synthetic read failure');
+    return { sourceId, sessionId, ...state };
+  });
+  const refused = (oid: string, taskIds = ['I1']) => ({ complete: true, refusals: [{ plan: 'P-alpha', reason: 'conflict', recovery: 'redeclare-or-link', declaration: { oid, taskIds, declaredRevision: 1 } }] });
+  return {
+    set: (value: any) => { state = value; }, refused, restore: () => read.mock.restore(),
+    text: (oid: string, taskIds?: string[]) => delegationRefusalText({ sourceId: 'x', sessionId: 'y', ...refused(oid, taskIds) } as any),
+  };
+}
+
+for (const withId of [true, false]) test(`delivered notes stay in place on later requests and the system section never changes (${withId ? 'user message ids' : 'no user message ids'})`, async () => {
   await fixture(async f => {
     f.seed();
-    const stored = { role: 'user', content: [{ type: 'text', text: 'Make a plan' }] }; const snapshot = structuredClone(stored);
-    const systems: string[] = [];
-    // Every request is rebuilt from the same stored history, as the host does.
-    const request = async () => { f.tick(); const c = context(); c.messages = [stored]; await f.context(c); systems.push(JSON.stringify(c.system)); return c; };
-    const note = async () => requestNote(await request());
-    assert.equal(await note(), '');
-    // One-request hint.
-    await f.after(writeEvent());
-    assert.equal(await note(), HINT); assert.equal(await note(), '');
-    // Delegation refusal appears, then clears.
-    await f.report({ op: 'delegate', plan: 'P-alpha', oid: 'refused-declaration', rev: 1, assign: ['I1'] });
-    const actor = { sourceId: f.binding.source.id, sessionId: 'ses_M', parentId: null, ancestry: [], agent: 'synthetic', directory: '/fixture/project', verifiedSource: true };
-    const key = { source: actor.sourceId, parent: actor.sessionId, message: 'message', call: 'reserved-call' };
-    f.store.beforeRun(key, actor, 'subagent', {}, 1000);
-    f.store.apply({ op: 'change', plan: 'P-alpha', oid: 'target-touch', rev: 1, changes: [{ id: 'I1', status: 'working' }] }, actor);
-    f.store.afterRun(key, 0, { ...actor, sessionId: 'ses_C', parentId: 'ses_M', ancestry: ['ses_M'] }, 'returned');
-    assert.match(await note(), /^## Delegation not applied/);
-    await f.report({ op: 'delegate', plan: 'P-alpha', oid: 'new-declaration', rev: 2, assign: ['I1'] });
-    assert.equal(await note(), '');
-    // Capsule naming the plan revision changes between requests.
-    const revision = () => f.store.get(f.binding.source.id, 'P-alpha').revision;
-    await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-a', rev: revision(), title: 'Synthetic alpha r2' });
-    const first = revision(); assert.match(await note(), new RegExp(`last-known revision ${first}`));
-    await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-b', rev: revision(), title: 'Synthetic alpha r3' });
-    assert.match(await note(), new RegExp(`last-known revision ${first + 1}`));
-    // The bounded capsule lookup times out for one request.
-    await f.compact();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f, withId);
+      const revision = () => f.store.get(f.binding.source.id, 'P-alpha').revision;
+      t.user(); assert.deepEqual(t.added(await t.request()), []);
+      // A hint after a plan-file write rides the tool carrier and stays there.
+      await f.after(writeEvent('docs/plans/search.md', 'w1')); t.tool(); const hinted = t.last;
+      assert.deepEqual(t.added(await t.request()), [[hinted, HINT]]);
+      t.user(); assert.deepEqual(t.added(await t.request()), [[hinted, HINT]], 'the earlier hint is repeated, and not added again');
+      // A user carrier: a later hint on a user message.
+      await f.after(writeEvent('docs/plans/search.md', 'w2')); t.user(); const userHint = t.last;
+      assert.deepEqual(t.added(await t.request()), [[hinted, HINT], [userHint, HINT]]);
+      // A refusal appears, is repeated, clears once and appears again.
+      refusals.set(refusals.refused('d1')); t.tool('read'); const refused = t.last;
+      assert.deepEqual(t.added(await t.request()), [[hinted, HINT], [userHint, HINT], [refused, refusals.text('d1')]]);
+      t.user(); assert.equal(t.added(await t.request()).length, 3, 'an unchanged refusal whose carrier is present is not delivered again');
+      refusals.set({ complete: true, refusals: [] }); t.tool('read'); const cleared = t.last;
+      assert.deepEqual(t.added(await t.request()).slice(3), [[cleared, CLEARED]]);
+      t.user(); assert.equal(t.added(await t.request()).length, 4, 'the cleared line is delivered once');
+      refusals.set(refusals.refused('d1')); t.tool('read'); const again = t.last;
+      assert.deepEqual(t.added(await t.request()).slice(4), [[again, refusals.text('d1')]], 'the same refusal returning after the cleared line is delivered again');
+      refusals.set({ complete: true, refusals: [] });
+      // A hint, a capsule and a cleared line due together are one note, in that order.
+      await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-a', rev: revision(), title: 'Synthetic alpha r2' });
+      await f.after(writeEvent('docs/plans/search.md', 'w3')); t.user(); const combined = t.last;
+      const joint = t.added(await t.request()).slice(5);
+      assert.equal(joint.length, 1); assert.equal(joint[0][0], combined);
+      const pieces = joint[0][1].split('\n\n');
+      assert.equal(pieces.length, 3); assert.equal(pieces[0], HINT); assert.match(pieces[1], /^## Progress resume.*last-known revision 2/s); assert.equal(pieces[2], CLEARED);
+      t.user(); assert.equal(t.added(await t.request()).length, 6, 'the capsule is repeated, not delivered again');
+      // A capsule revision delivers the new capsule after the latest message; the old one stays.
+      await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-b', rev: revision(), title: 'Synthetic alpha r3' });
+      t.user(); const revised = t.last;
+      const afterRevision = t.added(await t.request());
+      assert.equal(afterRevision.length, 7); assert.equal(afterRevision[6][0], revised); assert.match(afterRevision[6][1], /last-known revision 3/);
+      assert.match(afterRevision[5][1], /last-known revision 2/);
+      // A lookup that times out adds nothing and leaves every earlier note where it was.
+      await f.compact(); const release = deferred(); let calls = 0;
+      f.lookup = async (id: string) => { if (++calls > 1) await release.promise; return f.info(id); };
+      t.user(); assert.equal(t.added(await t.request()).length, 7);
+      release.resolve(); f.lookup = async (id: string) => f.info(id); await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(new Set(t.systems).size, 1, 'one byte-identical system array on every request');
+      assert.deepEqual(JSON.parse(t.systems[0]), [{ type: 'text', text: 'Other system section' }, { type: 'text', text: BASE }]);
+      assert.equal(t.systems.length, 13);
+    } finally { refusals.restore(); }
+  });
+});
+
+test('an assigned child gets its brief once, a changed brief after the latest message, and nothing on a lookup timeout', async () => {
+  await fixture(async f => {
+    f.seed();
+    assert.equal((await f.report({ op: 'link', plan: 'P-alpha', oid: 'link', rev: 1, child: 'ses_C', assign: ['I1'] })).error, undefined);
+    const t = conversation(f, false, 'ses_C');
+    // The brief is read on every request; it is delivered once and then only repeated.
+    t.user(); const first = t.last;
+    const delivered = t.added(await t.request());
+    assert.equal(delivered.length, 1); assert.equal(delivered[0][0], first); assert.match(delivered[0][1], /last-known revision 2.*Assigned-only scope: \["I1"\]/s);
+    t.tool('read'); t.user(); t.tool('read');
+    assert.deepEqual(t.added(await t.request()), delivered, 'later requests repeat the brief and do not add it again');
+    // The plan moves on: the new brief follows the latest message, the old one stays.
+    await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise', rev: 2, title: 'Synthetic alpha r2' });
+    t.user(); const revised = t.last;
+    const second = t.added(await t.request());
+    assert.equal(second.length, 2); assert.deepEqual(second[0], delivered[0]); assert.equal(second[1][0], revised); assert.match(second[1][1], /last-known revision 3/);
+    // A lookup that times out adds nothing and leaves both briefs where they were.
+    await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-again', rev: 3, title: 'Synthetic alpha r3' });
     const release = deferred(); let calls = 0;
     f.lookup = async (id: string) => { if (++calls > 1) await release.promise; return f.info(id); };
-    assert.equal(await note(), ''); release.resolve(); f.lookup = async (id: string) => f.info(id);
-    await new Promise<void>(resolve => setImmediate(resolve));
-    await f.compact(); assert.match(await note(), /^## Progress resume/);
-    assert.equal(await note(), '');
-    assert.equal(systems.length, 10);
-    assert.equal(new Set(systems).size, 1, 'one byte-identical system array on every request');
-    assert.deepEqual(JSON.parse(systems[0]), [{ type: 'text', text: 'Other system section' }, { type: 'text', text: BASE }]);
-    assert.deepEqual(stored, snapshot, 'stored conversation never carries a note');
+    t.user(); assert.deepEqual(t.added(await t.request()), second);
+    release.resolve(); f.lookup = async (id: string) => f.info(id); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(new Set(t.systems).size, 1);
+  });
+});
+
+test('a standing capsule or refusal is delivered again when its carrier is gone, and a gone carrier keeps nothing alive', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f); refusals.set(refusals.refused('d1'));
+      await f.compact(); t.user();
+      const first = t.added(await t.request());
+      assert.equal(first.length, 1); const [capsuleText, refusalText] = first[0][1].split('\n\n');
+      assert.match(capsuleText, /^## Progress resume/); assert.equal(first[0][1], `${capsuleText}\n\n${refusalText}`);
+      await f.compact(); t.user();
+      assert.equal(t.added(await t.request()).length, 1, 'unchanged text with its carrier present is not delivered again, and consumes the armed capsule');
+      // Compaction rebuilds the prompt: the old carriers are gone, the text is unchanged.
+      const rebuilt = conversation(f); rebuilt.user('Summary of the earlier conversation');
+      await f.compact();
+      const again = rebuilt.added(await rebuilt.request());
+      assert.deepEqual(again, [[0, first[0][1]]], 'both standing notes arrive again after the latest message');
+      // A reverted message: the carrier of the last delivery is missing from this request.
+      rebuilt.user(); rebuilt.user();
+      const reverted = rebuilt.history.slice(); reverted.splice(0, 1, { role: 'user', content: [textPart('A different first message')] });
+      const c = await rebuilt.request(true, false, reverted);
+      assert.equal(rebuilt.added(c, reverted).filter(([, text]) => text.includes(refusals.text('d1'))).length, 1);
+    } finally { refusals.restore(); }
+  });
+});
+
+test('a failed or incomplete refusal read adds no cleared line; only a complete read that finds none does', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f); refusals.set(refusals.refused('d1')); t.user();
+      assert.equal(t.added(await t.request()).length, 1);
+      refusals.set('fail'); t.user(); assert.equal(t.added(await t.request()).length, 1, 'a failed read adds nothing');
+      refusals.set({ complete: false, refusals: [] }); t.user();
+      assert.ok(!t.added(await t.request()).some(([, text]) => text.includes(CLEARED)), 'an incomplete read adds no cleared line');
+      // No cleared line while the last refusal delivered is not in this request.
+      refusals.set({ complete: true, refusals: [] });
+      const other = conversation(f); other.user();
+      assert.deepEqual(other.added(await other.request()), [], 'a request that does not hold the refusal has nothing to clear');
+      t.user(); const last = t.last;
+      const done = t.added(await t.request());
+      assert.deepEqual(done.at(-1), [last, CLEARED]);
+    } finally { refusals.restore(); }
+  });
+});
+
+test('a tool call identifier reused in a later turn does not receive the earlier note', async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f);
+    await f.after(writeEvent('docs/plans/search.md', 'w1')); t.user(); t.tool('write', 'First result', 'call_shared'); const first = t.last;
+    assert.deepEqual(t.added(await t.request()), [[first, HINT]]);
+    t.user(); t.tool('write', 'Second result', 'call_shared');
+    assert.deepEqual(t.added(await t.request()), [[first, HINT]], 'the later result with the same identifier stays unchanged');
+    // The same position and identifier with a different original output is a different carrier.
+    const edited = t.history.slice(); edited[first] = { ...edited[first], content: [{ ...edited[first].content[0], result: { type: 'content', value: [textPart('Another output')] } }] };
+    const c = await t.request(true, false, edited);
+    assert.deepEqual(t.added(c, edited), [], 'the note belongs to the original output');
+  });
+});
+
+test('delivered notes are removed with the section and come back with it; only capture off clears the memory', async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f);
+    await f.after(writeEvent('docs/plans/search.md', 'w1')); t.user(); t.tool(); const hinted = t.last;
+    assert.deepEqual(t.added(await t.request()), [[hinted, HINT]]);
+    // No report tool, a failed caller lookup: no section and no note, nothing lost.
+    t.user();
+    const noTool = await t.request(false, false); assert.equal(parts(noTool).length, 0); assert.deepEqual(t.added(noTool), []);
+    f.lookup = async () => { throw new Error('lookup unavailable'); };
+    const noCaller = await t.request(true, false); assert.equal(parts(noCaller).length, 0); assert.deepEqual(t.added(noCaller), []);
+    f.lookup = async (id: string) => f.info(id);
+    const back = await t.request(true, false); assert.equal(parts(back).length, 1); assert.deepEqual(t.added(back), [[hinted, HINT]], 'the note returns with the section');
+    // A reused event that already carries notes loses them where the section goes.
+    const reused = await t.request(); assert.equal(t.added(reused).length, 1);
+    f.lookup = async () => { throw new Error('lookup unavailable'); }; await f.context(reused); f.lookup = async (id: string) => f.info(id);
+    assert.equal(parts(reused).length, 0); assert.deepEqual(t.added(reused), []);
+    // Capture off clears the memory: the note does not return when capture is on again.
+    f.store.setEnabled(false); const off = await t.request(true, false); assert.equal(parts(off).length, 0); assert.deepEqual(t.added(off), []);
+    f.store.setEnabled(true); const on = await t.request(true, false); assert.equal(parts(on).length, 1); assert.deepEqual(t.added(on), []);
+  });
+});
+
+test('a user message identifier keeps its note across a shifted history; without one the position and content are the key', async () => {
+  for (const withId of [true, false]) await fixture(async f => {
+    f.seed();
+    const t = conversation(f, withId);
+    t.user('First'); await f.after(writeEvent('docs/plans/search.md', 'w1')); t.user('Second'); const carrier = t.last;
+    assert.deepEqual(t.added(await t.request()), [[carrier, HINT]]);
+    t.user('Third');
+    const shifted = [{ role: 'user', content: [textPart('Summary')] }, ...t.history];
+    const c = await t.request(true, false, shifted);
+    assert.deepEqual(t.added(c, shifted), withId ? [[carrier + 1, HINT]] : []);
+  });
+});
+
+test('memory is bounded: 128 sessions, 64 carriers and 64 KiB per session, absent carriers first', async () => {
+  await fixture(async f => {
+    f.seed();
+    // Sessions: the least recently used loses its notes.
+    const sessions = Array.from({ length: 129 }, (_, i) => conversation(f, false, `ses_s${i}`));
+    for (const [i, s] of sessions.entries()) { await f.after(writeEvent('docs/plans/search.md', `s${i}`, `ses_s${i}`)); s.user(); s.tool(); assert.equal(s.added(await s.request()).length, 1); }
+    assert.equal(sessions[1].added(await sessions[1].request(true, false)).length, 1);
+    assert.equal(sessions[128].added(await sessions[128].request(true, false)).length, 1);
+    assert.deepEqual(sessions[0].added(await sessions[0].request(true, false)), [], 'the least recently used session was evicted');
+    // Carriers: 65 carried hints on one session keep 64, oldest first.
+    const t = conversation(f);
+    for (let i = 0; i < 65; i++) { await f.after(writeEvent('docs/plans/search.md', `c${i}`)); t.user(); const c = await t.request(true, false); assert.equal(t.added(c).at(-1)![0], t.last); }
+    const full = t.added(await t.request(true, false)); assert.equal(full.length, 64);
+    assert.ok(!full.some(([i]) => i === 0) && full.some(([i]) => i === 1), 'the first carrier lost its note');
+    // A carrier absent from the latest request goes before older ones that are present.
+    const trimmed = t.history.slice(); trimmed[40] = { role: 'user', content: [textPart('Edited')] };
+    await f.after(writeEvent('docs/plans/search.md', 'c-next')); const next = [...trimmed, { role: 'user', content: [textPart('Newest')] }];
+    await t.request(true, false, next);
+    const extended = [...t.history, { role: 'user', content: [textPart('Newest')] }];
+    const kept = t.added(await t.request(true, false, extended), extended).map(([i]) => i);
+    assert.ok(kept.includes(1), 'an older present carrier kept its note');
+    assert.ok(!kept.includes(40), 'the absent carrier was evicted first');
+  });
+});
+
+test('memory is bounded to 64 KiB of note text per session, oldest first', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f), long = Array.from({ length: 30 }, (_, i) => `T${String(i).padStart(2, '0')}-${'x'.repeat(40)}`);
+      const sizes: number[] = [], carriers: number[] = [];
+      for (let i = 0; i < 40; i++) {
+        refusals.set(refusals.refused(`d${i}`, long)); t.user(); carriers.push(t.last);
+        const added = t.added(await t.request(true, false)); sizes.push(Buffer.byteLength(added.at(-1)![1]));
+        const total = added.reduce((n, [, text]) => n + Buffer.byteLength(text), 0);
+        assert.ok(total <= 64 * 1024, `note text stays within 64 KiB: ${total}`);
+      }
+      assert.ok(sizes.reduce((a, b) => a + b) > 64 * 1024 && Math.min(...sizes) > 1500, 'each refusal note is large enough to fill the bound');
+      const final = t.added(await t.request(true, false));
+      assert.ok(!final.some(([i]) => i === 0), 'the oldest note was evicted'); assert.ok(final.some(([i]) => i === t.last), 'the newest is kept'); assert.ok(final.some(([i]) => i === carriers[35]), 'recent notes stay in place on later requests');
+    } finally { refusals.restore(); }
   });
 });
 

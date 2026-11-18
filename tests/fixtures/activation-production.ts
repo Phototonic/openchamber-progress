@@ -84,9 +84,11 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
   }
 }
 
-export const activationContext = (sessionID = 'ses_M', available = true): any => ({ sessionID, agent: 'coordinator-x', model: { providerID: 'fixture', id: 'script' }, system: [{ type: 'text', text: 'Other system section' }], messages: [{ role: 'user', content: [{ type: 'text', text: 'Make a plan' }] }], tools: available ? { agent_progress_report: { description: 'fixture', input: {} } } : {}, options: { temperature: 0.2 } });
+let turns = 0;
+/** Each call is a new conversation turn: a distinct user message, so delivered notes of an earlier call stay with that call's own message. */
+export const activationContext = (sessionID = 'ses_M', available = true): any => ({ sessionID, agent: 'coordinator-x', model: { providerID: 'fixture', id: 'script' }, system: [{ type: 'text', text: 'Other system section' }], messages: [{ role: 'user', content: [{ type: 'text', text: `Make a plan (turn ${++turns})` }] }], tools: available ? { agent_progress_report: { description: 'fixture', input: {} } } : {}, options: { temperature: 0.2 } });
 /**
- * Text the companion added to the latest message for this request only: every
+ * Text the companion added to the latest message of this request: every
  * text part after the original content of a user message, or the parts appended
  * to the content of the last tool result of a tool message. Empty when nothing
  * was added.

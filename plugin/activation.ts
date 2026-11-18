@@ -2,6 +2,7 @@ import type { Plugin } from '@opencode/plugin';
 import type { ToolHooks } from '@opencode/plugin/effect/tool';
 import type { SessionHooks } from '@opencode/plugin/effect/session';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { identifier } from '../shared/progress.ts';
 import type { ResumeRead, ResumeRequest, ResumeSelection } from '../shared/progress-resume.ts';
 import type { DelegationRefusals } from '../shared/subagent-runs.ts';
@@ -51,41 +52,63 @@ function hintText(reasons: number) {
 }
 
 /**
- * Where request-only text can ride on the latest message of a request, chosen
- * by its role. A user message takes a text part after its content. A tool
- * message, the continuation after a tool call, takes the text on the output of
- * its last tool result: a separate part is not valid there, and this is the
- * carrier the completed-result note already uses, so it has the same shape
- * limits (a string, or text/file parts). The Code Mode wrapper's result is the
- * exact structured value its script returned and never carries a note. Any
- * other role, shape or result has no valid carrier. The stored message is never
- * changed; the returned copy remembers its original so a reused host array can
- * be restored.
+ * Where context notes can ride on a message, chosen by its role. A user message
+ * takes a text part after its content. A tool message, the continuation after a
+ * tool call, takes the text on the output of its last tool result: a separate
+ * part is not valid there, and this is the carrier the completed-result note
+ * already uses, so it has the same shape limits (a string, or text/file parts).
+ * The Code Mode wrapper's result is the exact structured value its script
+ * returned and never carries a note. Any other role, shape or result has no
+ * valid carrier. The stored message is never changed; the returned copy
+ * remembers its original so a reused host array can be restored.
+ *
+ * A carrier is identified so a delivered note can be put back in the same place
+ * on later requests: a tool message by its position, the call identifier and a
+ * digest of its original output (providers do not keep call identifiers unique
+ * across turns), a user message by its identifier when it has one, else by its
+ * position and a digest of its original content.
  */
 const CODE_MODE_TOOL = 'execute';
 const restored = Symbol('agent-progress-note');
-function carrier(messages: unknown): { index: number; apply: (text: string) => Record<string, any> } | undefined {
-  if (!Array.isArray(messages) || !messages.length) return;
-  const index = messages.length - 1, message = messages[index];
+interface Carrier { index: number; key: string; id?: string; apply: (text: string) => Record<string, any> }
+const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value) ?? '').digest('hex').slice(0, 32);
+function carrierAt(messages: unknown, index: number): Carrier | undefined {
+  if (!Array.isArray(messages)) return;
+  const message = messages[index];
   if (!record(message) || !Array.isArray(message.content)) return;
   const copy = (content: unknown[]) => {
     const value = Object.assign(Object.create(Object.getPrototypeOf(message)), message, { content });
     Object.defineProperty(value, restored, { value: message });
     return value;
   };
-  if (message.role === 'user') return { index, apply: text => copy([...message.content, { type: 'text', text }]) };
-  if (message.role !== 'tool') return;
-  const at = message.content.findLastIndex((part: unknown) => record(part) && part.type === 'tool-result');
-  const part = message.content[at], output = part?.result;
-  if (part?.name === CODE_MODE_TOOL || !record(output) || !(output.type === 'text' ? typeof output.value === 'string' : output.type === 'content' && Array.isArray(output.value))) return;
-  if (appended(output.value, '') === undefined) return;
-  return { index, apply: text => copy(message.content.map((entry: unknown, i: number) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry)) };
+  try {
+    if (message.role === 'user') {
+      const id = boundedID(message.id) ? message.id : undefined;
+      return { index, id, key: id !== undefined ? `user:${id}` : `user:${index}:${digest(message.content)}`, apply: text => copy([...message.content, { type: 'text', text }]) };
+    }
+    if (message.role !== 'tool') return;
+    const at = message.content.findLastIndex((part: unknown) => record(part) && part.type === 'tool-result');
+    const part = message.content[at], output = part?.result;
+    if (part?.name === CODE_MODE_TOOL || typeof part?.id !== 'string' || !record(output) || !(output.type === 'text' ? typeof output.value === 'string' : output.type === 'content' && Array.isArray(output.value))) return;
+    if (appended(output.value, '') === undefined) return;
+    return { index, key: `tool:${index}:${part.id}:${digest(output)}`, apply: text => copy(message.content.map((entry: unknown, i: number) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry)) };
+  } catch { /* an unhashable message has no carrier */ }
 }
 /** Put back every message this owner replaced on a reused host array. */
 function restoreNotes(messages: unknown) {
   if (!Array.isArray(messages)) return;
   for (let i = 0; i < messages.length; i++) if (record(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored)) messages[i] = messages[i][restored];
 }
+
+/** Sent after a delivered delegation refusal stops applying. Fixed text. */
+export const CLEARED_REFUSAL = 'Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.';
+const NOTE_SEPARATOR = '\n\n';
+const MAX_NOTE_SESSIONS = 128, MAX_NOTE_CARRIERS = 64, MAX_NOTE_BYTES = 64 * 1024;
+/** One delivered note and where it sits. Text is exactly what was added. */
+interface DeliveredNote { key: string; id?: string; index: number; text: string }
+/** Last delivered standing text and the carrier it went out on. */
+interface Standing { text: string; key: string }
+interface NoteMemory { notes: Map<string, DeliveredNote>; capsule?: Standing; refusal?: Standing }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const boundedID = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
@@ -239,10 +262,11 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   const recent = new Set<string>(); // max256 qualifying source/session/message/call IDs
   const eligibility = new Map<string, Set<string>>(); // latest context, max128 sessions
   const noted = new Set<string>(); // max256 source/session/model-message IDs
+  const memories = new Map<string, NoteMemory>(); // delivered context notes; max128 sessions, least recently used first
   const owned = Symbol('agent-progress-section');
   // The section is fixed text: it must be byte-identical on every request, or
   // a provider's prompt cache misses from this point on. Anything that varies
-  // per request rides the latest message instead (see `carrier`).
+  // per request rides a message instead and stays there (see `carrierAt`).
   function section() {
     const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE };
     Object.defineProperty(part, owned, { value: true });
@@ -271,9 +295,9 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   }
   function control() {
     const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
-    if (current !== binding) { binding = current; retireRecovery(); pending.clear(); eligibility.clear(); noted.clear(); disableEpoch++; }
+    if (current !== binding) { binding = current; retireRecovery(); pending.clear(); eligibility.clear(); noted.clear(); memories.clear(); disableEpoch++; }
     try { if (enabled() === true) return true; } catch { /* unavailable control is not enabled */ }
-    pending.clear(); eligibility.clear(); noted.clear(); retireRecovery(); disableEpoch++; return false;
+    pending.clear(); eligibility.clear(); noted.clear(); memories.clear(); retireRecovery(); disableEpoch++; return false;
   }
   function remember(set: Set<string>, key: string, cap: number) {
     set.add(key);
@@ -284,6 +308,12 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     if (pending.size > 128) pending.delete(pending.keys().next().value!);
   }
   const key = (sessionID: string) => JSON.stringify([source.id, sessionID]);
+  function noteMemory(sessionKey: string): NoteMemory {
+    const memory: NoteMemory = memories.get(sessionKey) ?? { notes: new Map() };
+    memories.delete(sessionKey); memories.set(sessionKey, memory);
+    if (memories.size > MAX_NOTE_SESSIONS) memories.delete(memories.keys().next().value!);
+    return memory;
+  }
   function retain(sessionKey: string, attempt: Compaction, created: number) {
     compactions.delete(sessionKey); compactions.set(sessionKey, attempt);
     if (compactions.size > 128) {
@@ -312,7 +342,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     finally { if (timer !== undefined) clearTimeout(timer); }
   }
   async function dispose() {
-    disposed = true; pending.clear(); recent.clear(); eligibility.clear(); noted.clear(); retireRecovery(); replay.clear();
+    disposed = true; pending.clear(); recent.clear(); eligibility.clear(); noted.clear(); memories.clear(); retireRecovery(); replay.clear();
     await stopRecovery?.();
     for (const registration of registrations.splice(0)) {
       try { await registration.dispose(); } catch { /* host scope also owns cleanup */ }
@@ -394,10 +424,11 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || epoch !== disableEpoch) { removeOwned(); return; }
         if (!caller || !control()) { pending.delete(sessionKey); removeOwned(); return; }
         let capsule = '';
-        // Request-only text needs a carrier valid for the latest message's role.
-        // Without one nothing is computed or consumed: the hint stays pending and
-        // an armed capsule stays armed for the next request that has a carrier.
-        const carried = carrier(event.messages) !== undefined;
+        // A new note needs a carrier valid for the latest message's role. Without one
+        // nothing new is computed or consumed: the hint stays pending and an armed capsule
+        // stays armed for the next request that has a carrier. Delivered notes are still
+        // put back in place.
+        const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1) !== undefined;
         const rearm = () => { if (armed && compactions.get(sessionKey) === attempt) attempt.pending = true; };
         if (!carried) rearm();
         // Ordinary coordinators do not scan plans. Children reuse the bounded,
@@ -431,11 +462,14 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
           finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
         }
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) { removeOwned(); return; }
-        let refusal='';
+        // 'failed' adds nothing; 'cleared' is a successful, complete read that found no refusal.
+        let refusal='',refusalRead:'failed'|'read'|'cleared'='failed';
         try {
           const selection=carried?recovery?.refusals?.(event.sessionID):undefined;
-          if(selection?.sourceId===source.id&&selection.sessionId===event.sessionID)refusal=delegationRefusalText(selection);
-        } catch { /* Optional bounded receipt read never enables a report or blocks guidance. */ }
+          if(selection?.sourceId===source.id&&selection.sessionId===event.sessionID){
+            refusal=delegationRefusalText(selection);refusalRead=refusal?'read':'cleared';
+          }
+        } catch { refusal='';refusalRead='failed'; /* Optional bounded receipt read never enables a report or blocks guidance. */ }
         if(disposed||!control()||epoch!==disableEpoch||!source.verified||!Object.prototype.hasOwnProperty.call(event.tools,REPORT_TOOL)){removeOwned();return;}
         if (eligibility.get(sessionKey) === effective) for (const tool of NOTE_TOOLS) {
           if (Object.prototype.hasOwnProperty.call(event.tools, tool)) effective.add(tool);
@@ -444,12 +478,52 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
         if (existing !== -1) event.system[existing] = section(); else event.system.push(section());
         const hint = (pending.get(sessionKey) ?? 0) & 7;
-        const target = carrier(event.messages);
-        if (!target) { rearm(); return; } // the hint stays pending; capsule and refusal are read again next request
-        const text = [hint ? hintText(hint) : '', capsule, refusal].filter(Boolean).join('\n\n');
-        if (text) event.messages[target.index] = target.apply(text) as typeof event.messages[number];
-        const remaining = (pending.get(sessionKey) ?? 0) & ~7;
-        if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
+        // One synchronous step from here: compare with the last delivery, update the
+        // memory and add every note, so concurrent requests each record their own carrier.
+        const messages = event.messages;
+        const memory = noteMemory(sessionKey);
+        const ids = new Map<string, number>();
+        if (Array.isArray(messages)) messages.forEach((message, i) => { if (record(message) && message.role === 'user' && boundedID(message.id) && !ids.has(message.id)) ids.set(message.id, i); });
+        const placed = new Map<string, Carrier>(); // remembered notes whose carrier this request still holds
+        for (const note of memory.notes.values()) {
+          const found = carrierAt(messages, note.id !== undefined ? ids.get(note.id) ?? -1 : note.index);
+          if (found?.key === note.key) placed.set(note.key, found);
+        }
+        const latest = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
+        if (!latest) rearm(); // the hint stays pending; an armed capsule stays armed; capsule and refusal are read again next request
+        else {
+          const due: string[] = [];
+          if (hint) due.push(hintText(hint));
+          const standing = (last: Standing | undefined, text: string) => !last || last.text !== text || !placed.has(last.key);
+          const capsuleDue = !!capsule && standing(memory.capsule, capsule);
+          if (capsuleDue) due.push(capsule);
+          let refusalDue: string | undefined;
+          if (refusalRead === 'read' && standing(memory.refusal, refusal)) refusalDue = refusal;
+          else if (refusalRead === 'cleared' && memory.refusal && memory.refusal.text !== CLEARED_REFUSAL && placed.has(memory.refusal.key)) refusalDue = CLEARED_REFUSAL;
+          if (refusalDue !== undefined) due.push(refusalDue);
+          const before = memory.notes.get(latest.key);
+          const text = [...(before ? [before.text] : []), ...(due.length ? [due.join(NOTE_SEPARATOR)] : [])].join(NOTE_SEPARATOR);
+          if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
+            if (due.length) {
+              // A later note on a carrier follows the earlier ones; it is also the newest.
+              memory.notes.delete(latest.key);
+              memory.notes.set(latest.key, { key: latest.key, id: latest.id, index: latest.index, text });
+              placed.set(latest.key, latest);
+              if (capsuleDue) memory.capsule = { text: capsule, key: latest.key };
+              if (refusalDue !== undefined) memory.refusal = { text: refusalDue, key: latest.key };
+            }
+            const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+            if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
+          }
+        }
+        // Bound: carriers absent from this request go first, then the oldest.
+        let bytes = 0;
+        for (const note of memory.notes.values()) bytes += Buffer.byteLength(note.text);
+        while (memory.notes.size > MAX_NOTE_CARRIERS || bytes > MAX_NOTE_BYTES) {
+          const victim = [...memory.notes.values()].find(note => !placed.has(note.key)) ?? memory.notes.values().next().value!;
+          memory.notes.delete(victim.key); placed.delete(victim.key); bytes -= Buffer.byteLength(victim.text);
+        }
+        for (const [noteKey, carrier] of placed) messages[carrier.index] = carrier.apply(memory.notes.get(noteKey)!.text) as typeof messages[number];
       } catch { pending.delete(key(event.sessionID)); eligibility.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
     };
     registrations.push(await ctx.session.hook('context',context));

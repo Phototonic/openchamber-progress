@@ -1010,8 +1010,9 @@ Hints mention a possible delegated child, never paths, names or assignments.
 The same bounded recipient map coalesces plan-write, dispatch and tracker reason
 bits into one conditional hint. Proxy reasons target only the actor, never a child
 or parent; only qualifying plan writes retain the direct-parent relay. The existing
-128-recipient/256-call caps, one-shot next-context consumption and synchronous
-duplicate/disable/disposal checks apply to all reasons, with no extra queues,
+128-recipient/256-call caps, one-shot consumption by the next context whose latest
+message has a valid carrier (a request without one leaves the hint pending) and
+synchronous duplicate/disable/disposal checks apply to all reasons, with no extra queues,
 per-tool history or progress lookup. A shared inner/outer Code Mode call identity
 may conservatively lose a second reason rather than create more history.
 
@@ -1064,14 +1065,30 @@ Both system-forwarding and system-dropping providers get the checklist via the
 short report description; result notes do not depend on plugin system text.
 The owned system section is the fixed guidance only and stays byte-identical across
 requests, so it does not defeat a provider's prompt cache. The context hook adds
-the one-request hint, the resume capsule and the refusal note after the content
-of the request's latest message instead, on a copy of that message so the stored
-conversation is unchanged: a text part on a user message, the output of the last
-tool result on a tool message (native-proven string or content-array shapes, as for
-result notes; the Code Mode wrapper result stays the script's exact value, so a hint
-raised by an inner call waits for the next valid carrier), and nothing on any other
-role or shape, where the hint stays pending, an armed capsule stays armed and the
-refusal is read again on the next request.
+the hint, the resume capsule and the refusal note after the content of a message
+instead, on a copy of it so the stored conversation is unchanged: a text part on a
+user message, the output of the last tool result on a tool message (native-proven
+string or content-array shapes, as for result notes; the Code Mode wrapper result
+stays the script's exact value, so a hint raised by an inner call waits for the next
+valid carrier), and nothing on any other role or shape, where the hint stays
+pending, an armed capsule stays armed and the refusal is read again on the next
+request. Notes due together are one note: hint, capsule, then refusal or cleared
+line, joined by a blank line.
+A process-local memory (128 sessions least recently used first; per session 64
+carriers and 64 KiB of note text, carriers absent from the latest request first,
+then the oldest) keeps each delivered note with its carrier (tool: call identifier,
+position and a digest of the original output; user: message identifier, else
+position and a digest of the original content) and adds the same bytes in the same
+place on every later request that still holds the carrier, so each request begins
+with the previous one and a provider's cache entry written at the end of the latest
+message is read again. The comparison with the last delivery and the memory update
+run in one synchronous step after the request's last wait. A capsule or refusal is
+delivered again only when its text changed or its last carrier is absent (compaction,
+revert, eviction, restart, fork); a timeout adds nothing. A refusal that stops
+applying gets one fixed cleared line, only after a successful complete read that
+finds none while the last delivered refusal is still in the request. Every path that
+removes the section removes every added note; the memory is cleared only by capture
+off, a source binding change or disposal.
 Providers that drop plugin system sections therefore receive these notes too.
 The context section and inline/packaged skill share that checklist. The listing
 line names the plan/dispatch load boundary; detailed operation help stays in the
@@ -1091,7 +1108,9 @@ Both start→hook→end and hook→delivered-start→end can qualify; arbitrary 
 of the durable stream and background/precomputed compactions are not certified.
 Terminals retire the window; failures clear pending state. The first following
 primary consumes pending and incomplete evidence before awaits, preserving a
-creation-time retirement fence against delayed stream backfill. Eviction, floor
+creation-time retirement fence against delayed stream backfill; a request whose
+latest message has no valid carrier does no lookup and leaves pending completion
+armed for the next one. Eviction, floor
 rejection and lifecycle clearing promote removed records' fences into the global
 event floor, even after clock rollback, conservatively declining older queued
 episodes. There is no
@@ -1526,8 +1545,8 @@ linked children at a later revision; archived/deleted plans and
 disabled/unverified contexts expose none. A pending or reserved receipt whose
 state disagrees with its dispatch, or that names no task, marks evidence
 incomplete instead of yielding a refusal.
-The refreshed coordinator note, carried on the latest message and not in the
-system section, is capped at 4 KiB, uses fixed reasons
+The refreshed coordinator note, delivered on a message and kept in place on later
+requests rather than in the system section, is capped at 4 KiB, uses fixed reasons
 and explicitly marks omissions, including an empty incomplete result. It is
 advisory and read-only: recovery requires
 an intentional fresh declaration or verified explicit link, never an automatic
