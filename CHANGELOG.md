@@ -16,7 +16,7 @@ Cleanup follow-ups from the 1.5.1 review and a companion system prompt section t
 - `docs/ui.md` and `docs/contracts.md` state when chosen plans are checked by `/v1/search-state` point lookup, when loaded rows or a list scan are used instead, and which revision a retry compares against (#162).
 - The large-library gate bounds each timed window by request and reply offsets read in the browser evaluation that starts and stops it, counts cadence, list starts and both inbox forms by the requests sent inside it, and shows run reads per window as an informational row. It records how an artifact attributed its traffic, compares the list-carried inbox form on its own, and reports a budget it cannot compare as unverified with exit status 2 instead of passing it. QA tooling only; no shipped behaviour changes (#166).
 - The `release-1-5-2` OpenSpec change records the proposal, design and tasks (#160). The 1.5.0 and 1.5.1 changes are archived with their task lists reconciled, the 1.5.1 deltas corrected to keep the scenario names and requirement lengths the specs hold, and a Purpose written for each of the ten capabilities their archives created.
-- PLACEHOLDER (test-suite speed-up, pull request not yet merged): add the entry once it merges, or remove this line.
+- PLACEHOLDER (test-suite speed-up, pull request #170, still open): add the entry once it merges, or remove this line.
 
 ### Fixed
 
