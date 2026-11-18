@@ -2,7 +2,7 @@ import { constants, realpathSync, openSync, closeSync, fstatSync, lstatSync, rea
 import path from 'node:path';
 import { LIMITS, type Capture, type DocumentRef } from '../shared/progress.ts';
 import { digest } from '../shared/store.ts';
-import { windowsDocumentPath, platformSecurityScope } from '../shared/platform.ts';
+import { windowsPath } from '../shared/platform.ts';
 import type { BigIntStats } from 'node:fs';
 
 /** Caller authorization is mandatory and happens before any document-byte read. */
@@ -59,23 +59,23 @@ async function captureWindowsDocument(reference:string,directory:string,authoriz
     await authorize(requested);
     // Do not conceal traversal, ADS, reserved names or device paths by resolve().
     const raw=path.isAbsolute(reference)?reference:directory+'\\'+reference;
-    const canonicalPath=platformSecurityScope(()=>windowsDocumentPath(raw,true));
+    const canonicalPath=(windowsPath(raw,true));
     await authorize(canonicalPath);
     if(previous?.canonicalPath&&canonicalPath!==previous.canonicalPath)return result('moved',canonicalPath);
     const bound=lstatSync(canonicalPath,{bigint:true});
-    if(platformSecurityScope(()=>windowsDocumentPath(raw))!==canonicalPath)return result('changed-during-read');
+    if((windowsPath(raw))!==canonicalPath)return result('changed-during-read');
     if(!bound.isFile()||bound.isSymbolicLink())return result('non-text',canonicalPath);
     const parents=ancestors(canonicalPath);
     if(bound.size>BigInt(LIMITS.documentBytes))return result('oversized',canonicalPath);
     fd=openSync(canonicalPath,constants.O_RDONLY);
     const before=fstatSync(fd,{bigint:true});const current=lstatSync(canonicalPath,{bigint:true});
-    if(!before.isFile()||before.ino===0n||!unchanged(bound,before)||!unchanged(before,current)||platformSecurityScope(()=>windowsDocumentPath(raw))!==canonicalPath)return result('changed-during-read');
+    if(!before.isFile()||before.ino===0n||!unchanged(bound,before)||!unchanged(before,current)||(windowsPath(raw))!==canonicalPath)return result('changed-during-read');
     for(const[p,stat]of parents)if(!sameFile(stat,lstatSync(p,{bigint:true})))return result('changed-during-read');
     const bytes=Buffer.alloc(LIMITS.documentBytes+1);let offset=0;
     while(offset<bytes.length){const n=readSync(fd,bytes,offset,bytes.length-offset,null);if(!n)break;offset+=n;}
     if(offset>LIMITS.documentBytes)return result('oversized',canonicalPath);
     const after=fstatSync(fd,{bigint:true}),still=lstatSync(canonicalPath,{bigint:true});
-    if(!still.isFile()||still.isSymbolicLink()||!unchanged(before,after)||!unchanged(after,still)||platformSecurityScope(()=>windowsDocumentPath(raw))!==canonicalPath)return result('changed-during-read');
+    if(!still.isFile()||still.isSymbolicLink()||!unchanged(before,after)||!unchanged(after,still)||(windowsPath(raw))!==canonicalPath)return result('changed-during-read');
     for(const[p,stat]of parents)if(!sameFile(stat,lstatSync(p,{bigint:true})))return result('changed-during-read');
     let text:string;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes.subarray(0,offset));}catch{return result('non-text',canonicalPath);}
     if(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text))return result('non-text',canonicalPath);

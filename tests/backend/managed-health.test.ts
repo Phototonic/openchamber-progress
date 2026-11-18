@@ -76,7 +76,7 @@ test('data routes preserve fixed admission and coordination refusals',async t=>{
   try{
     server.listen(0,'127.0.0.1');await once(server,'listening');
     const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
-    for(const error of [new PlatformError('private-permissions'),new PlatformError('windows-security-unavailable'),new ManagedBindingError('managed-binding-modified'),new PlatformError('untrusted-message')]){
+    for(const error of [new PlatformError('private-permissions'),new ManagedBindingError('managed-binding-modified'),new PlatformError('untrusted-message')]){
       const mock=t.mock.method(fs,'lstatSync',()=>{throw error;});syncBuiltinESMExports();
       try{
         // Managed capture now runs in a separate worker, so these main-thread

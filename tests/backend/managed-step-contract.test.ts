@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { MANAGED_STEP_LIMITS, MANAGED_MIGRATION_STEPS, MANAGED_OPERATION_TRANSITIONS,
-  MANAGED_STEP_SPAWN_ALLOCATION, managedStepRequest, type ManagedStepRequest } from '../../shared/managed-steps.ts';
+  managedStepRequest, type ManagedStepRequest } from '../../shared/managed-steps.ts';
 import { managedStepFixtures, managedStepPlan } from '../fixtures/managed-steps.ts';
 import type { SetupView } from '../../ui/shared/model.ts';
 import type { ManagedDelivery } from '../../shared/progress.ts';
@@ -138,16 +138,9 @@ test('receipt-proven removal honestly lacks a manifest and starts only the remai
   assert.equal(journal.migration.legacy.ownershipDigest, createHash('sha256').update(manifest).digest('hex'));
 });
 
-test('all effect allocations reserve checkpoints/cleanup within the real-spawn ceiling', () => {
-  assert.deepEqual(Object.keys(MANAGED_STEP_SPAWN_ALLOCATION), [...MANAGED_MIGRATION_STEPS]);
-  for (const allocation of Object.values(MANAGED_STEP_SPAWN_ALLOCATION)) {
-    assert.ok(Object.values(allocation).reduce<number>((sum, n) => sum + n, 0) <= MANAGED_STEP_LIMITS.securitySpawns);
-    assert.ok(allocation.checkpoint > 0 && allocation.cleanup > 0);
-  }
-  assert.ok(MANAGED_STEP_LIMITS.securitySpawns * 2_500 < MANAGED_STEP_LIMITS.workMs);
+test('request deadlines stay ordered below the host limit', () => {
   assert.ok(MANAGED_STEP_LIMITS.workMs < MANAGED_STEP_LIMITS.responseMs);
   assert.ok(MANAGED_STEP_LIMITS.responseMs < MANAGED_STEP_LIMITS.hostMs);
-  // This checks allocation arithmetic only, not actual engine/native spawn counts.
 });
 
 test('pause and abandonment cannot jump to complete or enable; completion is terminal', () => {

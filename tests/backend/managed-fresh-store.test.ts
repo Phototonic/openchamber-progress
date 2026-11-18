@@ -5,7 +5,7 @@ import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {syncBuiltinESMExports} from 'node:module';
 import {Store} from '../../shared/store.ts';
-import {privateDirectory,platformSecurityScope} from '../../shared/platform.ts';
+import {privateDirectory,PlatformRequestBudget,withPlatformRequestBudget} from '../../shared/platform.ts';
 import {receiptIndexInstalled} from '../../shared/receipt-index.ts';
 
 function fixture(){const root=fs.mkdtempSync('/tmp/opencode/fresh-store-');return {root,file:path.join(root,'progress.sqlite'),
@@ -36,11 +36,9 @@ test('existing empty, partial, initialized, linked and orphan-sidecar state is r
     }finally{f.close();}
   }
 });
-test('fresh validation refuses before reservation and cannot inherit an enclosing security scope',()=>{
+test('fresh validation refuses before reservation',()=>{
   const f=fixture();try{
     assert.throws(()=>Store.createFresh(f.file,{storeId:'new-store',validate(){throw new Error('synthetic refusal');}}),/synthetic refusal/);
-    assert.equal(fs.existsSync(f.file),false);
-    assert.throws(()=>platformSecurityScope(()=>Store.createFresh(f.file,{storeId:'new-store',validate(){}})),{code:'managed-step-conflict'});
     assert.equal(fs.existsSync(f.file),false);
   }finally{f.close();}
 });
@@ -78,6 +76,20 @@ test('exclusive directory creation shares preflight but refuses existing targets
     const missing=path.join(f.root,'other');
     assert.throws(()=>privateDirectory(missing,false,{exclusive:true,validate(){throw new Error('synthetic refusal');}}),/synthetic refusal/);
     assert.equal(fs.existsSync(missing),false);
-    assert.throws(()=>platformSecurityScope(()=>privateDirectory(missing,false,{exclusive:true,validate(){}})),{code:'managed-step-conflict'});
+  }finally{f.close();}
+});
+test('creation refuses once the request deadline has passed, before any exclusive reservation',t=>{
+  const f=fixture();try{
+    let now=process.hrtime.bigint();const started=now;
+    const clock=t.mock.method(process.hrtime,'bigint',()=>now);
+    try{
+      const expire=()=>{now=started+18_000_000_000n;};
+      const dir=path.join(f.root,'store');
+      assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(started),()=>privateDirectory(dir,false,{exclusive:true,validate:expire})),{code:'managed-step-deadline'});
+      assert.equal(fs.existsSync(dir),false);
+      now=started;
+      assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(started),()=>Store.createFresh(f.file,{storeId:'slow-store',validate:expire})),{code:'managed-step-deadline'});
+      assert.equal(fs.existsSync(f.file),false);
+    }finally{clock.mock.restore();}
   }finally{f.close();}
 });

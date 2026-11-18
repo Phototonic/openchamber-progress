@@ -467,13 +467,15 @@ test('a second ambiguous capture interruption cannot reuse a consumed renewal',t
 for(const action of ['pause','abandon','resume'] as const)test(`fenced running intent supports ${action} without capture or removal`,t=>{
   const f=fixture();try{
     // Leave a durable running expectation intent, simulating process loss after
-    // publication. Exhaust accounting so this request cannot settle a failure.
-    const prior=f.journal(),budget=new PlatformRequestBudget(),rename=fs.renameSync,file=migrationFile(f.env);
+    // publication. Expire the deadline so this request cannot settle a failure.
+    const prior=f.journal(),started=process.hrtime.bigint(),budget=new PlatformRequestBudget(started),rename=fs.renameSync,file=migrationFile(f.env);
+    let expired=false;
+    const clock=t.mock.method(process.hrtime,'bigint',()=>expired?started+18_000_000_000n:started);
     const mock=t.mock.method(fs,'renameSync',((from:any,to:any)=>{
-      rename(from,to);if(String(to)===file){Atomics.store(budget.counter,0,6);throw new Error('synthetic interruption');}
+      rename(from,to);if(String(to)===file){expired=true;throw new Error('synthetic interruption');}
     }) as typeof fs.renameSync);syncBuiltinESMExports();
     try{assert.equal(withPlatformRequestBudget(budget,()=>advanceManagedStep(f.env,payload,f.request(),budget,prior)).disposition,'refused');}
-    finally{mock.mock.restore();syncBuiltinESMExports();}
+    finally{mock.mock.restore();clock.mock.restore();syncBuiltinESMExports();}
     const running=f.journal();assert.equal(running.migration.state,'running');
     const database=fs.readFileSync(running.database),history=fs.readFileSync(path.join(f.targets.storeRoot,'installation-history.jsonl'));
     const reply=f.control(action),next=f.journal();
@@ -485,12 +487,13 @@ for(const action of ['pause','abandon','resume'] as const)test(`fenced running i
   }finally{f.cleanup();}
 });
 
-for(const exhausted of ['spawns','time'] as const)test(`advance reserves ${exhausted} before intent and any effect`,()=>{
+test('advance refuses an exhausted deadline before intent and any effect',()=>{
   const f=fixture();try{
-    const budget=new PlatformRequestBudget(process.hrtime.bigint()-(exhausted==='time'?7_000_000_000n:0n)),before=fs.readFileSync(migrationFile(f.env));
-    if(exhausted==='spawns')Atomics.store(budget.counter,0,3);
-    const reply=withPlatformRequestBudget(budget,()=>advanceManagedStep(f.env,payload,f.request(),budget,f.journal()));
-    assert.equal(reply.disposition,'refused');assert.equal(reply.error!.code,exhausted==='spawns'?'managed-step-budget':'managed-step-deadline');
+    // An already expired budget, used directly: the engine's own check before the
+    // intent is published refuses, ahead of any intent or effect.
+    const budget=new PlatformRequestBudget(process.hrtime.bigint()-18_000_000_000n),before=fs.readFileSync(migrationFile(f.env));
+    const reply=advanceManagedStep(f.env,payload,f.request(),budget,f.journal());
+    assert.equal(reply.disposition,'refused');assert.equal(reply.error!.code,'managed-step-deadline');
     assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(fs.existsSync(managedExpectationFile(f.journal())),false);
   }finally{f.cleanup();}
 });
@@ -509,7 +512,7 @@ test('failed settlement surfaces a journal conflict instead of swallowing it as 
   }finally{f.cleanup();}
 });
 
-test('every integrated effect and control fits six launches with fresh supervisor claims',{skip:process.platform==='win32'},async t=>{
+test('every integrated effect and control starts no process on the Windows path',{skip:process.platform==='win32'},async t=>{
   const f=fixture(),originalSystemRoot=process.env.SystemRoot;
   try{
     const source=path.join(f.root,'source');for(const dir of ['shared','setup'])fs.cpSync(path.resolve(dir),path.join(source,dir),{recursive:true});
@@ -518,56 +521,47 @@ test('every integrated effect and control fits six launches with fresh superviso
     const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
     assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);fs.writeFileSync(file,text);
     let spawns=0;
-    const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-      spawns++;const input=JSON.parse(String(options.input));assert.deepEqual(input.create,[]);
-      return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-    }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+    const mock=t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
     try{
       const platform=await import(pathToFileURL(file).href) as typeof import('../../shared/platform.ts');
       const engine=await import(pathToFileURL(path.join(source,'setup/managed-step-engine.ts')).href) as typeof import('../../setup/managed-step-engine.ts');
-      const counts:Array<{step:string;spawns:number}>=[];
       for(const action of ['pause','abandon','resume'] as const){
-        const prior=f.journal(),budget=new platform.PlatformRequestBudget();spawns=0;
+        const prior=f.journal(),budget=new platform.PlatformRequestBudget();
         const request={version:1 as const,action,operationId:prior.migration.operationId,expectedSequence:prior.migration.sequence};
         const reply=platform.withPlatformRequestBudget(budget,()=>engine.controlManagedStep(f.env,payload,request,budget,prior));
-        assert.equal(reply.disposition,'applied');assert.equal(spawns,budget.securitySpawns);assert.ok(spawns<=6);
-        counts.push({step:action,spawns});
+        assert.equal(reply.disposition,'applied');assert.equal(spawns,0);
       }
       while(f.journal().migration.state!=='complete'){
-        const prior=f.journal(),request=f.request(),budget=new platform.PlatformRequestBudget();spawns=0;
+        const prior=f.journal(),request=f.request(),budget=new platform.PlatformRequestBudget();
         const reply=platform.withPlatformRequestBudget(budget,()=>engine.advanceManagedStep(f.env,payload,request,budget,prior));
-        assert.equal(reply.disposition,'applied',`${request.step.name}: ${JSON.stringify(reply.error)}`);assert.equal(spawns,budget.securitySpawns);assert.ok(spawns<=6);
-        counts.push({step:`${request.step.name}:${request.step.batch}`,spawns});
-        spawns=0;const replayBudget=new platform.PlatformRequestBudget();
+        assert.equal(reply.disposition,'applied',`${request.step.name}: ${JSON.stringify(reply.error)}`);assert.equal(spawns,0);
+        const replayBudget=new platform.PlatformRequestBudget();
         assert.equal(platform.withPlatformRequestBudget(replayBudget,()=>engine.advanceManagedStep(f.env,payload,request,replayBudget,reply.journal)).disposition,'replayed');
-        assert.ok(spawns<=6);
+        assert.equal(spawns,0);
       }
-      t.diagnostic(JSON.stringify({effects:counts}));
     }finally{mock.mock.restore();syncBuiltinESMExports();}
   }finally{if(originalSystemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=originalSystemRoot;f.cleanup();}
 });
 
-test('full fresh engine counts every creation, settlement, failure, replay and control launch',{skip:process.platform==='win32'},async t=>{
+test('full fresh engine starts no process for creation, settlement, replay or control on the Windows path',{skip:process.platform==='win32'},async t=>{
   const sourceRoot=fs.mkdtempSync('/tmp/opencode/fresh-engine-counts-'),systemRoot=process.env.SystemRoot;
+  // The projected Windows path creates ordinary directories; a restrictive umask
+  // keeps the POSIX-side fixture readers satisfied.
+  const umask=process.umask(0o077);
   try{
     const source=path.join(sourceRoot,'source');for(const dir of ['shared','setup'])fs.cpSync(path.resolve(dir),path.join(source,dir),{recursive:true});
     const file=path.join(source,'shared/platform.ts');let text=fs.readFileSync(file,'utf8');
     text=text.replace("export const windows = process.platform === 'win32';",'export const windows = true;');
     const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
     assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);fs.writeFileSync(file,text);
-    let spawns=0,failAt=0;
-    const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-      spawns++;if(failAt===spawns)return {pid:1,output:[],stdout:'',stderr:'',status:1,signal:null};
-      const input=JSON.parse(String(options.input));for(const dir of input.create)fs.mkdirSync(dir,{mode:0o700});
-      return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-    }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+    let spawns=0;
+    const mock=t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
     try{
       const platform=await import(pathToFileURL(file).href) as typeof import('../../shared/platform.ts');
       const engine=await import(pathToFileURL(path.join(source,'setup/managed-step-engine.ts')).href) as typeof import('../../setup/managed-step-engine.ts');
-      const counts:Record<string,number>={};
       const run=<T>(name:string,fn:(budget:InstanceType<typeof platform.PlatformRequestBudget>)=>T)=>{
-        spawns=0;const budget=new platform.PlatformRequestBudget();try{return platform.withPlatformRequestBudget(budget,()=>fn(budget));}
-        finally{assert.equal(spawns,budget.securitySpawns,name);assert.ok(spawns<=6,`${name}: ${spawns}`);counts[name]=Math.max(counts[name]??0,spawns);}
+        const budget=new platform.PlatformRequestBudget();try{return platform.withPlatformRequestBudget(budget,()=>fn(budget));}
+        finally{assert.equal(spawns,0,name);}
       };
       const begin=(f:ReturnType<typeof freshFixture>)=>{const session=f.review();return run('prepare',b=>engine.beginManagedStep(f.env,payload,{version:2,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},b,session));};
       const advance=(f:ReturnType<typeof freshFixture>)=>run(f.request().step.name,b=>engine.advanceManagedStep(f.env,payload,f.request(),b,f.journal()));
@@ -581,27 +575,6 @@ test('full fresh engine counts every creation, settlement, failure, replay and c
           }
         }
       }finally{f.cleanup();}}
-      assert.deepEqual(Object.fromEntries(['prepare','store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile','replay','pause','abandon','resume'].map(n=>[n,counts[n]])),
-        {prepare:6,'store-directory':6,'create-store':6,expectation:5,'register-source':5,'publish-binding':5,enable:5,reconcile:5,replay:1,pause:3,abandon:3,resume:3});
-      for(let attempt=1;attempt<=6;attempt++){
-        const f=freshFixture();try{
-          failAt=attempt;assert.throws(()=>begin(f),{code:'windows-security-unavailable'});counts['failed-prepare']=Math.max(counts['failed-prepare']??0,spawns);
-          assert.equal(fs.existsSync(f.storeRoot),false);
-        }finally{failAt=0;f.cleanup();}
-      }
-      // Fail every charged boundary of each full effect, including completion
-      // and readback. Six-slot paths retain uncertain intent when settlement
-      // cannot fit; never borrow a seventh launch for diagnostics/cleanup.
-      for(const name of ['store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile'])for(let attempt=1;attempt<=counts[name]!;attempt++){
-        const f=freshFixture();try{
-          begin(f);while(f.journal().migration.step?.name!==name)assert.equal(advance(f).disposition,'applied');
-          failAt=attempt;
-          try{const r=run('failed-'+name,b=>engine.advanceManagedStep(f.env,payload,f.request(),b,f.journal()));assert.equal(r.disposition,'refused');}
-          catch(e){assert.equal((e as {code:string}).code,'windows-security-unavailable');}
-          finally{failAt=0;}
-        }finally{f.cleanup();}
-      }
-      t.diagnostic(JSON.stringify({freshEngineSecuritySpawns:counts}));
     }finally{mock.mock.restore();syncBuiltinESMExports();}
-  }finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(sourceRoot,{recursive:true,force:true});}
+  }finally{process.umask(umask);if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(sourceRoot,{recursive:true,force:true});}
 });
