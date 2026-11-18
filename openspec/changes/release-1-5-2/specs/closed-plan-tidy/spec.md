@@ -2,7 +2,7 @@
 
 ### Requirement: A bulk count is exact only when its read can show it
 
-A Tidy or Select all count taken from the loaded plan list SHALL be stated as exact only when that list was read in a single page. Otherwise the confirmation SHALL say that some plans may have been missed, on its first step and on the deletion step. A count of named plans, whether chosen rows or a Try again recount, SHALL stay exact. The qualification MUST NOT add a read, and MUST NOT put a plus on a selection count that the incomplete-count rule does not mark.
+A Tidy or Select all count taken from the loaded plan list SHALL be stated as exact only when that list was read in a single page. Otherwise the confirmation SHALL say that some plans may have been missed, on its first step and on the deletion step. A count of explicitly chosen rows SHALL stay exact. A Try again recount from a list read in several pages SHALL stay exact only when it found every plan it names. The qualification MUST NOT add a read.
 
 #### Scenario: List read in several pages
 - **WHEN** Tidy is opened on a complete list of 120 plans that was read in three pages
@@ -16,15 +16,23 @@ A Tidy or Select all count taken from the loaded plan list SHALL be stated as ex
 #### Scenario: Select all on a multi-page list
 - **WHEN** Select all is active on a complete list read in several pages and an action is opened
 - **THEN** the confirmation says that some plans may have been missed
-- **AND** the selection bar's count carries no plus, because every matching plan is loaded
 
 #### Scenario: Explicitly chosen rows
 - **WHEN** three rows are chosen one by one on a list read in several pages and an action is opened
 - **THEN** the confirmation states three plans without qualification
 
-#### Scenario: Try again on a multi-page list
-- **WHEN** Try again is chosen after a partial run on a complete list that was read in several pages
-- **THEN** the recount states the remaining plans it found without qualification, because it names its plans
+#### Scenario: Try again finds every named plan
+- **WHEN** Try again is chosen after a partial run on a complete list that was read in several pages, and every remaining plan is among the loaded rows
+- **THEN** the recount states those plans without qualification
+
+#### Scenario: Try again does not find a named plan
+- **WHEN** Try again is chosen on a complete list that was read in several pages, and a remaining plan is not among the loaded rows
+- **THEN** the recount states the plans it found and that some plans may have been missed, because that read cannot show whether the plan left the view or was missed
+- **AND** no request is sent to look for it
+
+#### Scenario: Try again on a list read in one page
+- **WHEN** Try again is chosen on a complete list that was read in one page, and a remaining plan is not among its rows
+- **THEN** the recount states the plans it found without qualification
 
 #### Scenario: Deletion step
 - **WHEN** Delete permanently is chosen from a qualified count
@@ -32,7 +40,7 @@ A Tidy or Select all count taken from the loaded plan list SHALL be stated as ex
 
 ### Requirement: A bulk run completes only into the account and store it ran in
 
-A bulk run SHALL capture the integration account and the store and binding identity when it starts. When it finishes after either changed, it SHALL drop its own state and MUST NOT reset caches, change the selection, close the opened plan or show a result on the board shown then.
+A bulk run SHALL capture the integration account and the store and binding identity when it starts. When it finishes after the frame observed a change of either, it SHALL drop its own state and MUST NOT reset caches, change the selection, close the opened plan or show a result on the board shown then. A validated Delete receipt SHALL still remove the device review marker captured for its plan in the account and store the run started in.
 
 #### Scenario: Account switched while a request is held
 - **WHEN** the integration account changes while a bulk archive request is held, a plan is opened and selected on the new board, and the held request then answers
@@ -43,13 +51,22 @@ A bulk run SHALL capture the integration account and the store and binding ident
 - **WHEN** the board shown after the change holds a selected plan with the same source and plan identifier as a target of the earlier run
 - **THEN** that plan stays selected and is not treated as archived, restored or deleted
 
+#### Scenario: Delete receipt arrives after the switch
+- **WHEN** the integration account changes while a bulk delete request is held, and the request then answers with a valid receipt
+- **THEN** the review marker stored for that plan under the account and store the run started in is removed
+- **AND** the markers of other plans, and of the same plan identifier under another account, stay
+
 #### Scenario: Board scope changed in the same account and store
 - **WHEN** only the board's filters or search changed while the run was in flight
 - **THEN** the run stops after the request in flight and reconciles once, as before this change
 
+#### Scenario: Store changed during a run without the frame observing it
+- **WHEN** the store changes with no account change while a bulk run has the list reads paused
+- **THEN** the run ends on the board it started on, and the list read that follows it adopts the new store and clears that board, as before this change
+
 ### Requirement: Cleanup support follows the service's latest answer
 
-Cleanup controls SHALL reflect the cleanup facts of the latest health reply the frame observed. A remembered list scope MUST NOT bring back cleanup support, or in-progress cleanup support, that a later health reply withdrew. Support SHALL return only with a newer health reply that offers it.
+Cleanup controls SHALL follow the cleanup facts of the latest health reply the frame accepted, whichever list is shown. Showing a remembered list scope MUST NOT bring back cleanup support, or in-progress cleanup support, that a later health reply withdrew, and MUST NOT hide support that a later health reply granted. A health reply is accepted when the refresh that read it settles, whether its list read completed or failed.
 
 #### Scenario: Switching back to a remembered view
 - **WHEN** Current plans was read with cleanup support, Archived plans then observes a service without it, and the person switches back to Current plans while its new read is pending
@@ -62,6 +79,10 @@ Cleanup controls SHALL reflect the cleanup facts of the latest health reply the 
 #### Scenario: Support returns
 - **WHEN** a later health reply offers cleanup again
 - **THEN** the controls return with that reply, not earlier
+
+#### Scenario: Support granted after a view was remembered
+- **WHEN** Archived plans was last read while the service offered no cleanup, a later refresh in Current plans accepts a health reply that offers it, and the person switches back to Archived plans while its new read is pending
+- **THEN** Tidy and Select are offered while the remembered list is shown
 
 ### Requirement: Background cleanup updates do not interrupt the person
 
@@ -77,13 +98,17 @@ A count that finishes by itself, including its failure and the end of a Check mo
 
 ### Requirement: A deferred cleanup focus move is decided when it is applied
 
-A focus move that cleanup deferred SHALL be applied only if, at the paint that applies it, focus is still inside the cleanup panel or was lost with the removed control. Otherwise the move SHALL be dropped and MUST NOT be kept for a later paint. A move denied because another frame has focus SHALL stay dropped.
+A focus move that cleanup deferred SHALL be applied only if, at the paint that applies it, focus is still on the control the move was queued from, or is on no control because that control was removed. If the person has focused anything else, inside the cleanup panel or outside it, the move SHALL be dropped and MUST NOT be kept for a later paint. A move denied because another frame has focus SHALL stay dropped.
 
 #### Scenario: Focus moved before Tidy returns
 - **WHEN** a run ends while Stop has focus, the Tidy button is absent during the reconciliation read, and the person focuses Search before that read finishes
 - **THEN** focus stays in Search when the Tidy button reappears, and on every later paint
 
-#### Scenario: Focus still owned by the panel
+#### Scenario: Focus moved to Undo before Tidy returns
+- **WHEN** a run ends while Stop has focus, the result line offers Undo while the Tidy button is absent during the reconciliation read, and the person focuses Undo before that read finishes
+- **THEN** focus stays on Undo when the Tidy button reappears, and on every later paint
+
+#### Scenario: Focus lost with the removed control
 - **WHEN** a run ends while Stop has focus and the person focuses nothing else
 - **THEN** focus moves to the Tidy button when it reappears
 
@@ -93,11 +118,15 @@ A focus move that cleanup deferred SHALL be applied only if, at the paint that a
 
 ### Requirement: An account or store switch releases pending cleanup controls
 
-After the integration account or the store and binding change, cleanup controls on the board shown SHALL be usable without waiting for a cleanup request sent before the change. That request's late answer MUST NOT complete, release or otherwise change a cleanup action started after the change. This SHALL hold for a single-plan request as for a bulk run, and when the account or store changed and changed back before the answer.
+After the frame observes a change of the integration account or of the store and binding, cleanup controls on the board shown SHALL be usable without waiting for a cleanup request sent before the change. That request's late answer MUST NOT complete, release or otherwise change a cleanup action started after the change. This SHALL hold for a single-plan request as for a bulk run, and when the account or store changed and changed back before the answer.
 
 #### Scenario: Tidy after a switch
-- **WHEN** the account or store changes while a cleanup request is held, and the person opens Tidy on the new board before that request answers
+- **WHEN** the account changes while a cleanup request is held, and the person opens Tidy on the new board before that request answers
 - **THEN** Tidy opens and counts
+
+#### Scenario: Store change observed during a single-plan request
+- **WHEN** a single-plan cleanup request is held and a list reply shows that the store changed
+- **THEN** cleanup controls on the board shown after that reply are usable before the held request answers
 
 #### Scenario: Late answer during a newer run
 - **WHEN** the earlier request answers while a run started on the new board is in flight
@@ -112,32 +141,26 @@ After the integration account or the store and binding change, cleanup controls 
 - **WHEN** the account changes and changes back while a cleanup request is held, a new run is started, and the held request then answers
 - **THEN** the late answer neither completes nor releases the new run
 
-### Requirement: Run progress does not replace a held control
+### Requirement: A run's own updates do not replace a held control
 
-A progress update of a bulk run SHALL repaint as background data, so it waits while a control is held or a picker is open. The run itself MUST NOT wait for the repaint.
+A progress update of a bulk run, and the repaint at its end with the result line and the selection changes its receipts cause, SHALL repaint as background data, so they wait while a control is held or a picker is open. The run itself, the release of its busy state, its cache invalidation and its reconciliation read MUST NOT wait for the repaint.
 
 #### Scenario: Stop pressed while a plan is confirmed
-- **WHEN** a plan's receipt arrives between pointer down and pointer up on Stop
+- **WHEN** a plan's receipt arrives between pointer down and pointer up on Stop, and requests remain
 - **THEN** Stop is not replaced before its click, and the run stops after the request in flight
+
+#### Scenario: Last reply arrives during a press
+- **WHEN** the run's last reply arrives between pointer down and pointer up on an unrelated control such as Filters
+- **THEN** that control is not replaced before its click, the click takes effect and the result line appears on the next paint
+- **AND** the reconciliation read is sent without waiting for that paint
 
 #### Scenario: Progress still advances
 - **WHEN** no control is held and no picker is open during a run
-- **THEN** the progress line follows the completed count as before
+- **THEN** the progress line follows the completed count, and the result line appears when the run ends, as before this change
 
-## MODIFIED Requirements
+### Requirement: The result separates skipped plans from unconfirmed ones
 
-### Requirement: Honest result with undo
-
-A run SHALL show one progress line with how many of the total are done and a Stop control. Its result SHALL be one line stating how many plans were archived or deleted, how many were skipped and, separately, how many could not be confirmed and may have been applied, and SHALL stay until the next action or refresh, not a timer. A plan whose request was attempted and received no valid answer SHALL be reported as unconfirmed, never as skipped; a plan the run did not attempt MUST NOT be reported as unconfirmed. After Archive the result SHALL offer Undo, which restores each plan this run archived through the existing restore route. A deletion result MUST NOT offer Undo. Archive and Undo MUST NOT change a plan's lifecycle, counts or history. A plan SHALL be reported as done only when its receipt was validated, and a refused or unconfirmed plan MUST NOT be retried automatically.
-
-#### Scenario: All archived
-- **WHEN** 128 plans are archived
-- **THEN** one line says 128 plans were archived and offers Undo, and the plans leave the current list after one authoritative re-read
-
-#### Scenario: Partial failure
-- **WHEN** two of 128 plans were refused as changed
-- **THEN** the line says 126 of 128 were archived and two were skipped, with a way to try again for the plans that remain
-- **AND** the skipped plans are not retried automatically and are not reported as archived
+The result line SHALL state how many plans were archived, restored or deleted, how many were skipped and, separately, how many could not be confirmed and may have been applied. A plan whose request was attempted and received no valid answer SHALL be reported as unconfirmed, never as skipped. A plan the run did not attempt MUST NOT be reported as unconfirmed. Undo SHALL restore only plans with a validated archive receipt.
 
 #### Scenario: Reply lost
 - **WHEN** the reply to one of 128 archive requests is lost or times out and the other 127 are archived
@@ -159,15 +182,77 @@ A run SHALL show one progress line with how many of the total are done and a Sto
 #### Scenario: Unconfirmed plans and Undo
 - **WHEN** Undo is chosen after a run with unconfirmed plans
 - **THEN** only the plans with a validated archive receipt are restored
-- **AND** an unconfirmed plan that was in fact archived is shown in Archived plans after the reconciliation read, where it can be restored
+- **AND** an unconfirmed plan that was in fact archived is not restored by Undo; it can be restored on its own once an Archived plans list or search shows it
 
 #### Scenario: Try again after unconfirmed plans
-- **WHEN** Try again is chosen after a run with skipped and unconfirmed plans
+- **WHEN** Try again is chosen after an archive, a deletion or a restore of selected plans that left skipped and unconfirmed plans
 - **THEN** both are recounted under the existing retry rules before a new confirmation, and a plan that has left the view is left out
+
+#### Scenario: Try again after a partial Undo
+- **WHEN** Undo restored some plans, others were skipped or could not be confirmed, and Try again is chosen
+- **THEN** the restore is sent again for exactly those remaining plans, each still bound to the revision and cleanup generation its archive receipt returned, without a recount in the view shown
+- **AND** a plan that changed since, including one whose earlier restore was in fact applied, is left as it is and reported
 
 #### Scenario: Three languages
 - **WHEN** the result line is shown in English, Russian or Simplified Chinese
 - **THEN** it distinguishes skipped from unconfirmed plans in that language, as whole sentences with its plural forms
+
+## MODIFIED Requirements
+
+### Requirement: Explicit confirmation before any request
+
+Opening Tidy SHALL show an inline panel, not a modal, whose one short line states how many plans are in scope and whose buttons name the action and the count. It MUST NOT list plan titles. Cancel SHALL have initial focus, Enter MUST NOT confirm by default and Escape SHALL cancel. No archive, restore or delete request SHALL be sent on opening or cancelling. The deletion step SHALL keep what deletion removes and keeps reachable in one collapsed disclosure.
+
+#### Scenario: Cancel
+- **WHEN** the user opens the panel and presses Escape or Cancel
+- **THEN** no cleanup request is sent and focus returns to the Tidy button
+
+#### Scenario: Confirm
+- **WHEN** the user activates the archive button
+- **THEN** each plan in scope is archived through the existing per-plan archive route, bound to the progress revision and cleanup generation captured for it, one request at a time
+
+#### Scenario: Counting plans that are not loaded
+- **WHEN** the scope reaches beyond the loaded list
+- **THEN** the panel shows that it is counting, sends only reads, and can be cancelled before the count arrives
+
+#### Scenario: More than one run covers
+- **WHEN** at least 1,000 matching plans are collected and more remain
+- **THEN** the line says it covers the first 1,000 of more, and the rest can be done by using Tidy again
+
+#### Scenario: Scan limit reached first
+- **WHEN** the scan reaches its 2,000-plan limit having collected fewer than 1,000 matching plans
+- **THEN** the line states the number actually found and that more plans weren't checked, without claiming more matches exist, and offers Check more
+
+#### Scenario: Check more continues past checked plans
+- **WHEN** the user chooses Check more after the scan limit
+- **THEN** the scan continues from where it stopped in the same reading, reading up to 2,000 further plans and adding their matches to the count, never re-reading plans it already checked
+- **AND** a change of store, account, binding, view, search or filters discards the continuation, so the next scan starts from the beginning
+
+#### Scenario: Deletion details
+- **WHEN** the user expands the disclosure in the deletion step
+- **THEN** it states that stored tasks, history and the document copy are removed, the original file is kept, and deletion is not secure erasure
+
+#### Scenario: Context changes mid-run
+- **WHEN** the frame observes a change of the store, account, binding or board reading while requests remain
+- **THEN** no further request is sent and no plan is reported as done without its validated receipt
+- **AND** a change of board reading in the same account, store and binding is followed by one reconciliation read
+
+#### Scenario: Account, store or binding changes mid-run
+- **WHEN** the frame observes a change of the account, store or binding while requests remain
+- **THEN** the board shown after the change shows no result of that run and is not changed by it
+
+### Requirement: Honest result with undo
+
+A run SHALL show one progress line with how many of the total are done, and Stop. Its result SHALL be one line, kept until the next action or refresh, not a timer. After Archive it SHALL offer Undo, which restores each plan this run archived through the restore route; a deletion result MUST NOT offer Undo. Archive and Undo MUST NOT change a plan's lifecycle, counts or history. A plan SHALL be reported as done only when its receipt was validated, and no plan SHALL be retried automatically.
+
+#### Scenario: All archived
+- **WHEN** 128 plans are archived
+- **THEN** one line says 128 plans were archived and offers Undo, and the plans leave the current list after one authoritative re-read
+
+#### Scenario: Partial failure
+- **WHEN** two of 128 plans were refused as changed
+- **THEN** the line says 126 of 128 were archived and two were skipped, with a way to try again for the plans that remain
+- **AND** the skipped plans are not retried automatically and are not reported as archived
 
 #### Scenario: Stop
 - **WHEN** the user chooses Stop during a run
