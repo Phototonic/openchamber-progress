@@ -30,18 +30,21 @@ export function freshCompileCache(root = process.cwd()): Record<string, string> 
   try {
     rmSync(directory, { recursive: true, force: true });
     mkdirSync(directory, { recursive: true });
-  } catch { return {}; }
+  } catch {
+    console.log('Compile cache disabled: node_modules/.cache/agent-progress-compile could not be prepared; tests run without it.');
+    return {};
+  }
   return { NODE_COMPILE_CACHE: directory };
 }
 
-export function portableLanes(options: { fenced: boolean; env?: Record<string, string> }): Lane[] {
+export function portableLanes(options: { fenced: boolean; env?: Record<string, string>; cpus?: number; environment?: NodeJS.ProcessEnv }): Lane[] {
   const env = options.env ?? {};
   const backend = testFiles('tests/backend').filter(f => !nativeOnlyTests.includes(f.split('/').at(-1)!));
-  const [parallel, serial] = backendTestCommands(backend);
+  const [parallel, serial] = backendTestCommands(backend, options.environment ?? process.env);
   // The serial group's chain keeps about two cores busy (its main thread and the
   // workers it starts). Leave them free so its timing assertions keep their
   // headroom, and run this lane under `nice` as well.
-  const workers = `--test-concurrency=${Math.max(1, availableParallelism() - 2)}`;
+  const workers = `--test-concurrency=${Math.max(1, (options.cpus ?? availableParallelism()) - 2)}`;
   const withWorkers = (args: string[]) => [...args.slice(0, 2), workers, ...args.slice(2)];
   const node = (label: string, args: string[]) => ({ label, command: 'node', args, env });
   const types = [

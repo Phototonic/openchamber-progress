@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { backendTestCommands, nativeOnlyTests } from '../../scripts/ci-backend.ts';
 import { freshCompileCache, portableLanes } from '../../scripts/test-plan.ts';
 import { outputs } from '../../scripts/build-all.ts';
@@ -46,7 +45,7 @@ test('Windows service tests have an explicit same-job backend build prerequisite
 
 test('portable backend groups isolate coordination ports without omitting or repeating tests',()=>{
   const files=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
-  const [parallel,serial]=backendTestCommands(files);
+  const [parallel,serial]=backendTestCommands(files,{});
   assert.deepEqual(parallel.slice(0,2),['--experimental-strip-types','--test']);
   assert.deepEqual(serial.slice(0,3),['--experimental-strip-types','--test','--test-concurrency=1']);
   assert.deepEqual([...parallel.slice(2),...serial.slice(3)].sort(),files.sort());
@@ -60,29 +59,55 @@ test('portable backend groups isolate coordination ports without omitting or rep
   assert.match(source,/await runLanes\(portableLanes\(\{ fenced: true, env: freshCompileCache\(\) \}\)\)/);
 });
 
-test('portable lanes run every portable file once, keep the port-bound group serial and alone, and the fast loop drops only that group',()=>{
+test('portable lanes run every portable file once, keep the port-bound group serial and alone, and the fast loop drops only that group, on any core count',()=>{
   const names=(dir:string)=>readdirSync(dir).filter(f=>f.endsWith('.test.ts')).map(f=>`${dir}/${f}`).sort();
   const native=new Set(nativeOnlyTests);
   const backend=names('tests/backend').filter(f=>!native.has(f.split('/').at(-1)!));
   const every=(lanes:ReturnType<typeof portableLanes>)=>lanes.flatMap(l=>l.steps).filter(s=>s.command==='node');
   const files=(steps:{args:string[]}[])=>steps.flatMap(s=>s.args.filter(a=>a.endsWith('.test.ts'))).sort();
-  const full=portableLanes({fenced:true}),fast=portableLanes({fenced:false});
-  assert.deepEqual(files(every(full)),[...backend,...names('tests/browser'),...names('tests/automation')].sort());
-  assert.equal(new Set(files(every(full))).size,files(every(full)).length,'no file runs twice');
-  const serial=every(full).filter(s=>s.args.includes('--test-concurrency=1'));
-  assert.equal(serial.length,1);
-  assert.deepEqual(files(serial).map(f=>f.split('/').at(-1)),backendTestCommands(backend)[1].slice(3).map(f=>f.split('/').at(-1)).sort());
-  const alone=full.filter(l=>l.steps.includes(serial[0]));
-  assert.equal(alone.length,1);assert.equal(alone[0].steps.length,1,'the port-bound group shares its lane with nothing that could take a port');
-  assert.ok(!serial[0].lowPriority&&full.find(l=>l.steps.includes(serial[0]))!.steps.length===1,'the serial group never yields cores');
-  assert.ok(full.flatMap(l=>l.steps).filter(s=>s!==serial[0]).every(s=>s.lowPriority),'the lane beside it yields cores to it');
-  // Every other test step is bounded by an explicit worker count rather than the host default.
-  for(const step of every(full).filter(s=>s!==serial[0]))assert.ok(step.args.some(a=>/^--test-concurrency=[1-9]\d*$/.test(a)),step.label);
-  assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files(serial).includes(f)));
-  for(const lanes of [full,fast]){
-    const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
-    assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),'both typechecks stay in every run');
+  // On one to three cores the other lane's worker count is also 1, so the serial group
+  // cannot be told apart by its --test-concurrency=1; it is the sole step of its own lane.
+  for(const cpus of [1,2,3,4,24]){
+    const at=`on ${cpus} cpus`;
+    const full=portableLanes({fenced:true,cpus,environment:{}}),fast=portableLanes({fenced:false,cpus,environment:{}});
+    assert.deepEqual(files(every(full)),[...backend,...names('tests/browser'),...names('tests/automation')].sort(),at);
+    assert.equal(new Set(files(every(full))).size,files(every(full)).length,`no file runs twice ${at}`);
+    const serialLanes=full.filter(l=>l.name==='port-bound backend');
+    assert.equal(serialLanes.length,1,at);assert.equal(serialLanes[0].steps.length,1,`the port-bound group shares its lane with nothing that could take a port ${at}`);
+    const serial=serialLanes[0].steps[0];
+    assert.ok(serial.args.includes('--test-concurrency=1'),at);
+    assert.deepEqual(serial.args.slice(0,3),backendTestCommands(backend,{})[1].slice(0,3),at);
+    assert.deepEqual(files([serial]).map(f=>f.split('/').at(-1)),backendTestCommands(backend,{})[1].slice(3).map(f=>f.split('/').at(-1)).sort(),at);
+    assert.ok(!serial.lowPriority,`the serial group never yields cores ${at}`);
+    const others=full.filter(l=>l!==serialLanes[0]).flatMap(l=>l.steps);
+    assert.ok(others.every(s=>s.lowPriority),`the lane beside it yields cores to it ${at}`);
+    // Every other test step is bounded by an explicit worker count: the cores minus two, never below one.
+    const workers=Math.max(1,cpus-2);
+    for(const step of others.filter(s=>s.command==='node'))assert.ok(step.args.includes(`--test-concurrency=${workers}`),`${step.label} ${at}`);
+    assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files([serial]).includes(f)),at);
+    assert.equal(fast.some(l=>l.steps.some(s=>s.args.includes('--test-concurrency=1')&&files([s]).some(f=>files([serial]).includes(f)))),false,`the fast loop has no serial group ${at}`);
+    for(const lanes of [full,fast]){
+      const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
+      assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),`both typechecks stay in every run ${at}`);
+    }
   }
+  // Without a core count the host's is used.
+  assert.deepEqual(portableLanes({fenced:true,environment:{}}),portableLanes({fenced:true,cpus:availableParallelism(),environment:{}}));
+});
+
+test('a file that takes Setup ports only when CP_BUILT_SERVICE=1 runs in the serial group in that configuration and only there',()=>{
+  const names=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
+  const opted='tests/backend/plan-cleanup-service.test.ts';
+  const [parallelOff,serialOff]=backendTestCommands(names,{});
+  assert.ok(parallelOff.includes(opted)&&!serialOff.includes(opted),'without the opt-in it stays parallel: it takes no port');
+  const [parallelOn,serialOn]=backendTestCommands(names,{CP_BUILT_SERVICE:'1'});
+  assert.ok(serialOn.includes(opted)&&!parallelOn.includes(opted),'with the opt-in its built service takes writer slots');
+  assert.deepEqual([...parallelOn.slice(2),...serialOn.slice(3)].sort(),names.sort(),'still no file omitted or repeated');
+  assert.ok(!backendTestCommands(names,{CP_BUILT_SERVICE:'0'})[1].includes(opted),'only 1 opts in');
+  const plan=(environment:NodeJS.ProcessEnv)=>portableLanes({fenced:true,cpus:4,environment}).find(l=>l.name==='port-bound backend')!.steps[0].args;
+  assert.ok(plan({CP_BUILT_SERVICE:'1'}).includes(opted)&&!plan({}).includes(opted));
+  const rest=(environment:NodeJS.ProcessEnv)=>portableLanes({fenced:true,cpus:4,environment}).filter(l=>l.name!=='port-bound backend').flatMap(l=>l.steps).flatMap(s=>s.args);
+  assert.ok(!rest({CP_BUILT_SERVICE:'1'}).includes(opted),'the lane beside the serial group never holds it');
 });
 
 test('every step shares one compile cache folder that starts each run empty and stays out of tracked paths',()=>{
@@ -101,71 +126,6 @@ test('every step shares one compile cache folder that starts each run empty and 
     // An unusable location turns the cache off instead of failing the run.
     writeFileSync(join(root,'blocked'),'a file where a folder is needed');
     assert.deepEqual(freshCompileCache(join(root,'blocked')),{});
-  } finally {rmSync(root,{recursive:true,force:true});}
-});
-
-test('lane runner starts a yielding step at lower priority and an ordinary one at the usual priority',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'portable-lanes-priority-'));
-  try {
-    const script=join(root,'lanes.ts');
-    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
-const show=(label:string,lowPriority?:boolean)=>({label,command:process.execPath,args:['-e',"console.log('PRIORITY '+require('node:os').getPriority())"],lowPriority});
-await runLanes([{name:'a',steps:[show('usual')]},{name:'b',steps:[show('yielding',true)]}]);`);
-    // Plain headings: the runner writes `::group::` blocks when it sees GitHub Actions.
-    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000,env:{...process.env,GITHUB_ACTIONS:''}});
-    assert.equal(r.status,0,r.stderr);
-    const seen=(label:string)=>Number(new RegExp(`=== ${label} ===\\nPRIORITY (-?\\d+)`).exec(r.stdout)?.[1]);
-    assert.ok(seen('b: yielding')>seen('a: usual'),'the yielding step has the larger niceness');
-  } finally {rmSync(root,{recursive:true,force:true});}
-});
-
-test('lane runner stops every step when it is signalled, keeping their output and leaving no process behind',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'portable-lanes-signal-'));
-  try {
-    const script=join(root,'lanes.ts');
-    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
-const hang=(label:string)=>({label,command:process.execPath,args:['-e',"console.log('CHILD-PID '+process.pid);setInterval(()=>{},1000)"]});
-try{await runLanes([{name:'a',steps:[hang('one')]},{name:'b',steps:[hang('two')]}]);}catch(error){console.log('REJECTED '+(error as Error).message);process.exit(1);}`);
-    const child=spawn(process.execPath,['--experimental-strip-types',script],{env:{...process.env,GITHUB_ACTIONS:''}});
-    let out='';child.stdout.on('data',c=>{out+=c;});
-    const exited=new Promise<number|null>(done=>child.on('close',code=>done(code)));
-    for(const end=Date.now()+10_000;!(/start  b: two/.test(out)&&/start  a: one/.test(out))&&Date.now()<end;)await new Promise(r=>setTimeout(r,25));
-    await new Promise(r=>setTimeout(r,500));
-    child.kill('SIGTERM');
-    const code=await Promise.race([exited,new Promise<string>(r=>setTimeout(()=>r('hung'),15_000))]);
-    assert.notEqual(code,'hung','the runner exits after the signal');
-    assert.equal(code,1);
-    assert.match(out,/REJECTED Portable check interrupted by SIGTERM/);
-    const pids=[...out.matchAll(/CHILD-PID (\d+)/g)].map(m=>Number(m[1]));
-    assert.equal(pids.length,2,'the output of both running steps is kept');
-    assert.match(out,/Interrupted before it ended/);
-    for(const pid of pids){
-      let alive=true;
-      for(const end=Date.now()+5000;alive&&Date.now()<end;){try{process.kill(pid,0);await new Promise(r=>setTimeout(r,50));}catch{alive=false;}}
-      assert.equal(alive,false,'a step outlives the runner');
-    }
-  } finally {rmSync(root,{recursive:true,force:true});}
-});
-
-test('lane runner stops every lane at the first failure and reports it without interleaving',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'portable-lanes-'));
-  try {
-    const script=join(root,'lanes.ts');
-    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
-const node=(label:string,code:string)=>({label,command:process.execPath,args:['-e',code]});
-try{await runLanes([
-  {name:'slow',steps:[node('hangs',"setTimeout(()=>{},60000)"),node('never starts',"console.log('LATE-STEP')")]},
-  {name:'fails',steps:[node('breaks',"console.log('FAIL-OUTPUT');process.exit(3)")]},
-  {name:'ok',steps:[node('passes',"console.log('PASS-OUTPUT')"),node('skipped after failure',"setTimeout(()=>console.log('LATE-STEP'),5000)")]},
-]);}catch(error){console.log('REJECTED '+(error as Error).message);process.exit(1);}`);
-    const started=performance.now();
-    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000});
-    assert.equal(r.status,1);
-    assert.ok(performance.now()-started<15_000,'the hanging lane is stopped, not waited for');
-    assert.match(r.stdout,/FAIL-OUTPUT/);assert.match(r.stdout,/Exited with code 3/);assert.match(r.stdout,/REJECTED Portable check failed/);
-    assert.doesNotMatch(r.stdout,/LATE-STEP/);
-    assert.match(r.stdout,/stopped\s+[\d.]+s\s+slow: hangs/);
-    assert.match(r.stdout,/failed\s+[\d.]+s\s+fails: breaks/);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 

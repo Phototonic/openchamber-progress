@@ -111,11 +111,29 @@ and `bun run test:all` therefore run it in one lane beside a second lane that
 holds both typechecks, the parallel backend group and the browser-model and
 automation tests (`scripts/test-plan.ts`, `scripts/test-lanes.ts`). The second
 lane is capped at the machine's cores minus two and runs under `nice`, so the
-timing assertions in the serial group keep their headroom. Each step's output is printed whole under its
-own heading, the first failure (or Ctrl-C or a termination signal) stops both lanes and
-prints what the running steps had written, and the run ends with a
-per-step duration list. A file that takes a Setup port belongs in the serial
-group; never add one to the other lane.
+timing assertions in the serial group keep their headroom (the cap never goes below
+one worker, so on one to three cores the lane runs one worker at a time). A file that takes
+a Setup port belongs in the serial group; never add one to the other lane. A listen probe
+(a preload on `net.Server.prototype.listen`, covering worker threads, child processes and the
+bundled `build/service/main.js`) found that no file in the parallel group or the browser and
+automation tests takes one in the CI configuration. One file does in one configuration CI does
+not use: `plan-cleanup-service.test.ts` runs the built service when `CP_BUILT_SERVICE=1`, and the
+plan then moves it into the serial group (`fencedWhenSet` in `scripts/ci-backend.ts`).
+
+The runner (`scripts/test-lanes.ts`) is POSIX-first: it prints each step's output whole under its
+own heading (the last 2 MB if a step is noisier, saying what was dropped), names the steps still
+running about every minute, and ends with a per-step duration list. The first failure, SIGINT,
+SIGTERM, SIGHUP or a closed output pipe (`test:all | head`) stops both lanes and prints what the
+running steps had written. Each step runs in its own process group, so the runner stops the groups
+itself: a repeated signal, or a step that has not stopped ten seconds after the first, is killed
+outright and abandoned even if a leftover process still holds its output pipes, and every group
+the runner started is killed once the steps settle and again if the runner itself crashes. An
+interrupted run exits 128 plus the signal number (130, 143, 129, 141), a failed one 1. A step
+the runner stopped is reported as stopped; one that fails on its own is reported as failed with
+its output, whenever it does so. On Windows steps are not detached and are stopped with
+`taskkill /T /F`; that path is covered by a unit test of the stop command but has not been run on
+Windows, and the typecheck step's `./node_modules/.bin/tsc` is a POSIX path, so on Windows run the
+individual commands listed under Local development by hand.
 
 Both runners also turn on Node's compile cache for every step they start
 (`NODE_COMPILE_CACHE`, a folder under the ignored `node_modules/.cache/`). It keeps
@@ -153,7 +171,8 @@ Without that opt-in, the three journeys explicitly skip; no per-request
 assertion, budget or deadline is relaxed. Local full native runs must also set
 `AP_WINDOWS_FULL=1`. The Windows job starts the platform file and the service file
 as two processes at once, each in its own serial test runner and as the same
-unprivileged principal, and waits for both before reading either exit code; only the
+unprivileged principal, each started with `Start-Process -Wait` inside a PowerShell thread job so
+it is waited for together with everything it started, and reads both exit codes after both end; only the
 service file starts a server and request workers, which take the Setup coordination
 ports. Weekly and manual CI runs target Windows only; the Linux
 jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).

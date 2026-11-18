@@ -6,7 +6,7 @@
  *   node --experimental-strip-types scripts/test.ts --fast   the same without the serial Setup-port group */
 import { mkdirSync } from 'node:fs';
 import { nativeOnlyTests } from './ci-backend.ts';
-import { runLanes } from './test-lanes.ts';
+import { LanesError, runLanes } from './test-lanes.ts';
 import { freshCompileCache, portableLanes } from './test-plan.ts';
 
 const fast = process.argv.includes('--fast');
@@ -19,5 +19,5 @@ try {
   console.log(`\nAll portable groups passed in ${((performance.now() - started) / 1000).toFixed(1)}s${fast ? ' (fast loop, not the full set)' : ''}.`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
+  process.exit(error instanceof LanesError ? error.exitCode : 1);
 }

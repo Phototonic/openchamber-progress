@@ -493,7 +493,8 @@ permits cleanup/permission repair. See
 
 The `Windows setup, storage and capture` CI job runs the native platform suite
 and `tests/backend/windows-service.test.ts` in the same provisioned non-admin
-account, as two processes at once, each in its own serial test runner. Ordinary PRs run it when backend/build/test inputs change (unknown
+account, as two processes at once, each in its own serial test runner and each waited for
+with everything it started (`Start-Process -Wait` inside a thread job). Ordinary PRs run it when backend/build/test inputs change (unknown
 paths conservatively run it); UI, documentation, OpenSpec and browser-test-only
 PRs skip it, as do duplicate same-repository main/dev heads outside promotion.
 Every `dev` push runs the fast set. This retains every native test except three
