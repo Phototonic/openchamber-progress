@@ -51,6 +51,27 @@ export interface LiveSnapshot {
 
 export const EMPTY_LIVE: LiveSnapshot = { projectsState: 'off', projects: [], worktrees: new Map(), sessions: new Map(), capped: [] };
 
+// Opt-in immutable derivation snapshot. The workspace itself mutates its Maps; callers
+// must create a new index when their entries change, not cache by progress revision.
+const indexes = new WeakMap<LiveSnapshot, { sessions: Map<string, LiveSession | undefined>; projects: Map<string, LiveProject | undefined> }>();
+export function indexedLive(snap: LiveSnapshot): LiveSnapshot {
+  const copy = { ...snap, sessions: new Map(snap.sessions), worktrees: new Map(snap.worktrees) };
+  const sessions = new Map<string, LiveSession | undefined>();
+  for (const entry of copy.sessions.values()) {
+    if (entry.state !== 'ready') continue;
+    const seen = new Set<string>();
+    for (const r of entry.records) {
+      if (seen.has(r.id)) continue; // The direct resolver uses the first match in each stream.
+      seen.add(r.id);
+      const before = sessions.get(r.id);
+      if (sessions.has(r.id) && (!before || before.projectId !== r.projectId || directoryKey(before.directory) !== directoryKey(r.directory))) sessions.set(r.id, undefined);
+      else sessions.set(r.id, r);
+    }
+  }
+  indexes.set(copy, { sessions, projects: new Map() });
+  return copy;
+}
+
 /** Optional host context, never task evidence. URLs are validated but not retained. */
 export function hostWorkContext(value: { agent?: unknown; links?: unknown }): Pick<LiveSession, 'agent' | 'links' | 'moreLinks'> {
   const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && !/[\u0000-\u001f\u007f]/u.test(v);
@@ -79,15 +100,21 @@ export type Coverage =
 export function projectFor(directory: string, snap: LiveSnapshot): LiveProject | undefined {
   if (!directory) return undefined;
   const dir = directoryKey(directory);
+  const index = indexes.get(snap);
+  if (index?.projects.has(dir)) return index.projects.get(dir);
   const matches = snap.projects.filter((p) => {
     if (dir === directoryKey(p.directory)) return true;
     const trees = snap.worktrees.get(p.id);
     return trees?.state === 'ready' && trees.records.some((w) => w.status === 'ready' && directoryWithin(dir, w.directory));
   });
-  return matches.length === 1 ? matches[0] : undefined;
+  const result = matches.length === 1 ? matches[0] : undefined;
+  index?.projects.set(dir, result);
+  return result;
 }
 
 export function findSession(id: string, snap: LiveSnapshot): LiveSession | undefined {
+  const index = indexes.get(snap);
+  if (index) return index.sessions.get(id);
   let found: LiveSession | undefined;
   for (const entry of snap.sessions.values()) {
     if (entry.state !== 'ready') continue;

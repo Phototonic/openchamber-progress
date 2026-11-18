@@ -21,7 +21,7 @@
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
-import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, runTidy, tidyConfirmation, type CleanupState, type CleanupTarget } from './cleanup.ts';
+import { cleanupClosed, cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, runTidy, tidyConfirmation, selectionConfirmation, selectionTargets, type SelectionRequest, type CleanupPlan, type CleanupScan, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, projectFor, type LiveSnapshot } from './live.ts';
 import { progressItem, progressTargetState, progressTargetRead, type ProgressItem, type ProgressContextState } from './session-context.ts';
@@ -144,9 +144,15 @@ export interface ViewContext<U> {
   runCleanup: (action: 'archive' | 'restore', plan: PlanView) => void;
   tidyPlans: () => PlanView[];
   requestTidy: () => void;
+  retryTidy: () => void;
+  requestSelection: (action: 'archive' | 'restore' | 'delete', selection: SelectionRequest) => void;
   cancelTidy: () => void;
   confirmTidy: () => void;
   undoTidy: () => void;
+  moreTidy: () => void;
+  deleteTidy: () => void;
+  confirmTidyDelete: () => void;
+  stopTidy: () => void;
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
   /**
@@ -224,6 +230,8 @@ export interface ViewSpec<U> {
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Optional native focus continuity seam, with both old and new roots connected. */
   preserveFocus?: (previous: HTMLElement, next: HTMLElement) => void;
+  /** Keep a connected region's ancestor chain without requiring state-preserving DOM moves. */
+  reconcilePaint?: (previous: HTMLElement, next: HTMLElement) => HTMLElement;
   /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
   refreshed?: (vc: ViewContext<U>) => void;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
@@ -232,10 +240,18 @@ export interface ViewSpec<U> {
   onContext?: (vc: ViewContext<U>) => void;
   /** Only rail/page expose cleanup; the selected plan, including document/history tabs. */
   actionPlan?: (vc: ViewContext<U>) => PlanView | null;
-  /** Already listed surface plans, not a broader library. Absent on Work Status. */
+  /** Complete loaded scope; a separate panel reader covers incomplete lists/search. */
   tidyPlans?: (vc: ViewContext<U>) => PlanView[];
+  /** `known`: the exact plans an explicit selection or retry names; they are validated, not searched for. */
+  tidyScan?: (vc: ViewContext<U>, context: string, includes?: (plan: CleanupPlan) => boolean, allowActive?: boolean, known?: CleanupPlan[]) => CleanupScan | null;
+  selectionScope?: (vc: ViewContext<U>) => string;
+  tidyArchived?: (vc: ViewContext<U>) => boolean;
+  tidyMatching?: (vc: ViewContext<U>) => boolean;
   tidyScope?: (vc: ViewContext<U>) => string;
-  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
+  /** Whether a counted target is still in the view's scope right now; asked before each cleanup request. */
+  tidyMember?: (vc: ViewContext<U>, target: CleanupTarget) => boolean;
+  /** `confirmed`: keys whose cleanup receipt succeeded, given only when a cleanup action ended. */
+  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => Partial<U>;
   /**
    * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
    * selected session; board: its own list scope, never the host session). Its task-reading state
@@ -748,9 +764,16 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     if (detailsDeferred) detailQueue = Promise.resolve();
   };
-  const forgetPlans = (keys: Set<string>) => {
+  /** Without cleanup support a count or confirmation must not return with it; a finished result stays (its actions need support). */
+  const retirePendingTidy = (h: { planCleanup?: 1 }) => {
+    if (h.planCleanup === 1 || !cleanup.tidy || cleanup.tidy.result || cleanupBusy) return;
+    // The old callbacks die with the state; the repaint is background data, never an explicit UI action.
+    cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.data++;
+  };
+  /** `confirmed`: plans a cleanup receipt took out of view; `returned`: plans a receipt put back (Undo). */
+  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
-    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; }
+    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) }; versions.ui++; }
   };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
@@ -895,6 +918,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // data visibly stale instead of replacing it with a setup form.
       if (health?.ready !== false) { setup = null; loadSetup(); }
       health = result.health;
+      retirePendingTidy(health);
       if (failure?.kind !== 'setup-lost') versions.data++;
       failure = { kind: 'setup-lost', code: result.health.diagnostics.join(',') || 'not-ready', message: 'The progress service reports that it is not set up.' };
       schedule();
@@ -929,7 +953,10 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), 'inbox' in result ? result.inbox : undefined)) versions.data++;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
-      if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
+      if (sig !== readSig || failure) {
+        readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++;
+        retirePendingTidy(health);
+      }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
       refreshDetails(generation);
@@ -949,6 +976,11 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else {
       if (!failure || failure.kind !== result.failure.kind) versions.data++;
       failure = result.failure;
+      // The health reply read before the failure still says what the service offers: the page learns a loss too.
+      if (result.health) {
+        if (result.health.planCleanup !== 1 && health?.planCleanup === 1) { const { planCleanup: _lost, planCleanupActive: _active, ...kept } = health; health = kept; versions.data++; }
+        retirePendingTidy(result.health);
+      }
     }
     schedule();
     plan(failure ? RETRY_MS : REFRESH_MS);
@@ -965,32 +997,120 @@ export function startView<U>(spec: ViewSpec<U>) {
   const cleanupContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, session?.id ?? null, directory, scopeKey(currentScope())]);
   // Board bulk actions follow its own filters, not host-session notifications.
   const tidyContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface === 'page' ? null : session?.id ?? null, scopeKey(currentScope()), spec.tidyScope?.(context())]);
-  function requestTidy() {
+  /** A captured target as a plan to re-validate: identity, revision and the placement facts the per-target check needs. */
+  const remainingPlan = (t: CleanupTarget, vc: ViewContext<U>): CleanupPlan => ({
+    key: t.key, title: t.title, lifecycle: t.lifecycle, sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,
+    ...(t.where ? { ownerSessionId: t.where.owner, directory: t.where.directory } : {}),
+    ...(spec.tidyArchived?.(vc) ? { cleanup: { state: 'archived' as const, revision: t.request.cleanupRev } } : {}),
+  });
+  /**
+   * `remaining`: Try again after a stopped or partial run recounts only those plans (current revision and
+   * eligibility, the scope displayed now), never the whole scope or plans that began matching since.
+   */
+  function requestTidy(remaining?: CleanupTarget[]) {
     if (cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
-    const confirmation = tidyConfirmation(spec.tidyPlans?.(context()) ?? [], read.storeId, tidyContext());
-    if (!confirmation.targets.length) return;
-    cleanup = { ...initialCleanup(), tidy: { context: confirmation.context, confirmation } };
+    cleanup.tidy?.scan?.cancel();
+    // A shown result no longer pins the scope: this request is bound to the scope displayed now.
+    if (cleanup.tidy?.result) cleanup = initialCleanup();
+    const vc = context(), key = tidyContext();
+    const keys = remaining && new Set(remaining.map(t => t.key));
+    const scan = (keys
+      ? spec.tidyScan?.(vc, key, p => keys.has(p.key), false, remaining!.map(t => remainingPlan(t, vc)))
+      : spec.tidyScan?.(vc, key)) ?? undefined;
+    const listed = (spec.tidyPlans?.(vc) ?? []).filter(p => !keys || keys.has(p.key));
+    const confirmation = scan ? undefined : { ...tidyConfirmation(listed, read.storeId, key, spec.tidyArchived?.(vc)), matching: spec.tidyMatching?.(vc) };
+    cleanup = { ...initialCleanup(), tidy: { context: key, confirmation, scan, ...(remaining ? { recount: remaining } : {}) } };
     cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
+    if (scan) void moreTidy();
+  }
+  function requestSelection(action: 'archive' | 'restore' | 'delete', selection: SelectionRequest) {
+    if (spec.surface !== 'page' || cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
+    const vc = context();
+    if (selection.scope !== undefined && spec.selectionScope?.(vc) !== selection.scope) return;
+    cleanup.tidy?.scan?.cancel();
+    if (cleanup.tidy?.result) cleanup = initialCleanup();
+    const key = tidyContext();
+    // A named selection validates its own plans; only Select all walks the scope.
+    const scan = spec.tidyScan?.(vc, key, selection.includes, action === 'restore' || health.planCleanupActive === 1, selection.all ? undefined : selection.plans) ?? undefined;
+    const latest = new Map(read.plans.map(p => [p.key, p]));
+    // A complete list is the displayed one: a plan that has since moved out of scope is not offered.
+    const shown = spec.tidyPlans ? new Set(spec.tidyPlans(vc).map(p => p.key)) : null;
+    const confirmation = scan ? undefined : selectionConfirmation(selection.plans.filter(p => latest.has(p.key) && (!shown || shown.has(p.key))).map(p => latest.get(p.key)!), read.storeId, key,
+      !!spec.tidyArchived?.(vc), action, health.planCleanupActive === 1);
+    cleanup = { ...initialCleanup(), tidy: { context: key, selection: action, selectionRequest: selection, opener: `selection-${action}`, confirmation, scan } };
+    cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
+    if (scan) void moreTidy();
+  }
+  async function moreTidy() {
+    const state = cleanup.tidy;
+    if (!state?.scan || state.counting || cleanupBusy) return;
+    const current = () => !disposed && cleanup.tidy === state && state.context === tidyContext();
+    state.counting = true; state.confirmation = undefined; versions.ui++; schedule();
+    try {
+      const confirmation = await state.scan.more(current);
+      if (!current()) return;
+      if (confirmation) state.confirmation = state.selection ? selectionTargets(confirmation, state.selection, health?.planCleanupActive === 1) : confirmation;
+    } catch {
+      if (!current()) return;
+      state.scan.cancel(); state.countFailed = true;
+    } finally {
+      if (current()) {
+        state.counting = false;
+        // Cancel took focus when the panel opened; keep it only if the panel still owns focus or lost it.
+        const at = document.activeElement;
+        if (!at || at === document.body || at.closest('[data-testid="tidy-actions"]')) cleanupFocus = 'tidy-cancel';
+        versions.ui++; schedule();
+      }
+    }
   }
   function cancelTidy() {
     if (cleanupBusy) return;
-    cleanup = initialCleanup(); cleanupFocus = 'more-trigger'; versions.ui++; schedule();
+    cleanup.tidy?.scan?.cancel();
+    cleanupFocus = cleanup.tidy?.opener ?? 'tidy-open'; cleanup = initialCleanup(); versions.ui++; schedule();
   }
-  async function executeTidy(undo: boolean) {
+  let tidyStopped = false;
+  function deleteTidy() {
+    const state = cleanup.tidy;
+    if (cleanupBusy || !state?.confirmation || state.context !== tidyContext()) return;
+    state.confirmation = { ...state.confirmation, deleting: true };
+    cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
+  }
+  async function executeTidy(undo: boolean, deleting = false) {
     const state = cleanup.tidy;
     if (cleanupBusy || !state || state.context !== tidyContext() || failure || health?.planCleanup !== 1) return;
+    if (undo && state.result?.action !== 'archive' && state.result?.action !== 'restore') return;
     const targets = undo ? state.result?.action === 'archive' ? state.result.succeeded : state.result?.remaining ?? [] : state.confirmation?.targets ?? [];
     if (!targets.length) return;
-    const current = () => !disposed && cleanup.tidy === state && state.context === tidyContext() && health?.planCleanup === 1;
+    if (!undo && (deleting !== !!state.confirmation?.deleting || !deleting && state.confirmation?.archived && !state.selection)) return;
+    const action = undo ? 'restore' : deleting ? 'delete' : state.selection === 'restore' ? 'restore' : 'archive';
+    const deleted = new Map<string, CheckpointIdentity>();
+    if (action === 'delete' && read) for (const target of targets) {
+      deleted.set(target.key, digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }));
+    }
+    tidyStopped = false;
+    const current = () => !tidyStopped && !disposed && cleanup.tidy === state && state.context === tidyContext() && health?.planCleanup === 1;
+    state.scan?.cancel(); state.confirmation = undefined;
+    state.progress = { action, done: 0, total: targets.length };
+    cleanupFocus = 'tidy-stop';
     cleanupBusy = true; cleanup = { ...cleanup, pending: true }; versions.ui++; gate.retire(); schedule();
-    const result = await runTidy(host, undo ? 'restore' : 'archive', targets, current);
+    const result = await runTidy(guardedHost(current), action, targets, current, (done, total, confirmed) => {
+      const checkpoint = confirmed && deleted.get(confirmed.key);
+      if (checkpoint) { if (digests) digests.forget(checkpoint); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(checkpoint); }
+      if (cleanup.tidy === state && state.context === tidyContext()) { state.progress = { action, done, total }; versions.ui++; schedule(); }
+    }, !!state.selection && (action === 'restore' || health?.planCleanupActive === 1) || undo,
+    // Undo restores exactly the receipts; everything else must still be in the displayed scope when sent.
+    undo || !spec.tidyMember ? undefined : t => spec.tidyMember!(context(), t));
     cleanupBusy = false;
     if (disposed) return;
     const same = cleanup.tidy === state && state.context === tidyContext();
+    if (same && document.activeElement?.closest('[data-testid="tidy-stop"]')) cleanupFocus = 'tidy-open';
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
-    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)));
+    const receipts = new Set(result.succeeded.map(t => t.key));
+    // Undo of an archive puts plans back in view; every other successful receipt takes them out.
+    const back = undo && (state.result?.action === 'archive' || !!state.result?.returned);
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined);
     read = null; readScope = ''; readSig = ''; failure = null;
-    cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result } : undefined };
+    cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result: back ? { ...result, returned: true } : result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
     tidyReconcile = same;
     versions.ui++; versions.data++; schedule(); retry();
   }
@@ -1003,6 +1123,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
   function requestDelete(plan: PlanView) {
     if (cleanupBusy || !read || !cleanupEligible('delete', plan)) return;
+    if (!cleanupClosed(plan) && health?.planCleanupActive !== 1) return;
     const target = cleanupTarget(plan, read.storeId, cleanupContext());
     if (!validTarget(target)) return;
     cleanup = { ...initialCleanup(), target }; cleanupFocus = 'cleanup-cancel'; versions.ui++; schedule();
@@ -1015,7 +1136,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     const actionIntegrationAccount = ctx?.connection?.account;
     const deleted = action === 'delete' && read ? digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }) : null;
     cleanupBusy = true; cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
-    const result = await cleanupCall(host, action, target.request);
+    const result = await cleanupCall(host, action, { ...target.request,
+      ...(!cleanupClosed(target) && action === 'delete' && health?.planCleanupActive === 1 ? { active: true as const } : {}) });
     cleanupBusy = false;
     // A confirmed deletion is authoritative for its captured context: retire its review markers.
     if (result.ok && deleted) { if (digests) digests.forget(deleted); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(deleted); }
@@ -1026,7 +1148,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const sameContext = target.context === cleanupContext();
     // Also reconcile ambiguous failures. Never replay an action automatically or retain
     // pre-action data as a fresh success; every part/list reply from before this is retired.
-    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]));
+    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]), new Set(result.ok ? [target.key] : []));
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
@@ -1207,6 +1329,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const actionContext = cleanupContext();
     const confirmation = cleanup.target;
     const tidyState = cleanup.tidy;
+    const tidyConfirm = tidyState?.confirmation;
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
@@ -1297,9 +1420,29 @@ export function startView<U>(spec: ViewSpec<U>) {
       cleanup,
       tidyPlans: () => spec.tidyPlans?.(context()) ?? [],
       requestTidy: () => { if (actionContext === cleanupContext()) requestTidy(); },
+      retryTidy: () => {
+        if (actionContext !== cleanupContext()) return;
+        if (tidyState?.selection && tidyState.selectionRequest) {
+          const remaining = tidyState.result?.remaining;
+          const keys = new Set(remaining?.map(t => t.key));
+          // Only the captured remaining plans, under the scope displayed now (each is re-checked when sent).
+          const selection = remaining ? {
+            scope: spec.selectionScope?.(context()),
+            all: false, includes: (p: CleanupPlan) => keys.has(p.key),
+            plans: remaining.map(t => remainingPlan(t, context())),
+          } : tidyState.selectionRequest;
+          requestSelection(tidyState.selection, selection);
+        }
+        else requestTidy(tidyState?.result?.remaining.length ? tidyState.result.remaining : tidyState?.recount);
+      },
+      requestSelection: (action, selection) => { if (actionContext === cleanupContext()) requestSelection(action, selection); },
       cancelTidy: () => { if (tidyState === cleanup.tidy) cancelTidy(); },
-      confirmTidy: () => { if (tidyState === cleanup.tidy) void executeTidy(false); },
+      confirmTidy: () => { if (tidyState === cleanup.tidy && tidyConfirm && tidyConfirm === cleanup.tidy?.confirmation) void executeTidy(false); },
       undoTidy: () => { if (tidyState === cleanup.tidy) void executeTidy(true); },
+      moreTidy: () => { if (tidyState === cleanup.tidy) void moreTidy(); },
+      deleteTidy: () => { if (tidyState === cleanup.tidy && tidyConfirm && tidyConfirm === cleanup.tidy?.confirmation) deleteTidy(); },
+      confirmTidyDelete: () => { if (tidyState === cleanup.tidy && tidyConfirm && tidyConfirm === cleanup.tidy?.confirmation) void executeTidy(false, true); },
+      stopTidy: () => { if (tidyState === cleanup.tidy) tidyStopped = true; },
       requestDelete: (plan) => { if (actionContext === cleanupContext()) requestDelete(plan); },
       cancelCleanup: () => { if (confirmation === cleanup.target) cancelCleanup(); },
       // A retired button must never confirm a newer dialog's target.
@@ -1423,7 +1566,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       vc.reading = readingView();
     }
 
-    const root = el('main', 'ap');
+    let root = el('main', 'ap');
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
@@ -1461,18 +1604,25 @@ export function startView<U>(spec: ViewSpec<U>) {
       const v = values.get(n.dataset.keep!);
       if (v !== undefined && n.value !== v && !n.dataset.fixed) n.value = v;
     }
-    if ((spec.preserveFocus || sameReading) && 'moveBefore' in root && typeof root.moveBefore === 'function') {
+    // Disclosure handles belong to this logical paint even if a view keeps the
+    // physical root and moves the new regions into it.
+    const infoRoot = root;
+    const nativeMoves = 'moveBefore' in root && typeof root.moveBefore === 'function';
+    if (spec.reconcilePaint || ((spec.preserveFocus || sameReading) && nativeMoves)) {
       // State-preserving moves require connected source AND destination. Connect the
       // new tree before removing the old one; no frame is displayed between these steps.
       const previous = mount!.firstElementChild as HTMLElement | null;
       mount!.append(root);
       if (previous) {
-        spec.preserveFocus?.(previous, root);
-        if (sameReading && complete) preserveFocusedTaskRow(previous, root);
+        if (nativeMoves) {
+          spec.preserveFocus?.(previous, root);
+          if (sameReading && complete) preserveFocusedTaskRow(previous, root);
+        }
+        root = spec.reconcilePaint?.(previous, root) ?? root;
       }
       for (const child of [...mount!.children]) if (child !== root) child.remove();
     } else mount!.replaceChildren(root);
-    commitInfoPaint(root);
+    commitInfoPaint(infoRoot);
     alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
       const top = scrolls.get(n.dataset.scrollKey!);
@@ -1531,7 +1681,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (cleanupFocus) {
       const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
       const target = owner?.querySelector<HTMLElement>('button') ?? owner;
-      if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
+      // Never pull focus out of the host or a sibling frame; that request is dropped, not kept for a later paint.
+      if (!(document.hasFocus?.() ?? true)) cleanupFocus = null;
+      else if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
     }
     const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');

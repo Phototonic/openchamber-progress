@@ -120,7 +120,7 @@ export interface DependencyMapView {
  * zoom-out,zoom-level,fit-all,focus-current,pan-left,pan-right,pan-up,pan-down}; one per-frame
  * map-announcer outside the root; plan-view, plan-view-{list,map}. Attribution (S4): card
  * data-{attribution,live}, map-card-who-ID, map-card-live-ID; inspector map-attribution
- * data-{assignment,live} with map-attribution-{assignment,links,reports,live}; map-attribution-help.
+ * data-{assignment,live} with map-attribution-live, present only for proven session activity.
  * Wide board: map-inspector data-placement="over" (hidden without a selection) and map-inspector-close.
  * No data-reading article.
  * These describe semantic facts, not styling or incidental DOM nesting.
@@ -145,9 +145,9 @@ const EN = {
   openingHint: (tasks: string) => `Fit shows all ${tasks}.`,
   stateCounts: (p: string, w: string, b: string, d: string, s: string) => `${p} not started, ${w} in progress, ${b} blocked, ${d} done, ${s} skipped`,
   panHelp: '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.',
-  touchHelp: 'Touch: tap a card to select it, tap the background to clear the selection, drag with one finger to move the map and pinch with two to zoom. Zoom and Fit are also buttons; keyboard navigation and List are alternatives to dragging.',
+  touchHelp: 'Touch: tap to select · background to clear · drag to pan · pinch to zoom.',
   panelHelp: 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.',
-  arrowKey: 'Arrow key. Blue beads: the prerequisite is reported working and the task it points to is still waiting or blocked. Moving beads are a looping sign of reported work, not progress and not proof that the work is happening now; still beads mean the same (they stop when motion is reduced, on large or zoomed-out maps, and outside a selected task’s chain). A bar before the arrowhead: the prerequisite is explicitly blocked. Dashed: the prerequisite was skipped. Faint: the prerequisite is done. Beads and bars appear only on an active plan’s current picture.',
+  arrowKey: 'Beads: work in progress as reported, not progress made. Bar: blocked · Dashed: skipped · Faint: done.',
   blockedSelection: ' An explicitly blocked task is never shown as ready, whatever its prerequisites.',
   verifiedActivity: 'Session activity is shown only for a verified assignment.',
   mapDescription: 'Use arrow keys to navigate cards. Open Help and filters for all map keys.',
@@ -170,7 +170,7 @@ const EN = {
   groupsOnly: 'No task cards. This plan records only groups; their context is listed below. ', noTasksYet: 'No task cards. This plan has no recorded tasks yet. ',
   noPrerequisites: 'No prerequisites recorded for this plan', listOrder: '. Cards are placed in list order, without arrows.',
   noTaskPrerequisites: 'No task-to-task prerequisites recorded', groupArrows: '. Group prerequisites are listed as group context, never drawn as arrows.',
-  arrows: 'Must finish first: arrows point from an earlier task to the task that needs it; they are not a schedule or proof that work ran.',
+  arrows: 'Must finish first →',
   filters: 'Map filters', showTasks: 'Show tasks', all: 'Show all', unfinished: 'Unfinished', allGroups: 'All groups', noGroup: 'No group recorded', groupGone: 'Chosen group is no longer recorded', group: 'Group',
   filtered: (visible: string, tasks: string, _hidden: string, _arrows: string) => `Showing ${visible} of ${tasks}.`,
   allShown: (tasks: string, _arrows: string) => `Showing all ${tasks}.`,
@@ -187,7 +187,7 @@ const EN = {
   unlockHelp: (titles: string) => `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${titles}. That is not permission to start them.`,
   groupContext: 'Group context', groupHelp: (title: string, deps: string) => `Group “${title}” records its own prerequisites: ${deps}. These belong to the group, not to this task.`,
   hiddenHelp: (n: string) => `${n} hidden by the current filters. Choosing one shows it again.`,
-  keys: 'Keys in the map: ', arrowKeys: 'Arrow keys', nearest: ' nearest card · ', firstPrerequisite: ' first prerequisite · ', firstDependent: ' first dependent · ', fitKey: ' fit all · ', zoomKey: ' zoom', drag: '. Drag the background or scroll to pan; Tab leaves the map.',
+  keys: 'Arrow keys: move · [ / ] links · Esc clear · F fit · + / − zoom',
   selectionHelp: 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).',
   readinessHelp: 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.',
   attributionHelp: 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.',
@@ -212,9 +212,9 @@ const RU: typeof EN = {
   openingHint: tasks => `Вместить всё: ${tasks}.`,
   stateCounts: (p, w, b, d, s) => `Не начато: ${p}; в работе: ${w}; заблокировано: ${b}; выполнено: ${d}; пропущено: ${s}`,
   panHelp: '. Нажмите на фон, чтобы снять выбор; перетаскивайте или прокручивайте для сдвига. Tab выводит с карты.',
-  touchHelp: 'Касание: коснитесь карточки, чтобы выбрать её, коснитесь фона, чтобы снять выбор, ведите одним пальцем, чтобы сдвинуть карту, и сводите или разводите два пальца для масштаба. Масштаб и вся карта доступны кнопками; вместо перетаскивания можно пользоваться клавишами или списком.',
+  touchHelp: 'Касание: карточка — выбор · фон — сброс · сдвиг пальцем · масштаб щипком.',
   panelHelp: 'Выберите карточку, чтобы увидеть записанные зависимости, зависимые задачи и сообщённые сведения в панели справа на карте. Закройте панель, нажмите Escape или на фон, чтобы снять выбор.',
-  arrowKey: 'Обозначения стрелок. Синие точки: по отчёту зависимость в работе, а задача, на которую указывает стрелка, ещё ожидает или заблокирована. Движение точек — циклический знак сообщённой работы, а не прогресс или доказательство работы прямо сейчас; неподвижные точки означают то же самое (движение останавливается при уменьшении анимации, на больших или отдалённых картах и вне цепочки выбранной задачи). Черта перед наконечником: зависимость явно заблокирована. Пунктир: зависимость пропущена. Бледная стрелка: зависимость выполнена. Точки и черты появляются только на текущей картине активного плана.',
+  arrowKey: 'Точки: работа по отчёту, не достигнутый прогресс. Черта: заблокировано · Пунктир: пропущено · Бледная: выполнено.',
   blockedSelection: ' Явно заблокированная задача никогда не показывается готовой независимо от зависимостей.',
   verifiedActivity: 'Активность сессии показана только при подтверждённом назначении.',
   mapDescription: 'Перемещайтесь между карточками клавишами стрелок. Все клавиши перечислены в справке и фильтрах.',
@@ -237,7 +237,7 @@ const RU: typeof EN = {
   groupsOnly: 'Нет карточек задач. В плане записаны только группы; их контекст указан ниже. ', noTasksYet: 'Нет карточек задач. В плане пока не записаны задачи. ',
   noPrerequisites: 'Для этого плана не записаны зависимости', listOrder: '. Карточки расположены в порядке списка, без стрелок.',
   noTaskPrerequisites: 'Зависимости между задачами не записаны', groupArrows: '. Зависимости групп указаны как контекст групп и никогда не рисуются стрелками.',
-  arrows: 'Должна завершиться раньше: стрелка идёт от предыдущей задачи к той, которой она нужна; это не расписание и не доказательство выполнения работы.',
+  arrows: 'Должна завершиться раньше →',
   filters: 'Фильтры карты', showTasks: 'Показать задачи', all: 'Все', unfinished: 'Незавершённые', allGroups: 'Все группы', noGroup: 'Группа не записана', groupGone: 'Выбранная группа больше не записана', group: 'Группа',
   filtered: (visible, tasks, _hidden, _arrows) => `Показано ${visible} из ${tasks}.`,
   allShown: (tasks, _arrows) => `Показаны все: ${tasks}.`,
@@ -254,7 +254,7 @@ const RU: typeof EN = {
   unlockHelp: titles => `Если сообщить о выполнении, это закроет последнюю незавершённую записанную зависимость для: ${titles}. Это не разрешение начинать их.`,
   groupContext: 'Контекст групп', groupHelp: (title, deps) => `Группа «${title}» записывает собственные зависимости: ${deps}. Они относятся к группе, а не к этой задаче.`,
   hiddenHelp: n => `Текущими фильтрами скрыто: ${n}. Выбор задачи снова покажет её.`,
-  keys: 'Клавиши на карте: ', arrowKeys: 'Стрелки', nearest: ' ближайшая карточка · ', firstPrerequisite: ' первая зависимость · ', firstDependent: ' первая зависимая задача · ', fitKey: ' вместить всё · ', zoomKey: ' масштаб', drag: '. Перетаскивайте фон или прокручивайте для сдвига; Tab выводит с карты.',
+  keys: 'Стрелки: переход · [ / ] связи · Esc сброс · F всё · + / − масштаб',
   selectionHelp: 'При выборе карточки задачи, которых она ожидает, помечаются как предшествующие (сплошной контур), а ожидающие её — как последующие (двойной контур).',
   readinessHelp: 'Готова: о выполнении каждой записанной зависимости сообщено. Открывает далее: отчёт о выполнении карточки закроет последнюю незавершённую записанную зависимость другой задачи.',
   attributionHelp: 'Назначено: подтверждённое делегирование для этой редакции. Непроверенный исполнитель: записан, но без подтверждённого делегирования. Связь с сессией: не назначение. Квадрат перед именем назначенной сессии: по записям запусков этого представления сессия сейчас активна (закрашен) или ожидает ввода (контур). Это не показывает, над какой задачей работает сессия.',
@@ -273,7 +273,7 @@ const RU: typeof EN = {
   },
 };
 const ZH: typeof EN = {
-  touchHelp: '触控：轻点卡片可选中任务，轻点背景可清除选择；单指拖动可平移，双指捏合可缩放。也可使用缩放和全部适配按钮；键盘导航和列表可替代拖动。',
+  touchHelp: '触控：轻点选中，轻点背景清除，单指平移，双指缩放。',
   planView: '计划视图', list: '列表', map: '依赖图', under: '低于 1%', viewList: '查看列表', retry: '重试', heading: '依赖图',
   closeDetails: '关闭任务详情', helpTitle: '依赖图帮助和筛选', clearKey: ' 清除选择 · ',
   needsYou: '需要你处理', clearFilters: '清除', openSession: '打开会话',
@@ -281,7 +281,7 @@ const ZH: typeof EN = {
   stateCounts: (p, w, b, d, s) => `未开始 ${p}，进行中 ${w}，受阻 ${b}，已完成 ${d}，已跳过 ${s}`,
   panHelp: '。点击背景可清除选择；拖动背景或滚动可平移。Tab 离开依赖图。',
   panelHelp: '选择卡片，可在依赖图右侧面板查看其已记录的前置任务、后续任务和报告详情。关闭面板、按 Escape 或点击背景可清除选择。',
-  arrowKey: '箭头图例。蓝色圆点：前置任务报告为进行中，而箭头指向的任务仍在等待或受阻。移动的圆点循环表示报告中的工作状态，不代表进度，也不能证明工作正在执行；静止圆点含义相同（减少动态效果、大型或缩小的依赖图上，以及所选任务关联链之外会停止移动）。箭头前的横杠：前置任务明确报告为受阻。虚线：前置任务已跳过。淡色：前置任务已完成。圆点和横杠仅显示在活动计划的当前依赖图上。',
+  arrowKey: '圆点：报告中的进行状态，不代表实际进度。横杠：受阻 · 虚线：已跳过 · 淡色：已完成。',
   blockedSelection: ' 明确报告为受阻的任务，无论前置任务如何，都不会显示为已就绪。',
   verifiedActivity: '仅对已验证的分配显示会话活动。',
   mapDescription: '使用方向键浏览卡片。打开帮助和筛选可查看全部按键。',
@@ -304,7 +304,7 @@ const ZH: typeof EN = {
   groupsOnly: '没有任务卡片。此计划仅记录了分组；其背景信息列于下方。 ', noTasksYet: '没有任务卡片。此计划尚未记录任务。 ',
   noPrerequisites: '此计划未记录前置任务', listOrder: '。卡片按列表顺序排列，没有箭头。',
   noTaskPrerequisites: '未记录任务之间的前置任务', groupArrows: '。分组前置任务列为分组背景信息，不绘制为箭头。',
-  arrows: '必须先完成：箭头从前置任务指向需要它的任务，这不是日程，也不能证明工作已执行。',
+  arrows: '必须先完成 →',
   filters: '依赖图筛选', showTasks: '显示任务', all: '显示全部', unfinished: '未完成', allGroups: '所有分组', noGroup: '未记录分组', groupGone: '所选分组已无记录', group: '分组',
   filtered: (visible, tasks, _hidden, _arrows) => `显示 ${tasks} 中的 ${visible}。`,
   allShown: (tasks, _arrows) => `显示全部 ${tasks}。`,
@@ -321,7 +321,7 @@ const ZH: typeof EN = {
   unlockHelp: titles => `若报告为已完成，将满足以下任务最后一个未完成的已记录前置任务：${titles}。这不是开始这些任务的许可。`,
   groupContext: '分组背景', groupHelp: (title, deps) => `分组“${title}”记录了自身的前置任务：${deps}。这些属于分组，而非此任务。`,
   hiddenHelp: n => `当前筛选条件隐藏了 ${n}。选择其中一个可重新显示。`,
-  keys: '依赖图中的按键：', arrowKeys: '方向键', nearest: ' 最近的卡片 · ', firstPrerequisite: ' 第一个前置任务 · ', firstDependent: ' 第一个后续任务 · ', fitKey: ' 全部适配 · ', zoomKey: ' 缩放', drag: '。拖动背景或滚动可平移；Tab 离开依赖图。',
+  keys: '方向键移动 · [ / ] 关联 · Esc 清除 · F 全图 · + / − 缩放',
   selectionHelp: '选择卡片后，它等待的任务标为上游（实线边框），等待它的任务标为下游（双线边框）。',
   readinessHelp: '已就绪：所有已记录的前置任务均报告为已完成。接下来可解锁：若某卡片报告为已完成，将满足另一任务最后一个未完成的已记录前置任务。',
   attributionHelp: '已分配给：此修订中已验证的委派。未验证的受派人：已有记录，但没有已验证的委派。关联至：会话链接，不是分配。受派会话名称前的方块表示此视图的运行记录显示该会话当前活跃（实心）或等待输入（空心）。这不说明会话正在处理哪个任务。',
@@ -447,7 +447,7 @@ type Status = ItemView['status'];
 /** `working`: beads; `blocked`: static stop bar; null: the arrow keeps its existing style. */
 export type ArrowCue = 'working' | 'blocked' | null;
 export function arrowCue(prerequisite: Status | undefined, dependent: Status | undefined): ArrowCue {
-  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'blocked' ? 'working' : null;
+  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'working' : null;
   if (prerequisite === 'blocked') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'blocked' : null;
   return null;
 }
@@ -960,7 +960,14 @@ export function createDependencyMapView(): DependencyMapView {
     const helpId = `${uid}-help`;
     let world: HTMLElement | null = null;
     let toolbar: HTMLElement | null = null;
-    if (layout && b) viewport.style.height = `min(${layout.order.length ? Math.ceil(layout.height * (v.coarse ? 1 : MAP_ZOOM.readable) + 32) : 180}px, ${v.frame === 'rail' || v.coarse ? '300px' : '64vh'})`;
+    if (layout && b) {
+      const content = layout.order.length ? Math.ceil(layout.height * (v.coarse ? 1 : MAP_ZOOM.readable) + 32) : 180;
+      // The rail has a host-sized viewport (only Work Status requests height sync).
+      // CSS clamp's minimum wins even when 60vh is below 320px on a short rail.
+      viewport.style.height = v.frame === 'rail' && !v.coarse
+        ? `clamp(320px, ${content}px, 60vh)`
+        : `min(${content}px, ${v.coarse ? '300px' : '64vh'})`;
+    }
     if (b) {
       viewport.dataset.interactive = '';
       viewport.setAttribute('aria-describedby', helpId);
@@ -984,8 +991,9 @@ export function createDependencyMapView(): DependencyMapView {
       zoomNode.setAttribute('aria-label', c.zoom(zoomText(t0.zoom, language)));
       zoomSet.append(tool('map-zoom-out', 'zoom-out', c.zoomOut, () => zoomBy(1 / MAP_ZOOM.step)), tool('map-zoom-in', 'zoom-in', c.zoomIn, () => zoomBy(MAP_ZOOM.step)));
       const fit = tool('map-fit-all', 'fit', c.fit, () => binding()?.dispatch({ type: 'fit' }));
+      const current = tool('map-focus-current', 'current', c.current, () => binding()?.dispatch({ type: 'current' }));
       if (v.viewSwitch) toolbar.append(v.viewSwitch);
-      toolbar.append(zoomSet, fit, zoomNode);
+      toolbar.append(zoomSet, fit, current, zoomNode);
       stage.append(toolbar);
 
       // Keys only while the canvas (a card or the empty target) owns focus; never modified/browser keys.
@@ -1184,7 +1192,7 @@ export function createDependencyMapView(): DependencyMapView {
           const text = el('span', 'ap-map-card-who-text');
           // Session activity: a small square (status marks are round) placed on the assigned SESSION's
           // name, never beside the task's status words. Inline in this fixed line, so it moves nothing
-          // else; its words are in the card's name, the inspector and the map help.
+          // else; its words are in the card's name and the inspector.
           if (who.live && who.session) {
             const live = testid(el('span', 'ap-map-live-mark'), `map-card-live-${id}`);
             live.dataset.live = who.live.kind; live.setAttribute('aria-hidden', 'true');
@@ -1257,7 +1265,7 @@ export function createDependencyMapView(): DependencyMapView {
     if (panel) {
       inspector.dataset.placement = 'over';
       inspector.style.width = `${panel}px`;
-      // Shown only with a selection: no empty panel (the hint lives in the map help instead).
+      // Shown only with a selection: no empty panel.
       if (!selected) inspector.hidden = true;
       else {
         // A focusable, labelled region so long content scrolls by keyboard; never modal.
@@ -1395,27 +1403,11 @@ export function createDependencyMapView(): DependencyMapView {
     help.append(summaryHelp);
     const helpBody = el('div', 'ap-map-help-body');
     if (b) {
-      const keys = el('p', 'ap-map-keys');
-      const k = (text: string) => el('kbd', '', text);
-      const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-      keys.append(el('strong', '', c.keys), k(c.arrowKeys), c.nearest, k('['), c.firstPrerequisite, k(']'), c.firstDependent, k('Escape'), c.clearKey, k('F'), c.fitKey, nowrap(k('+'), ' ', k('−'), c.zoomKey), c.panHelp);
-      helpBody.append(keys);
+      helpBody.append(el('p', 'ap-map-keys', c.keys));
       if (v.coarse) helpBody.append(testid(el('p', '', c.touchHelp), 'map-touch-help'));
-      if (panel) helpBody.append(el('p', '', c.panelHelp));
     }
     helpBody.append(controls, el('p', '', c.arrows));
-    helpBody.append(el('p', '', c.select));
     helpBody.append(testid(el('p', '', c.arrowKey), 'map-arrow-key'));
-    helpBody.append(el('p', '', `${c.guidance} ${c.readinessHelp}`));
-    helpBody.append(el('p', '', c.selectionHelp + c.blockedSelection));
-    if (selected && highlight && ((upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0))) helpBody.append(el('p', 'ap-map-chain', c.chain(count(upstreamSet?.size ?? 0, 'upstream'), count(downstreamSet?.size ?? 0, 'downstream'))));
-    if (selected) {
-      const who = attributionOf(selected.id);
-      if (who.kind === 'assigned' && who.assignmentNote) helpBody.append(el('p', '', who.assignmentNote));
-      if (who.live) helpBody.append(el('p', '', ATTRIBUTION[language].hedge));
-      else if (who.activityNote === ATTRIBUTION[language].assignmentOnly) helpBody.append(el('p', '', c.verifiedActivity));
-    }
-    helpBody.append(testid(el('p', '', c.attributionHelp), 'map-attribution-help'));
     help.append(helpBody);
     // Do not collapse on pointerdown: the in-flow disclosure would move the pressed control
     // before pointerup. A click has a fixed target; for canceled/non-click gestures close after

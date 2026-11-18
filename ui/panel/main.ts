@@ -101,7 +101,6 @@ startView<Ui>({
     return vc.ui.presentation === presentation ? null : { presentation };
   },
   actionPlan: current,
-  tidyPlans: (vc) => vc.session?.id ? vc.read?.plans ?? [] : [],
   forgetPlans: (keys, ui, vc) => {
     selectionGeneration++;
     recentSelection.deleteWhere((key, session) => {

@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-18
+
+Full-page responsiveness with large libraries, visible Tidy and multi-select cleanup, and map and count fixes. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- Full-page Tidy archives or permanently deletes closed plans, including failed plans, matching the current search and filters. Identity scans include unloaded matches and stop at 2,000 plans or 40 request windows per explicit scan; Check more continues a stopped scan, and confirmations cover at most 1,000 targets. Runs use sequential revision- and generation-checked requests, Stop and receipt-bound archive Undo; the old More-menu bulk entry is removed (#148, #149).
+- Full-page multi-select supports individual rows and all matching plans, with Archive/Delete in Current plans and Restore/Delete in Archived plans. In-progress cleanup has a warning and requires `planCleanupActive:1`; selection changes retire confirmations, and scope changes, including changes to effective normalized location filters, clear selection (#149).
+- The service advertises `planCleanupActive:1` and accepts literal `active: true` only for in-progress Archive/Delete, with the acknowledgement included in request identity. Restore preserves lifecycle and refuses that field. Archived plans refuse all reports before receipt replay; archiving retires pending delegation intents atomically. A 1.5.0 service cannot restore archived in-progress plans; restore them before rollback if they must remain reportable (#144).
+
+### Changed
+
+- Full-page derivation uses frame-scoped session/project indexes, cached board scope and selection, on-demand filter options and one-pass Needs you row badges, without changing refresh routes or read budgets. In a synthetic 511-plan library, median cold selection fell from 6,010 ms to 188 ms and drag/wheel-pan p99 frame gaps from 1,000 ms to 16.8 ms (#147).
+- Desktop rail maps grow with content from 320 px up to 60% of rail height; coarse-pointer maps retain their 300 px cap. Focus current work returns beside Fit, and map help is shortened in English, Russian and Simplified Chinese (#146).
+- Companion inline and packaged guidance tells agents not to retry or recreate plans the user archived or deleted unless explicitly asked; ordinary continuation of agent-finished plans remains supported. Guidance is advisory and does not change tool validation (#143).
+- Tidy and Select all bind counts, confirmations and per-request checks to the effective board scope, including the fallback to All when a saved project or worktree filter has no loaded plans. A refresh that changes the displayed scope retires an open confirmation; a started run keeps its confirmed filters and rechecks each plan before sending. Losing cleanup support also retires confirmations; a finished result stays visible, but Undo needs that support. Browse scans place plans by recorded directory, and receipt-confirmed plans leave a selection. Counts read each later page one row early and fail rather than skip plans when offsets shift, or say plans may have been missed. In searched or truncated scopes on a service advertising `planTaskSearch`, explicitly chosen plans and Try again use `/v1/search-state` point lookups (at most 50 keys per request), while complete browse lists use loaded rows; more-match wording needs a confirmed further match (#155).
+- Map arrows from a working prerequisite into a working dependent show beads, with arrows into done or skipped tasks plain and all motion bounds unchanged. Focus current work with no target announces the Fit all overview (#158, #156).
+- Companion guidance tells agents to mark a working task blocked with a `dependency` blocker, or set it back to pending if none of its own work was done, when work moves back to its prerequisites; existing blockers are left alone and the task is cleared once those prerequisites are done again (#158). The reopen stop-reporting advice applies to `closed` and `not-found` only; `conflict` and `stage-incomplete` are recoverable (#154).
+- The `release-1-5-1` OpenSpec change records the proposal and ordered implementation tasks (#142).
+
+### Fixed
+
+- Full-page browse-list scroll containers and row listboxes survive background updates, preserving native scrollbar dragging (#147).
+- Zero counts no longer carry `+`; positive Needs you counts retain it only while that count may be incomplete, and unrelated history coverage no longer qualifies current sub-agent counts. Accessible names match visible counts (#145, #147). Board rows show an exact Needs you count only from a fresh read, and a truncated run traversal qualifies Running and Waiting separately from history-only gaps (#153).
+- Restoring an archived in-progress plan shows its retired delegation intents as `retired`/`closed` in `/v1/plan?delegationIntent=1` and coordinator guidance. Unlinked dispatch ignores archived plans when finding its visible active plan, and the companion refuses a report to an archived plan before asking for document read permission (#154).
+- The large-library gate and map QA driver check idle polling against the refresh cadence, count inbox reads in both request forms and follow the compact map help (#156).
+
 ## [1.5.0] - 2026-11-17
 
 Simple-by-default progress surfaces, session-scoped Needs you and source-only development builds. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -319,7 +346,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.3.0...v1.4.0

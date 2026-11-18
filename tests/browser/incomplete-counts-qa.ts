@@ -42,6 +42,12 @@ export async function verifyIncompleteCounts(h: Harness) {
   await reasons('panel', 'recording-gap');
   check('several reasons produce one neutral last indicator', await guest('panel', `const n=d.querySelector('${note}');return d.querySelectorAll('${note}').length===1&&n===d.querySelector('main').lastElementChild&&!n.querySelector('[data-tone="warning"],[data-icon="warning"]')&&!d.querySelector('[data-testid="subagent-coverage-cue"]')&&n.textContent.includes('Counts may be incomplete.')`));
   check('history gap qualifies completed counts', await guest('panel', `return d.querySelector('[data-kind="finished"]').textContent==='4+ finished'`));
+  // The new run revision retires loaded history rows. Reload those children before
+  // testing history-only qualification; otherwise current activity is genuinely incomplete.
+  if (await guest('panel', `return !d.querySelector('[data-testid="observed-more"]').open`)) await click('panel', '[data-testid="observed-more"] > summary');
+  await click('panel', '[data-testid="subagent-more"]');
+  await wait('panel', `!d.querySelector('${note}')?.dataset.reasons.includes('runs-not-loaded')`);
+  check('history gap leaves fully covered current activity exact', await guest('panel', `const parts=[...d.querySelectorAll('[data-kind="running"],[data-kind="waiting"]')];return parts.length>0&&parts.every(n=>!n.textContent.includes('+'))`));
   await guest('panel', `w.focus();d.querySelector('${toggle}').focus();return true`); await key('Enter');
   await wait('panel', `d.querySelector('${toggle}').getAttribute('aria-expanded')==='true'`);
   check('keyboard expansion keeps focus and names the recording gap', await guest('panel', `const t=d.querySelector('${toggle}');return d.activeElement===t&&!d.querySelector('${body}').hidden&&d.getElementById(t.getAttribute('aria-controls'))===d.querySelector('${body}')&&d.querySelector('${body}').textContent.includes('recording gap')`));
@@ -109,12 +115,13 @@ export async function verifyIncompleteCounts(h: Harness) {
   await wait('page', `d.querySelector('[data-testid="subagent-activity"]')`, 'board local plan');
   for (const [language, label] of [['en', 'Counts may be incomplete.'], ['ru', 'Числа могут быть неполными.'], ['zh-CN', '计数可能不完整。']]) {
     await evaluate(`qa.locale=${js(language)};qa.context('A');true`);
-    for (const surface of ['panel', 'page']) {
-      await show(surface, 390);
+    for (const surface of ['panel', 'page']) for (const width of [1100, 390]) {
+      await show(surface, width);
       await wait(surface, `d.querySelector('${toggle}')?.textContent===${js(label)}`);
       await open(surface);
       check(`${surface} ${language}: no horizontal overflow`, await guest(surface, `return d.documentElement.scrollWidth<=d.documentElement.clientWidth`));
-      await shot(surface, `indicator-${surface}-${language}`);
+      check(`${surface} ${language} ${width}: no zero-plus counts`, await guest(surface, `return !/\\b0\\+/.test(d.querySelector('[data-testid="subagent-activity"]')?.textContent??'')`));
+      await shot(surface, `indicator-${surface}-${language}-${width}`);
     }
   }
   await evaluate(`qa.dark();qa.lose();qa.context('A');true`);

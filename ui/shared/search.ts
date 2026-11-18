@@ -195,7 +195,7 @@ export function scopeAvailability(c: Pick<SearchCriteria, 'project' | 'worktree'
   const a = locationAvailability(c, live);
   return SEVERITY[Math.max(SEVERITY.indexOf(a.project), SEVERITY.indexOf(a.worktree))];
 }
-const inPlace = (c: SearchCriteria, plan: SearchPlanView, live: LiveSnapshot, bound: string | null) => {
+export const inPlace = (c: Pick<SearchCriteria, 'project' | 'worktree'>, plan: Pick<SearchPlanView, 'ownerSessionId' | 'directory' | 'sourceId'>, live: LiveSnapshot, bound: string | null) => {
   if (!narrowed(c)) return true;
   const place = placeOf(plan, live, bound);
   return (c.project === ALL || place.projectKey === c.project) && (c.worktree === ALL || place.worktreeKey === c.worktree);
@@ -454,6 +454,8 @@ export class SearchController {
     const current = () => !this.disposed && this.run === r && generation === this.freshness && this.host.visible();
     if (!r || !keys.length || !current()) return { state: 'retired' };
     const rows = [];
+    // The keys above belong to the page shown now; a reply is evidence for that page only.
+    const view = r.view;
     let captureEnabled = true;
     let firstInbox: InboxFirst | undefined;
     for (let i = 0; i < keys.length; i += STATE_KEYS) {
@@ -483,8 +485,9 @@ export class SearchController {
       }
     }
     // Repaint only on a change: an unchanged poll leaves the DOM (focus, scroll, selection) alone.
-    const checked = !r.checked && rows.length > 0;
-    if (rows.length) r.checked = true;
+    const covers = r.view === view;
+    const checked = covers && !r.checked && rows.length > 0;
+    if (covers && rows.length) r.checked = true;
     if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) }; }
     this.gate.retire();
     r.busy = false; r.pending = false; r.countsCurrent = false;

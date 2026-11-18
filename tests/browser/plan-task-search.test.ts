@@ -492,3 +492,20 @@ test('capture state must agree across freshness batches before any rows or metad
     assert.equal(c.view()!.page.checked, true);
   });
 });
+
+test('a freshness reply read for one page does not mark another page checked', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedSearchLibrary(b.f);
+    const { c } = controller(svc);
+    await run(c, b, { q: 'Dense match' });
+    c.more(); await done(c);
+    const release = svc.hold('/v1/search-state');
+    const reading = c.revalidate({ serviceRequest: svc.serviceRequest });
+    await until(() => svc.count('/v1/search-state') === 1, 'the batch for the newest page is sent');
+    c.showPage(-1);
+    assert.equal(c.view()!.page.checked, false);
+    release();
+    await reading; await settle();
+    assert.equal(c.view()!.page.checked, false, 'the reply was for the other page');
+  });
+});

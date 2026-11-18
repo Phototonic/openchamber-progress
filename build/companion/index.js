@@ -24888,7 +24888,7 @@ function readManagedBindingInner(env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.0";
+var RELEASE = "1.5.1";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -24996,15 +24996,16 @@ function parseCleanup(action, value3) {
   requireProgress(["archive", "restore", "delete"].includes(action));
   requireProgress(value3 && typeof value3 === "object" && !Array.isArray(value3));
   const r = value3;
-  const fields = ["storeId", "source", "plan", "rev", "cleanupRev", "oid", ...action === "delete" ? ["confirmed"] : []];
+  const fields = ["storeId", "source", "plan", "rev", "cleanupRev", "oid", ...action === "delete" ? ["confirmed"] : [], ...action !== "restore" ? ["active"] : []];
   requireProgress(Object.keys(r).every((k) => fields.includes(k)));
   requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && identifier2(r.oid));
   requireProgress(Number.isSafeInteger(r.rev) && r.rev > 0 && Number.isSafeInteger(r.cleanupRev) && r.cleanupRev >= 0 && r.cleanupRev < Number.MAX_SAFE_INTEGER);
   requireProgress(action !== "delete" || r.confirmed === true);
+  requireProgress(!Object.hasOwn(r, "active") || r.active === true);
   return r;
 }
 function requestHash(action, r) {
-  return createHash("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false])).digest("hex");
+  return createHash("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false, ...r.active === true ? [true] : []])).digest("hex");
 }
 function preflight(db, action, r, installed) {
   requireProgress(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id === r.storeId, "conflict");
@@ -25024,7 +25025,8 @@ function preflight(db, action, r, installed) {
     throw new ProgressError("corrupt");
   }
   requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
-  requireProgress(["finished", "cancelled", "failed"].includes(p.lifecycle), "closed");
+  const closed = ["finished", "cancelled", "failed"].includes(p.lifecycle);
+  requireProgress(action === "restore" ? p.lifecycle === "active" || closed : r.active === true ? p.lifecycle === "active" : closed, "closed");
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
@@ -25452,14 +25454,27 @@ class PendingDelegationError extends ProgressError {
     super("conflict");
   }
 }
+function retireCleanupIntent(db, source, plan) {
+  if (runStorageCompatibility(db) !== "absent")
+    db.prepare("DELETE FROM runs_intents WHERE source=? AND plan=?").run(source, plan);
+}
 function declareIntent(db, r, actor, validate3) {
   const c = runControl(db);
   requireProgress(c.enabled, "disabled");
   const payloadHash = hash2([r, actor.sourceId, actor.sessionId]);
+  const cleanup = cleanupInstalled(db) ? cleanupState(db, actor.sourceId, r.plan) : undefined;
+  requireProgress(cleanup?.state !== "deleted", "not-found");
+  requireProgress(cleanup?.state !== "archived", "closed");
   const old = db.prepare("SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
   if (old) {
     requireProgress(old.payload_hash === payloadHash, "operation-reused");
-    return JSON.parse(String(old.receipt));
+    const receipt = JSON.parse(String(old.receipt));
+    if (cleanup?.state === "visible" && ["pending", "reserved"].includes(receipt.delegation?.state)) {
+      const intent = activeIntent(db, actor.sourceId, actor.sessionId);
+      if (intent?.request.plan !== r.plan || intent.request.oid !== r.oid)
+        return { ...receipt, delegation: { ...receipt.delegation, state: "retired", reason: "closed", recovery: "redeclare-or-link" } };
+    }
+    return receipt;
   }
   validate3();
   const current = activeIntent(db, actor.sourceId, actor.sessionId);
@@ -25554,9 +25569,16 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       result3.complete = false;
       continue;
     }
-    if (cleanupInstalled(db) && ["archived", "deleted"].includes(String(cleanupState(db, sourceId, r.plan)?.state ?? "")))
+    const cleanup = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
+    if (["archived", "deleted"].includes(cleanup))
       continue;
-    if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
+    const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
+    if (orphaned && cleanup !== "visible") {
+      result3.complete = false;
+      continue;
+    }
+    const reason = orphaned ? "closed" : d.reason;
+    if (!orphaned && d.state !== "retired" || reason === "cancelled" || !a.taskIds.length)
       continue;
     const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes2);
     bytes2 += recovery.bytes;
@@ -25569,7 +25591,7 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     }
     const reasons = ["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget", "dispatch-unconfirmed", "binding", "disabled", "capture-disabled", "not-found", "storage", "corrupt", "schema", "busy"];
-    result3.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(d.reason) ? d.reason : "unverified", recovery: "redeclare-or-link" });
+    result3.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(reason) ? reason : "unverified", recovery: "redeclare-or-link" });
   }
   return result3;
 }
@@ -25676,10 +25698,10 @@ function handoff(db, r, actor, now3, epoch = observationEpoch(db)) {
   return { handoff: claim };
 }
 function associatedPlan(db, actor, at) {
-  const p = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active' AND
+  const visible = cleanupInstalled(db) ? " AND NOT EXISTS(SELECT 1 FROM cleanup_state c WHERE c.source=plans.source AND c.plan=plans.id AND c.state IN('archived','deleted'))" : "";
+  const eligible = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active'${visible} AND
     (json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=? AND json_array_length(json_extract(l.value,'$.itemIds'))>0)) LIMIT 3`).all(actor.sourceId, actor.sessionId, actor.sessionId);
-  const eligible = p.filter((r) => !cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(r.id))?.state)));
-  if (p.length >= 3)
+  if (eligible.length >= 3)
     return null;
   const incoming = db.prepare(`SELECT json_extract(payload,'$.planContext.plan') AS plan FROM runs_rows r WHERE source=? AND child=? AND terminal=0 AND json_extract(payload,'$.ran.state')='running' AND json_extract(payload,'$.planContext.plan') IS NOT NULL
     AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId, actor.sessionId);
@@ -27570,6 +27592,16 @@ class Store {
   delegationRefusals(sourceId, sessionId) {
     return this.transaction(false, () => delegationRefusals(this.db, this.readBinding, sourceId, sessionId));
   }
+  assertReportable(sourceId, plan2, handoff2 = false) {
+    if (handoff2)
+      requireProgress(this.readBinding.verified && this.readBinding.sourceId === sourceId, "source-unverified");
+    this.transaction(false, () => {
+      requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, sourceId, plan2) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      requireProgress(state?.state !== "archived", "closed");
+    });
+  }
   handoff(value3, actor, now3 = Date.now(), epoch, capture) {
     const r = parseReportRequest(value3);
     requireProgress(r.op === "handoff");
@@ -27917,8 +27949,14 @@ class Store {
   }
   cleanup(action, value3) {
     requireProgress(!this.readOnly, "storage");
+    const request3 = parseCleanup(action, value3);
     try {
-      return mutateCleanup(this.db, this.file, action, value3, (write, fn3) => this.transaction(write, fn3));
+      return mutateCleanup(this.db, this.file, action, request3, (write, fn3) => this.transaction(write, () => {
+        const result3 = fn3();
+        if (write && action === "archive" && request3.active === true)
+          retireCleanupIntent(this.db, request3.source, request3.plan);
+        return result3;
+      }));
     } catch (e) {
       throw storageError(e);
     }
@@ -29627,6 +29665,25 @@ async function setupCompanion(ctx, read, managed) {
             requireProgress(await initialize(), "binding");
             guard();
             const current = store;
+            const captureReport = async (reference2, directory, sourceId, plan2, handoff2, previous2) => {
+              let refusal;
+              const check2 = () => {
+                try {
+                  current.assertReportable(sourceId, plan2, handoff2);
+                } catch (e) {
+                  refusal = e;
+                  throw e;
+                }
+              };
+              const captured = await captureDocument(reference2, directory, async (resource) => {
+                check2();
+                await ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] });
+                check2();
+              }, previous2);
+              if (refusal)
+                throw refusal;
+              return captured;
+            };
             const observedAt = Date.now(), observedEpoch = r.op === "handoff" ? delegation.currentEpoch() : undefined;
             const actor = await identity4(caller.sessionID, caller.agent);
             guard();
@@ -29634,9 +29691,11 @@ async function setupCompanion(ctx, read, managed) {
               const child2 = actor;
               const previous2 = r.taskUpdate ? current.get(child2.sourceId, r.taskUpdate.plan) : undefined;
               const reference2 = previous2?.document.path;
-              const capture2 = reference2 ? await captureDocument(reference2, child2.directory, (resource) => ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] }), { ...previous2.document, canonicalPath: previous2.boundCanonicalPath }) : undefined;
+              if (reference2)
+                current.assertReportable(child2.sourceId, r.taskUpdate.plan, true);
+              const captured = reference2 ? await captureReport(reference2, child2.directory, child2.sourceId, r.taskUpdate.plan, true, { ...previous2.document, canonicalPath: previous2.boundCanonicalPath }) : undefined;
               guard();
-              return { content: JSON.stringify(current.handoff(r, child2, observedAt, observedEpoch, capture2)) };
+              return { content: JSON.stringify(current.handoff(r, child2, observedAt, observedEpoch, captured)) };
             }
             if (r.op === "read") {
               const view = current.detail(actor.sourceId, r.plan, r.page ?? 0);
@@ -29657,7 +29716,9 @@ async function setupCompanion(ctx, read, managed) {
               }
             }
             const reference = r.source ?? previous?.document.path;
-            const capture = reference && r.op !== "stage" ? await captureDocument(reference, actor.directory, (resource) => ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] }), r.op === "bind" || r.op === "start" ? undefined : previous ? { ...previous.document, canonicalPath: previous.boundCanonicalPath } : undefined) : undefined;
+            if (reference && r.op !== "stage")
+              current.assertReportable(actor.sourceId, r.plan);
+            const capture = reference && r.op !== "stage" ? await captureReport(reference, actor.directory, actor.sourceId, r.plan, false, r.op === "bind" || r.op === "start" ? undefined : previous ? { ...previous.document, canonicalPath: previous.boundCanonicalPath } : undefined) : undefined;
             guard();
             requireProgress(current.list({ limit: 1 }).captureEnabled, "disabled");
             const receipt = current.apply(r, actor, capture, child);
@@ -29709,16 +29770,16 @@ Valid start (replace synthetic values with the real plan; task-2 requires task-1
 Load the agent-progress skill when writing, receiving or coordinating plans and before dispatching sub-agents: it has delegation, staging, handoff and blocker rules.
 Tracker updates are not Agent Progress reports. Mirror actionable structure at PLAN_READY handoff; review approval and owner approval are separate, existing canonical gates only. A write is not readiness, dispatch is not work start, and worker completion is not accepted handoff. Repeated guidance or already-current state needs no report. Never invent review tasks, infer progress or report automatically per turn.
 Read uses only op=read, one concrete plan ID and optional 0-based page; no oid/rev. Read current revision before updating and after compaction/conflict. Batch changes. Report only real same-plan prerequisites; omit dependencies when none are known, and retain still-needed links in full structural replacements. Source is optional; never manufacture a file; document capture still needs read permission.
-For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. Finish successfully only when all actionable work is resolved.`;
+For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Finish successfully only when all actionable work is resolved.`;
 var GUIDANCE = `${REPORT_CHECKLIST}
 Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
-Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
+Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
-Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
+Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {
   setupLegacy,
   plugin_default as default

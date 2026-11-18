@@ -29,7 +29,7 @@ New working and blocked arrow cues SHALL appear only for an active, unarchived p
 
 ### Requirement: Working dependencies have a distinct beaded treatment
 
-On an eligible picture, an arrow from a working prerequisite to a pending or blocked dependent SHALL use blue round beads over a faint blue line with a blue arrowhead, except for selection and forced-colour overrides. Other outgoing working arrows SHALL retain their ordinary style.
+On an eligible picture, an arrow from a working prerequisite to a pending, working or blocked dependent SHALL use blue round beads over a faint blue line with a blue arrowhead, except for selection and forced-colour overrides. Other outgoing working arrows SHALL retain their ordinary style.
 
 #### Scenario: Waiting dependent
 - **WHEN** a working prerequisite points to a pending task
@@ -40,8 +40,13 @@ On an eligible picture, an arrow from a working prerequisite to a pending or blo
 - **WHEN** a working prerequisite points to an explicitly blocked task
 - **THEN** the arrow has the working treatment without suggesting that the dependent's blocker has cleared
 
-#### Scenario: Working or terminal dependent
-- **WHEN** a working prerequisite points to a working, done or skipped task
+#### Scenario: Working dependent
+- **WHEN** a working prerequisite points to a working task, for example because work moved back to earlier tasks while a later one stayed in progress
+- **THEN** that arrow has the working treatment
+- **AND** the dependent's status and the waiting-task summary do not change
+
+#### Scenario: Terminal dependent
+- **WHEN** a working prerequisite points to a done or skipped task
 - **THEN** that arrow has no beads and retains its ordinary static style
 
 ### Requirement: Explicitly blocked prerequisites have a static stop treatment

@@ -140,6 +140,22 @@ try {
   };
   const ready = (f: string) => wait(f, `d.querySelector('${region}')?.dataset.current==='true'&&d.querySelector('${viewport}')&&d.querySelector('${hook('map-world')}')`, 'current map');
   const smallTargets = (f: string) => guest<string[]>(f, `return [...d.querySelectorAll('${region} :is(.ap-map-tool,.ap-map-select,.oc-sdk-btn,.ap-map-help-trigger,.ap-map-rel-item),.ap-map-switch .oc-sdk-btn')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return [n.dataset.testid??n.closest('[data-testid]')?.dataset.testid??n.className,Math.round(r.width),Math.round(r.height)]}).filter(([,w,h])=>w<44||h<44).map(x=>x.join(':'))`);
+  const focusCurrent = async (f: string, input: 'touch' | 'mouse') => {
+    await guest(f, `d.querySelector('${hook('map-toolbar')}').scrollIntoView({block:'center'});return true`); await settle(f);
+    const press = async (id: string) => {
+      const p = await need(f, hook(id));
+      if (input === 'touch') await tap(p);
+      else { await mouse('mouseMoved', p, 0); await mouse('mousePressed', p); await mouse('mouseReleased', p, 0); await frames2(); }
+    };
+    await press('map-fit-all');
+    const before = await guest(f, `return {selected:d.querySelector('${inspector}').dataset.selected,group:d.querySelector('${hook('map-group')}').value,status:d.querySelector('${hook('map-status')} [aria-pressed="true"]').textContent}`);
+    await guest(f, `w.__currentMessages=[];w.__currentObserver?.disconnect();const a=d.querySelector('${hook('map-announcer')}');w.__currentObserver=new MutationObserver(()=>{if(a.textContent)w.__currentMessages.push(a.textContent)});w.__currentObserver.observe(a,{subtree:true,childList:true,characterData:true});d.querySelector('${hook('map-focus-current')}').addEventListener('click',()=>w.__currentFocus=d.activeElement?.getAttribute('data-testid')??d.activeElement?.tagName,{capture:true,once:true});return true`);
+    await press('map-focus-current');
+    await wait(f, 'w.__currentMessages.length>0', `${input} Focus current work`);
+    const after = await guest(f, `w.__currentObserver.disconnect();return {selected:d.querySelector('${inspector}').dataset.selected,group:d.querySelector('${hook('map-group')}').value,status:d.querySelector('${hook('map-status')} [aria-pressed="true"]').textContent,focus:(d.activeElement?.getAttribute('data-testid')??d.activeElement?.tagName)===w.__currentFocus,messages:w.__currentMessages.length}`);
+    check(`${f}-${input}-focus-current-keeps-reading`, before.selected===after.selected&&before.group===after.group&&before.status===after.status&&after.focus&&after.messages===1, {before,after});
+    await guest(f, `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await settle(f);
+  };
 
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fx.port}/` });
   await wait('page', `d.querySelector('[data-testid="plan-view"]')`, 'board loaded');
@@ -187,13 +203,14 @@ try {
   const first = await guest<{ id: string; width: number; inside: boolean; zoom: string }>('page', `const v=d.querySelector('${viewport}').getBoundingClientRect(),n=d.querySelector('[data-testid="map-card-B"]'),r=n.getBoundingClientRect();return {id:n.dataset.task,width:Math.round(r.width),inside:r.left>=v.left-1&&r.right<=v.right+1&&r.top>=v.top-1&&r.bottom<=v.bottom+1,zoom:d.querySelector('${hook('map-zoom-level')}').textContent}`);
   check('board-readable-initial-framing', first.width >= 219 && first.inside, first);
   const canvasHeight = await guest<number>('page', `return d.querySelector('${viewport}').getBoundingClientRect().height`);
-  check('board-canvas-leaves-page-scroll-room', canvasHeight <= 844 * 0.55, { canvasHeight });
+  check('board-canvas-leaves-page-scroll-room', canvasHeight <= 300, { canvasHeight });
   await shot('map', 'page');
 
   // Tap selects; the stacked inspector names it; no hover was needed.
   await tap(await need('page', hook('map-card-B')));
   await wait('page', `d.querySelector('${inspector}')?.dataset.selected==='B'`, 'tap selected B');
   check('board-tap-selects', await guest('page', `return d.querySelector('${hook('map-card-B')}').getAttribute('aria-current')==='true'`));
+  await focusCurrent('page', 'touch');
   // One finger on a card pans the map, keeps the selection and does not scroll the page.
   const t0 = await transform('page'), s0 = await scrollTop('page');
   const onCard = await need('page', hook('map-card-B'));
@@ -291,12 +308,12 @@ try {
   check('board-dark-no-overflow', await noOverflow('page'));
   await shot('map-dark', 'page');
   await evaluate(`qa.theme('light');qa.locale='ru';qa.ready();true`);
-  await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Справка и фильтры'`, 'Russian map');
+  await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Справка и фильтры карты'`, 'Russian map');
   await ready('page');
   check('board-russian-no-overflow', await noOverflow('page') && (await smallTargets('page')).length === 0, await smallTargets('page'));
   check('board-russian-touch-help', await guest('page', `return (d.querySelector('${hook('map-touch-help')}')?.textContent??'').startsWith('Касание')`));
   await shot('map-ru', 'page');
-  await evaluate(`qa.locale='en';qa.ready();true`); await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Help and filters'`, 'English map');
+  await evaluate(`qa.locale='en';qa.ready();true`); await wait('page', `d.querySelector('${hook('map-help-trigger')}')?.getAttribute('aria-label')==='Map help and filters'`, 'English map');
 
   // ── Rail Map at 390 with touch.
   await phone('panel'); await withDevice('panel', DEVICE);
@@ -317,6 +334,7 @@ try {
   check('rail-coarse-and-targets', await guest('panel', `return d.querySelector('${region}').dataset.pointer==='coarse'`) && (await smallTargets('panel')).length === 0 && await noOverflow('panel'), await smallTargets('panel'));
   await tap(await need('panel', hook('map-card-B')));
   await wait('panel', `d.querySelector('${inspector}')?.dataset.selected==='B'`, 'rail tap selected');
+  await focusCurrent('panel', 'touch');
   // Native switch acceptance precedes pan; post-pan tap suppression is compared to native controls above.
   await guest('panel', `d.querySelector('${hook('plan-view-list')} button').scrollIntoView({block:'center'});return true`); await frames2();
   await tap(await need('panel', `${hook('plan-view-list')} button`));
@@ -336,6 +354,9 @@ try {
   check('desktop-not-coarse', await guest('page', `return !d.querySelector('${region}').dataset.pointer&&getComputedStyle(d.querySelector('${hook('map-zoom-in')}')).height==='28px'`));
   const fitAll = await need('page', hook('map-fit-all'));
   await mouse('mouseMoved', fitAll, 0); await mouse('mousePressed', fitAll); await mouse('mouseReleased', fitAll, 0); await frames2();
+  await focusCurrent('page', 'mouse');
+  // The following mouse/card cases deliberately start from the whole-plan view.
+  await guest('page', `d.querySelector('${hook('map-fit-all')}').focus();return true`); await key('Enter');
   const card = await need('page', hook('map-card-C'));
   await guest('page', `w.__qaDown=[];d.addEventListener('pointerdown',e=>w.__qaDown.push(e.pointerType+':'+(e.target.closest('[data-testid]')?.dataset.testid)),{capture:true});return true`);
   await mouse('mouseMoved', card, 0); await mouse('mousePressed', card); await frames2();

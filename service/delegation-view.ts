@@ -72,7 +72,10 @@ export function delegationView(store: Store, envelope: Envelope, plan: PlanSumma
           ready(recovery.recovered ? { state: 'none' } : { state: 'refused', declaration: a, reason: refusalReason(reason), recovery: 'redeclare-or-link' });
         };
         if (d.state === 'pending' || d.state === 'reserved') {
-          if (!a.taskIds.length || (d.state === 'pending') !== (a.dispatch === null) || intentRow?.plan !== plan.id || intentRow.oid !== a.oid || typeof intentRow.payload !== 'string') { unavailable('invalid'); break; }
+          if (!a.taskIds.length || (d.state === 'pending') !== (a.dispatch === null)) { unavailable('invalid'); break; }
+          // Cleanup retires the intent without rewriting the guarded receipt. Only a restored plan (an explicit visible cleanup record, as replay requires) explains a missing intent; anything else stays unavailable.
+          if (!intentRow || intentRow.plan !== plan.id || intentRow.oid !== a.oid) { if (cleanup?.state === 'visible') refused('closed'); else unavailable('invalid'); break; }
+          if (typeof intentRow.payload !== 'string') { unavailable('invalid'); break; }
           try {
             const intent = activeIntent(db, plan.sourceId, plan.sessionId);
             need(intent && intent.caller.sourceId === plan.sourceId && intent.caller.sessionId === plan.sessionId && intent.request.plan === plan.id && intent.request.oid === a.oid && intent.request.rev === a.declaredRevision &&

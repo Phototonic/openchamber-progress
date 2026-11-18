@@ -356,8 +356,9 @@ export class DependencyMapInteraction {
     this.sink({ type: 'selection', id: null });
     this.announce({ kind: 'cleared' });
   }
-  private current() {
-    const i = this.input; if (!i) return;
+  /** Returns false when there was no current-work target, so the view only fitted the overview. */
+  private current(): boolean {
+    const i = this.input; if (!i) return false;
     const room = mapRoom(i.viewport, this.state.selected);
     const visible = new Set(this.visible);
     const ordered = (ids: readonly string[]) => i.layout.order.filter(id => ids.includes(id) && visible.has(id));
@@ -369,7 +370,7 @@ export class DependencyMapInteraction {
     const readable = i.readable ?? MAP_ZOOM.readable;
     const all = fitProjection(i.layout, this.visible, room, 16, i.framingMax);
     // Coarse pointers retain full-size text. No current work (including closed plans) is an overview.
-    if (!first || all.zoom >= (readable >= 1 ? 1 : MAP_ZOOM.threshold)) { this.viewport(all); return; }
+    if (!first || all.zoom >= (readable >= 1 ? 1 : MAP_ZOOM.threshold)) { this.viewport(all); return !!first; }
     const neighbours = new Set(work.length ? work : [first]);
     for (const [a, b] of i.layout.edges) {
       if (workSet.has(a) && visible.has(b)) neighbours.add(b);
@@ -384,6 +385,7 @@ export class DependencyMapInteraction {
       t = { zoom, x: room.width / 2 - (p.x + i.layout.metrics.width / 2) * zoom, y: room.height / 2 - (p.y + i.layout.metrics.height / 2) * zoom };
     }
     this.viewport(t);
+    return true;
   }
   private endDrag() {
     if (this.pinch) this.sink({ type: 'capture', pointerId: this.pinch.id, capture: false });
@@ -404,7 +406,7 @@ export class DependencyMapInteraction {
       case 'relation': this.pending = null; this.select(e.id, true, true); break;
       case 'filters': this.filters(e.status ?? this.state.status, e.group === undefined ? this.state.group : e.group); this.announce({ kind: 'filters', count: this.visible.length }); break;
       case 'fit': this.viewport(fitProjection(i.layout, this.visible, mapRoom(i.viewport, this.state.selected), 16, i.framingMax)); this.announce({ kind: 'fit', count: this.visible.length }); break;
-      case 'current': this.current(); this.announce({ kind: 'current' }); break;
+      case 'current': this.announce(this.current() ? { kind: 'current' } : { kind: 'fit', count: this.visible.length }); break;
       case 'zoom': { const room = mapRoom(i.viewport, this.state.selected); this.viewport(zoomAt(this.state.transform, e.factor, e.point ?? { x: room.width / 2, y: room.height / 2 })); break; }
       case 'clear': this.pending = null; this.clearSelection(true); break;
       case 'pan': if (Number.isFinite(e.x) && Number.isFinite(e.y)) this.viewport({ ...this.state.transform, x: this.state.transform.x + e.x, y: this.state.transform.y + e.y }); break;

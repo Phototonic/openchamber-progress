@@ -395,7 +395,7 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
   toggle.type = 'button'; toggle.id = 'ap-inbox-h';
   toggle.setAttribute('aria-expanded', String(expanded)); toggle.setAttribute('aria-controls', 'ap-inbox-content');
   toggle.append(el('span', '', t.heading));
-  if (m.availability === 'ready') {
+  if (m.availability === 'ready' && m.counts.needsYou > 0) {
     const count = testid(el('span', 'ap-inbox-count', `${m.counts.needsYou}${m.complete ? '' : '+'}`), ATTENTION_HOOKS.count);
     Object.assign(count.dataset, { count: String(m.counts.needsYou), exact: String(m.complete) });
     if (m.counts.needsYou) count.dataset.tone = 'attention';
@@ -522,8 +522,10 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
   if (m.alsoBlocked.length) {
     const also = el('div', 'ap-note'); also.dataset.count = String(m.counts.alsoBlocked);
     const row = m.alsoBlocked.find(r => r.planKey === options.shownPlan);
-    if (row) button(also, ATTENTION_HOOKS.alsoBlocked, t.also(m.counts.alsoBlocked, m.complete), () => options.open(row), 'ghost');
-    else { also.dataset.testid = ATTENTION_HOOKS.alsoBlocked; also.textContent = t.also(m.counts.alsoBlocked, m.complete); }
+    // Retained rows remain readable during a recheck, but may support no current count.
+    const label = m.counts.alsoBlocked > 0 ? t.also(m.counts.alsoBlocked, m.complete) : t.alsoListLabel;
+    if (row) button(also, ATTENTION_HOOKS.alsoBlocked, label, () => options.open(row), 'ghost');
+    else { also.dataset.testid = ATTENTION_HOOKS.alsoBlocked; also.textContent = label; }
     body.append(also);
   }
   return box;

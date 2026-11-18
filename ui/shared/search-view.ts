@@ -10,9 +10,10 @@ import { lifecycleLabel, statusLabel, type ItemStatus, type Lifecycle, type Sear
 import { ALL } from './scope.ts';
 import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+import type { CleanupPlan } from './cleanup.ts';
 
 const EN = {
-  searchHint: 'Search titles and IDs',
+  searchHint: 'Search',
   searchPlans: 'Search plans and tasks', searchTitles: 'Search titles and IDs', filters: 'Filters', close: 'Close', planStatus: 'Plan status', anyPlan: 'Any plan status', taskStatus: 'Task status', anyTask: 'Any task status', source: 'Recorded source', allSources: 'All recorded sources', unverified: 'unverified', unavailable: 'not available here', search: 'Search', constraints: 'Search constraints', clear: 'Clear search and filters', results: 'Search results', retry: 'Retry', removeProject: 'Remove project filter', removeWorktree: 'Remove worktree filter', searching: 'Searching recorded plans', noMatch: 'No plans or tasks match', uncertain: 'No matches in the plans and locations that could be checked', tryOther: 'Try other words, or remove a constraint. Filters and Clear search stay above.', noneYet: 'No matches found yet; more recorded plans remain unchecked.', previous: 'Previous results', next: 'Next results', busy: 'Searching…', refresh: 'Refresh search', more: 'Load more results', continue: 'Continue searching', help: 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).', apply: 'Plan status, task status and source apply when you search. Location choices apply right away.', pending: 'Not searched yet: these results are for the previous search. Press Search to update them.', unavailableService: 'Search is unavailable with this service version. The board below still lists plans as before.', allPlans: 'all recorded plans in this store', archived: 'archived plans only', current: 'current plans (archived plans excluded)', location: 'in the chosen project or worktree', sessionScope: 'where the chosen session is the owner, linked or a recorded contributor', scopeNote: 'Ordinary board list pages are not the search scope.', words: 'Words', sourceChip: 'Source', project: 'Project', worktree: 'Worktree', session: 'Session', remove: 'Remove', continued: 'Continued from the previous results', planMatch: 'The plan’s own title or ID matches', changed: 'Changed since found', openPlan: 'Open plan', showTask: 'Show task', inside: 'In', setup: 'unverified setup', noTasks: 'no counted tasks', exhausted: 'Every recorded plan in this scope was checked, as searched; reports may change, so this is not a live census.', partial: 'More recorded plans remain unchecked. Counts so far are not totals.', checking: 'Checking that these earlier results are still current…',
 };
 const COPY = { en: EN, ru: {
@@ -51,6 +52,7 @@ export const draftDiffers = (text: string, draft: SearchDraft, c: SearchCriteria
   !!c && (text.trim() !== c.q.trim() || draft.lifecycle !== c.lifecycle || draft.status !== c.status || draft.source !== c.source);
 
 export interface BoardBarHooks {
+  tidy?: { label: string; run: () => void; disabled: boolean } | null;
   /** Reject input from a synchronously retired board paint. */
   current?: () => boolean;
   /** Current plans / Archived plans, always visible beside the search field. */
@@ -187,6 +189,7 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
   });
   owner.append(trigger, panel);
   row.append(owner);
+  if (h.tidy) button(row, 'tidy-open', h.tidy.label, h.tidy.run, 'outline', h.tidy.disabled);
   form.append(row);
   bar.append(form);
   const box = el('div', 'ap-board-bar-wrap');
@@ -321,6 +324,7 @@ export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 
 }
 
 export interface ResultHooks {
+  selection?: { has: (key: string) => boolean; toggle: (plan: CleanupPlan) => void; disabled: boolean };
   selected: { key: string; item: string | null } | null;
   openPlan: (hit: SearchHitView) => void;
   openTask: (hit: SearchHitView) => void;
@@ -344,6 +348,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   if (g.changed) section.dataset.changed = 'true';
   const head = testid(el('button', 'ap-hit ap-hit-plan'), `search-plan-${g.plan.sourceId}/${g.plan.id}`);
   head.type = 'button';
+  head.disabled = !!h.selection?.disabled;
   Object.assign(head.dataset, { source: g.plan.sourceId, plan: g.plan.id, kind: 'plan' });
   if (h.selected?.key === g.plan.key && !h.selected.item) head.setAttribute('aria-current', 'true');
   head.append(el('span', 'ap-hit-title', g.plan.title), el('span', 'ap-hit-meta', hitMeta(g.plan, env)));
@@ -352,10 +357,14 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   if (g.planOnly) notes.push(copy.planMatch);
   if (g.changed) notes.push(copy.changed);
   if (notes.length) head.append(el('span', 'ap-hit-note', notes.join(' · ')));
-  head.setAttribute('aria-label', `${copy.openPlan}: ${g.plan.title}`);
-  head.addEventListener('click', () => h.openPlan(g.hits[0] ?? { plan: g.plan, planMatched: true, task: null, ancestors: [], omittedAncestors: 0, continued: g.continued, classified: null }));
+  head.setAttribute('aria-label', h.selection ? g.plan.title : `${copy.openPlan}: ${g.plan.title}`);
+  if (h.selection) head.setAttribute('aria-pressed', String(h.selection.has(g.plan.key)));
+  head.addEventListener('click', () => {
+    if (h.selection) { if (head.isConnected) h.selection.toggle(g.plan); }
+    else h.openPlan(g.hits[0] ?? { plan: g.plan, planMatched: true, task: null, ancestors: [], omittedAncestors: 0, continued: g.continued, classified: null });
+  });
   section.append(head);
-  if (g.hits.length) {
+  if (g.hits.length && !h.selection) {
     const list = el('ul', 'ap-hit-tasks');
     list.setAttribute('aria-label', ru ? `Подходящие задачи в ${g.plan.title}` : zh ? `${g.plan.title} 中的匹配任务` : `Matching tasks in ${g.plan.title}`);
     for (const hit of g.hits) {

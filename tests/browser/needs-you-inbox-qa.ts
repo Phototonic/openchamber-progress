@@ -32,7 +32,7 @@ const plans = [
 const real = await inboxIntegration(SRC, plans);
 const membership = await needsYouMembershipIntegration(SRC, S.M, S.C1, true);
 const assets = createGuestAssets({ source: process.argv.includes('--source') });
-let fail = false, unsupported = false, rulePhase = false;
+let fail = false, unsupported = false, rulePhase = false, incompleteZero = false;
 const failFirstContinuation = new Set<string>();
 const project = { id: 'example', name: 'Example', directory: '/fixture/Alpha' };
 const sessions = [S.M, S.U].map(id => ({ id, title: 'Example session', parentId: null, projectId: project.id, directory: project.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }));
@@ -64,6 +64,11 @@ const server = createServer(async (req, res) => {
       if (unsupported) { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
       const failWindow = q.path === '/v1/needs-you' && failFirstContinuation.delete(url.searchParams.get('frame') ?? '');
       const r = (fail && q.path === '/v1/plans') || failWindow ? { status: 503, body: { error: 'busy' } } : await (rulePhase ? membership : real).request(q);
+      // Labelled read seam: an unreadable plan can leave a genuinely unknown zero.
+      if (incompleteZero) {
+        const inbox = (q.path === '/v1/needs-you' ? r.body : r.body.needsYou) as { coverage: Record<string, unknown> } | undefined;
+        if (inbox) Object.assign(inbox.coverage, { complete: false, gapped: true, skippedRecords: 1, reasons: ['invalid-snapshot'] });
+      }
       if (unsupported && q.path === '/health') delete r.body.needsYouInbox;
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
     }
@@ -248,7 +253,7 @@ try {
   check('board-default-selected-plan-expanded', await guest('page', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='true' && !!d.querySelector('[data-testid="plan-needs-you-count"]')`));
   await shot('desktop-board');
   await evaluate(`qa.show('panel',600);qa.session='session-with-no-plans';qa.ready();true`);
-  await wait('panel', `!!d.querySelector('[data-testid="needs-you-other-plans"] button') && ${count(0)}`);
+  await wait('panel', `!!d.querySelector('[data-testid="needs-you-other-plans"] button') && !d.querySelector('[data-testid="needs-you-count"]')`);
   check('empty-session-never-auto-widens', await guest('panel', `return !d.querySelector('.ap-inbox-open')`));
   await shot('empty-current-scope');
   await click('panel', '[data-testid="needs-you-other-plans"] button'); await wait('panel', count(3));
@@ -291,6 +296,22 @@ try {
   real.empty();
   await wait('panel', `d.querySelector('[data-testid="needs-you-inbox"]')?.hidden && d.querySelector('[data-testid="needs-you-inbox"]').getBoundingClientRect().height===0`);
   check('complete-empty-rail-has-no-visible-line', true);
+  incompleteZero = true;
+  for (const locale of ['en', 'ru', 'zh-CN']) for (const width of [600, 390]) {
+    const reload = await evaluate<number>(`qa.locale=${js(locale)};qa.ready();qa.show('panel',${width});qa.reload('panel')`);
+    await wait('panel', `w.location.search==='?reload=${reload}' && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="incomplete-counts"]') && !!d.querySelector('[data-testid="needs-you-empty"]')`);
+    check(`incomplete-zero-${locale}-${width}-no-badge`, await guest('panel', `const n=d.querySelector('[data-testid="needs-you-inbox"]');return !n.hidden&&!n.querySelector('[data-testid="needs-you-count"]')&&!/\\b0\\+/.test(n.textContent)`));
+    const fr = (await c.send('Page.getFrameTree')).frameTree.childFrames.find((f: any) => f.frame.url.includes('/panel/')).frame.id;
+    const ax = await c.send('Accessibility.getFullAXTree', { frameId: fr });
+    const noneYet = ({ en: 'Nothing found yet that needs you', ru: 'Пока не найдено задач, где нужно ваше участие', 'zh-CN': '尚未找到需要你处理的事项' } as Record<string, string>)[locale];
+    // Existing CSS disclosure chevrons are exposed by Chromium; compare the semantic label.
+    const heading = await guest<string>('panel', `return d.querySelector('[data-testid="needs-you-toggle"]').textContent`);
+    check(`incomplete-zero-${locale}-${width}-accessible-heading`, ax.nodes.some((n: any) => n.role?.value === 'button' && n.name?.value?.replace(/^›\s*/, '') === heading) && !ax.nodes.some((n: any) => /\b0\+/.test(n.name?.value ?? '')), ax.nodes.filter((n: any) => n.role?.value === 'button' || /\b0\+/.test(n.name?.value ?? '')).map((n: any) => ({ role: n.role?.value, name: n.name?.value })));
+    check(`incomplete-zero-${locale}-${width}-not-verified-empty`, await guest('panel', `return d.querySelector('[data-testid="needs-you-empty"]').textContent===${js(noneYet)}`));
+    await shot(`incomplete-zero-${locale}-${width}`);
+  }
+  incompleteZero = false;
+  await evaluate(`qa.locale='en';qa.ready();true`);
   unsupported = true; await wait('panel', `!!d.querySelector('[data-testid="needs-you-unavailable"]')`);
   check('unsupported-not-empty', await guest('panel', `return !d.querySelector('[data-testid="needs-you-empty"]')`));
   // Keep the membership fixture's old stored reports: the presentation changes no service data.

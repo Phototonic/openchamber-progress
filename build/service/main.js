@@ -1196,15 +1196,16 @@ function parseCleanup(action, value) {
   requireProgress(["archive", "restore", "delete"].includes(action));
   requireProgress(value && typeof value === "object" && !Array.isArray(value));
   const r = value;
-  const fields = ["storeId", "source", "plan", "rev", "cleanupRev", "oid", ...action === "delete" ? ["confirmed"] : []];
+  const fields = ["storeId", "source", "plan", "rev", "cleanupRev", "oid", ...action === "delete" ? ["confirmed"] : [], ...action !== "restore" ? ["active"] : []];
   requireProgress(Object.keys(r).every((k) => fields.includes(k)));
   requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && identifier(r.oid));
   requireProgress(Number.isSafeInteger(r.rev) && r.rev > 0 && Number.isSafeInteger(r.cleanupRev) && r.cleanupRev >= 0 && r.cleanupRev < Number.MAX_SAFE_INTEGER);
   requireProgress(action !== "delete" || r.confirmed === true);
+  requireProgress(!Object.hasOwn(r, "active") || r.active === true);
   return r;
 }
 function requestHash(action, r) {
-  return createHash2("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false])).digest("hex");
+  return createHash2("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false, ...r.active === true ? [true] : []])).digest("hex");
 }
 function preflight(db, action, r, installed) {
   requireProgress(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id === r.storeId, "conflict");
@@ -1224,7 +1225,8 @@ function preflight(db, action, r, installed) {
     throw new ProgressError("corrupt");
   }
   requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
-  requireProgress(["finished", "cancelled", "failed"].includes(p.lifecycle), "closed");
+  const closed = ["finished", "cancelled", "failed"].includes(p.lifecycle);
+  requireProgress(action === "restore" ? p.lifecycle === "active" || closed : r.active === true ? p.lifecycle === "active" : closed, "closed");
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
@@ -2584,14 +2586,27 @@ class PendingDelegationError extends ProgressError {
     super("conflict");
   }
 }
+function retireCleanupIntent(db, source, plan) {
+  if (runStorageCompatibility(db) !== "absent")
+    db.prepare("DELETE FROM runs_intents WHERE source=? AND plan=?").run(source, plan);
+}
 function declareIntent(db, r, actor, validate) {
   const c = runControl(db);
   requireProgress(c.enabled, "disabled");
   const payloadHash = hash2([r, actor.sourceId, actor.sessionId]);
+  const cleanup2 = cleanupInstalled(db) ? cleanupState(db, actor.sourceId, r.plan) : undefined;
+  requireProgress(cleanup2?.state !== "deleted", "not-found");
+  requireProgress(cleanup2?.state !== "archived", "closed");
   const old = db.prepare("SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
   if (old) {
     requireProgress(old.payload_hash === payloadHash, "operation-reused");
-    return JSON.parse(String(old.receipt));
+    const receipt = JSON.parse(String(old.receipt));
+    if (cleanup2?.state === "visible" && ["pending", "reserved"].includes(receipt.delegation?.state)) {
+      const intent = activeIntent(db, actor.sourceId, actor.sessionId);
+      if (intent?.request.plan !== r.plan || intent.request.oid !== r.oid)
+        return { ...receipt, delegation: { ...receipt.delegation, state: "retired", reason: "closed", recovery: "redeclare-or-link" } };
+    }
+    return receipt;
   }
   validate();
   const current = activeIntent(db, actor.sourceId, actor.sessionId);
@@ -2686,9 +2701,16 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       result.complete = false;
       continue;
     }
-    if (cleanupInstalled(db) && ["archived", "deleted"].includes(String(cleanupState(db, sourceId, r.plan)?.state ?? "")))
+    const cleanup2 = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
+    if (["archived", "deleted"].includes(cleanup2))
       continue;
-    if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
+    const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
+    if (orphaned && cleanup2 !== "visible") {
+      result.complete = false;
+      continue;
+    }
+    const reason = orphaned ? "closed" : d.reason;
+    if (!orphaned && d.state !== "retired" || reason === "cancelled" || !a.taskIds.length)
       continue;
     const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes);
     bytes += recovery.bytes;
@@ -2701,7 +2723,7 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     }
     const reasons = ["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget", "dispatch-unconfirmed", "binding", "disabled", "capture-disabled", "not-found", "storage", "corrupt", "schema", "busy"];
-    result.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(d.reason) ? d.reason : "unverified", recovery: "redeclare-or-link" });
+    result.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(reason) ? reason : "unverified", recovery: "redeclare-or-link" });
   }
   return result;
 }
@@ -2808,10 +2830,10 @@ function handoff(db, r, actor, now, epoch = observationEpoch(db)) {
   return { handoff: claim };
 }
 function associatedPlan(db, actor, at) {
-  const p = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active' AND
+  const visible = cleanupInstalled(db) ? " AND NOT EXISTS(SELECT 1 FROM cleanup_state c WHERE c.source=plans.source AND c.plan=plans.id AND c.state IN('archived','deleted'))" : "";
+  const eligible = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active'${visible} AND
     (json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=? AND json_array_length(json_extract(l.value,'$.itemIds'))>0)) LIMIT 3`).all(actor.sourceId, actor.sessionId, actor.sessionId);
-  const eligible = p.filter((r) => !cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(r.id))?.state)));
-  if (p.length >= 3)
+  if (eligible.length >= 3)
     return null;
   const incoming = db.prepare(`SELECT json_extract(payload,'$.planContext.plan') AS plan FROM runs_rows r WHERE source=? AND child=? AND terminal=0 AND json_extract(payload,'$.ran.state')='running' AND json_extract(payload,'$.planContext.plan') IS NOT NULL
     AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId, actor.sessionId);
@@ -4342,6 +4364,16 @@ class Store {
   delegationRefusals(sourceId, sessionId) {
     return this.transaction(false, () => delegationRefusals(this.db, this.readBinding, sourceId, sessionId));
   }
+  assertReportable(sourceId, plan2, handoff2 = false) {
+    if (handoff2)
+      requireProgress(this.readBinding.verified && this.readBinding.sourceId === sourceId, "source-unverified");
+    this.transaction(false, () => {
+      requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, sourceId, plan2) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      requireProgress(state?.state !== "archived", "closed");
+    });
+  }
   handoff(value, actor, now = Date.now(), epoch, capture) {
     const r = parseReportRequest(value);
     requireProgress(r.op === "handoff");
@@ -4689,8 +4721,14 @@ class Store {
   }
   cleanup(action, value) {
     requireProgress(!this.readOnly, "storage");
+    const request = parseCleanup(action, value);
     try {
-      return mutateCleanup(this.db, this.file, action, value, (write, fn) => this.transaction(write, fn));
+      return mutateCleanup(this.db, this.file, action, request, (write, fn) => this.transaction(write, () => {
+        const result = fn();
+        if (write && action === "archive" && request.active === true)
+          retireCleanupIntent(this.db, request.source, request.plan);
+        return result;
+      }));
     } catch (e) {
       throw storageError(e);
     }
@@ -6245,7 +6283,7 @@ function blockedTiming(store, detail, now = new Date, options = {}) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.0";
+var RELEASE = "1.5.1";
 
 // service/request-worker.ts
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -9904,7 +9942,18 @@ function delegationView(store, envelope, plan2, now = new Date) {
           ready(recovery.recovered ? { state: "none" } : { state: "refused", declaration: a, reason: refusalReason(reason), recovery: "redeclare-or-link" });
         };
         if (d.state === "pending" || d.state === "reserved") {
-          if (!a.taskIds.length || d.state === "pending" !== (a.dispatch === null) || intentRow?.plan !== plan2.id || intentRow.oid !== a.oid || typeof intentRow.payload !== "string") {
+          if (!a.taskIds.length || d.state === "pending" !== (a.dispatch === null)) {
+            unavailable("invalid");
+            break;
+          }
+          if (!intentRow || intentRow.plan !== plan2.id || intentRow.oid !== a.oid) {
+            if (cleanup2?.state === "visible")
+              refused("closed");
+            else
+              unavailable("invalid");
+            break;
+          }
+          if (typeof intentRow.payload !== "string") {
             unavailable("invalid");
             break;
           }
@@ -10268,7 +10317,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
           ok: true,
           ...health,
           ...setup?.managed ? { managedMigrationSteps: 1, managedFreshSteps: 1 } : {},
-          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, delegationIntent: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
+          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planCleanupActive: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, delegationIntent: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
           protocolVersion: VERSION,
           schemaVersion: VERSION,
           runtime: { node: process.versions.node, bun: process.versions.bun ?? null }

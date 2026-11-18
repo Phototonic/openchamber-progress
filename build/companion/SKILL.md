@@ -46,6 +46,8 @@ it is not evidence of a host outage. Empty/all-skipped plans cannot finish
 successfully. Denied document access still commits valid checklist changes with
 diagnostics; `source` is optional and never a reason to manufacture a file.
 
+If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready.
+
 Inline guidance documents the other operations. Routine
 requests use `op=change`, `plan`, fresh `oid`, expected `rev`, and changed items.
 For large structures stage numbered chunks and explicitly commit all chunks;
@@ -54,6 +56,17 @@ link a verified child before accepting its assigned-item reports. Do not relax
 restricted-child tool policies; an explicit parent relay labels both identities.
 Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
+
+Closed plans require explicit coordinator `revise`/`commit` with `reopen=true`.
+If a plan you were reporting returns `closed` while in progress or on a reopen,
+or a plan you started returns `not-found`, the user archived or deleted it; stop
+reporting to it, do not retry, and don't recreate it unless the user specifically
+asks for it. A reopen refused with `conflict` or `stage-incomplete` is recoverable:
+read the plan and retry at its current revision. For a staged commit, if every
+chunk already staged is valid for the current revision and intended layout, stage
+only the missing chunks under that same upload ID; otherwise stage the whole
+intended set under a fresh upload ID, because chunks stay pinned to the revision
+they were staged at. Keep `reopen=true` on every stage and the commit.
 
 Coordinator `finish` optionally accepts `changes` for 1–50 unique existing task
 IDs with ordinary status/blocker validation. At the expected revision, explicit

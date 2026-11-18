@@ -11,7 +11,7 @@ import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync, fstatSync, fsyncSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
-import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
+import { cleanupInstalled, cleanupState, mutateCleanup, parseCleanup, type CleanupAction } from './cleanup.ts';
 import { searchWindow, searchState } from './plan-task-search.ts';
 import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
@@ -168,6 +168,11 @@ export class Store {
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
   delegationRefusals(sourceId:string,sessionId:string) {return this.transaction(false,()=>runs.delegationRefusals(this.db,this.readBinding,sourceId,sessionId));}
+  /** Early refusal so a companion never asks for document access a write cannot use. Same precedence as the write path: a handoff checks the source binding first, then paused capture is `disabled`, then a cleanup-fenced plan is `closed`/`not-found`. The write path still checks inside its transaction. */
+  assertReportable(sourceId:string,plan:string,handoff=false) {
+    if(handoff)need(this.readBinding.verified&&this.readBinding.sourceId===sourceId,'source-unverified');
+    this.transaction(false,()=>{need(Boolean(this.db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()!.enabled),'disabled');const state=cleanupInstalled(this.db)?cleanupState(this.db,sourceId,plan):undefined;need(state?.state!=='deleted','not-found');need(state?.state!=='archived','closed');});
+  }
   handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number,capture?:Capture) {
     const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');
     const result=this.transaction(true,()=>{
@@ -365,7 +370,12 @@ export class Store {
   }
   cleanup(action:CleanupAction,value:unknown) {
     need(!this.readOnly,'storage');
-    try{return mutateCleanup(this.db,this.file,action,value,(write,fn)=>this.transaction(write,fn));}catch(e){throw storageError(e);}
+    const request=parseCleanup(action,value);
+    try{return mutateCleanup(this.db,this.file,action,request,(write,fn)=>this.transaction(write,()=>{
+      const result=fn();
+      if(write&&action==='archive'&&request.active===true)runs.retireCleanupIntent(this.db,request.source,request.plan);
+      return result;
+    }));}catch(e){throw storageError(e);}
   }
   /** One bounded keyed read per plan. Missing/malformed parent identity is never top-level. */
   mainSessionKind(source: string, session: string): import('./needs-you.ts').MainSessionKind {
