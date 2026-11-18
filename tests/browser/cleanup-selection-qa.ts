@@ -6,7 +6,7 @@ import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
 import { launchCleanupService } from '../fixtures/cleanup-service.ts';
 import { startLanguageFixture } from './interface-language-fixture.ts';
 import { chromiumPath, launchChromium } from './phone-cdp.ts';
-import { selectionCopy } from '../../ui/shared/cleanup.ts';
+import { selectionCopy, tidyCopy } from '../../ui/shared/cleanup.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -203,6 +203,8 @@ try {
   check('all-includes-closed-folds', await count() === '6 selected');
   await click('selection-archive'); await click('tidy-confirm-archive');
   await wait(`!!d.querySelector('[data-testid="tidy-undo"]')`);
+  // Undo restores only receipts: a slow reply must not let the run go on with fewer plans than it believes were archived.
+  check('archive-result-reports-all-archived', await guest(`return d.querySelector('[data-testid="tidy-result"]')?.textContent===${js(tidyCopy('en').result(6, 6, 'archive'))}`));
   const archived = await posts();
   check('mixed-archive-ack-only-active', archived.length === 6 && archived.every(q => q.body.plan === 'P-active' ? q.body.active === true : !('active' in q.body)));
   const report = (oid: string) => ({ op: 'change', plan: 'P-active', rev: service.store.get(service.source.id, 'P-active')?.revision ?? 2, oid, changes: [{ id: 'A', status: 'working' }] });

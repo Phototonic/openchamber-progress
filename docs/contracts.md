@@ -1159,14 +1159,18 @@ service's 16 KiB encoded-query limit each, pinned to the expected store and
 binding). This applies to scans that use the named reader: a truncated or searched
 scope on a service that advertises `planTaskSearch`. A complete non-search list
 counts from the displayed metadata without a lookup, and an older service still
-counts a truncated browse scope with the list scan. In the named reader, where the
-view's scope depends on content the client cannot evaluate (a search, a session
-scope) a plan whose revision moved since the count began (the revision captured
-when the count was requested, not necessarily when the rows were chosen) is
+counts a truncated browse scope with the list scan. Only the point lookup
+compares a named plan with a baseline: the revision supplied to the count, which
+is the revision the chosen plan carried and, on Try again, the original target's
+revision (not the revision at which the count began). A complete list takes a
+named plan as its loaded row shows it, and the older service's list scan takes it
+as the scan's row shows it; neither compares it with a supplied revision. In the
+point lookup, where the view's scope depends on content the client cannot evaluate
+(a search, a session scope) a plan whose revision differs from the supplied one is
 skipped as changed; elsewhere it is re-read with one `/v1/plan` head read,
 verified against the expected store and binding, and a missing plan is dropped
 only after the pinned lookup confirms its absence. Every request carries the
-captured revision and the service enforces it. Each lookup and each head read is one request of the
+captured revision and the service enforces it, in every path. Each lookup and each head read is one request of the
 per-action budget; unfinished plans wait for Check more.
 The count distinguishes a target ceiling with a confirmed further match (**more
 remain**) from unchecked plans that may or may not match: a full set keeps scanning
@@ -1184,7 +1188,13 @@ automatically. Stop and a change of account, store/binding or board reading end
 the run after the in-flight request. One progress line shows completed/total
 counts; start and result are announced once, not per plan. One final
 invalidation/re-read reconciles the result, including uncertain failures. Only
-validated receipts count as completed; all other targets are reported as skipped.
+validated receipts count as completed. A plan the service refused (changed,
+closed, reused operation, not found, store busy) and a plan the run did not send
+(left out of the view before sending, or after Stop) are reported as skipped. A
+plan whose attempted request got no valid answer (a lost reply, a connection or
+host failure, an unreadable receipt, or an attempt that failed before the service
+could receive it) is reported separately as unconfirmed: it may have been
+applied. Undo covers validated receipts only.
 
 Undo restores exactly the successful archive receipts of that action through
 the restore route, each bound to the generation returned by its receipt and a
@@ -1327,7 +1337,9 @@ replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
 `retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
 a fresh declaration works. Only the explicit restore record explains a missing
 intent: a plan never archived whose pending receipt lost its intent is not reported
-as closed; the view is unavailable and guidance incomplete. A new unlinked dispatch ignores archived plans when it
+as closed; the view is unavailable and guidance incomplete. A pending or reserved
+receipt whose state disagrees with its dispatch, or that names no task, is
+unreadable evidence: guidance is incomplete and reports no refusal for it. A new unlinked dispatch ignores archived plans when it
 looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
@@ -1921,7 +1933,7 @@ prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to workin
 to load the skill when writing, receiving or coordinating plans and before
 dispatching sub-agents. The description is at most 4,096 characters, with the
 checklist and executable prerequisite start example inside the first 2,048.
-Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that once every prerequisite it was blocked on is done again the task blocked this way is set back to working or pending, including before a handoff, because an explicit blocked task never becomes Ready. The following conditional rule still applies:
+Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that the block is cleared against the plan's current prerequisites: before a handoff, and when a prerequisite finishes, the agent reads the current plan, and once every prerequisite the task still lists is done the task blocked this way is set back to working or pending, because an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds the task, and a skipped prerequisite that is still listed counts as unfinished. This guidance is advisory; the store is unchanged and a structural revision keeps an explicit blocked status. The following conditional rule still applies:
 tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
