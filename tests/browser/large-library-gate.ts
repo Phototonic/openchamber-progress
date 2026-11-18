@@ -39,13 +39,16 @@ for (const label of ['idle', 'selection', 'drag', 'wheel-pan', 'key-zoom']) {
 // Idle polling. A refresh starts with a first-page list read; /health is read once per refresh. Each window's own elapsed
 // time (at the product cadence, ui/shared/app.ts REFRESH_MS) sets the allowed count, +/- one boundary tick, and both
 // surfaces must pass within the same run, so one healthy surface cannot cover for a stalled or doubled one. Traffic is then
-// compared per observed refresh, so a healthy extra boundary poll does not read as extra work. Artifacts from before the
-// driver recorded list starts fall back to /health as the refresh count; each fallback is named in its row.
+// compared per complete refresh: the driver attributes every reply to the refresh whose first page started it and counts only
+// refreshes that a later first page closed inside the window, so a refresh split by the window edge counts on neither side
+// of the ratio. Artifacts from before the driver recorded that fall back to wall-clock counts divided by list starts, or by
+// /health when list starts are missing too; every fallback is named in a row, for the baseline and for each candidate.
 const REFRESH_MS = 3000;
 const idle = (r: any, surface: string) => measurement(r, surface, 'idle');
 const requests = (r: any, surface: string, route: string) => idle(r, surface).traffic[`${surface} ${route}`]?.count ?? 0;
 const listStarts = (r: any, surface: string): number | undefined => idle(r, surface).listStarts?.[surface];
-const refreshes = (r: any, surface: string) => Math.max(1, listStarts(r, surface) ?? requests(r, surface, '/health'));
+const settled = (r: any) => idle(r, 'page').complete?.page as { refreshes: number; traffic: Record<string, number>; inbox: { needsYouRoute: number; plansFirstWindow: number } } | undefined;
+const denominator = (r: any) => settled(r) ? 'complete refreshes' : listStarts(r, 'page') !== undefined ? 'wall-clock list starts' : '/health count';
 const startsFallback: string[] = [];
 after.forEach((r, n) => {
   const violations: string[] = [];
@@ -60,22 +63,29 @@ after.forEach((r, n) => {
   rows.push({ name: `Idle cadence, run ${n + 1}: page and rail /health and list starts${violations.length ? ` (${violations.join('; ')})` : ''}`, before: 0, after: violations.length, budget: '== 0', pass: violations.length === 0 });
 });
 if (startsFallback.length) rows.push({ name: `Idle list starts not recorded (${startsFallback.join(', ')}): counted /v1/plans reads against the lower bound only`, before: 0, after: 0, budget: 'informational', pass: true });
-const perRefresh = (read: (r: any) => number) => (r: any) => read(r) / refreshes(r, 'page');
+if (denominator(before) !== 'complete refreshes') rows.push({ name: `Baseline traffic per refresh uses its ${denominator(before)} (complete-refresh attribution not recorded)`, before: 0, after: 0, budget: 'informational', pass: true });
+{
+  const fallback = after.map((r, n) => settled(r) ? null : `run ${n + 1} (${denominator(r)})`).filter(Boolean);
+  if (fallback.length) rows.push({ name: `Candidate traffic per refresh without complete-refresh attribution: ${fallback.join(', ')}`, before: 0, after: 0, budget: 'informational', pass: true });
+}
+const perRefresh = (route: (r: any) => number, complete: (r: any) => number) => (r: any) => {
+  const done = settled(r);
+  return done ? complete(r) / Math.max(1, done.refreshes) : route(r) / Math.max(1, listStarts(r, 'page') ?? requests(r, 'page', '/health'));
+};
 for (const route of ['/v1/plans', '/v1/needs-you', '/v1/subagent-runs']) {
-  const read = perRefresh(r => requests(r, 'page', route));
+  const read = perRefresh(r => requests(r, 'page', route), r => settled(r)!.traffic[route] ?? 0);
   check(`Idle ${route} requests/refresh`, read, read(before));
 }
 {
-  // Inbox work travels as /v1/needs-you windows and as the first window on /v1/plans?needsYou=1. Compare both forms when the
-  // baseline and at least two candidates carry them; otherwise compare the /v1/needs-you route alone and say so.
-  const split = (r: any) => idle(r, 'page').inbox?.page;
-  const comparable = after.filter(split);
-  const both = !!split(before) && comparable.length >= 2;
-  const total = (r: any) => both ? split(r).needsYouRoute + split(r).plansFirstWindow : requests(r, 'page', '/v1/needs-you');
-  const read = perRefresh(total), value = median((both ? comparable : after).map(read));
+  // Compare both inbox forms when the baseline and at least two candidates carry them; otherwise compare the
+  // /v1/needs-you route alone and say so.
+  const comparable = after.filter(settled);
+  const both = !!settled(before) && comparable.length >= 2;
+  const read = perRefresh(r => requests(r, 'page', '/v1/needs-you'), r => both ? settled(r)!.inbox.needsYouRoute + settled(r)!.inbox.plansFirstWindow : settled(r)!.traffic['/v1/needs-you'] ?? 0);
+  const value = median((both ? comparable : after).map(read));
   rows.push({
     name: both ? 'Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)'
-      : `Idle inbox requests/refresh (/v1/needs-you only: ${split(before) ? 'fewer than two candidates carry' : 'baseline lacks'} the form split)`,
+      : `Idle inbox requests/refresh (/v1/needs-you only: ${settled(before) ? 'fewer than two candidates carry' : 'baseline lacks'} the form split)`,
     before: read(before), after: value, budget: `<= ${read(before)}`, pass: value <= read(before),
   });
 }

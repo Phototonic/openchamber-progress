@@ -9,28 +9,36 @@ import test from 'node:test';
 const row = (count: number) => ({ count, bytes: count * 100 });
 /**
  * One idle window per surface at the 3 s cadence. Per refresh the board reads one first page plus nine continuation
- * pages, one /v1/needs-you window and one /v1/plans?needsYou=1 window; the rail reads one page.
+ * pages, one /v1/needs-you window and one /v1/plans?needsYou=1 window; the rail reads one page. The driver's complete
+ * refreshes are the ones a later first page closed, so one fewer than the list starts in the window.
  */
 interface Opt {
   page?: number; rail?: number; elapsed?: number; railElapsed?: number; pagesPerRefresh?: number; pageStarts?: number; railStarts?: number;
   railPlans?: number; firstWindow?: number; split?: boolean; before?: boolean;
+  /** Wall-clock /v1/plans replies on the board, and the plan pages the driver attributed to its complete refreshes. */
+  pagePlans?: number; completePlans?: number;
 }
 function results(o: Opt = {}) {
   const page = o.page ?? 5, rail = o.rail ?? 5, split = o.split ?? true;
-  const window = (surface: 'page' | 'panel', refreshes: number, elapsed: number, plans: number, starts: number, first: number) => ({
+  const window = (surface: 'page' | 'panel', refreshes: number, elapsed: number, plans: number, starts: number, first: number, completePlans: number) => ({
     surface, label: 'idle', elapsed, longTasks: { count: 0, total: o.before && surface === 'page' ? 5000 : 0, max: 0 }, frames: { p99: 16, max: 20 },
     traffic: {
       [`${surface} /health`]: row(refreshes), [`${surface} /v1/plans`]: row(plans), [`${surface} /v1/needs-you`]: row(refreshes), [`${surface} /v1/subagent-runs`]: row(refreshes),
     },
-    ...(split ? { listStarts: { [surface]: starts }, inbox: { [surface]: { needsYouRoute: refreshes, plansFirstWindow: first } } } : {}),
+    ...(split ? {
+      listStarts: { [surface]: starts },
+      complete: { [surface]: { refreshes: Math.max(0, starts - 1), traffic: { '/v1/plans': completePlans, '/v1/needs-you': Math.max(0, starts - 1), '/v1/subagent-runs': Math.max(0, starts - 1) }, inbox: { needsYouRoute: Math.max(0, starts - 1), plansFirstWindow: Math.round(first * Math.max(0, starts - 1) / Math.max(1, refreshes)) } } },
+    } : {}),
   });
   const others = (surface: 'page' | 'panel') => ['drag', 'wheel-pan', 'selection', 'key-zoom'].map(label => ({
     surface, label, elapsed: 1000, longTasks: { count: 0, total: 0, max: 0 }, frames: { p99: 16, max: 20 }, traffic: {},
   }));
   return {
     measurements: [
-      window('page', page, o.elapsed ?? 16000, page * (o.pagesPerRefresh ?? 10), o.pageStarts ?? page, page * (o.firstWindow ?? 1)),
-      window('panel', rail, o.railElapsed ?? 16000, o.railPlans ?? rail, o.railStarts ?? rail, rail), ...others('page'), ...others('panel'),
+      window('page', page, o.elapsed ?? 16000, o.pagePlans ?? page * (o.pagesPerRefresh ?? 10), o.pageStarts ?? page, page * (o.firstWindow ?? 1),
+        o.completePlans ?? Math.max(0, (o.pageStarts ?? page) - 1) * (o.pagesPerRefresh ?? 10)),
+      window('panel', rail, o.railElapsed ?? 16000, o.railPlans ?? rail, o.railStarts ?? rail, rail, Math.max(0, (o.railStarts ?? rail) - 1)),
+      ...others('page'), ...others('panel'),
     ],
     scrollbar: ['paused', 'inside', 'outside'].map(mode => ({ mode, distance: 100, same: true, reportArrived: true })),
     errors: [], search: { passed: true }, keyboard: { focusedListbox: true, activeOption: true },
@@ -38,7 +46,7 @@ function results(o: Opt = {}) {
   };
 }
 /** Run the gate on a baseline and three candidate runs (one option set repeats for all three). */
-function gate(after: Opt | [Opt, Opt, Opt], before: Opt = {}): { status: number | null; failed: string[]; error: string } {
+function gate(after: Opt | [Opt, Opt, Opt], before: Opt = {}): { status: number | null; failed: string[]; info: string[]; error: string } {
   const scratch = mkdtempSync(join(tmpdir(), 'large-library-gate-'));
   try {
     const runs = Array.isArray(after) ? after : [after, after, after];
@@ -47,7 +55,8 @@ function gate(after: Opt | [Opt, Opt, Opt], before: Opt = {}): { status: number 
     });
     const run = spawnSync(process.execPath, ['--experimental-strip-types', 'tests/browser/large-library-gate.ts', ...dirs], { encoding: 'utf8' });
     const report = run.stdout ? JSON.parse(run.stdout) : null;
-    return { status: run.status, failed: (report?.rows ?? []).filter((r: any) => !r.pass).map((r: any) => r.name as string), error: run.stderr };
+    const rows: { name: string; pass: boolean; budget: string }[] = report?.rows ?? [];
+    return { status: run.status, failed: rows.filter(r => !r.pass).map(r => r.name), info: rows.filter(r => r.budget === 'informational').map(r => r.name), error: run.stderr };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 const cadence = (failed: string[]) => failed.filter(n => n.startsWith('Idle cadence'));
@@ -112,9 +121,24 @@ test('one legacy candidate does not discard the inbox form split of the others',
   assert.deepEqual(run.failed.filter(n => n.startsWith('Idle inbox')), ['Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)']);
 });
 
-test('a baseline without list starts or the split still compares, and names the fallback', () => {
+test('a refresh split by the window edge counts on neither side of the traffic ratio', () => {
+  // 49 board pages over 4 list starts (a refresh's first page fell just before the window): healthy, 10 pages per complete refresh.
+  const edge = gate({ pageStarts: 4, pagePlans: 49 });
+  assert.equal(edge.status, 0, `${edge.error}${edge.failed.join('\n')}`);
+  // 50 pages over 5 starts looks healthy by wall clock, yet the complete refreshes carried 11 pages each.
+  const hidden = gate({ completePlans: 44 });
+  assert.equal(hidden.status, 1);
+  assert.deepEqual(hidden.failed, ['Idle /v1/plans requests/refresh']);
+});
+
+test('a legacy baseline still compares, and the report says its denominator fell back to /health', () => {
   const run = gate({}, { split: false });
   assert.equal(run.status, 0, run.error);
+  assert.ok(run.info.includes('Baseline traffic per refresh uses its /health count (complete-refresh attribution not recorded)'), run.info.join('\n'));
+  assert.ok(run.info.every(n => !/^Candidate traffic/.test(n)));
   const doubled = gate({ page: 10, rail: 10 }, { split: false });
   assert.equal(doubled.status, 1);
+  // A candidate without the attribution is reported too.
+  const legacy = gate([{}, {}, { split: false }]);
+  assert.ok(legacy.info.some(n => /^Candidate traffic per refresh without complete-refresh attribution: run 3 \(\/health count\)/.test(n)), legacy.info.join('\n'));
 });
