@@ -168,8 +168,9 @@ export class Store {
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
   delegationRefusals(sourceId:string,sessionId:string) {return this.transaction(false,()=>runs.delegationRefusals(this.db,this.readBinding,sourceId,sessionId));}
-  /** Early refusal so a companion never asks for document access a write cannot use. Same precedence as the write path: paused capture is `disabled`, then a cleanup-fenced plan is `closed`/`not-found`. The write path still checks inside its transaction. */
-  assertReportable(sourceId:string,plan:string) {
+  /** Early refusal so a companion never asks for document access a write cannot use. Same precedence as the write path: a handoff checks the source binding first, then paused capture is `disabled`, then a cleanup-fenced plan is `closed`/`not-found`. The write path still checks inside its transaction. */
+  assertReportable(sourceId:string,plan:string,handoff=false) {
+    if(handoff)need(this.readBinding.verified&&this.readBinding.sourceId===sourceId,'source-unverified');
     this.transaction(false,()=>{need(Boolean(this.db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()!.enabled),'disabled');const state=cleanupInstalled(this.db)?cleanupState(this.db,sourceId,plan):undefined;need(state?.state!=='deleted','not-found');need(state?.state!=='archived','closed');});
   }
   handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number,capture?:Capture) {

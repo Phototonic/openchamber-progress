@@ -107,6 +107,15 @@ test('the early report refusal has the write path precedence: disabled, then clo
   }finally{f.cleanup();}
 });
 
+test('a handoff early refusal checks the source binding before paused capture',()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.setEnabled(false);f.store.bindReads(f.source.id,false);
+    assert.throws(()=>f.store.assertReportable(f.source.id,'P-active',true),(e:any)=>e.code==='source-unverified');
+    assert.throws(()=>f.store.assertReportable(f.source.id,'P-active'),(e:any)=>e.code==='disabled','an ordinary report keeps its own precedence');
+  }finally{f.cleanup();}
+});
+
 test('an unlinked dispatch keeps its visible plan when other active plans are archived',()=>{
   const f=cleanupFixture();
   try{
