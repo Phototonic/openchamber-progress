@@ -74,6 +74,8 @@ test('portable lanes run every portable file once, keep the port-bound group ser
   assert.deepEqual(files(serial).map(f=>f.split('/').at(-1)),backendTestCommands(backend)[1].slice(3).map(f=>f.split('/').at(-1)).sort());
   const alone=full.filter(l=>l.steps.includes(serial[0]));
   assert.equal(alone.length,1);assert.equal(alone[0].steps.length,1,'the port-bound group shares its lane with nothing that could take a port');
+  assert.ok(!serial[0].lowPriority&&full.find(l=>l.steps.includes(serial[0]))!.steps.length===1,'the serial group never yields cores');
+  assert.ok(full.flatMap(l=>l.steps).filter(s=>s!==serial[0]).every(s=>s.lowPriority),'the lane beside it yields cores to it');
   // Every other test step is bounded by an explicit worker count rather than the host default.
   for(const step of every(full).filter(s=>s!==serial[0]))assert.ok(step.args.some(a=>/^--test-concurrency=[1-9]\d*$/.test(a)),step.label);
   assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files(serial).includes(f)));
@@ -81,6 +83,20 @@ test('portable lanes run every portable file once, keep the port-bound group ser
     const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
     assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),'both typechecks stay in every run');
   }
+});
+
+test('lane runner starts a yielding step at lower priority and an ordinary one at the usual priority',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-lanes-priority-'));
+  try {
+    const script=join(root,'lanes.ts');
+    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
+const show=(label:string,lowPriority?:boolean)=>({label,command:process.execPath,args:['-e',"console.log('PRIORITY '+require('node:os').getPriority())"],lowPriority});
+await runLanes([{name:'a',steps:[show('usual')]},{name:'b',steps:[show('yielding',true)]}]);`);
+    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000});
+    assert.equal(r.status,0,r.stderr);
+    const seen=(label:string)=>Number(new RegExp(`=== ${label} ===\\nPRIORITY (-?\\d+)`).exec(r.stdout)?.[1]);
+    assert.ok(seen('b: yielding')>seen('a: usual'),'the yielding step has the larger niceness');
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('lane runner stops every lane at the first failure and reports it without interleaving',async()=>{

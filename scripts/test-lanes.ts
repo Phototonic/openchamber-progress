@@ -4,7 +4,9 @@
  * from different lanes never interleave. The first failure stops every lane. */
 import { spawn } from 'node:child_process';
 
-export type Step = { label: string; command: string; args: string[] };
+/** `lowPriority` runs the step under `nice`, so a lane that must keep its timing
+ * headroom wins the cores when the machine is short of them. */
+export type Step = { label: string; command: string; args: string[]; lowPriority?: boolean };
 export type Lane = { name: string; steps: Step[] };
 export type StepResult = { lane: string; label: string; seconds: number; status: 'passed' | 'failed' | 'stopped' };
 
@@ -32,7 +34,8 @@ export async function runLanes(lanes: Lane[]): Promise<StepResult[]> {
     console.log(`start  ${label}`);
     const chunks: Buffer[] = [];
     // Own process group, so stopping a step also stops the test files it started.
-    const child = spawn(step.command, step.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const niced = step.lowPriority && process.platform !== 'win32';
+    const child = spawn(niced ? 'nice' : step.command, niced ? ['-n', '10', step.command, ...step.args] : step.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     if (child.pid) children.add(child.pid);
     child.stdout.on('data', chunk => chunks.push(chunk));
     child.stderr.on('data', chunk => chunks.push(chunk));

@@ -30,10 +30,12 @@ export function portableLanes(options: { fenced: boolean }): Lane[] {
     node('backend tests (parallel group)', withWorkers(parallel)),
     node('browser-model and automation tests', withWorkers(['--experimental-strip-types', '--test', ...testFiles('tests/browser'), ...testFiles('tests/automation')])),
   ];
+  // Beside the serial group, the other lane yields cores to it.
+  const yielding = [...types, ...rest].map(step => ({ ...step, lowPriority: true }));
   return options.fenced
     ? [
       { name: 'port-bound backend', steps: [node('backend tests (serial group, Setup ports)', serial)] },
-      { name: 'everything else', steps: [...types, ...rest] },
+      { name: 'everything else', steps: yielding },
     ]
     : [
       { name: 'types', steps: types },

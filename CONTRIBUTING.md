@@ -108,8 +108,8 @@ and worker start-up, and no other group acquires Setup ports. `scripts/ci.ts`
 and `bun run test:all` therefore run it in one lane beside a second lane that
 holds both typechecks, the parallel backend group and the browser-model and
 automation tests (`scripts/test-plan.ts`, `scripts/test-lanes.ts`). The second
-lane is capped at the machine's cores minus two so the timing assertions in the
-serial group keep their headroom. Each step's output is printed whole under its
+lane is capped at the machine's cores minus two and runs under `nice`, so the
+timing assertions in the serial group keep their headroom. Each step's output is printed whole under its
 own heading, the first failure stops both lanes, and the run ends with a
 per-step duration list. A file that takes a Setup port belongs in the serial
 group; never add one to the other lane.
