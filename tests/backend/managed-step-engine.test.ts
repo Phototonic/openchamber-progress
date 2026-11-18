@@ -497,6 +497,16 @@ test('advance refuses an exhausted deadline before intent and any effect',()=>{
     assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(fs.existsSync(managedExpectationFile(f.journal())),false);
   }finally{f.cleanup();}
 });
+test('advance refuses inside the headroom before intent and any effect',()=>{
+  const f=fixture();try{
+    // A budget with only one second left, used directly: the engine's own check before the
+    // intent is published refuses, ahead of any intent or effect.
+    const budget=new PlatformRequestBudget(process.hrtime.bigint()-16_000_000_000n),before=fs.readFileSync(migrationFile(f.env));
+    const reply=advanceManagedStep(f.env,payload,f.request(),budget,f.journal());
+    assert.equal(reply.disposition,'refused');assert.equal(reply.error!.code,'managed-step-deadline');
+    assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(fs.existsSync(managedExpectationFile(f.journal())),false);
+  }finally{f.cleanup();}
+});
 
 test('failed settlement surfaces a journal conflict instead of swallowing it as the effect error',t=>{
   const f=fixture();try{

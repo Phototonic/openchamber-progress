@@ -488,10 +488,12 @@ process. New databases initialize off; retained stores keep capture and IDs.
 Rendered synthetic-shell checks do not certify native Windows latency. Native CI
 exercises empty default and custom stores, and retained stores with matching
 sources (capture on/off) or a new source (capture off). Fresh default recovery
-covers lost-reply replay, restart and pause/resume before/after creation; the
-migration cases additionally cover late-worker refusal. Every native request is
-gated at eight seconds with zero process launches. These are the job's
-assertions, not portable certification. Timeout never undoes changes or permits
+covers lost-reply replay, restart and pause/resume before/after creation. Every
+native request is gated at eight seconds with zero process launches. Deadline
+refusal, late-worker exclusion and injected faults are covered by portable
+fixtures only (`managed-step-http.test.ts`, `managed-request-worker.test.ts`);
+versions before 1.5.2 injected them natively through the slow helper. These are
+the job's assertions, not portable certification. Timeout never undoes changes or permits
 cleanup/permission repair. See
 [Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 

@@ -17,7 +17,7 @@ import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, requirePlatformWriteBoundary,
-  requirePlatformStoreFence, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
+  requirePlatformStoreFence, STEP_HEADROOM_MS, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 import { canonical } from './canonical.ts';
@@ -116,7 +116,7 @@ export class Store {
       need(![file,...sidecars].some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
       return storeObject(stat);
     })();
-    requirePlatformWriteBoundary();
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
     const fd=openSync(file,'wx',0o600);
     try{
       const reserved=storeObject(fstatSync(fd,{bigint:true}));

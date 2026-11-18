@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {SetupError,type Payload} from './lifecycle.ts';
 import {managedSourceRoots,createManagedBindingDirectory} from '../shared/managed-binding.ts';
-import {windows,windowsPaths,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
+import {windows,windowsPaths,STEP_HEADROOM_MS,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
 import {managedJournalProgress,managedFreshJournalProgress,managedRequestDigest,parseManagedStepJournal,parseManagedFreshStepJournal,sameManagedStep,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedCaptureRenewal,type ManagedFreshCaptureRenewal,type ManagedFreshStepIntent} from './managed-step-journal.ts';
 import {readManagedStepJournal,readManagedFreshStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths} from './managed-migration.ts';
 import {validateManagedInspectionReview,validateManagedFreshInspectionReview,type ManagedInspectionSession,type ManagedFreshInspectionSession} from './managed-inspection.ts';
@@ -70,15 +70,15 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   parseJournal(next,request.version);
   const validate=()=>{validateReview(env,payload,session);};
   if('prior' in reviewed&&reviewed.prior){
-    // No directory, capture or removal effect here; refuse past the deadline.
-    budget.require();
+    // No directory, capture or removal effect here; refuse near the deadline.
+    budget.require(STEP_HEADROOM_MS);
     upgradeManagedStepJournal(env,next as ManagedStepJournal,reviewed.prior,validate);
   }else{
-    budget.require();
+    budget.require(STEP_HEADROOM_MS);
     createManagedBindingDirectory(env);
     // A slow disk may leave a valid marker and a missing journal. Refuse before
     // publication; fresh explicit review can recover that state.
-    budget.require();
+    budget.require(STEP_HEADROOM_MS);
     writeManagedStepJournal(env,next,undefined,validate);
   }
   return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};
@@ -174,7 +174,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
       freshCapture=['enable','disable'].includes(m.step!.name);
     }
     running.migration.state='running';running.migration.diagnostic=null;running.migration.capture=capture;
-    budget.require();
+    budget.require(STEP_HEADROOM_MS);
     if(canonical(running)!==canonical(prior)){
       try{publishManagedStepIntent(env,running,prior,()=>{validateManagedStepTarget(env,payload,prior);});}
       catch(error){

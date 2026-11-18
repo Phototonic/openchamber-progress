@@ -35,6 +35,10 @@ export function writerTargetPort(target:string):number {
   while(writerPortDenylist.has(25000+offset))offset=(offset+1)%4000;
   return 25000+offset;
 }
+/** Time kept in reserve before an effect that must be checkpointed, such as an
+ * exclusive creation or an intent publication: past this point the request would
+ * rather refuse (target still absent, safely retryable) than strand an object. */
+export const STEP_HEADROOM_MS = 2_500;
 /** A worker-local request boundary: the work deadline and the writer fence. It
  * starts no process. Monotonic nanoseconds use the same clock in service and
  * worker threads. */
@@ -51,9 +55,10 @@ export class PlatformRequestBudget {
     this.writerFence=writerFence;
   }
   get elapsedMs(){return Math.max(0,Number(process.hrtime.bigint()-this.startedAt)/1_000_000);}
-  /** Refuse to admit further effects once the work deadline has passed. */
-  require() {
-    if(Number(this.deadline-process.hrtime.bigint())/1_000_000<=0)
+  /** Refuse to admit further effects once less than `headroomMs` of the work
+   * deadline is left (0: once it has passed). */
+  require(headroomMs=0) {
+    if(Number(this.deadline-process.hrtime.bigint())/1_000_000<=headroomMs)
       throw new PlatformError('managed-step-deadline');
   }
 }
@@ -84,8 +89,8 @@ export function withPlatformRequestBudget<T>(budget:PlatformRequestBudget,run:()
   }finally{requestBudget=undefined;}
 }
 /** A mutation owner checks the request deadline before each effect. */
-export function requirePlatformWriteBoundary():void {
-  requestBudget?.require();
+export function requirePlatformWriteBoundary(headroomMs=0):void {
+  requestBudget?.require(headroomMs);
 }
 /** A pre-dispatch metadata read may route locks, but never grant authority. The
  * fresh owner must bind its actual Store to an acquired slot before any effect. */
@@ -162,9 +167,11 @@ export function privateDirectory(file: string, recursive=false, creation?:{exclu
     const target=windows?windowsPath(file,true):file,parent=path.dirname(target);
     if(!path.isAbsolute(target)||path.resolve(target)!==target||!lstatSync(parent).isDirectory()||
       (!windows&&realpathSync(parent)!==parent)||lstatSync(target,{throwIfNoEntry:false}))throw new PlatformError('path-unverified');
-    requirePlatformWriteBoundary();
-    // Exclusive: mkdir fails if the target appeared since validation.
-    if(windows)mkdirSync(target);else mkdirSync(target,{mode:0o700});
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
+    // Exclusive: mkdir fails if the target appeared since validation. On Windows
+    // that is a path refusal, not a raw filesystem error.
+    try{if(windows)mkdirSync(target);else mkdirSync(target,{mode:0o700});}
+    catch(error){if(windows&&(error as NodeJS.ErrnoException).code==='EEXIST')throw new PlatformError('path-unverified');throw error;}
     syncDirectory(path.dirname(target));
     return;
   }
@@ -172,7 +179,10 @@ export function privateDirectory(file: string, recursive=false, creation?:{exclu
   const target=windowsPath(file,true);
   let missing=0; for(let parent=target;!existsSync(parent);parent=path.dirname(parent))missing++;
   if(!recursive&&missing>1)throw new PlatformError('path-unverified');
-  if(missing)mkdirSync(target,{recursive});
+  if(missing){
+    try{mkdirSync(target,{recursive});}
+    catch(error){if(['EEXIST','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))throw new PlatformError('path-unverified');throw error;}
+  }
   else if(!lstatSync(target).isDirectory())throw new PlatformError('path-unverified');
 }
 export function syncFile(file:string) {const fd=openSync(file,windows?'r+':'r');try{fsyncSync(fd);}finally{closeSync(fd);}}

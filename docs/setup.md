@@ -531,14 +531,24 @@ decision ([#172](https://github.com/Phototonic/openchamber-progress/issues/172))
 starting Windows PowerShell synchronously for each check (one to two seconds each)
 blocked the OpenCode event loop inside the companion for tens of seconds.
 
+**On Windows, Agent Progress no longer checks folder permissions.** It does not
+check who owns a folder, who can write to it, or who can replace it or its parents.
+A store or custom root in a folder that other accounts can write to (a shared
+profile, `ProgramData`, a shared drive) is accepted, and so is state under a
+parent that another account can replace. Protection is whatever the folder
+already has: with the default profile location that is the user's own profile
+permissions. A custom store folder outside the profile simply has the
+permissions it already carries. Existing roots that carry a private ACL from an
+earlier version keep working and are never modified. Linux and macOS keep their
+uid and mode checks.
+
 Windows keeps the checks that need only filesystem calls: drive-qualified path
-syntax, canonical path, refusal of symbolic links and junctions in the path chain,
-refusal of hard-linked owned state files, content-ownership markers, hashes and
-schema validation. Directories are created with default inheritance, and an
-existing directory is accepted as it is. A custom store folder outside the
-profile simply has whatever permissions it already carries. Existing roots that
-carry a private ACL from an earlier version keep working and are never modified. Linux and macOS keep
-their uid and mode checks.
+syntax, canonical path, refusal of hard-linked owned state files, content-ownership
+markers, hashes and schema validation. In the path chain only **symbolic links and
+junctions** are refused. Other reparse points, such as volume mount points or
+cloud-storage placeholders, are not detected: they are resolved through their real
+path. Directories are created with default inheritance, and an existing directory
+is accepted as it is.
 
 Managed service construction and health do no legacy payload/Store preflight.
 Every request and every mutation boundary repeats its path and object checks; no
@@ -549,8 +559,9 @@ proxy to **20 seconds** per request (`packages/sdk/src/contract.ts:499`,
 at tag `v2.7.1`). Migration and fresh setup run as separate inspection pages and
 confirmed steps. The 17-second work and 18-second response deadlines sit below the
 host limit; the undelayed runner gates each request at eight seconds. The native
-suite also exercises pause/reopen/resume and failed workers, and an independent
-observer asserts that the service starts no process. Native results remain
+suite also exercises pause/reopen/resume, and an independent observer asserts
+that the service starts no process. Failed-worker and late-worker cases are
+portable-only. Native results remain
 pending CI; these are acceptance budgets, not a latency guarantee for every
 machine.
 

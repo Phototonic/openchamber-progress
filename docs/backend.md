@@ -452,8 +452,11 @@ workers. Admission reads the current private journal and revalidates
 all known paths and lifecycle facts; no validation result crosses a request or write.
 An outdated hint is discarded as authority, not a conflict with an otherwise
 valid current request; operation identity is still checked.
-Status can restore those claims after restart. A cold mutation that cannot finish
-before the work deadline refuses before publishing an intent; explicit bounded
+Status can restore those claims after restart. A mutation with less than
+2.5 seconds of the work deadline left (`STEP_HEADROOM_MS`) refuses before
+publishing an intent and again right before an exclusive creation (directory,
+database or managed folder), so a creation is never stranded without its
+checkpoint and the target stays absent and retryable; explicit bounded
 status/resume is the recovery path, not a hidden retry or a weakened check.
 Portable HTTP tests assert that no step starts a process.
 
@@ -522,10 +525,13 @@ can reconcile read-only from their matching durable creation intent.
 Portable full-engine tests run the whole fresh engine on a projected Windows path
 and assert that no creation, settlement, replay or control starts a process.
 Native CI tests empty default/custom stores, retained matching sources with
-capture on/off, and a retained new source with capture off. Default fresh
-recovery tests replay and restart/pause/resume; migration tests add late-worker
-refusal. Native requests assert no process launch and eight seconds, and health
-answers with zero launches.
+capture on/off, and a retained new source with capture off. Native recovery
+covers replay and restart/pause/resume. Native requests assert no process launch
+and eight seconds, and health answers with zero launches. Deadline refusal, a
+response deadline with a late worker (the writer slot is held until it exits),
+injected worker faults and concurrent writers are covered by the portable
+`managed-step-http.test.ts` and `managed-request-worker.test.ts` fixtures only;
+no native case injects them.
 
 The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber

@@ -127,14 +127,15 @@ Acceptance SHALL include native Windows released-legacy migration and fresh setu
 
 #### Scenario: CI verifies the built candidate
 - **WHEN** the final built service migrates an isolated released 1.1.1 installation under a non-admin Windows test principal
-- **THEN** inspect, step, failure, retry and status paths start no process and meet the time bound with retained identities/history and honest capture state
+- **THEN** inspect, step, retry and status paths start no process and meet the time bound with retained identities/history and honest capture state
 - **AND** traces contain only bounded stage/code/timing/count/state facts, never account names, paths, credentials or raw logs
 
 #### Scenario: CI verifies empty-store setup
 - **WHEN** the built candidate starts with only isolated config/data roots and no legacy, managed directory, store or journal
 - **THEN** fresh journeys complete within the request bound with no process started
 - **AND** health starts no process and responds within the existing 1.25-second native health bound
-- **AND** representative restart, dropped-reply, pause/resume, retained reconnection and over-budget cases assert actual durable effects
+- **AND** representative restart, dropped-reply, pause/resume and retained reconnection cases assert actual durable effects
+- **AND** over-budget, late-worker and injected-fault cases are covered by portable fixtures only, not by native CI
 
 #### Scenario: Rendered fresh Setup
 - **WHEN** current-source guests run the fresh journey in the existing rendered browser harness

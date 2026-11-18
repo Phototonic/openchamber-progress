@@ -93,3 +93,19 @@ test('creation refuses once the request deadline has passed, before any exclusiv
     }finally{clock.mock.restore();}
   }finally{f.close();}
 });
+test('a slow final preflight inside the headroom refuses while the target is still absent',t=>{
+  const f=fixture();try{
+    let now=process.hrtime.bigint();const started=now;
+    const clock=t.mock.method(process.hrtime,'bigint',()=>now);
+    try{
+      // Validation consumes the time until only one second of the work deadline is left.
+      const slow=()=>{now=started+16_000_000_000n;};
+      const dir=path.join(f.root,'store');
+      assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(started),()=>privateDirectory(dir,false,{exclusive:true,validate:slow})),{code:'managed-step-deadline'});
+      assert.equal(fs.existsSync(dir),false,'no directory is stranded without its checkpoint');
+      now=started;
+      assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(started),()=>Store.createFresh(f.file,{storeId:'slow-store',validate:slow})),{code:'managed-step-deadline'});
+      assert.equal(fs.existsSync(f.file),false,'no empty database file is stranded');
+    }finally{clock.mock.restore();}
+  }finally{f.close();}
+});
