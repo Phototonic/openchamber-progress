@@ -249,6 +249,9 @@ try {
   await evaluate(`qa.release('tidy-stop');true`);
   await wait('page', `!!d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('skipped')`);
   check('stop-after-inflight-only', await posts() === stopPosts + 1);
+  // Focus was on Stop when the run ended and nothing else took it: it returns to Tidy once the board is read again.
+  await wait('page', `!!d.querySelector('[data-testid="tidy-open"] button') && !!d.activeElement?.closest('[data-testid="tidy-open"]')`);
+  check('stop-focus-returns-to-tidy', true);
   // Archived Tidy has Delete only; no eligible targets leaves just the empty line and Cancel.
   await wait('page', `!!d.querySelector('[data-testid="board-filters-trigger"]')`);
   await click('page', '[data-testid="board-filters-trigger"]');

@@ -62,6 +62,10 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     replaceChildren(node: Node) { this.children = [node]; }
   }
   const mount = new Node();
+  let popupOpen = false;
+  const nativeQueryAll = mount.querySelectorAll.bind(mount);
+  mount.querySelectorAll = ((selector?: string) => popupOpen && selector?.includes('aria-haspopup') ? [{ closest: () => null }] : nativeQueryAll()) as typeof mount.querySelectorAll;
+  const frames: (() => void)[] = [];
   const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', get activeElement() { return focused; }, hasFocus: () => ownsFrame, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(type: string, fn: (e: unknown) => void) { docListeners[type] = fn; } };
   const plans = opts.plans ?? [summary('one', [], { lifecycle: active ? 'active' : 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
   const feed = opts.live ? liveFeed(opts.live) : null;
@@ -109,7 +113,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   const exports: any = {};
   runInNewContext(APP, {
     exports, document, AbortController, crypto: globalThis.crypto, queueMicrotask, performance, console,
-    setTimeout: () => 1, clearTimeout() {},
+    setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (fn: () => void) => frames.push(fn),
     window: { addEventListener: (key: string, fn: any) => { listeners[key] = fn; } },
     require: (name: string) => ({
       ...appCountsModules,
@@ -149,7 +153,13 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
       const node = { focused: 0, tagName: 'BUTTON', focus() { node.focused++; }, querySelector: () => null };
       focusables.set(`[data-testid="${id}"]`, node); return node;
     },
+    /** The control is no longer painted: its marker is gone, so a focus request for it finds nothing. */
+    absent(id: string) { focusables.delete(`[data-testid="${id}"]`); },
     focusAt(element: unknown) { focused = element; },
+    /** The pointer is lifted: the press ends and the paint it held can run. */
+    releasePress() { docListeners.pointercancel({ type: 'pointercancel' }); for (const next of frames.splice(0)) next(); },
+    /** A picker is open (or closed): background paints wait for it. */
+    popup(on: boolean) { popupOpen = on; },
     ownsFocus(on: boolean) { ownsFrame = on; },
     normalizeScope(value: string) { effectiveScope = value; },
     hold() { holds++; },
@@ -1207,5 +1217,206 @@ test('a later equal list read replaces the facts a failed read granted, after a 
     freshness = false; f.capability(false); f.vc.retry();
     await until(() => !offered(f));
     assert.equal(await refusesCleanup(f), true);
+  } finally { f.stop(); }
+});
+
+// Background cleanup updates and deferred focus moves. A press is simulated with `press` and ended with `releasePress`;
+// a paint is counted through the spec's paint hook, so "the control is not replaced" is "no paint ran".
+/** The focused element as the controller reads it: the test id of its owner and whether it sits in the cleanup panel. */
+const control = (id: string) => ({
+  isConnected: true,
+  closest: (selector: string) => selector === '[data-testid]' ? { dataset: { testid: id } }
+    : selector === `[data-testid="${id}"]` || selector === '[data-testid="tidy-actions"]' && id.startsWith('tidy-') ? {} : null,
+});
+const pressing = () => ({ closest: () => ({}), isConnected: true, setPointerCapture() {} });
+const threePlans = () => [summary('one', [], { lifecycle: 'finished' }), summary('two', [], { lifecycle: 'cancelled' }), summary('three', [], { lifecycle: 'finished' })];
+function countedScan() {
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  const paints = { n: 0 };
+  const extra = {
+    tidyScan: (c: any, key: string) => new cleanup.CleanupScan(key, c.read.storeId, false, async () => { await held; return { plans: c.read.plans, visited: 1, nextCursor: null }; }),
+    paint: () => { paints.n++; },
+  } as Partial<ViewSpec<any>>;
+  return { release: () => release(), paints, extra };
+}
+
+test('a count that finishes during a press does not replace the pressed control', async () => {
+  const scan = countedScan();
+  const f = frame('page', false, false, true, scan.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain();
+    f.press(pressing());
+    const before = scan.paints.n;
+    scan.release(); await drain();
+    assert.equal(scan.paints.n, before, 'the finished count waits for the press');
+    f.releasePress(); await drain();
+    assert.ok(scan.paints.n > before, 'the count line is painted once the press is over');
+    assert.ok(f.vc.cleanup.tidy?.confirmation, 'the count is shown');
+  } finally { f.stop(); }
+});
+
+test('a count that fails during a press waits for it too, and pressing Cancel while counting still paints at once', async () => {
+  const paints = { n: 0 };
+  let fail!: () => void;
+  const held = new Promise<void>((_, reject) => { fail = () => reject(new Error('storage')); });
+  const f = frame('page', false, false, true, {
+    tidyScan: (c: any, key: string) => new cleanup.CleanupScan(key, c.read.storeId, false, async () => { await held; return { plans: [], visited: 0, nextCursor: null }; }),
+    paint: () => { paints.n++; },
+  });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain();
+    f.press(pressing());
+    const before = paints.n;
+    fail(); await drain();
+    assert.equal(paints.n, before, 'the failed count waits for the press');
+    f.releasePress(); await drain();
+    assert.ok(paints.n > before);
+    assert.equal(f.vc.cleanup.tidy?.countFailed, true);
+  } finally { f.stop(); }
+});
+
+test('Cancel while a count is running repaints at once, with another control pressed', async () => {
+  const scan = countedScan();
+  const f = frame('page', false, false, true, scan.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain();
+    f.press(pressing());
+    const before = scan.paints.n;
+    f.vc.cancelTidy(); await drain();
+    assert.ok(scan.paints.n > before, 'an explicit action is not held');
+  } finally { f.stop(); }
+});
+
+test('a receipt arriving during a press on Stop does not replace Stop, and the run stops after the request in flight', async () => {
+  const paints = { n: 0 };
+  const f = frame('page', false, false, true, { ...boardSpy().extra, paint: () => { paints.n++; } }, { plans: threePlans() });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain(); f.hold(); f.hold(); f.vc.confirmTidy();
+    await until(() => f.posts.length === 1); await drain();
+    const stop = f.vc.stopTidy;
+    f.press(pressing());
+    const before = paints.n;
+    f.release(); await until(() => f.posts.length === 2); await drain();
+    assert.equal(paints.n, before, 'the progress update waits for the press');
+    stop(); f.releasePress();
+    f.release(); await drain();
+    assert.equal(f.posts.length, 2, 'no request is sent after the one in flight');
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2);
+  } finally { f.stop(); }
+});
+
+/** A two-plan run whose last reply arrives while an unrelated control is pressed (or a picker is open). */
+async function lastReplyHeld(f: Held, hold: () => void) {
+  await until(() => !!f.vc?.read);
+  f.vc.requestTidy(); await drain(); f.hold(); f.hold(); f.vc.confirmTidy();
+  await until(() => f.posts.length === 1); f.release(); await until(() => f.posts.length === 2); await drain();
+  hold();
+  const lists = f.lists;
+  f.release(); await until(() => f.lists > lists);
+}
+
+test('the last reply of a run arriving during a press leaves the pressed control, sends the reconciliation read and paints the result after the press', async () => {
+  const paints = { n: 0 };
+  const f = frame('page', false, false, true, { ...boardSpy().extra, paint: () => { paints.n++; } });
+  try {
+    let before = 0;
+    await lastReplyHeld(f, () => { f.press(pressing()); before = paints.n; });
+    await drain();
+    assert.equal(paints.n, before, 'the run end waits for the press');
+    assert.equal(f.vc.cleanup.pending, true, 'the painted state is still the one before the run ended');
+    f.releasePress(); await drain();
+    assert.ok(paints.n > before);
+    assert.equal(f.vc.cleanup.pending, false);
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the result line is painted after the press');
+  } finally { f.stop(); }
+});
+
+for (const hold of ['press', 'picker'] as const) test(`a hold that lasts past the next refresh does not lose the result (${hold})`, async () => {
+  const paints = { n: 0 };
+  const f = frame('page', false, false, true, { ...boardSpy().extra, paint: () => { paints.n++; } });
+  try {
+    let before = 0;
+    await lastReplyHeld(f, () => { if (hold === 'press') f.press(pressing()); else f.popup(true); before = paints.n; });
+    await drain();
+    f.vc.retry(); await drain();
+    f.vc.retry(); await drain();
+    assert.equal(paints.n, before, 'the refresh neither expires the result nor repaints around the hold');
+    if (hold === 'press') f.releasePress(); else { f.popup(false); f.vc.invalidate(); }
+    await drain();
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the result is painted after the hold');
+    f.vc.retry(); await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the refresh after that paint expires it');
+  } finally { f.stop(); }
+});
+
+/** A run whose last receipt arrives while focus is on Stop and whose reconciliation read is held, so Tidy is absent. */
+async function endedOnStop(f: Held) {
+  await until(() => !!f.vc?.read);
+  f.vc.requestTidy(); await drain(); f.hold(); f.vc.confirmTidy();
+  await until(() => f.posts.length === 1);
+  f.focusAt(control('tidy-stop'));
+  f.holdHealth(); f.release();
+  await until(() => f.vc.cleanup.tidy?.result !== undefined && !f.vc.cleanup.pending);
+  await drain();
+}
+const finishRead = async (f: Held) => { f.releaseHealth(); await until(() => !!f.vc.read); await drain(); };
+
+test('focus left on Stop moves to the Tidy button when it reappears', async () => {
+  const f = frame('page');
+  try {
+    await endedOnStop(f);
+    f.focusAt(null); // the removed Stop took focus with it
+    const tidy = f.focusable('tidy-open');
+    await finishRead(f);
+    assert.equal(tidy.focused, 1);
+  } finally { f.stop(); }
+});
+
+test('focus moved elsewhere before the Tidy button returns stays there', async () => {
+  const f = frame('page');
+  try {
+    await endedOnStop(f);
+    f.focusAt(control('search'));
+    const tidy = f.focusable('tidy-open');
+    await finishRead(f);
+    f.vc.invalidate(); await drain();
+    assert.equal(tidy.focused, 0, 'neither the paint that brings the button back nor a later one takes focus');
+  } finally { f.stop(); }
+});
+
+test('focus moved to Undo before the Tidy button returns stays there, also after the result expires', async () => {
+  const f = frame('page');
+  try {
+    await endedOnStop(f);
+    f.focusAt(control('tidy-undo')); // inside the cleanup panel, but not the control the move was queued from
+    const tidy = f.focusable('tidy-open');
+    await finishRead(f);
+    assert.equal(tidy.focused, 0);
+    f.vc.retry(); await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the result has expired');
+    f.vc.invalidate(); await drain();
+    assert.equal(tidy.focused, 0, 'the dropped move is not applied after Undo is gone');
+  } finally { f.stop(); }
+});
+
+for (const moved of [false, true]) test(`a count delayed by a held control ${moved ? 'does not take focus back after focus moved' : 'still moves focus to Cancel when focus stayed'}`, async () => {
+  const scan = countedScan();
+  const f = frame('page', false, false, true, scan.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    const cancel = f.focusable('tidy-cancel');
+    f.vc.requestTidy(); await drain();
+    f.focusAt(control('tidy-cancel'));
+    const opened = cancel.focused;
+    f.press(pressing());
+    scan.release(); await drain();
+    if (moved) f.focusAt(control('search'));
+    f.releasePress(); await drain();
+    assert.equal(cancel.focused, opened + (moved ? 0 : 1));
   } finally { f.stop(); }
 });

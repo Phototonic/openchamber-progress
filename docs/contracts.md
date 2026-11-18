@@ -1216,9 +1216,11 @@ Requests run sequentially; a refused/changed or unconfirmed plan is not retried
 automatically. Stop and a change of account, store/binding or board reading end
 the run after the in-flight request. One progress line shows completed/total
 counts; start and result are announced once, not per plan. One final
-invalidation/re-read reconciles the result, including uncertain failures. Only
-validated receipts count as completed. A plan the service refused (changed,
-closed, reused operation, not found, store busy) and a plan the run did not send
+invalidation/re-read reconciles the result, including uncertain failures,
+unless an account, store or binding change was observed during the run: a run
+that ends after such a change shows no result and changes nothing on the board
+shown then. Only validated receipts count as completed. A plan the service
+refused (changed, closed, reused operation, not found, store busy) and a plan the run did not send
 (left out of the view before sending, or after Stop) are reported as skipped. A
 plan whose attempted request got no valid answer (a lost reply, a connection or
 host failure, an unreadable receipt, or an attempt that failed before the service
@@ -1231,8 +1233,8 @@ fresh operation ID. It never widens to other archived plans. Changed or refused
 restores are reported, not treated as success. Archive and Undo preserve lifecycle,
 counts, report history and copied documents. Delete offers no Undo.
 The result and Undo survive the action's reconciliation read and remain until
-the next action or refresh, not a timer. Other surfaces converge through their
-existing refresh cadence; no polling loop or new stored state is introduced.
+the next action or refresh after they were shown, not a timer. Other surfaces
+converge through their existing refresh cadence; no polling loop or new stored state is introduced.
 
 Authenticated, query-free **POST** `/v1/plan/archive`, `/v1/plan/restore`, and
 `/v1/plan/delete` accept only this JSON body (identifiers use the existing80-character
