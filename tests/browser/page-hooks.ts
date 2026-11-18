@@ -9,8 +9,10 @@ export function pageHook(name: string, globals: Record<string, unknown>) {
   let expression = '';
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node) && node.expression.getText(file) === 'startView' && ts.isObjectLiteralExpression(node.arguments[0])) {
-      const property = node.arguments[0].properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(file) === name);
+      const property = node.arguments[0].properties.find(p => (ts.isPropertyAssignment(p) || ts.isMethodDeclaration(p)) && p.name.getText(file) === name);
       if (property && ts.isPropertyAssignment(property)) expression = property.initializer.getText(file);
+      // A method shorthand (paint(root, vc) { ... }) is evaluated as a function value.
+      else if (property && ts.isMethodDeclaration(property)) expression = `function ${property.getText(file)}`;
     }
     ts.forEachChild(node, visit);
   };

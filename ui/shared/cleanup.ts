@@ -195,6 +195,8 @@ export class PlanSelection {
   private known = new Map<string, CleanupPlan>();
   private chosen = new Set<string>();
   private omitted = new Set<string>();
+  /** Plans a cleanup receipt took out of scope: not a user choice, so a plan back in scope is selected again. */
+  private departed = new Set<string>();
   private partial = false;
   private plans: CleanupPlan[] | null = null;
   private selectedCount = 0;
@@ -212,15 +214,15 @@ export class PlanSelection {
       for (const key of this.chosen) if (!keys.has(key)) this.chosen.delete(key);
       this.known.clear();
     }
-    for (const p of plans) this.known.set(p.key, p);
+    for (const p of plans) { this.known.set(p.key, p); this.departed.delete(p.key); }
     this.recount();
     this.version++;
   }
-  has(key: string) { return this.all ? !this.omitted.has(key) : this.chosen.has(key); }
+  has(key: string) { return this.all ? !this.omitted.has(key) && !this.departed.has(key) : this.chosen.has(key); }
   get count() { return this.selectedCount; }
   get incomplete() { return this.all && this.partial; }
-  clear() { this.all = false; this.chosen.clear(); this.omitted.clear(); this.selectedCount = 0; this.version++; }
-  selectAll() { this.all = true; this.chosen.clear(); this.omitted.clear(); this.selectedCount = this.known.size; this.version++; }
+  clear() { this.all = false; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = 0; this.version++; }
+  selectAll() { this.all = true; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = this.known.size; this.version++; }
   toggle(p: CleanupPlan) {
     this.known.set(p.key, p);
     const set = this.all ? this.omitted : this.chosen;
@@ -233,13 +235,13 @@ export class PlanSelection {
     for (const key of keys) {
       this.known.delete(key); this.chosen.delete(key);
       // A Select all rule must not keep a departed plan pressed or target it in a later scan.
-      if (this.all) this.omitted.add(key);
+      if (this.all) this.departed.add(key);
     }
     this.recount();
     this.version++;
   }
   snapshot(): SelectionRequest {
-    const all = this.all, chosen = new Set(this.chosen), omitted = new Set(this.omitted);
+    const all = this.all, chosen = new Set(this.chosen), omitted = new Set([...this.omitted, ...this.departed]);
     return { all, plans: [...this.known.values()].filter(p => this.has(p.key)),
       includes: p => all ? !omitted.has(p.key) : chosen.has(p.key) };
   }

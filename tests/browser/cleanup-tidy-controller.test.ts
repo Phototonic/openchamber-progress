@@ -16,7 +16,7 @@ import * as checkpoints from '../../ui/shared/change-digest-checkpoint.ts';
 import * as liveModule from '../../ui/shared/live.ts';
 import type { LiveProject, LiveSession } from '../../ui/shared/live.ts';
 import { BoardDerivation, NO_FILTERS } from '../../ui/shared/scope.ts';
-import { inPlace } from '../../ui/shared/search.ts';
+import { inPlace, scopeAvailability } from '../../ui/shared/search.ts';
 import type { PlanSummary } from '../../shared/progress.ts';
 const { EMPTY_LIVE } = liveModule;
 import { HEALTH, plansPage, summary, S } from './fixtures.ts';
@@ -29,23 +29,24 @@ async function until(check: () => boolean) {
   assert.fail('Controller did not reach the expected state');
 }
 /** Host-side workspace streams for the real LiveWorkspace: `pause` leaves discovery loading, as after a restart. */
-function liveFeed(config: { projects: LiveProject[]; sessions: LiveSession[] }) {
+function liveFeed(config: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] }) {
   let ready = true;
   const pushers = new Set<() => void>();
   const subscribe = (push: () => void) => { pushers.add(push); push(); return Promise.resolve(() => { pushers.delete(push); }); };
   return {
     host: {
       onProjects: (cb: (v: unknown) => void) => subscribe(() => cb(ready ? { state: 'ready', projects: config.projects } : { state: 'loading', projects: [] })),
-      onWorktrees: (_id: string, cb: (v: unknown) => void) => subscribe(() => cb({ state: ready ? 'ready' : 'loading', worktrees: [] })),
+      onWorktrees: (_id: string, cb: (v: unknown) => void) => subscribe(() => cb({ state: ready ? 'ready' : 'loading', worktrees: ready ? config.worktrees ?? [] : [] })),
       onSessions: (id: string, cb: (v: unknown) => void) => subscribe(() => cb({ state: ready ? 'ready' : 'loading', sessions: ready ? config.sessions.filter(s => s.projectId === id) : [], coverage: [] })),
     },
     pause() { ready = false; },
     settle() { ready = true; for (const push of [...pushers]) push(); },
+    dropWorktrees() { config.worktrees = []; for (const push of [...pushers]) push(); },
     drop(id: string) { config.sessions = config.sessions.filter(s => s.id !== id); for (const push of [...pushers]) push(); },
   };
 }
 const liveSession = (id: string, projectId = 'proj', directory = '/fixture/proj'): LiveSession => ({ id, title: id, projectId, directory, parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null });
-type Opts = { plans?: PlanSummary[]; live?: { projects: LiveProject[]; sessions: LiveSession[] } };
+type Opts = { plans?: PlanSummary[]; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
 function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<any>> = {}, opts: Opts = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
   class Node {
@@ -62,6 +63,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   const plans = opts.plans ?? [summary('one', [], { lifecycle: active ? 'active' : 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
   const feed = opts.live ? liveFeed(opts.live) : null;
   let capability = true;
+  let setupLost = false;
   const posts: string[] = [];
   const bodies: any[] = [];
   let release: (() => void) | undefined;
@@ -72,7 +74,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   let vc!: ViewContext<{ filter: string }>;
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
-      if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, ...(capability ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) }) };
+      if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) }) };
       if (q.path === '/v1/plans') return { status: 200, body: JSON.stringify(plansPage(plans)) };
        if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
@@ -122,6 +124,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   return {
     get vc() { return vc; }, posts, markers, bodies, live: feed,
     capability(on: boolean) { capability = on; },
+    setup(lost: boolean) { setupLost = lost; },
     refuse(plan: string) { refused = plan; },
     normalizeScope(value: string) { effectiveScope = value; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
@@ -425,7 +428,7 @@ const placed = (extra: Record<string, unknown> = {}) => {
   const board = new BoardDerivation();
   const globals: Record<string, unknown> = {
     derivedBoard: (c: any) => board.get({ plans: c.read?.plans ?? [], live: c.env.live, filters: c.ui.filters, bound: c.env.boundSource, locale: 'en', archived: c.ui.archived, reading: 'fixture' }),
-    isSearching: () => false, inPlace, NO_FILTERS, selectionEpoch: 0, tidyEffective: '', tidyFilters: null, ...extra,
+    isSearching: () => false, inPlace, scopeAvailability, NO_FILTERS, selectionEpoch: 0, tidyEffective: '', tidyFilters: null, ...extra,
   };
   return { globals, extra: { tidyScope: pageHook('tidyScope', globals), tidyMember: pageHook('tidyMember', globals),
     initialUi: () => ({ filter: 'all', filters: { ...NO_FILTERS }, archived: false, search: null }), wantProjects: () => ['proj'] } as Partial<ViewSpec<any>> };
@@ -504,11 +507,11 @@ test('losing cleanup support retires a pending confirmation, which does not retu
     await until(() => !!f.vc?.read);
     f.vc.requestSelection('delete', { all: false, plans: f.vc.read!.plans, includes: () => true });
     await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    const stale = f.vc;
     f.capability(false); f.vc.retry();
     await until(() => f.vc.health?.planCleanup !== 1);
     await drain();
     assert.equal(f.vc.cleanup.tidy, undefined);
-    const stale = f.vc;
     f.capability(true); f.vc.retry();
     await until(() => f.vc.health?.planCleanup === 1);
     stale.confirmTidyDelete(); f.vc.confirmTidyDelete(); await drain();
@@ -518,13 +521,88 @@ test('losing cleanup support retires a pending confirmation, which does not retu
 });
 
 test('a search with displayed hits revalidates through its own read and observes capability loss at the next list read', async () => {
-  let searching = true;
-  const f = frame('page', false, true, true, { freshness: () => searching ? async () => ({ state: 'fresh', captureEnabled: true, inbox: undefined }) as any : null });
+  let searching = true, freshReads = 0;
+  const f = frame('page', false, true, true, { freshness: () => searching ? async () => { freshReads++; return { state: 'fresh', captureEnabled: true, inbox: undefined } as any; } : null });
   try {
     await until(() => !!f.vc?.read);
-    f.capability(false); f.vc.retry(); await drain();
+    f.capability(false); f.vc.retry(); await until(() => freshReads > 0); await drain();
     assert.equal(f.vc.health?.planCleanup, 1, 'the search freshness read carries no service capabilities');
     searching = false; f.vc.retry();
     await until(() => f.vc.health?.planCleanup !== 1);
+  } finally { f.stop(); }
+});
+
+test('a search Delete is refused when its chosen worktree left discovery, though its live owner still places the plan there', async () => {
+  const ext = '/fixture/ext';
+  const config = { projects: [{ id: 'proj', name: 'Proj', directory: '/fixture/proj' }], sessions: [liveSession(S.M)],
+    worktrees: [{ directory: ext, name: 'ext', branch: 'ext', status: 'ready' as const }] };
+  const p = placed({ isSearching: () => true });
+  const f = frame('page', false, false, true, p.extra, { live: config, plans: [summary('one', [], { lifecycle: 'finished', directory: ext, sessionId: S.M })] });
+  try {
+    await until(() => !!f.vc?.read && f.vc.live.projectsState === 'ready' && f.vc.live.sessions.get('proj')?.state === 'ready' && f.vc.live.worktrees.get('proj')?.state === 'ready');
+    const criteria = { project: 'p:proj', worktree: 'w:' + path.directoryKey(ext), session: 'all' };
+    (f.vc as any).setUi({ search: { key: 'search', criteria } });
+    assert.equal(scopeAvailability(criteria, f.vc.live), 'ok');
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.deleteTidy(); await drain();
+    f.live!.dropWorktrees();
+    await until(() => f.vc.live.sessions.get('proj')?.state === 'ready' && f.vc.live.worktrees.get('proj')?.records.length === 0);
+    assert.notEqual(scopeAvailability(criteria, f.vc.live), 'ok', 'a fresh search count would be refused');
+    assert.equal(inPlace(criteria, { ownerSessionId: S.M, directory: ext, sourceId: 'src-local' }, f.vc.live, 'src-local'), true, 'while placement alone still passes');
+    f.vc.confirmTidyDelete(); await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.posts.length, 0);
+    assert.equal(f.vc.cleanup.tidy?.result?.remaining.length, 1);
+  } finally { f.stop(); }
+});
+
+test('Try again on a complete browse list offers only remaining plans the board still shows', async () => {
+  const visible = new Set<string>();
+  const f = frame('page', false, false, true, { tidyPlans: (c: any) => (c.read?.plans ?? []).filter((x: any) => visible.has(x.key)) });
+  try {
+    await until(() => !!f.vc?.read);
+    const plans = f.vc.read!.plans;
+    for (const x of plans) visible.add(x.key);
+    f.refuse('two');
+    f.vc.requestSelection('archive', { all: false, plans, includes: () => true, scope: 'initial' });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidy(); await until(() => !!f.vc.cleanup.tidy?.result);
+    visible.delete(plans[1].key);
+    f.vc.retryTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.targets.length, 0, 'a plan that moved out of scope is not offered');
+  } finally { f.stop(); }
+});
+
+test('a finished result and its Undo survive the reconciliation read losing cleanup support, but cannot act', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.hold(); f.vc.confirmTidy(); await until(() => f.posts.length === 1);
+    f.capability(false); f.release();
+    await until(() => !f.vc.cleanup.pending);
+    await until(() => f.vc.health?.planCleanup !== 1);
+    await drain();
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the completed counts and receipts remain');
+    f.vc.undoTidy(); await drain();
+    assert.equal(f.posts.filter(x => x.endsWith('/restore')).length, 0, 'Undo does nothing without support');
+  } finally { f.stop(); }
+});
+
+test('an unconfigured-service read retires an open Tidy Delete confirmation, which does not return on recovery', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.deleteTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.deleting, true);
+    const stale = f.vc;
+    f.setup(true); f.vc.retry();
+    await until(() => f.vc.health?.ready === false);
+    await drain();
+    f.setup(false); f.vc.retry();
+    await until(() => f.vc.health?.planCleanup === 1 && !f.vc.failure);
+    stale.confirmTidyDelete(); f.vc.confirmTidyDelete(); await drain();
+    assert.equal(f.posts.length, 0);
+    assert.equal(f.vc.cleanup.tidy, undefined);
   } finally { f.stop(); }
 });

@@ -311,8 +311,13 @@ startView<Ui>({
   },
   // Right before each request: the plan must still be placed in the scope the user confirmed (live
   // placement can change without any plan revision changing). Anything else is skipped.
-  tidyMember: (vc, t) => inPlace(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS,
-    { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }, vc.live, vc.env.boundSource ?? null),
+  // A search also needs its chosen locations to be classifiable now, exactly as when it was counted.
+  tidyMember: (vc, t) => {
+    const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
+    if (criteria && scopeAvailability(criteria, vc.live) !== 'ok') return false;
+    return inPlace(criteria ?? tidyFilters ?? NO_FILTERS,
+      { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }, vc.live, vc.env.boundSource ?? null);
+  },
   forgetPlans: (keys, ui, _vc, confirmed) => {
     // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list.
     if (confirmed?.size) selection.forget([...confirmed]);

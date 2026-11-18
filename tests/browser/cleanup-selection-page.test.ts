@@ -8,6 +8,7 @@ import { BoardDerivation, NO_FILTERS, ALL } from '../../ui/shared/scope.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC } from './fixtures.ts';
+import { pageHook } from './page-hooks.ts';
 
 // Exercise the production paint's selection reconciliation, including its cache guards.
 const source = readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8');
@@ -88,8 +89,20 @@ for (const searching of [false, true]) test(`Select mode ends when the service s
   assert.equal(f.selection.count, 0);
   assert.equal(f.globals.selectionEpoch, 1, 'a pending selection confirmation is retired with the selection');
 });
-test('capability loss is handled before the no-read return, so Archived cannot revive an old selection', () => {
-  const paint = source.slice(source.indexOf('  paint(root, vc) {'));
-  const end = paint.indexOf('endSelectionWithoutCleanup(vc)'), early = paint.indexOf('if (!read) {');
-  assert(end > 0 && early > 0 && end < early);
+// The production paint, driven with a null read (Archived on a service without cleanup): anything the paint
+// builds beyond its selection handling is a no-op stub, so only real page state is observed.
+test('the production paint ends Select mode on an Archived read-less frame without cleanup support', () => {
+  const selection = new PlanSelection();
+  selection.reconcile('archived', [], false); selection.mode = true; selection.toggle(plans[0]);
+  const stub: any = new Proxy(function () {}, { get: (_t, k) => (k === Symbol.toPrimitive ? () => '' : stub), apply: () => stub, construct: () => stub });
+  const base: Record<string | symbol, unknown> = { selection, selectionEpoch: 0, document: { getElementById: () => null, activeElement: null }, caret: null };
+  const sandbox = new Proxy(base, { has: () => true, get: (t, k) => (k in t ? t[k] : k in globalThis ? (globalThis as any)[k] : stub) });
+  createContext(sandbox);
+  if (endWithoutCleanup) runInContext(ts.transpileModule(endWithoutCleanup.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, sandbox);
+  const paint = pageHook('paint', sandbox);
+  const vc = { read: null, failure: null, ui: { archived: true, search: null, filters: { ...NO_FILTERS } }, health: { ready: true }, env: { locale: 'en' }, inbox: null, identity: 'fixture' };
+  paint({ append() {} }, vc);
+  assert.equal(selection.mode, false);
+  assert.equal(selection.count, 0);
+  assert.equal(base.selectionEpoch, 1);
 });

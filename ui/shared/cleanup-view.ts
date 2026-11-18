@@ -111,7 +111,7 @@ function tidyBlock<U>(vc: ViewContext<U>) {
   return tidyPanel(vc.cleanup.tidy, vc.env.locale, {
     cancel: vc.cancelTidy, archive: vc.confirmTidy, undo: vc.undoTidy, retry: vc.retryTidy,
     deleteStep: vc.deleteTidy, delete: vc.confirmTidyDelete, more: vc.moreTidy, stop: vc.stopTidy,
-  }, vc.cleanup.pending || !!vc.failure);
+  }, vc.cleanup.pending || !!vc.failure || vc.health?.planCleanup !== 1);
 }
 /** Panel rendering is independent of the board's controller and paint path. */
 export function tidyPanel(state: TidyState | undefined, locale: string, controls: TidyControls, disabled = false) {

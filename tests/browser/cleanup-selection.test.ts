@@ -95,9 +95,25 @@ test('a receipt-confirmed plan is no longer selected under Select all and does n
   const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
+  const earlier = selection.snapshot().includes;
   selection.forget(['a']);
   assert.equal(selection.has('a'), false);
   assert.equal(selection.has('b'), true);
   assert.equal(selection.count, 2);
-  assert.equal(selection.snapshot().includes(plans[0]), false, 'a later scan does not target it again');
+  const scanRule = selection.snapshot().includes;
+  assert.equal(scanRule(plans[0]), false, 'a later scan does not target it again');
+  assert.equal(scanRule(plans[1]), true, 'but still admits another matching plan');
+  assert.equal(earlier(plans[0]), true, 'a rule captured earlier is unchanged');
+});
+test('a plan confirmed back in scope after Undo is selected again; an explicit exclusion stays excluded', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.toggle(plans[1]);
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true);
+  assert.equal(selection.has('a'), true, 'the receipt departure is cleared when the plan returns');
+  assert.equal(selection.has('b'), false, 'the user exclusion is kept');
+  assert.equal(selection.count, 2);
+  assert.equal(selection.snapshot().includes(plans[0]), true);
 });

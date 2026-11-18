@@ -763,6 +763,11 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     if (detailsDeferred) detailQueue = Promise.resolve();
   };
+  /** Without cleanup support a count or confirmation must not return with it; a finished result stays (its actions need support). */
+  const retirePendingTidy = (h: { planCleanup?: 1 }) => {
+    if (h.planCleanup === 1 || !cleanup.tidy || cleanup.tidy.result || cleanupBusy) return;
+    cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.ui++;
+  };
   const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
     if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed) }; versions.ui++; }
@@ -910,6 +915,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // data visibly stale instead of replacing it with a setup form.
       if (health?.ready !== false) { setup = null; loadSetup(); }
       health = result.health;
+      retirePendingTidy(health);
       if (failure?.kind !== 'setup-lost') versions.data++;
       failure = { kind: 'setup-lost', code: result.health.diagnostics.join(',') || 'not-ready', message: 'The progress service reports that it is not set up.' };
       schedule();
@@ -946,8 +952,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const sig = JSON.stringify([key, nextHealth, nextRead]);
       if (sig !== readSig || failure) {
         readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++;
-        // Cleanup support lost: a pending confirmation must not come back when support does.
-        if (health.planCleanup !== 1 && cleanup.tidy && !cleanupBusy) { cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.ui++; }
+        retirePendingTidy(health);
       }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
@@ -1005,7 +1010,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     const key = tidyContext();
     const scan = spec.tidyScan?.(vc, key, selection.includes, action === 'restore' || health.planCleanupActive === 1) ?? undefined;
     const latest = new Map(read.plans.map(p => [p.key, p]));
-    const confirmation = scan ? undefined : selectionConfirmation(selection.plans.filter(p => latest.has(p.key)).map(p => latest.get(p.key)!), read.storeId, key,
+    // A complete list is the displayed one: a plan that has since moved out of scope is not offered.
+    const shown = spec.tidyPlans ? new Set(spec.tidyPlans(vc).map(p => p.key)) : null;
+    const confirmation = scan ? undefined : selectionConfirmation(selection.plans.filter(p => latest.has(p.key) && (!shown || shown.has(p.key))).map(p => latest.get(p.key)!), read.storeId, key,
       !!spec.tidyArchived?.(vc), action, health.planCleanupActive === 1);
     cleanup = { ...initialCleanup(), tidy: { context: key, selection: action, selectionRequest: selection, opener: `selection-${action}`, confirmation, scan } };
     cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
