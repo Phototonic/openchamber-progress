@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { activationFixture, activationContext, writeEvent } from '../fixtures/activation-production.ts';
+import { activationFixture, activationContext, requestNote, writeEvent } from '../fixtures/activation-production.ts';
 import { REPORT_CHECKLIST } from '../../plugin/activation.ts';
 import { trackerShape } from '../fixtures/activation-proxy-shapes.ts';
 
@@ -20,7 +20,7 @@ const providerView = (f: any, events: any[]) => ({
   messages: events.map(event => ({ role: 'tool', name: `mcp__opencode__${event.tool}`, result: event.result })),
 });
 async function context(f: any, sessionID = 'ses_M', available = true) {
-  const event = activationContext(sessionID, available); event.messages = [];
+  const event = activationContext(sessionID, available);
   Object.assign(event.tools, Object.fromEntries(['subagent', 'write', 'edit', 'linear_save_issue', 'linear_save_comment'].map(name => [name, {}])));
   await f.context(event); return event;
 }
@@ -92,17 +92,17 @@ test('spec plan and host-listed worktree recognition is lexical and relays only 
       `${f.root}/sibling/.slim/plans/example.md`];
     for (const [i, file] of accepted.entries()) {
       await f.after(writeEvent(file, `accept-${i}`));
-      assert.ok(section(await context(f))[0].text.includes('A possible plan document'));
+      assert.ok(requestNote(await context(f)).includes('A possible plan document'));
     }
     const rejected = ['openspec/changes/archive/example/tasks.md', 'openspec/changes/example/specs/plans/example.md',
       'openspec/changes/example/design.md', `${f.root}/elsewhere/plans/x.md`];
     for (const [i, file] of rejected.entries()) {
       await f.after(writeEvent(file, `reject-${i}`));
-      assert.ok(!section(await context(f))[0].text.includes('A possible plan document'));
+      assert.ok(!requestNote(await context(f)).includes('A possible plan document'));
     }
     f.worktrees = async () => { throw new Error('Unavailable list'); };
     await f.after(writeEvent(`${f.root}/sibling/plans/x.md`, 'unavailable'));
-    assert.ok(!section(await context(f))[0].text.includes('A possible plan document'));
+    assert.ok(!requestNote(await context(f)).includes('A possible plan document'));
   });
 });
 

@@ -7,7 +7,7 @@ import { fromPromise } from '@opencode/plugin/promise/adapter';
 import plugin from '../../plugin/index.ts';
 import { registerActivation, ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HINT } from '../../plugin/activation.ts';
 import { Store } from '../../shared/store.ts';
-import { activationContext as context, writeEvent } from '../fixtures/activation-production.ts';
+import { activationContext as context, requestNote, writeEvent } from '../fixtures/activation-production.ts';
 import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
 import { PARALLEL_DELEGATION_HINT } from '../../plugin/delegation.ts';
 
@@ -22,7 +22,7 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   finally { clearTimeout(timer); }
 }
 const parts = (c: any) => c.system.filter((p: any) => p.text?.startsWith('# Agent progress (companion)'));
-const capsule = (c: any): string => parts(c)[0]?.text.split('\n\n## Progress resume')[1] ? `## Progress resume${parts(c)[0].text.split('\n\n## Progress resume')[1]}` : '';
+const capsule = (c: any): string => { const note = requestNote(c), at = note.indexOf('## Progress resume'); return at < 0 ? '' : note.slice(at); };
 const samples: Record<string, string> = {};
 after(() => {
   if (process.env.RESUME_LIFECYCLE_EVIDENCE) fs.writeFileSync(process.env.RESUME_LIFECYCLE_EVIDENCE, JSON.stringify({ syntheticDataOnly: true, layer: 'unit/installed-adapter; not native outgoing proof', samples }, null, 2) + '\n');
@@ -153,7 +153,7 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
 test('ordinary child contexts deliver only current verified assignments without compaction or automatic reports',async()=>fixture(async f=>{
   f.seed();const child={sourceId:f.binding.source.id,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M'],agent:'synthetic',directory:'/fixture/project',verifiedSource:true};
   const parent={...child,sessionId:'ses_M',parentId:null,ancestry:[]};
-  const text=(c:any)=>parts(c)[0]?.text??'';
+  const text=(c:any)=>requestNote(c);
   assert.equal(text(await f.next('ses_C')).includes('last-known revision'),false);
   f.store.apply({op:'link',plan:'P-alpha',oid:'assign-child',rev:1,child:'ses_C',assign:['I1']},parent,undefined,child);
   const c=await f.next('ses_C');assert.ok(text(c).includes('Assigned-only scope: ["I1"]'));
@@ -236,16 +236,16 @@ test(`durable refusal is refreshed after ${recovery} recovery on eligible coordi
   f.store.apply({op:'change',plan:'P-alpha',oid:'target-touch',rev:1,changes:[{id:'I1',status:'working'}]},actor);
   f.store.afterRun(key,0,{...actor,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M']},'returned');
   const before=f.store.get(actor.sourceId,'P-alpha');
-  const absent=parts(await f.next('ses_sibling'))[0].text;assert.ok(!absent.includes('## Delegation not applied'));
+  const absent=requestNote(await f.next('ses_sibling'));assert.ok(!absent.includes('## Delegation not applied'));
   assert.equal(parts(await f.next('ses_M',false)).length,0);
-  const context=await f.next();const text=parts(context)[0].text;
+  const context=await f.next();const text=requestNote(context);
   assert.match(text,/Plan "P-alpha", declaration "refused-declaration" at revision 1; tasks \["I1"\]: not applied because/);
   assert.match(text,/re-declare at the current revision/);assert.match(text,/explicitly link/);
   assert.deepEqual(f.store.get(actor.sourceId,'P-alpha'),before);
   if(recovery==='redeclare')await f.report({op:'delegate',plan:'P-alpha',oid:'new-declaration',rev:2,assign:['I1']});
   else f.store.apply({op:'link',plan:'P-alpha',oid:'recovered-link',rev:2,child:'ses_C',assign:['I1']},actor,undefined,
     {...actor,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M']},recovery==='binding'?{generation:0,messageId:key.message,callId:key.call,observedAt:new Date(1000).toISOString()}:undefined);
-  await f.context(context);assert.ok(!parts(context)[0].text.includes('## Delegation not applied'),'reused context removes obsolete refusal');
+  await f.context(context);assert.ok(!requestNote(context).includes('## Delegation not applied'),'reused context removes obsolete refusal');
   f.store.setEnabled(false);assert.equal(parts(await f.next()).length,0);
 }));
 
@@ -524,22 +524,89 @@ test('V6/V8 held ancestry retires on disable/disposal, no next hop or late injec
   });
 });
 
-test('V8 reused system strips consumed recovery but preserves generic/file hints and unrelated context', async () => {
+test('V8 reused context strips consumed recovery, hint and note, and preserves unrelated context', async () => {
   await fixture(async f => {
     f.seed(); await f.after(writeEvent()); await f.compact();
-    const c = await f.next(); assert.ok(capsule(c)); assert.ok(parts(c)[0].text.includes(HINT));
+    const c = await f.next(); assert.ok(capsule(c)); assert.ok(requestNote(c).includes(HINT)); assert.equal(parts(c)[0].text, BASE);
     const other = c.system[0], messages = c.messages, tools = c.tools, settings = c.options;
-    await f.context(c); assert.equal(capsule(c), ''); assert.equal(parts(c).length, 1); assert.ok(parts(c)[0].text.includes(HINT));
+    // A reused event keeps neither the consumed capsule nor the consumed hint: they were for one request.
+    await f.context(c); assert.equal(requestNote(c), ''); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE);
     assert.equal(c.system[0], other); assert.equal(c.messages, messages); assert.equal(c.tools, tools); assert.equal(c.options, settings);
     assert.equal(parts(await f.next())[0].text, BASE);
-    await f.compact(); await f.context(c); assert.ok(capsule(c)); assert.equal(parts(c).length, 1);
+    await f.compact(); await f.context(c); assert.ok(capsule(c)); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE);
+  });
+});
+
+test('system section is byte-identical across hint, refusal, capsule revision and lookup timeout; request-only text rides the latest message once', async () => {
+  await fixture(async f => {
+    f.seed();
+    const stored = { role: 'user', content: [{ type: 'text', text: 'Make a plan' }] }; const snapshot = structuredClone(stored);
+    const systems: string[] = [];
+    // Every request is rebuilt from the same stored history, as the host does.
+    const request = async () => { f.tick(); const c = context(); c.messages = [stored]; await f.context(c); systems.push(JSON.stringify(c.system)); return c; };
+    const note = async () => requestNote(await request());
+    assert.equal(await note(), '');
+    // One-request hint.
+    await f.after(writeEvent());
+    assert.equal(await note(), HINT); assert.equal(await note(), '');
+    // Delegation refusal appears, then clears.
+    await f.report({ op: 'delegate', plan: 'P-alpha', oid: 'refused-declaration', rev: 1, assign: ['I1'] });
+    const actor = { sourceId: f.binding.source.id, sessionId: 'ses_M', parentId: null, ancestry: [], agent: 'synthetic', directory: '/fixture/project', verifiedSource: true };
+    const key = { source: actor.sourceId, parent: actor.sessionId, message: 'message', call: 'reserved-call' };
+    f.store.beforeRun(key, actor, 'subagent', {}, 1000);
+    f.store.apply({ op: 'change', plan: 'P-alpha', oid: 'target-touch', rev: 1, changes: [{ id: 'I1', status: 'working' }] }, actor);
+    f.store.afterRun(key, 0, { ...actor, sessionId: 'ses_C', parentId: 'ses_M', ancestry: ['ses_M'] }, 'returned');
+    assert.match(await note(), /^## Delegation not applied/);
+    await f.report({ op: 'delegate', plan: 'P-alpha', oid: 'new-declaration', rev: 2, assign: ['I1'] });
+    assert.equal(await note(), '');
+    // Capsule naming the plan revision changes between requests.
+    const revision = () => f.store.get(f.binding.source.id, 'P-alpha').revision;
+    await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-a', rev: revision(), title: 'Synthetic alpha r2' });
+    const first = revision(); assert.match(await note(), new RegExp(`last-known revision ${first}`));
+    await f.compact(); await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise-b', rev: revision(), title: 'Synthetic alpha r3' });
+    assert.match(await note(), new RegExp(`last-known revision ${first + 1}`));
+    // The bounded capsule lookup times out for one request.
+    await f.compact();
+    const release = deferred(); let calls = 0;
+    f.lookup = async (id: string) => { if (++calls > 1) await release.promise; return f.info(id); };
+    assert.equal(await note(), ''); release.resolve(); f.lookup = async (id: string) => f.info(id);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await f.compact(); assert.match(await note(), /^## Progress resume/);
+    assert.equal(await note(), '');
+    assert.equal(systems.length, 10);
+    assert.equal(new Set(systems).size, 1, 'one byte-identical system array on every request');
+    assert.deepEqual(JSON.parse(systems[0]), [{ type: 'text', text: 'Other system section' }, { type: 'text', text: BASE }]);
+    assert.deepEqual(stored, snapshot, 'stored conversation never carries a note');
+  });
+});
+
+test('an armed capsule waits for a request with a carrier; an assigned child brief rides any tool continuation', async () => {
+  await fixture(async f => {
+    f.seed(); await f.compact();
+    const text = (value: string) => ({ type: 'text', text: value });
+    const user = { role: 'user', content: [text('Make a plan')] };
+    const result = (name: string) => ({ role: 'tool', content: [{ type: 'tool-result', id: 'c1', name, result: { type: 'content', value: [text('out')] } }] });
+    const without = context(); without.messages = [user, { role: 'assistant', content: [text('Partial answer')] }];
+    const before = f.reads; f.tick(); await f.context(without);
+    assert.deepEqual(without.messages[1], { role: 'assistant', content: [text('Partial answer')] }); assert.equal(f.reads, before, 'no lookup without a carrier');
+    assert.equal(without.system.filter((p: any) => p.text === BASE).length, 1, 'the section is still the fixed guidance');
+    const delivered = await f.next(); assert.ok(capsule(delivered)); assert.equal(f.reads, before + 1, 'the capsule was not consumed by the request that had no carrier');
+    assert.equal(capsule(await f.next()), '');
+    // A child's standing brief is read again on every request, so it must survive a continuation ending in any ordinary tool result.
+    assert.equal((await f.report({ op: 'link', plan: 'P-alpha', oid: 'link', rev: 1, child: 'ses_C', assign: ['I1'] })).error, undefined);
+    for (const name of ['read', 'shell', 'write']) {
+      const c = context('ses_C'); c.messages = [user, { role: 'assistant', content: [] }, result(name)]; f.tick(); await f.context(c);
+      assert.match(requestNote(c), /Assigned-only scope: \["I1"\]/, name);
+    }
+    const wrapper = context('ses_C'); wrapper.messages = [user, { role: 'assistant', content: [] }, result('execute')]; f.tick(); await f.context(wrapper);
+    assert.equal(requestNote(wrapper), '', 'a Code Mode wrapper result stays the script value');
   });
 });
 
 test('V8 optional recovery subscription/hook/stream failure retains generic activation and file hints', async () => {
   for (const unsupported of ['subscribe', 'hook', 'stream'] as const) await fixture(async f => {
     f.seed(); await f.after(writeEvent()); const c = await f.next();
-    assert.equal(capsule(c), ''); assert.equal(parts(c).length, 1); assert.ok(parts(c)[0].text.includes(HINT)); assert.equal(f.reads, 0);
+    assert.equal(capsule(c), ''); assert.equal(parts(c).length, 1); assert.equal(parts(c)[0].text, BASE); assert.ok(requestNote(c).includes(HINT)); assert.equal(f.reads, 0);
     assert.equal(f.hooks.has('session:compaction'), false);
   }, { unsupported });
 });

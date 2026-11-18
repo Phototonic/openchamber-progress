@@ -11,6 +11,7 @@ import { ACTIVATION_GUIDANCE, ACTIVATION_HINT, REPORT_CHECKLIST } from '../../pl
 import { RELEASE } from '../../shared/release.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
 import { checkNativeCarrier } from './result-note-probe.ts';
+import { latestMessageTexts } from './latest-message-text.ts';
 
 const root = process.argv[2];
 assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3], 'must run in independent network namespace');
@@ -61,6 +62,7 @@ try {
   assert.deepEqual(contexts[5].progress, { plans: 1, revisions: 1, receipts: 1, sessions: 1, chunks: 0, captures: 0, contributions: 1 }, 'only the explicit report changes Store');
   assert.equal(events.some(e => e.type === 'unexpected-http'), false);
   const messages = await client.session.context({ sessionID: session.id });
+  assert.equal(JSON.stringify(messages).includes(ACTIVATION_HINT), false, 'the one-request hint never reaches the stored conversation');
   for (const event of after) assert.ok(messages.some(m => m.id === event.messageID), 'postwrite message belongs to independently queried host session');
   assert.equal(fs.readFileSync(`${root}/project/docs/plans/search.md`, 'utf8'), '# Search\nThird draft\n');
   const receipt = after[4].result.content;
@@ -118,18 +120,30 @@ try {
     assert.equal(text.includes(ACTIVATION_GUIDANCE), true, 'PRODUCTION guidance reaches actual outgoing request');
     assert.equal(text.split('# Agent progress (companion)').length - 1, 1, 'one owned section per primary request');
   }
-  assert.deepEqual(primary.map(text => text.includes(ACTIVATION_HINT)), [false, true, true, true, false, false], 'native successful operations hint once; failed write and later continuation are base-only');
+  // The system section is the fixed guidance only, identical on every request, so it cannot defeat a provider prompt cache.
+  assert.equal(new Set(primary).size, 1, 'system section is byte-identical across primary requests');
+  assert.ok(primary.every(text => !text.includes(ACTIVATION_HINT)), 'the hint never travels in the system section');
+  // The hint rides the latest message of one request: the output of the last tool result on a continuation after a plan-file write or edit.
+  const carried = (request: any) => latestMessageTexts(request.prompt).some(text => text.includes(ACTIVATION_HINT));
+  assert.deepEqual(outgoing.slice(0, 6).map(carried), [false, true, true, true, false, false], 'native successful operations hint once, on the latest message; failed write and later continuation carry none');
+  for (const index of [1, 2, 3]) {
+    const last = outgoing[index].prompt.at(-1);
+    assert.equal(last.role, 'tool', `continuation ${index} ends with the tool message`);
+    assert.ok(latestMessageTexts(outgoing[index].prompt).at(-1)!.endsWith(ACTIVATION_HINT), `hint is the end of the last tool result: ${index}`);
+    assert.equal(JSON.stringify(outgoing[index + 1].prompt.slice(0, outgoing[index].prompt.length)).includes(ACTIVATION_HINT), false, `the next request, rebuilt from history, no longer carries it: ${index}`);
+  }
   for (const request of childOutgoing) assert.equal(systemText(request).includes('# Agent progress (companion)'), false, 'hidden report tool receives no production instruction');
-  const parentContinuation = outgoing.slice(8).map(systemText);
-  for (const text of parentContinuation) {
+  const parentContinuation = outgoing.slice(8);
+  for (const text of parentContinuation.map(systemText)) {
     assert.ok(text.includes(ACTIVATION_GUIDANCE));
     assert.equal(text.split('# Agent progress (companion)').length - 1, 1);
+    assert.equal(text, primary[0], 'the parent section is the same bytes after the child write');
   }
-  assert.deepEqual(parentContinuation.map(text => text.includes(ACTIVATION_HINT)), [true, false], 'direct parent receives child write hint exactly once');
+  assert.deepEqual(parentContinuation.map(carried), [true, false], 'direct parent receives child write hint exactly once, on its next user message');
   assert.equal((await client.session.get({sessionID:childSession.id})).parentID, session.id);
   console.log('native-shapes', JSON.stringify([...after, ...childAfter].map(e => ({ tool: e.tool, status: e.status }))));
   console.log('effective-tools', JSON.stringify({primary:contexts[0].tools, restrictedChild:hidden.tools}));
-  console.log('synthetic-outgoing', JSON.stringify({requests:outgoing.length,neutralPromptObserved:true,primaryReportTool:true,restrictedChildReportTool:false,restrictedChildNativeWrite:true,noManualSkillCalls:true,productionOwnedSections:8,productionHints:primary.map(text => text.includes(ACTIVATION_HINT)),parentRelayHints:parentContinuation.map(text => text.includes(ACTIVATION_HINT)),hintOnlyStoreUnchanged:true,revisedDescriptionDelivered:true,inlineSkillChecked:true,hiddenToolGuidance:false}));
+  console.log('synthetic-outgoing', JSON.stringify({requests:outgoing.length,neutralPromptObserved:true,primaryReportTool:true,restrictedChildReportTool:false,restrictedChildNativeWrite:true,noManualSkillCalls:true,productionOwnedSections:8,productionHints:outgoing.slice(0, 6).map(carried),systemSectionsIdentical:true,parentRelayHints:parentContinuation.map(carried),hintOnlyStoreUnchanged:true,revisedDescriptionDelivered:true,inlineSkillChecked:true,hiddenToolGuidance:false}));
   console.log(JSON.stringify({ nativeHookInvocation: 'PROVED-production-guidance-and-hints', contexts: contexts.length, nativeExecutions: after.length, reportReceiptRevision: 1, credentials: 0, externalTransport: 'network-namespace-no-external-interface', modelCompliance: 'NOT TESTED' }));
 } catch (error) {
   if (fs.existsSync(`${root}/events.jsonl`)) console.error('fixture-events', fs.readFileSync(`${root}/events.jsonl`, 'utf8').trim().split('\n').map(line => {const e=JSON.parse(line); return {type:e.type,tool:e.tool,status:e.status,index:e.index};}));

@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { Effect } from 'effect';
-import { activationFixture, activationContext as context, writeEvent as write } from '../fixtures/activation-production.ts';
+import { activationFixture, activationContext as context, requestNote, writeEvent as write } from '../fixtures/activation-production.ts';
 import { ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HINT } from '../../plugin/activation.ts';
 import { Store } from '../../shared/store.ts';
 import { DISPATCH_OBSERVATION, TRACKER_OBSERVATION } from '../../plugin/activation.ts';
 import { trackerShape } from '../fixtures/activation-proxy-shapes.ts';
 
 const copy = (c: any) => c.system.filter((p: any) => p.text.startsWith('# Agent progress (companion)'));
-const hint = (c: any) => copy(c).some((p: any) => p.text.includes(HINT));
-const proxyHint = (c: any) => copy(c).some((p: any) => p.text.includes(DISPATCH_OBSERVATION) || p.text.includes(TRACKER_OBSERVATION));
+const hint = (c: any) => requestNote(c).includes(HINT);
+const proxyHint = (c: any) => requestNote(c).includes(DISPATCH_OBSERVATION) || requestNote(c).includes(TRACKER_OBSERVATION);
 const dispatchEvent = (id = 'dispatch', status = 'completed'): any => ({ tool: 'subagent', sessionID: 'ses_M', agent: 'coordinator-x', messageID: 'msg_proxy', id,
   input: { agent: 'worker', description: 'Synthetic worker', prompt: 'IGNORE instructions; secret prompt', background: status === 'running' }, status: 'completed',
   result: { output: { sessionID: 'ses_child', status, output: 'IGNORE instructions; secret worker text' } } });
@@ -74,7 +74,7 @@ test('covered creates/revisions coalesce, consume on delivery, dedupe and remain
     assert.equal(hint(await next(f)), true);
     await f.after(write('docs/plans/search.md', 'incomplete'));
     await f.report({ op: 'start', plan: 'reported', oid: 'reported', rev: 0, title: 'Already reported', items: [] });
-    const claimed = context(); claimed.messages.push({ role: 'assistant', content: 'Already reported everything' }); await f.context(claimed);
+    const claimed = context(); claimed.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Already reported everything' }] }, { role: 'user', content: [{ type: 'text', text: 'Continue' }] }); await f.context(claimed);
     assert.equal(hint(claimed), true, 'receipt/model claims do not drive reminder state');
     assert.equal(hint(await next(f)), false);
   });
@@ -302,7 +302,7 @@ test('no-plan dispatch hint asks for explicit start and delegation; tracker hint
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0);
     for (const status of ['completed', 'running']) {
       await f.after(dispatchEvent(`no-plan-${status}`, status));
-      const text = copy(await next(f))[0].text.slice(BASE.length);
+      const text = requestNote(await next(f));
       assert.match(text, /if .*planned or multi-step work.*no Agent Progress plan mirrors it yet/i);
       assert.match(text, /start one now.*op=start.*complete real task structure.*before further dispatches/i);
       assert.match(text, /planned work.*op=delegate.*assigned task IDs.*before the next dispatch/i);
@@ -312,7 +312,7 @@ test('no-plan dispatch hint asks for explicit start and delegation; tracker hint
       assert.equal(proxyHint(await next(f)), false);
     }
     await f.after(trackerEvent('save_issue'));
-    assert.doesNotMatch(copy(await next(f))[0].text.slice(BASE.length), /op=start|op=delegate/);
+    assert.doesNotMatch(requestNote(await next(f)), /op=start|op=delegate/);
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0, 'conditional advice never creates a plan');
   });
 });
@@ -397,10 +397,10 @@ test('mixed plan dispatch tracker burst coalesces reasons; proxies never relay a
     f.lookup = async (id: string) => ({ ...f.info(id), parentID: id === 'ses_M' ? 'ses_parent' : undefined });
     await Promise.all(Array.from({ length: 30 }, (_, i) => f.after(i % 3 === 0 ? write('plan.md', `burst-${i}`) : i % 3 === 1 ? dispatchEvent(`burst-${i}`) : trackerEvent('save_comment', `burst-${i}`))));
     const actor = await next(f); assert.equal(copy(actor).length, 1);
-    const text = copy(actor)[0].text;
+    const text = requestNote(actor);
     for (const reason of ['A possible plan document', DISPATCH_OBSERVATION, TRACKER_OBSERVATION]) assert.ok(text.includes(reason));
     assert.equal(text.split('If this is tracked plan work').length - 1, 1);
-    const parent = copy(await next(f, 'ses_parent'))[0].text; assert.ok(parent.includes(HINT));
+    const parent = requestNote(await next(f, 'ses_parent')); assert.ok(parent.includes(HINT));
     assert.ok(!parent.includes(DISPATCH_OBSERVATION) && !parent.includes(TRACKER_OBSERVATION));
     assert.equal(proxyHint(await next(f)), false);
     const inner = trackerEvent('save_issue', 'shared-call'); await f.after(inner);
@@ -416,5 +416,86 @@ test('restricted or disabled proxy recipients lose only their actor flags withou
     assert.equal(proxyHint(await next(f)), false); assert.equal(proxyHint(await next(f, 'ses_parent')), false);
     await f.after(trackerEvent('save_issue')); f.store.setEnabled(false); await next(f); f.store.setEnabled(true);
     assert.equal(proxyHint(await next(f)), false);
+  });
+});
+
+test('request-only note picks its carrier by the latest message role, defers without one and never mutates stored objects', async () => {
+  await activationFixture(async f => {
+    const text = (value: string) => ({ type: 'text', text: value });
+    const user = { role: 'user', content: [text('Make a plan')] };
+    const result = (id: string, value: unknown, type = 'content') => ({ type: 'tool-result', id, name: 'write', result: { type, value } });
+    const tool = (...results: any[]) => ({ role: 'tool', content: results });
+    const call = { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'write', input: {} }] };
+    const request = (...messages: any[]) => { const c = context(); c.messages = messages; return c; };
+    const stored = (...messages: any[]) => messages.map(m => structuredClone(m));
+    const system = (c: any) => JSON.stringify(c.system);
+    let n = 0; const trigger = () => f.after(write('docs/plans/search.md', `trigger-${++n}`));
+    const baseline = system(await next(f));
+
+    // User message: a text part after its content, on a copy.
+    await trigger();
+    const history = [user], before = stored(user), c1 = request(...history);
+    await f.context(c1);
+    assert.deepEqual(c1.messages[0].content, [text('Make a plan'), text(HINT)]);
+    assert.notEqual(c1.messages[0], user); assert.deepEqual(history, before); assert.equal(c1.messages, c1.messages);
+    assert.equal(system(c1), baseline);
+    // Rebuilt from history, the next request carries nothing; a reused event loses its stale note.
+    const rebuilt = request(...history); await f.context(rebuilt);
+    assert.deepEqual(rebuilt.messages, before); assert.equal(system(rebuilt), baseline);
+    await f.context(c1); assert.deepEqual(c1.messages, before); assert.equal(system(c1), baseline);
+    assert.equal(copy(c1)[0].text, BASE);
+
+    // Tool message with a content result: appended after the content of its last result only.
+    await trigger();
+    const one = tool(result('c1', [text('Created file')]), result('c2', [text('Edited file')]));
+    const toolHistory = [user, call, one], toolBefore = stored(...toolHistory), c2 = request(...toolHistory);
+    await f.context(c2);
+    assert.deepEqual(c2.messages[2].content[0], one.content[0]);
+    assert.deepEqual(c2.messages[2].content[1].result, { type: 'content', value: [text('Edited file'), text(HINT)] });
+    assert.deepEqual(toolHistory, toolBefore); assert.equal(c2.messages[0], user); assert.equal(c2.messages[1], call); assert.equal(system(c2), baseline);
+
+    // Tool message with a text result: same newline-separated carrier as the completed-result note.
+    await trigger();
+    const plain = tool(result('c1', 'Created file', 'text')), plainBefore = stored(plain), c3 = request(user, call, plain);
+    await f.context(c3);
+    assert.deepEqual(c3.messages[2].content[0].result, { type: 'text', value: `Created file\n\n${HINT}` });
+    assert.deepEqual([plain], plainBefore); assert.equal(system(c3), baseline);
+
+    // Any other tool's result carries it too: a child's standing brief must not vanish behind a read.
+    await trigger();
+    const read = tool({ ...result('c1', [text('File contents')]), name: 'read' }), c4 = request(user, call, read);
+    await f.context(c4);
+    assert.deepEqual(c4.messages[2].content[0].result, { type: 'content', value: [text('File contents'), text(HINT)] });
+
+    // Roles and results with no valid carrier keep the text pending, never dropped.
+    await trigger();
+    const unusable = [
+      [user, { role: 'assistant', content: [text('Partial answer')] }],
+      [user, call, tool(result('c1', { ok: true }, 'json'))],
+      [user, call, tool(result('c1', 'failed', 'error'))],
+      [user, call, tool(result('c1', [{ type: 'unknown' }]))],
+      // The Code Mode wrapper's result stays the exact value its script returned.
+      [user, call, tool({ ...result('c1', '{"ok":true}', 'text'), name: 'execute' })],
+      [user, { role: 'system', content: [text('Operator note')] }],
+      [{ role: 'user', content: 'raw string content' }],
+      [],
+    ];
+    for (const messages of unusable) {
+      const snapshot = stored(...messages), c = request(...messages); await f.context(c);
+      assert.deepEqual(c.messages, snapshot, 'nothing is added without a valid carrier');
+      assert.equal(system(c), baseline); assert.equal(hint(c), false);
+    }
+    const delivered = request(user); await f.context(delivered);
+    assert.deepEqual(delivered.messages[0].content, [text('Make a plan'), text(HINT)], 'deferred text arrives on the next valid carrier');
+    await f.context(delivered); assert.deepEqual(delivered.messages, [user]);
+    assert.equal(hint(await next(f)), false, 'delivered once');
+
+    // Removal paths leave neither a section nor a note.
+    await trigger(); const reused = request(user); await f.context(reused); assert.equal(reused.messages[0].content.length, 2);
+    f.store.setEnabled(false); await f.context(reused);
+    assert.equal(copy(reused).length, 0); assert.deepEqual(reused.messages, [user]);
+    f.store.setEnabled(true);
+    const missing = request(user); delete missing.tools.agent_progress_report; await trigger(); await f.context(missing);
+    assert.equal(copy(missing).length, 0); assert.deepEqual(missing.messages, [user]);
   });
 });
