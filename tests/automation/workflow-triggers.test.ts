@@ -201,7 +201,10 @@ test('Windows selects fast PR/push checks and full release, weekly and manual jo
   assert.match(windows, /--test-concurrency=1 tests\/backend\/\$\(\$run\.File\)\.test\.ts/);
   // Each file runs under Start-Process -Wait, which waits for the whole process tree, inside its own thread job.
   assert.match(windows, /Start-ThreadJob[^\n]*-ScriptBlock \{/);
-  assert.match(windows, /-WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput \$run\.Output -RedirectStandardError \$run\.Errors/);
+  assert.match(windows, /-WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput \$run\.Output -RedirectStandardError \$run\.Errors -ErrorAction Stop/);
+  // The secondary logon service refuses a second simultaneous start once; only that refusal is retried.
+  assert.match(windows, /\$_\.Exception\.Message -notmatch 'already running'\) \{ throw \}/);
+  assert.match(windows, /\$attempt -ge 30/);
   assert.ok(!windows.includes('WaitForExit'), 'a bare process wait would not wait for what the process started');
   assert.match(windows, /\$null = \$runs\.Job \| Wait-Job/);
   assert.match(windows, /Receive-Job -Job \$run\.Job -ErrorAction Stop/);

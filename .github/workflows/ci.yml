@@ -224,7 +224,8 @@ jobs:
           # which are what take Setup coordination ports; the platform file
           # drives the setup controller directly. Each runs under Start-Process
           # -Wait inside a thread job, so it is waited for with everything it
-          # started, exactly as when they ran one after the other.
+          # started, exactly as when they ran one after the other. Starting the
+          # two at the same instant can be refused once, so the start is retried.
           $runs = @('windows-platform', 'windows-service') | ForEach-Object {
             [pscustomobject]@{
               File = $_
@@ -245,7 +246,17 @@ jobs:
             foreach ($run in $runs) {
               $run.Job = Start-ThreadJob -ArgumentList $run, $credential, $env:GITHUB_WORKSPACE, (Get-Command node).Source -ScriptBlock {
                 param($run, $credential, $workspace, $node)
-                $process = Start-Process -FilePath $node -ArgumentList "--experimental-strip-types --test --test-concurrency=1 tests/backend/$($run.File).test.ts" -WorkingDirectory $workspace -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $run.Output -RedirectStandardError $run.Errors
+                # The secondary logon service creates one process at a time and
+                # refuses a second request while it is busy; retry only that refusal.
+                $process = $null
+                for ($attempt = 1; -not $process; $attempt++) {
+                  try {
+                    $process = Start-Process -FilePath $node -ArgumentList "--experimental-strip-types --test --test-concurrency=1 tests/backend/$($run.File).test.ts" -WorkingDirectory $workspace -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $run.Output -RedirectStandardError $run.Errors -ErrorAction Stop
+                  } catch {
+                    if ($attempt -ge 30 -or $_.Exception.Message -notmatch 'already running') { throw }
+                    Start-Sleep -Seconds 1
+                  }
+                }
                 $process.ExitCode
               }
             }
