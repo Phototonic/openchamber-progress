@@ -153,6 +153,8 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   await wait4('page', `r.dataset.state==='updating'`, 'superseded picture'); st = await state('page');
   check('arrows:superseded-picture-removes-cues', st.current === 'false' && !st.beads.length && !Object.values(st.cues).some(v => v) && st.animations === 0, undefined, st);
   await evaluate(`qa.release('arrow-graph');true`); await moving('page', 3);
+  // The finished T9 keeps exactly one plain T4 → T9 path: no cue and no bead overlay (moving or still).
+  check('arrows:working-to-done-edge-stays-plain', await guest('page', `const r=d.querySelector('${REGION}');const p=r.querySelectorAll('path[data-from="T4"][data-to="T9"]');return r.dataset.current==='true'&&p.length===1&&!p[0].hasAttribute('data-arrow')&&!r.querySelector('.ap-map-bead[data-flow-from="T4"][data-flow-to="T9"]')`));
   // Hidden: revoked in place; on show, held revalidation cannot let the old DOM restart flow.
   await evaluate(`qa.visibility('page',false);true`); await frames2();
   check('arrows:hidden-revokes-motion', await guest('page', `const r=d.querySelector('${REGION}');return d.documentElement.hasAttribute('data-ap-hidden')&&r.dataset.motion!=='on'&&r.getAnimations({subtree:true}).length===0`));

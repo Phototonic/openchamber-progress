@@ -80,7 +80,7 @@ test('registered report provides safe recovery hints and executable start help w
     for(const text of [tool.description,skill.content,fs.readFileSync('plugin/SKILL.md','utf8')]){
       const examples=[...text.matchAll(/```json\s*([\s\S]*?)```/g)].map(m=>JSON.parse(m[1]));
       assert.ok(examples.length>0,'direct tool and both guidance surfaces include JSON start example');
-      assert.match(text,/work moves back to a task's prerequisites[^.]*set the later task back to pending instead of leaving it in progress/,'status guidance for moved-back work');
+      assert.match(text,/work moves back to a task's prerequisites after the later task's own work began, mark the later task blocked with blocker category dependency and a short reason; if none of its own work was done yet, set it back to pending/,'status guidance for moved-back work');
       for(const example of examples){assert.equal(parseRequest(example).op,'start');assert.equal(example.rev,0);assert.equal(example.items[0].kind,'task');
         const reply=await call(example);assert.equal(reply.rev,1);
         const page=await call({op:'read',plan:example.plan,page:0});
