@@ -92,7 +92,8 @@ test('lane runner starts a yielding step at lower priority and an ordinary one a
     writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
 const show=(label:string,lowPriority?:boolean)=>({label,command:process.execPath,args:['-e',"console.log('PRIORITY '+require('node:os').getPriority())"],lowPriority});
 await runLanes([{name:'a',steps:[show('usual')]},{name:'b',steps:[show('yielding',true)]}]);`);
-    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000});
+    // Plain headings: the runner writes `::group::` blocks when it sees GitHub Actions.
+    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000,env:{...process.env,GITHUB_ACTIONS:''}});
     assert.equal(r.status,0,r.stderr);
     const seen=(label:string)=>Number(new RegExp(`=== ${label} ===\\nPRIORITY (-?\\d+)`).exec(r.stdout)?.[1]);
     assert.ok(seen('b: yielding')>seen('a: usual'),'the yielding step has the larger niceness');
