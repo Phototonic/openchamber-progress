@@ -250,8 +250,8 @@ export interface ViewSpec<U> {
   tidyScope?: (vc: ViewContext<U>) => string;
   /** Whether a counted target is still in the view's scope right now; asked before each cleanup request. */
   tidyMember?: (vc: ViewContext<U>, target: CleanupTarget) => boolean;
-  /** `confirmed`: keys whose cleanup receipt succeeded, given only when a cleanup action ended. */
-  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => Partial<U>;
+  /** `confirmed`: keys whose cleanup receipt succeeded, each with the cleanup generation the receipt returned; given only when a cleanup action ended. */
+  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlyMap<string, number>, returned?: ReadonlySet<string>) => Partial<U>;
   /**
    * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
    * selected session; board: its own list scope, never the host session). Its task-reading state
@@ -796,9 +796,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     // The old callbacks die with the state; the repaint is background data, never an explicit UI action.
     cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.data++;
   };
-  /** `confirmed`: plans a cleanup receipt took out of view; `returned`: plans a receipt put back (Undo). */
+  /**
+   * `confirmed`: plans a cleanup receipt took out of view, each with the cleanup generation the receipt returned;
+   * `returned`: plans a receipt put back (Undo).
+   */
   /** Callers choose how the change repaints: an explicit action or refresh bumps `versions.ui`, a run's own end `versions.data`. */
-  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => {
+  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlyMap<string, number>, returned?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
     if (keys.size && spec.forgetPlans) ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) };
   };
@@ -1076,7 +1079,10 @@ export function startView<U>(spec: ViewSpec<U>) {
       ? spec.tidyScan?.(vc, key, p => keys.has(p.key), false, remaining!.map(t => remainingPlan(t, vc)))
       : spec.tidyScan?.(vc, key)) ?? undefined;
     const listed = (spec.tidyPlans?.(vc) ?? []).filter(p => !keys || keys.has(p.key));
-    const confirmation = scan ? undefined : { ...tidyConfirmation(listed, read.storeId, key, spec.tidyArchived?.(vc)), matching: spec.tidyMatching?.(vc) };
+    // A list read in several pages cannot show that no plan crossed a boundary. A recount that found every
+    // plan it names is exact; one that did not cannot tell a plan that left from one that was missed.
+    const unverified = !!read.multiPage && (!remaining || listed.length < remaining.length);
+    const confirmation = scan ? undefined : { ...tidyConfirmation(listed, read.storeId, key, spec.tidyArchived?.(vc), unverified), matching: spec.tidyMatching?.(vc) };
     cleanup = { ...initialCleanup(), tidy: { context: key, confirmation, scan, ...(remaining ? { recount: remaining } : {}) } };
     askFocus('tidy-cancel'); versions.ui++; schedule();
     if (scan) void moreTidy();
@@ -1093,8 +1099,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     const latest = new Map(read.plans.map(p => [p.key, p]));
     // A complete list is the displayed one: a plan that has since moved out of scope is not offered.
     const shown = spec.tidyPlans ? new Set(spec.tidyPlans(vc).map(p => p.key)) : null;
-    const confirmation = scan ? undefined : selectionConfirmation(selection.plans.filter(p => latest.has(p.key) && (!shown || shown.has(p.key))).map(p => latest.get(p.key)!), read.storeId, key,
-      !!spec.tidyArchived?.(vc), action, health.planCleanupActive === 1);
+    const found = selection.plans.filter(p => latest.has(p.key) && (!shown || shown.has(p.key))).map(p => latest.get(p.key)!);
+    // Rows chosen one by one name their plans and are exact; Select all is a census of the loaded list, and a
+    // recount is exact only when it found every plan it names (see requestTidy).
+    const unverified = !!read.multiPage && (selection.all || (!!selection.recount && found.length < selection.plans.length));
+    const confirmation = scan ? undefined : selectionConfirmation(found, read.storeId, key,
+      !!spec.tidyArchived?.(vc), action, health.planCleanupActive === 1, unverified);
     cleanup = { ...initialCleanup(), tidy: { context: key, selection: action, selectionRequest: selection, opener: `selection-${action}`, confirmation, scan } };
     askFocus('tidy-cancel'); versions.ui++; schedule();
     if (scan) void moreTidy();
@@ -1171,10 +1181,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     const same = cleanup.tidy === state && state.context === tidyContext();
     if (same && document.activeElement?.closest('[data-testid="tidy-stop"]')) askFocus('tidy-open', 'tidy-stop');
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
-    const receipts = new Set(result.succeeded.map(t => t.key));
+    const receipts = new Map(result.succeeded.map(t => [t.key, t.request.cleanupRev] as const));
     // Undo of an archive puts plans back in view; every other successful receipt takes them out.
     const back = undo && (state.result?.action === 'archive' || !!state.result?.returned);
-    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined);
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? new Set(receipts.keys()) : undefined);
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result: back ? { ...result, returned: true } : result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
     tidyReconcile = same;
@@ -1213,7 +1223,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const sameContext = target.context === cleanupContext();
     // Also reconcile ambiguous failures. Never replay an action automatically or retain
     // pre-action data as a fresh success; every part/list reply from before this is retired.
-    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]), new Set(result.ok ? [target.key] : []));
+    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]), new Map(result.ok ? [[target.key, result.cleanup.revision] as const] : []));
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     askFocus(result.ok ? 'cleanup-notice' : 'cleanup-error'); versions.ui++; versions.data++; schedule(); retry();
@@ -1493,7 +1503,7 @@ export function startView<U>(spec: ViewSpec<U>) {
           // Only the captured remaining plans, under the scope displayed now (each is re-checked when sent).
           const selection = remaining ? {
             scope: spec.selectionScope?.(context()),
-            all: false, includes: (p: CleanupPlan) => keys.has(p.key),
+            all: false, recount: true, includes: (p: CleanupPlan) => keys.has(p.key),
             plans: remaining.map(t => remainingPlan(t, context())),
           } : tidyState.selectionRequest;
           requestSelection(tidyState.selection, selection);

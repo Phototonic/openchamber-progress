@@ -197,7 +197,18 @@ test('Windows selects fast PR/push checks and full release, weekly and manual jo
   const windows = source.split('\n  windows-native:\n')[1].split('\n  publish:\n')[0];
   assert.ok(windows.includes("AP_WINDOWS_FULL: ${{ needs.gate.outputs.windows_full == 'true' && '1' || '0' }}"));
   assert.match(windows, /name: Fetch released Windows migration fixture\n        if: env.AP_WINDOWS_FULL == '1'\n        run: git fetch --no-tags origin tag v1\.1\.1/);
-  assert.match(windows, /--test-concurrency=1 tests\/backend\/windows-platform\.test\.ts tests\/backend\/windows-service\.test\.ts/);
+  assert.match(windows, /\$runs = @\('windows-platform', 'windows-service'\)/);
+  assert.match(windows, /--test-concurrency=1 tests\/backend\/\$\(\$run\.File\)\.test\.ts/);
+  // Each file runs under Start-Process -Wait, which waits for the whole process tree, inside its own thread job.
+  assert.match(windows, /Start-ThreadJob[^\n]*-ScriptBlock \{/);
+  assert.match(windows, /-WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput \$run\.Output -RedirectStandardError \$run\.Errors -ErrorAction Stop/);
+  // The secondary logon service refuses a second simultaneous start once; only that refusal is retried.
+  assert.match(windows, /\$_\.Exception\.Message -notmatch 'already running'\) \{ throw \}/);
+  assert.match(windows, /\$attempt -ge 30/);
+  assert.ok(!windows.includes('WaitForExit'), 'a bare process wait would not wait for what the process started');
+  assert.match(windows, /\$null = \$runs\.Job \| Wait-Job/);
+  assert.match(windows, /Receive-Job -Job \$run\.Job -ErrorAction Stop/);
+  assert.match(windows, /Where-Object \{ \$_\.ExitCode -ne 0 \}/);
 
   const root = mkdtempSync(join(tmpdir(), 'workflow-windows-'));
   const git = (...args: string[]) => {

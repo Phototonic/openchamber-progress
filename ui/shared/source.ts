@@ -205,8 +205,9 @@ export type ListResult =
   /** `health`: the capabilities of a health reply that was read before the failure, when there was one. */
   | { ok: false; failure: ReadFailure; health?: ReturnType<typeof parseHealth> };
 
-const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRead => ({
+const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean, multiPage = false): StoreRead => ({
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
+  ...(multiPage ? { multiPage: true } : {}),
 });
 
 /** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
@@ -271,7 +272,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       }
       cursor = next.nextCursor;
     }
-    const read = toRead(first.envelope, plans, Boolean(cursor));
+    const read = toRead(first.envelope, plans, Boolean(cursor), first.nextCursor !== null);
     return { ok: true, health, read, ...(inbox ? { inbox: firstInbox(askInbox, firstBody, read, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), ...(seen ? { health: seen } : {}) };
