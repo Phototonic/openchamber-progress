@@ -49,7 +49,20 @@ test('retirement discards held scans; collecting targets stops at the confirmati
   const c = await capped.more(() => true);
   assert.equal(c?.targets.length, 1000);
   assert.equal(c?.limited, true);
-  assert.equal(reads, 20);
+  assert.equal(reads, 21, 'only a further confirmed match establishes that more plans match');
+});
+
+test('exactly 1,000 matches followed only by nonmatching plans never claim more plans match', async () => {
+  let reads = 0;
+  const scan = new CleanupScan('reading', 'store', false, async () => {
+    const offset = reads++ * 50;
+    const matching = offset < 1000;
+    return { plans: plans(50, matching ? 'finished' : 'active').map((p, i) => ({ ...p, key: `s/${offset + i}` })), visited: 50, nextCursor: String(reads) };
+  });
+  const first = await scan.more(() => true);
+  assert.equal(first?.targets.length, 1000);
+  assert.equal(first?.limited, false, 'a remaining cursor alone is not a match');
+  assert.equal(first?.unchecked, true, 'say that more plans were not checked');
 });
 
 test('task-heavy search pauses after 40 windows and Check more resumes without repeating windows', async () => {

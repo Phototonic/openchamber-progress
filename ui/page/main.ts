@@ -19,7 +19,7 @@ import {
 } from '../shared/scope.ts';
 import { criteriaKey, freezeLive, inPlace, queryProblem, searchable, scopeAvailability, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
 import { CleanupScan, PlanSelection, tidyCopy } from '../shared/cleanup.ts';
-import { cleanupSearchReader, readCleanupListPage, type ServiceHost } from '../shared/source.ts';
+import { cleanupKnownReader, cleanupSearchReader, readCleanupListPage, type ServiceHost } from '../shared/source.ts';
 import {
   announceSearch, boardBar, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, statusLine, unavailableNote, type ChipKind, type SearchDraft,
 } from '../shared/search-view.ts';
@@ -79,6 +79,8 @@ type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number;
 const boardDerivation = new BoardDerivation();
 const selection = new PlanSelection();
 let selectionEpoch = 0;
+/** The filters the board displayed when a Tidy/selection was last opened (never while one runs or shows its result). */
+let tidyFilters: Filters | null = null;
 function selectionChanged() { selectionEpoch++; frame?.updateUi(() => ({})); }
 let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
@@ -158,6 +160,23 @@ function isSearching(vc: ViewContext<Ui>) {
 function selectionScope(vc: ViewContext<Ui>) {
   return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters,
     isSearching(vc) ? vc.ui.search!.criteria : derivedBoard(vc).filters, vc.ui.search?.key ?? null]);
+}
+/**
+ * The one scope predicate for cleanup: what the board or search shows, as far as this client can evaluate it
+ * (location placement and, for a search, whether its chosen locations are discoverable now). What it cannot
+ * (query, task status, lifecycle, session) is bound by the plan's revision, which every request carries and the
+ * service enforces; a count never adopts a newer revision where such a criterion applies. Used when counting
+ * (scan and named plans alike) and again right before each request.
+ */
+function scopeAdmits(scope: Pick<SearchCriteria, 'project' | 'worktree'>, searching: boolean, live: ViewContext<Ui>['live'], bound: string | null,
+  plan: { ownerSessionId?: string; directory?: string; sourceId: string }) {
+  return (!searching || scopeAvailability(scope, live) === 'ok')
+    && inPlace(scope, { ownerSessionId: plan.ownerSessionId ?? '', directory: plan.directory ?? '', sourceId: plan.sourceId }, live, bound);
+}
+/** Without cleanup support the selection bar is gone: leave Select mode, also with no read. The controller retires pending counts; a finished result keeps its scope. */
+function endSelectionWithoutCleanup(vc: ViewContext<Ui>) {
+  if (vc.health?.planCleanup === 1 || !selection.mode) return;
+  selection.clear(); selection.mode = false;
 }
 /** The submitted search of this frame identity, when the controller still runs it. */
 const searching = (vc: ViewContext<Ui>): SearchViewState | null => (isSearching(vc) ? search.view(resolveLanguage('auto', vc.env.locale)) : null);
@@ -272,7 +291,7 @@ startView<Ui>({
   selectionScope,
   tidyArchived: vc => vc.ui.archived,
   tidyMatching: vc => isSearching(vc) || Object.values(derivedBoard(vc).filters).some(v => v !== ALL),
-  tidyScan: (vc, key, includes, allowActive = true) => {
+  tidyScan: (vc, key, includes, allowActive = true, known) => {
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
     const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
@@ -286,17 +305,37 @@ startView<Ui>({
       session: criteria.session === ALL ? null : criteria.session, lifecycle: criteria.lifecycle === ALL ? null : criteria.lifecycle,
       status: criteria.status === ALL ? null : criteria.status, archived: vc.ui.archived ? 'only' : 'exclude', limit: 50,
     }, identity) : null;
+    // Named plans (a selection or a retry) are validated directly; the scope is walked only for Select all.
+    // A moved revision is adopted only where the whole predicate can be evaluated from the plan itself (no
+    // search, no server-side session scope); otherwise the plan is skipped as changed.
+    const named = known && vc.health?.planTaskSearch === 1 ? cleanupKnownReader(host, known, identity, criteria || filters.session !== ALL ? 'skip' : 'read') : null;
+    const continuation = {};
     return new CleanupScan(key, identity.storeId, vc.ui.archived, async (cursor, current) => {
       active = current;
-      if (scopeAvailability(filters, live) !== 'ok') throw new Error('The selected locations are unavailable.');
-      const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
-        { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
-      return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
-    }, matching, criteria ? 64 : 50, includes, allowActive);
+      // Only a search needs its chosen locations classifiable now; browse places a plan by its recorded directory.
+      if (criteria && scopeAvailability(criteria, live) !== 'ok') throw new Error('The selected locations are unavailable.');
+      return named ? await named(cursor) : searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
+        { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity, continuation);
+      // The scan applies the scope itself, after it has dropped an overlap row's earlier target.
+    }, matching, criteria ? 64 : 50, includes, allowActive, p => scopeAdmits(filters, !!criteria, live, bound, p));
   },
-  // Stable through the run's own reconciliation (which temporarily clears read).
-  tidyScope: vc => JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch]),
-  forgetPlans: (keys, ui) => {
+  // The displayed (effective) filters bind a count and its run, not only the saved ones. They are kept
+  // while a run is in flight or its result is shown: a live-discovery restart or the run's own
+  // reconciliation reshapes them without the user changing anything, and each request is re-checked below.
+  tidyScope: vc => {
+    if (vc.read && !vc.cleanup.pending && !vc.cleanup.tidy?.result) tidyFilters = isSearching(vc) ? null : derivedBoard(vc).filters;
+    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters]);
+  },
+  // Right before each request: the plan must still be placed in the scope the user confirmed (live
+  // placement can change without any plan revision changing). Anything else is skipped.
+  // The same predicate as the count (scopeAdmits), asked again with the live data as it is now.
+  tidyMember: (vc, t) => scopeAdmits(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS, isSearching(vc), vc.live, vc.env.boundSource ?? null,
+    { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }),
+  forgetPlans: (keys, ui, _vc, confirmed, returned) => {
+    // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list;
+    // an Undo receipt puts it back under a Select all rule (it need not be in the loaded list).
+    if (confirmed?.size) selection.forget([...confirmed]);
+    if (returned?.size) selection.returned(returned);
     if (!keys.has(ui.selected ?? '')) return {};
     captures.retire(); reporting.retire(); search.select(null); return { selected: null };
   },
@@ -342,6 +381,7 @@ startView<Ui>({
     frame = vc;
     captures.beginPaint();
     const { read, failure, ui } = vc;
+    endSelectionWithoutCleanup(vc);
     const env = read ? { ...vc.env, live: derivedBoard(vc).live } : vc.env;
     rowPlaces = read ? derivedBoard(vc).places : new Map();
     rowPlans = new Map(read?.plans.map(p => [p.key, p]) ?? []);
@@ -387,7 +427,7 @@ startView<Ui>({
     }
     if (!v) selectionPlans = visiblePlans(vc);
     selection.reconcile(selectionScope(vc),
-      v ? selectionSearchPlans : selectionPlans!, v ? true : !!read.truncated);
+      v ? selectionSearchPlans : selectionPlans!, v ? true : !!read.truncated, v ? !!v.page.checked : true);
     const empty = !v && !read.plans.length && ui.filters.session === ALL;
     // Location selects live in Filters: browsing applies them on choice, a search reruns with them.
     let locations: HTMLElement | null = null;

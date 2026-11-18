@@ -8,6 +8,7 @@ import { BoardDerivation, NO_FILTERS, ALL } from '../../ui/shared/scope.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC } from './fixtures.ts';
+import { pageHook } from './page-hooks.ts';
 
 // Exercise the production paint's selection reconciliation, including its cache guards.
 const source = readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8');
@@ -17,7 +18,9 @@ assert(start >= 0 && end > start);
 const code = ts.transpileModule(`(()=>{${source.slice(start, end)}})()`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const file = ts.createSourceFile('page.ts', source, ts.ScriptTarget.Latest, true);
-const scope = file.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'selectionScope');
+const fn = (name: string) => file.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name);
+const scope = fn('selectionScope');
+const endWithoutCleanup = fn('endSelectionWithoutCleanup');
 const plans = parsePlansPage(JSON.stringify(plansPage([
   summary('alpha', [], { directory: '/fixture/Alpha', lifecycle: 'finished' }),
   summary('beta', [], { directory: '/fixture/Beta', lifecycle: 'finished' }),
@@ -26,7 +29,7 @@ const plans = parsePlansPage(JSON.stringify(plansPage([
 function frame() {
   const selection = new PlanSelection(), board = new BoardDerivation();
   const vc = {
-    identity: 'fixture', ctx: { connection: { account: 'fixture' } },
+    identity: 'fixture', health: { planCleanup: 1 as 1 | undefined }, ctx: { connection: { account: 'fixture' } },
     ui: { filters: { ...NO_FILTERS }, archived: false, search: null as null | { key: string } },
     read: { plans, truncated: false },
     env: { live: { ...EMPTY_LIVE, projectsState: 'ready' as const }, boundSource: SRC },
@@ -36,8 +39,8 @@ function frame() {
   const globals = createContext({ vc, ui: vc.ui, read: vc.read, selection, derivedBoard,
     visiblePlans: () => derivedBoard().plans, ownerOf: () => 'fixture', v: null,
     isSearching: () => !!vc.ui.search,
-    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionPage: '' });
-  if (scope) runInContext(ts.transpileModule(scope.getText(file),
+    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionPage: '', selectionEpoch: 0 });
+  for (const node of [scope, endWithoutCleanup]) if (node) runInContext(ts.transpileModule(node.getText(file),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
   return { vc, selection, derivedBoard, globals,
     paint() { globals.read = vc.read; runInContext(code, globals); } };
@@ -70,4 +73,52 @@ test('Select all counts newly appended hits in the same search page array, dedup
   hits.push({ plan: plans[0] }, { plan: plans[1] }); f.paint();
   assert.equal(f.selection.count, 2);
   assert.equal(f.selection.snapshot().plans.length, 2);
+});
+
+for (const searching of [false, true]) test(`Select mode ends when the service stops offering cleanup (${searching ? 'search results' : 'browse'})`, () => {
+  const f = frame();
+  if (searching) { f.vc.ui.search = { key: 'search' }; f.globals.v = { page: { hits: [], number: 1, checked: true }, criteria: { ...NO_FILTERS } }; }
+  const paintTop = () => runInContext('endSelectionWithoutCleanup(vc)', f.globals);
+  f.paint(); f.selection.mode = true; f.selection.toggle(plans[0]);
+  paintTop(); f.paint();
+  assert.equal(f.selection.mode, true, 'capable service keeps the mode');
+  assert.equal(f.globals.selectionEpoch, 0);
+  f.vc.health = { planCleanup: undefined };
+  paintTop(); f.paint();
+  assert.equal(f.selection.mode, false);
+  assert.equal(f.selection.count, 0);
+  assert.equal(f.globals.selectionEpoch, 0, 'ending the mode leaves a finished result bound to its scope; the controller retires pending counts');
+});
+// The production paint, driven with a null read (Archived on a service without cleanup): anything the paint
+// builds beyond its selection handling is a no-op stub, so only real page state is observed.
+test('the production paint ends Select mode on an Archived read-less frame without cleanup support', () => {
+  const selection = new PlanSelection();
+  selection.reconcile('archived', [], false); selection.mode = true; selection.toggle(plans[0]);
+  const stub: any = new Proxy(function () {}, { get: (_t, k) => (k === Symbol.toPrimitive ? () => '' : stub), apply: () => stub, construct: () => stub });
+  const base: Record<string | symbol, unknown> = { selection, selectionEpoch: 0, document: { getElementById: () => null, activeElement: null }, caret: null };
+  const sandbox = new Proxy(base, { has: () => true, get: (t, k) => (k in t ? t[k] : k in globalThis ? (globalThis as any)[k] : stub) });
+  createContext(sandbox);
+  if (endWithoutCleanup) runInContext(ts.transpileModule(endWithoutCleanup.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, sandbox);
+  const paint = pageHook('paint', sandbox);
+  const vc = { read: null, failure: null, ui: { archived: true, search: null, filters: { ...NO_FILTERS } }, health: { ready: true }, env: { locale: 'en' }, inbox: null, identity: 'fixture' };
+  paint({ append() {} }, vc);
+  assert.equal(selection.mode, false);
+  assert.equal(selection.count, 0);
+  assert.equal(base.selectionEpoch, 0);
+});
+
+test('a cached search page does not reselect a plan a receipt took out; a checked one does', () => {
+  const f = frame();
+  const hits: { plan: typeof plans[number] }[] = [{ plan: plans[0] }, { plan: plans[1] }];
+  f.vc.ui.search = { key: 'search' };
+  const page = { hits, number: 1, checked: true };
+  f.globals.v = { page, criteria: { ...NO_FILTERS } };
+  f.paint(); f.selection.mode = true; f.selection.selectAll();
+  f.selection.forget([plans[0].key]);
+  page.checked = false; f.globals.v = { page: { ...page, hits: [...hits] }, criteria: { ...NO_FILTERS } };
+  f.paint();
+  assert.equal(f.selection.has(plans[0].key), false, 'an unverified cached page is not evidence');
+  f.globals.v = { page: { ...page, hits: [...hits], checked: true }, criteria: { ...NO_FILTERS } };
+  f.paint();
+  assert.equal(f.selection.has(plans[0].key), true);
 });

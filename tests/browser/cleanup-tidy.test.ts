@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchCleanupService } from '../fixtures/cleanup-service.ts';
-import { readList, readCleanupListPage, cleanupSearchReader, cleanupCall, type ServiceHost } from '../../ui/shared/source.ts';
+import { readList, readCleanupListPage, cleanupKnownReader, cleanupSearchReader, cleanupCall, type ServiceHost } from '../../ui/shared/source.ts';
 import { CleanupScan, runTidy, tidyConfirmation, tidyCopy, TIDY_LIMIT } from '../../ui/shared/cleanup.ts';
 
 test('Tidy archives all closed outcomes; Undo restores precisely its receipts without changing history', async () => {
@@ -69,6 +69,85 @@ test('separate list/search scans include unloaded closed plans and delete uses o
     assert.ok(requests.every(q => q.path === '/v1/plan/delete' && !('active' in JSON.parse(q.body!))));
     assert.equal(f.store.get('source-fixture', 'P-active')?.lifecycle, 'active');
     assert.equal(f.store.get('source-fixture', 'P-failed')?.lifecycle, 'failed');
+  } finally { await f.stop(); }
+});
+
+test('a list that shifts between pages retires the count instead of silently skipping plans', async () => {
+  const f = await launchCleanupService(false);
+  try {
+    const raw: ServiceHost = { serviceRequest: async q => {
+      const r = await f.request(q.path + (q.query ? '?' + new URLSearchParams(q.query) : ''), q.body ? JSON.parse(q.body) : undefined);
+      return { status: r.status, body: await r.text() };
+    } };
+    const listed = await readList(raw, { archived: 'exclude' }, 1);
+    assert.ok(listed.ok && listed.read?.truncated);
+    const read = listed.read;
+    const counted = tidyConfirmation(read.plans, read.storeId, 'board').targets[0];
+    assert.ok(counted, 'a closed plan on the first page is counted first');
+    let reads = 0;
+    // Another frame archives that already-counted plan before the second page is read.
+    const host: ServiceHost = { serviceRequest: async q => {
+      if (q.path === '/v1/plans' && ++reads === 2) assert.ok((await cleanupCall(raw, 'archive', counted.request)).ok);
+      return raw.serviceRequest(q);
+    } };
+    const continuation = {};
+    const scan = new CleanupScan('board', read.storeId, false,
+      cursor => readCleanupListPage(host, { archived: 'exclude' }, cursor, read, continuation));
+    await assert.rejects(scan.more(() => true), /changed/);
+    // Without a change the same guarded traversal still completes and sees every closed plan once.
+    reads = -1000;
+    const starts: string[] = [];
+    const watching: ServiceHost = { serviceRequest: async q => { if (q.path === '/v1/plans') starts.push(String(q.query?.cursor ?? '')); return host.serviceRequest(q); } };
+    const reused = {};
+    const stable = new CleanupScan('board', read.storeId, false,
+      cursor => readCleanupListPage(watching, { archived: 'exclude' }, cursor, read, reused));
+    const all = await stable.more(() => true);
+    assert.equal(all?.unchecked, false);
+    assert.ok(starts.length > 1, 'the traversal crossed a page boundary');
+    // The first page ended at cursor N; the next starts one row early to re-read that plan.
+    const firstPage = await readCleanupListPage(raw, { archived: 'exclude' }, null, read);
+    assert.equal(starts[1], String(Number(firstPage.nextCursor) - 1));
+    assert.ok(all!.targets.every(t => t.where), 'overlapped pages keep the placement facts');
+    assert.equal(new Set(all?.targets.map(t => t.key)).size, all?.targets.length);
+    const whole = await readList(raw, { archived: 'exclude' }, 20);
+    assert.ok(whole.ok && whole.read);
+    assert.equal(all?.targets.length, tidyConfirmation(whole.read.plans, read.storeId, 'board').targets.length);
+  } finally { await f.stop(); }
+});
+
+test('named plans are validated by point lookups, not by walking the library', async () => {
+  const f = await launchCleanupService(false, false);
+  try {
+    const paths: string[] = [];
+    const raw: ServiceHost = { serviceRequest: async q => {
+      paths.push(q.path);
+      const r = await f.request(q.path + (q.query ? '?' + new URLSearchParams(q.query) : ''), q.body ? JSON.parse(q.body) : undefined);
+      return { status: r.status, body: await r.text() };
+    } };
+    const listed = await readList(raw, { archived: 'exclude' }, 20);
+    assert.ok(listed.ok && listed.read);
+    const read = listed.read;
+    const named = ['P-done', 'P-other', 'P-cancelled', 'P-failed', 'P-active'].map(id => read.plans.find(p => p.id === id)!);
+    assert.ok(named.every(Boolean));
+    // Another frame changes four of them after they were chosen.
+    const byId = (id: string) => tidyConfirmation(named.filter(p => p.id === id), read.storeId, 'x').targets[0];
+    assert.ok((await cleanupCall(raw, 'archive', byId('P-cancelled').request)).ok);
+    assert.equal((await runTidy(raw, 'delete', [byId('P-failed')], () => true)).succeeded.length, 1);
+    f.store.apply({ op: 'revise', plan: 'P-other', rev: 2, oid: 'reopen-other', reopen: true,
+      items: [{ id: 'A', title: 'More work', kind: 'task', status: 'working' }] }, f.actor, f.capture());
+    paths.length = 0;
+    const scan = new CleanupScan('selection', read.storeId, false, cleanupKnownReader(raw, named, read), false, 50, () => true);
+    const counted = await scan.more(() => true);
+    assert.deepEqual(counted?.targets.map(t => t.request.plan).sort(), ['P-active', 'P-done', 'P-other']);
+    assert.equal(counted?.unchecked, false);
+    const other = counted!.targets.find(t => t.request.plan === 'P-other')!;
+    assert.notEqual(other.request.rev, named.find(p => p.id === 'P-other')!.revision);
+    assert.equal(other.request.rev, f.store.get('source-fixture', 'P-other')!.revision, 'a moved plan is counted at its current revision');
+    assert.equal(other.lifecycle, 'active');
+    // Unmoved and re-read plans alike keep the placement facts the per-target scope check needs.
+    assert.ok(counted!.targets.every(t => typeof t.where?.owner === 'string' && typeof t.where.directory === 'string'), 'placement carried');
+    assert.ok(paths.every(p => p === '/v1/search-state' || p === '/v1/plan'), `no list or search walk: ${paths.join()}`);
+    assert.equal(paths.filter(p => p === '/v1/search-state').length, 1);
   } finally { await f.stop(); }
 });
 

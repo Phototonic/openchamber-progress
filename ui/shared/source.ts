@@ -14,6 +14,7 @@ import {
   NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
+import { SEARCH_LIMITS } from '../../shared/progress.ts';
 import type { InboxWindowView } from './model.ts';
 import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
@@ -72,12 +73,23 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
 
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
-/** Panel-owned list traversal: no health/setup read, refresh budget, inbox or cache writes. */
+/** The last plan one scan has seen; the next page re-reads it to prove the offsets did not shift. */
+export interface ListContinuation { last?: string }
+
+/**
+ * Panel-owned list traversal: no health/setup read, refresh budget, inbox or cache writes.
+ * Offsets move when another frame archives or deletes a plan already behind the cursor. With a
+ * `continuation`, each later page starts one row early and must open with the plan that ended the
+ * previous page; otherwise the count is retired rather than skipping plans and claiming it is complete.
+ */
 export async function readCleanupListPage(host: ServiceHost, scope: ListScope, cursor: string | null,
-  expected: Pick<StoreRead, 'storeId' | 'binding' | 'sources'>) {
+  expected: Pick<StoreRead, 'storeId' | 'binding' | 'sources'>, continuation?: ListContinuation) {
+  const overlap = continuation?.last !== undefined && cursor !== null;
+  const offset = overlap ? Number(cursor) - 1 : NaN;
+  if (overlap && !(Number.isSafeInteger(offset) && offset >= 0)) throw new ContractError('The plan list continuation is unreadable.');
   const page = parsePlansPage(await call(host, ROUTES.plans, query({
     limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null,
-    archived: scope.archived ?? 'exclude', cursor,
+    archived: scope.archived ?? 'exclude', cursor: overlap ? String(offset) : cursor,
   })));
   const e = page.envelope;
   const verification = (sources: StoreRead['sources']) => JSON.stringify(sources.map(s => [s.id, s.verified]).sort());
@@ -85,7 +97,79 @@ export async function readCleanupListPage(host: ServiceHost, scope: ListScope, c
     e.binding.verified !== expected.binding.verified || verification(e.sources) !== verification(expected.sources)) {
     throw new ContractError('The progress store or binding changed during cleanup counting.');
   }
-  return { plans: page.data, visited: Math.max(1, page.data.length), nextCursor: page.nextCursor };
+  const plans = page.data;
+  if (overlap && plans[0]?.key !== continuation.last) throw new ContractError('The plan list changed during cleanup counting.');
+  if (continuation && page.data.length) continuation.last = page.data[page.data.length - 1].key;
+  // The re-read anchor stays in the page so a changed version replaces the old one; the scan dedupes by key.
+  // Matching ends cannot prove no other plan crossed the cursor (offsets are not a snapshot): `unverified`.
+  return { plans, visited: Math.max(1, plans.length - (overlap ? 1 : 0)), nextCursor: page.nextCursor, ...(overlap ? { unverified: true as const } : {}) };
+}
+
+/** Placement facts (`ownerSessionId`, `directory`) ride along untouched for the per-target scope check. */
+export type KnownPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'> & Partial<Pick<PlanView, 'ownerSessionId' | 'directory'>>;
+const stateBytes = (storeId: string, batch: readonly KnownPlan[]) =>
+  new URLSearchParams(searchStateQuery(storeId, batch.map(p => ({ source: p.sourceId, plan: p.id })))).toString().length + 1;
+/**
+ * An explicit selection (or a retry) names its plans: validate exactly those with point lookups
+ * (at most 50 keys and the service's encoded-query limit per lookup) instead of walking the library.
+ * A plan that is gone drops out. A plan whose progress revision moved is, with `moved: 'read'`,
+ * re-read once for its current facts; with `'skip'` (a view whose scope depends on content this client
+ * cannot evaluate, such as a search) it is dropped as changed, never adopted at its new revision.
+ * Every request is one unit of the caller's per-action budget: re-reads are done one per call and the
+ * unfinished ones wait for the next call. A re-read is pinned to the expected store and binding, and a
+ * missing plan is dropped only after the pinned lookup confirms its absence.
+ */
+export function cleanupKnownReader(host: ServiceHost, known: readonly KnownPlan[], expected: Pick<StoreRead, 'storeId' | 'binding'>, moved: 'read' | 'skip' = 'read') {
+  type Step = { plan: KnownPlan; confirm: boolean };
+  const steps: Step[] = [];
+  let resume: string | null = null;
+  let tick = 0;
+  const same = (b: { sourceId: string | null; verified: boolean }) => b.sourceId === expected.binding.sourceId && b.verified === expected.binding.verified;
+  const changed = () => new ContractError('The progress store or binding changed during cleanup counting.');
+  return async (cursor: string | null) => {
+    if (steps.length) {
+      const { plan, confirm } = steps.shift()!;
+      const next = steps.length ? `h${++tick}` : resume;
+      if (confirm) {
+        const r = await readSearchState(host, expected.storeId, [{ source: plan.sourceId, plan: plan.id }]);
+        if (!r.ok) throw new ContractError(r.failure.message);
+        if (!same(r.state.binding)) throw changed();
+        const row = r.state.data[0];
+        // Absent under the expected identity: drop it. Present after a missing head is inconsistent.
+        if (row.exists && row.cleanup.state !== 'deleted') throw new ContractError('The plan list changed during cleanup counting.');
+        return { plans: [] as KnownPlan[], visited: 1, nextCursor: next };
+      }
+      const head = await readPlanHead(host, plan);
+      if (head.ok) {
+        if (head.envelope.storeId !== expected.storeId || !same(head.envelope.binding)) throw changed();
+        return { plans: [head.plan] as KnownPlan[], visited: 1, nextCursor: next };
+      }
+      if (head.status !== 404) throw new ContractError(head.failure.message);
+      steps.unshift({ plan, confirm: true });
+      return { plans: [] as KnownPlan[], visited: 1, nextCursor: `h${++tick}` };
+    }
+    const start = cursor === null ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(start) || start < 0) throw new ContractError('The selection continuation is unreadable.');
+    const batch: KnownPlan[] = [];
+    for (const p of known.slice(start, start + SEARCH_LIMITS.stateKeys)) {
+      if (batch.length && stateBytes(expected.storeId, [...batch, p]) > SEARCH_LIMITS.queryBytes) break;
+      batch.push(p);
+    }
+    const next = start + batch.length;
+    if (!batch.length) return { plans: [] as KnownPlan[], visited: 1, nextCursor: null };
+    const result = await readSearchState(host, expected.storeId, batch.map(p => ({ source: p.sourceId, plan: p.id })));
+    if (!result.ok) throw new ContractError(result.failure.message);
+    if (!same(result.state.binding)) throw changed();
+    const plans: KnownPlan[] = [];
+    for (const [i, row] of result.state.data.entries()) {
+      if (!row.exists || row.cleanup.state === 'deleted' || row.revision === null) continue;
+      const plan = batch[i];
+      if (row.revision === plan.revision) plans.push({ ...plan, cleanup: { state: row.cleanup.state, revision: row.cleanup.revision } });
+      else if (moved === 'read') steps.push({ plan, confirm: false });
+    }
+    resume = next < known.length ? String(next) : null;
+    return { plans, visited: batch.length, nextCursor: steps.length ? `h${++tick}` : resume };
+  };
 }
 
 /** A separate search traversal, never the board search's cursor, pages or counts. */
@@ -118,7 +202,8 @@ export type InboxDemand = 'count' | 'rows';
 export type ListResult =
   | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead; inbox?: InboxFirst }
   | { ok: true; health: ReturnType<typeof parseHealth>; read: null } // service up, not configured: a setup state, not an empty success
-  | { ok: false; failure: ReadFailure };
+  /** `health`: the capabilities of a health reply that was read before the failure, when there was one. */
+  | { ok: false; failure: ReadFailure; health?: ReturnType<typeof parseHealth> };
 
 const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRead => ({
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
@@ -127,8 +212,10 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
 /** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
 /** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
+  let seen: ReturnType<typeof parseHealth> | undefined;
   try {
     let health = parseHealth(await call(host, ROUTES.health));
+    seen = health;
     if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
       let startingUnsettled = false;
       // New services separate host liveness from data admission. One explicit
@@ -142,6 +229,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
         startingUnsettled = true;
       }
       health = parseHealth(await call(host, ROUTES.health));
+      seen = health;
       // Older services can echo that same transient refusal into their health
       // snapshot. It still grants no data access; preserve any other diagnostic.
       if (startingUnsettled && !health.ready && health.state === 'refused' && health.diagnostics.length === 1 && health.diagnostics[0] === 'managed-step-unsettled') return { ok: true, health, read: null };
@@ -155,7 +243,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
         : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
         const failure = classify(new HttpError(503, failed));
-        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
+        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` }, health };
       }
     }
     if (!health.ready || scope === null) return { ok: true, health, read: null };
@@ -186,7 +274,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
     const read = toRead(first.envelope, plans, Boolean(cursor));
     return { ok: true, health, read, ...(inbox ? { inbox: firstInbox(askInbox, firstBody, read, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
-    return { ok: false, failure: classify(error) };
+    return { ok: false, failure: classify(error), ...(seen ? { health: seen } : {}) };
   }
 }
 

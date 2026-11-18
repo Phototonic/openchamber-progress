@@ -1,0 +1,145 @@
+// Named-plan lookups and offset-paged counts against a scripted service: bounded requests, pinned identity,
+// and honest qualification. The scope predicate itself is covered in cleanup-tidy-scope.test.ts.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CleanupScan, TIDY_SCAN_WINDOWS } from '../../ui/shared/cleanup.ts';
+import { cleanupKnownReader, readCleanupListPage, readList, type ServiceHost } from '../../ui/shared/source.ts';
+import { parsePlansPage } from '../../ui/shared/adapter.ts';
+import { envelope, plansPage, planPage, SRC, HEALTH, summary } from './fixtures.ts';
+import type { PlanSummary } from '../../shared/progress.ts';
+import { identity, view, stateRow, service, closed } from './cleanup-known-service.ts';
+
+test('a named batch stays within the encoded query limit, not only 50 keys', async () => {
+  const rows = Array.from({ length: 50 }, (_, i) => closed(`${String(i).padStart(2, '0')}${':'.repeat(78)}`, { sourceId: 's'.repeat(80) }));
+  const known = view(rows);
+  const s = service({ revisions: new Map(rows.map(r => [r.id, r.revision])) }, rows);
+  const scan = new CleanupScan('c', identity.storeId, false, cleanupKnownReader(s.host, known, identity), false, 50, () => true);
+  const counted = await scan.more(() => true);
+  const lookups = s.requests.filter(r => r.path === '/v1/search-state');
+  assert.ok(lookups.length > 1, 'split into several lookups');
+  for (const r of lookups) assert.ok(new URLSearchParams(r.query).toString().length + 1 <= 16 * 1024, 'every lookup fits the service limit');
+  assert.equal(counted?.targets.length, 50);
+  assert.equal(counted?.unchecked, false);
+});
+
+test('moved revisions are re-read one request at a time within the per-action budget, keeping unfinished plans', async () => {
+  const rows = Array.from({ length: 50 }, (_, i) => closed(`P-${i}`));
+  const known = view(rows);
+  const s = service({ revisions: new Map(rows.map(r => [r.id, r.revision + 1])) }, rows);
+  const scan = new CleanupScan('c', identity.storeId, false, cleanupKnownReader(s.host, known, identity), false, 50, () => true);
+  const first = await scan.more(() => true);
+  assert.ok(s.requests.length <= TIDY_SCAN_WINDOWS, `one action sends at most ${TIDY_SCAN_WINDOWS} requests, sent ${s.requests.length}`);
+  assert.equal(first?.unchecked, true, 'unfinished plans are kept for Check more');
+  s.requests.length = 0;
+  const second = await scan.more(() => true);
+  assert.ok(s.requests.length <= TIDY_SCAN_WINDOWS);
+  assert.equal(second?.targets.length, 50);
+  assert.equal(second?.unchecked, false);
+  assert.ok(second!.targets.every(t => t.request.rev === 2), 'each is counted at its current revision');
+});
+
+test('a plan whose revision moved is skipped, never adopted, when the predicate cannot be evaluated here', async () => {
+  const rows = [closed('P-1'), closed('P-2')];
+  const s = service({ revisions: new Map([['P-1', 2], ['P-2', 1]]) }, rows);
+  const scan = new CleanupScan('c', identity.storeId, false, cleanupKnownReader(s.host, view(rows), identity, 'skip'), false, 50, () => true);
+  const counted = await scan.more(() => true);
+  assert.deepEqual(counted?.targets.map(t => t.request.plan), ['P-2']);
+  assert.ok(s.requests.every(r => r.path === '/v1/search-state'), 'no head read for the moved plan');
+});
+
+test('a head read from another store or binding is refused, not counted', async () => {
+  const rows = [closed('P-1')];
+  for (const other of [{ storeId: 'store-2' }, { sourceBinding: { sourceId: SRC, verified: false } }]) {
+    const s = service({ revisions: new Map([['P-1', 2]]) }, rows);
+    const swapped: ServiceHost = { serviceRequest: async q => {
+      const reply = await s.host.serviceRequest(q);
+      return q.path === '/v1/plan' ? { ...reply, body: JSON.stringify({ ...JSON.parse(reply.body), ...other }) } : reply;
+    } };
+    const scan = new CleanupScan('c', identity.storeId, false, cleanupKnownReader(swapped, view(rows), identity), false, 50, () => true);
+    await assert.rejects(scan.more(() => true), /store or binding changed/);
+  }
+});
+
+test('a missing head counts as absent only when the pinned lookup confirms it', async () => {
+  const rows = [closed('P-1')];
+  const gone = service({ revisions: new Map([['P-1', 2]]), head: () => ({ status: 404, body: '{"error":"not-found"}' }) }, rows);
+  // The head is missing, and the pinned lookup now agrees the plan is gone.
+  let calls = 0;
+  gone.host.serviceRequest = ((inner) => async (q: Parameters<ServiceHost['serviceRequest']>[0]) => {
+    if (q.path === '/v1/search-state' && ++calls === 2) {
+      const keys = JSON.parse(q.query!.keys) as { source: string; plan: string }[];
+      return { status: 200, body: JSON.stringify({ ...envelope(), planTaskSearch: 1, data: keys.map(k => stateRow(k, null)) }) };
+    }
+    return inner(q);
+  })(gone.host.serviceRequest);
+  const absent = await new CleanupScan('c', identity.storeId, false, cleanupKnownReader(gone.host, view(rows), identity), false, 50, () => true).more(() => true);
+  assert.equal(absent?.targets.length, 0);
+  // A bare 404 that the pinned lookup contradicts is an inconsistent store, not an absence.
+  const odd = service({ revisions: new Map([['P-1', 2]]), head: () => ({ status: 404, body: '{"error":"not-found"}' }) }, rows);
+  await assert.rejects(new CleanupScan('c', identity.storeId, false, cleanupKnownReader(odd.host, view(rows), identity), false, 50, () => true).more(() => true));
+});
+
+// --- offset-paged browse counts
+const pageHost = (pages: (offset: number) => PlanSummary[], requests: string[] = []): ServiceHost => ({ serviceRequest: async q => {
+  assert.equal(q.path, '/v1/plans');
+  const offset = Number(q.query?.cursor ?? 0);
+  requests.push(String(offset));
+  const rows = pages(offset);
+  return { status: 200, body: JSON.stringify(plansPage(rows, offset === 0 ? '3' : null)) };
+} });
+async function paged(second: PlanSummary[], opts: { admit?: (p: { revision: number }) => boolean; allowActive?: boolean; includes?: () => boolean; last?: PlanSummary } = {}) {
+  const a = closed('a'), b = closed('b'), c = opts.last ?? closed('c');
+  const host = pageHost(offset => offset === 0 ? [a, b, c] : second);
+  const read = { ...identity, sources: parsePlansPage(JSON.stringify(plansPage([]))).envelope.sources };
+  const continuation = {};
+  const scan = new CleanupScan('c', identity.storeId, false, cursor => readCleanupListPage(host, { archived: 'exclude' }, cursor, read, continuation),
+    false, 50, opts.includes, opts.allowActive ?? true, opts.admit as ((p: unknown) => boolean) | undefined);
+  return scan.more(() => true);
+}
+test('a count that crossed an offset page boundary is qualified, because the offsets cannot be proven stable', async () => {
+  const done = await paged([closed('c'), closed('d')]);
+  assert.equal(done?.targets.length, 4);
+  assert.equal(done?.unchecked, false);
+  assert.equal(done?.unverified, true, 'never presented as a verified complete count');
+});
+test('an anchor that changed between pages is counted at its new version, not dropped', async () => {
+  const done = await paged([closed('c', { revision: 2 }), closed('d')]);
+  const anchor = done?.targets.find(t => t.request.plan === 'c');
+  assert.equal(anchor?.request.rev, 2);
+  assert.equal(done?.targets.filter(t => t.request.plan === 'c').length, 1);
+});
+
+test('an overlap row that left the view invalidates its earlier target instead of staying counted', async () => {
+  // The anchor c is re-read with a new revision that no longer passes the view's scope.
+  const done = await paged([closed('c', { revision: 2 }), closed('d')], { admit: p => p.revision !== 2 });
+  assert.deepEqual(done?.targets.map(t => t.request.plan).sort(), ['a', 'b', 'd']);
+});
+test('an in-progress exclusion is judged again when the overlap row is read as closed', async () => {
+  // Select all without the acknowledgement capability excludes an active plan; it finishes before the next page.
+  const done = await paged([closed('c', { revision: 2 }), closed('d')], { allowActive: false, includes: () => true, last: summary('c', [], { lifecycle: 'active' }) });
+  assert.deepEqual(done?.targets.map(t => t.request.plan).sort(), ['a', 'b', 'c', 'd']);
+  assert.equal(done?.excludedActive, undefined, 'it is no longer reported as in progress');
+});
+
+// --- a failed list read still reports the latest health it parsed
+const listHost = (healths: object[]): ServiceHost => { let n = 0; return { serviceRequest: async q => {
+  if (q.path === '/health') return { status: 200, body: JSON.stringify(healths[Math.min(n++, healths.length - 1)]) };
+  if (q.path === '/v1/setup') return { status: 200, body: '{}' };
+  return { status: 500, body: '{"error":"storage"}' };
+} }; };
+test('a failed plans read carries the latest health, not the first reply of a starting service', async () => {
+  const starting = { ...HEALTH, ready: false, state: 'starting', diagnostics: [] };
+  const ready = { ...HEALTH, state: 'ready', planCleanup: 1, planTaskSearch: 1 };
+  const r = await readList(listHost([starting, ready]), { archived: 'exclude' });
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.health?.ready, true);
+  assert.equal(!r.ok && r.health?.planCleanup, 1, 'the support the second reply advertised');
+});
+test('a classified store failure still carries the health it was read from', async () => {
+  const refused = { ...HEALTH, ready: false, state: 'refused', diagnostics: ['storage'] };
+  const r = await readList(listHost([refused, refused]), { archived: 'exclude' });
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.failure.code !== undefined, true);
+  assert.equal(!r.ok && r.health?.ready, false);
+  assert.equal(!r.ok && r.health?.planCleanup, undefined, 'the observed loss of support is reported');
+});

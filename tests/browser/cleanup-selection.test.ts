@@ -90,3 +90,77 @@ test('unsupported active plans do not consume scan targets or prevent Check more
   assert.equal(second.unchecked, false);
   assert.equal(new Set(cursors).size, cursors.length, 'continuation must not recount excluded plans');
 });
+
+test('a receipt-confirmed plan is no longer selected under Select all and does not count', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  const earlier = selection.snapshot().includes;
+  selection.forget(['a']);
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.has('b'), true);
+  assert.equal(selection.count, 2);
+  const scanRule = selection.snapshot().includes;
+  assert.equal(scanRule(plans[0]), false, 'a later scan does not target it again');
+  assert.equal(scanRule(plans[1]), true, 'but still admits another matching plan');
+  assert.equal(earlier(plans[0]), true, 'a rule captured earlier is unchanged');
+});
+test('a plan confirmed back in scope after Undo is selected again; an explicit exclusion stays excluded', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.toggle(plans[1]);
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true);
+  assert.equal(selection.has('a'), true, 'the receipt departure is cleared when the plan returns');
+  assert.equal(selection.has('b'), false, 'the user exclusion is kept');
+  assert.equal(selection.count, 2);
+  assert.equal(selection.snapshot().includes(plans[0]), true);
+});
+
+test('a cached, unchecked page cannot clear a receipt departure; a click on a departed row selects it', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true, false);
+  assert.equal(selection.has('a'), false, 'no evidence that it returned');
+  selection.toggle(plans[0]);
+  assert.equal(selection.has('a'), true, 'an unpressed row is chosen by a click');
+  assert.equal(selection.snapshot().includes(plans[0]), true, 'not recorded as an exclusion');
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true, true);
+  assert.equal(selection.has('a'), true, 'a checked page is evidence');
+});
+test('an Undo receipt clears only the departure, not explicit exclusions', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll(); selection.toggle(plans[1]);
+  selection.forget(['a', 'b']);
+  selection.returned(['a', 'b']);
+  assert.equal(selection.has('a'), true);
+  assert.equal(selection.has('b'), false);
+  assert.equal(selection.snapshot().includes(plans[0]), true);
+});
+
+test('a departed row kept in a cached page is not counted as selected', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(['a']);
+  assert.equal(selection.count, 1);
+  selection.reconcile('scope', [...plans], true, false);
+  assert.equal(selection.count, 1, 'the cached row is known but not selected');
+});
+test('one click selects a row that was both excluded by the user and taken out by a receipt', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.toggle(plans[0]);
+  selection.forget(['a']);
+  selection.returned(['a']);
+  assert.equal(selection.has('a'), false, 'passive handling keeps the exclusion');
+  selection.forget(['a']);
+  selection.toggle(plans[0]);
+  assert.equal(selection.has('a'), true, 'an explicit click selects it in one step');
+});
