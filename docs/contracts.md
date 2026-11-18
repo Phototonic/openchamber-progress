@@ -1220,7 +1220,17 @@ envelope carries no change token), so a count that crossed such a boundary is
 qualified as possibly missing plans, never presented as verified complete; an
 overlap anchor that changed is counted at its new version, or dropped when its
 new version no longer belongs to the view. A fully read count of that kind says
-plans may have been missed, rather than that more plans were not checked. Plans a user
+plans may have been missed, rather than that more plans were not checked. A complete loaded
+scope that was read in more than one list page (more than 50 plans) is qualified the
+same way, on the count line and on the delete step: the list read records that it
+crossed a page boundary and the count adds no request. A list read in one page is one
+answer from the service and stays exact, and so do rows explicitly chosen from it. A
+Try again recount names its plans; on a list read in several pages it stays exact only
+when it found every plan it names among the loaded rows, because otherwise it cannot
+show whether the plan left the view or was missed. Under Select all the selection
+bar's count is the number of selected plans the frame has loaded, with a plus only while
+matching plans are known not to be loaded, and the confirmation is what says a list read
+in several pages may have missed plans. Plans a user
 explicitly chose, and the remaining plans of a retry, are not searched for: they
 are validated with `/v1/search-state` point lookups (at most 50 keys and the
 service's 16 KiB encoded-query limit each, pinned to the expected store and
