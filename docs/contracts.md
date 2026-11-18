@@ -1286,7 +1286,9 @@ prompt is asked, no bytes are read and the report answers `closed` or `not-found
 a Store refusal such as `busy` from a check is returned as is, never recorded as a
 document denial. The checks are not serialised with cleanup: an archive committing
 after the last check can still let the companion read the user's own bound document
-once. Nothing is stored, the write is refused and no further prompt is shown.
+once. No further prompt is shown, and the write is refused if its transaction still
+sees the plan archived or deleted (an archive and restore that both commit between
+the last check and the write leave the plan reportable, so that report is accepted).
 Precedence is the same with or without a bound document and for a task-update
 handoff: an unverified source answers `source-unverified` (handoff), paused capture
 `disabled`, then cleanup `closed` or `not-found`.
@@ -1909,11 +1911,12 @@ in progress or on a reopen, or `not-found` for a plan the agent started, means
 the user archived or deleted it: stop reporting, do not retry, and do not recreate
 it (including under another identifier) unless the user specifically asks. A
 reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
-and is not user cleanup: read the plan and retry at its current revision. For a
-staged commit use a fresh upload ID, because chunks stay pinned to the revision
-they were staged at and the commit needs exactly the intended chunk set; add only
-missing chunks when every existing one is valid for the current revision and
-intended layout. `reopen:true` stays on every stage and the commit while the plan
+and is not user cleanup: read the plan and retry at its current revision. A
+commit reads only its own upload ID and needs exactly the intended chunk set at the current revision:
+if every chunk already staged is valid for the current revision and intended layout,
+stage only the missing chunks under that upload ID; otherwise stage the whole
+intended set under a fresh upload ID, because chunks stay pinned to the revision
+they were staged at. `reopen:true` stays on every stage and the commit while the plan
 is closed. Other refusals, such as `assignment`, are not covered by this advice.
 Ordinary continuation of an agent-finished plan still uses the coordinator's
 explicit `revise`/`commit` with `reopen:true`. This is advisory guidance only;
