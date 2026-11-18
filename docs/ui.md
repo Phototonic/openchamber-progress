@@ -951,9 +951,10 @@ never prove absence and never show the qualifier. Terminal runs never show it.
 
   | Count | Reasons that qualify a positive count |
   |---|---|
-  | Needs you or other blocked work, session/all-plans scope | Incomplete or gapped inbox traversal, stale read, or an incomplete session plan list |
+  | Needs you or other blocked work, session/all-plans scope | Incomplete or gapped inbox traversal, stale read (a failed refresh qualifies retained counts), or an incomplete session plan list |
+  | Needs you on a board plan row | The latest refresh failed, or that plan's inbox items may not be fully read (the inbox traversal is incomplete and the plan's detail at its current revision does not account for every item); older plans not being loaded does not qualify a row |
   | Needs you or other blocked work, selected-plan inbox | Its items may not be fully read; conservatively includes an incomplete source-wide inbox traversal because independent per-plan coverage is not available |
-  | Sub-agents running/waiting for you | Incomplete/unavailable host census or recorded children not all loaded; incomplete recorded history alone does not qualify these |
+  | Sub-agents running/waiting for you | Incomplete/unavailable host census, recorded children not all loaded, or a truncated run traversal (its counts cover only the traversed runs); other incomplete recorded history alone does not qualify these |
   | Sub-agents finished/failed/interrupted/unknown; records total | Incomplete recorded history/reconciliation, traversal bound or recording gap; a partial host census alone does not qualify these, nor does an unloaded row page lower a complete recorded total |
   | Plan position totals and Finished folds | Older plans not loaded |
 

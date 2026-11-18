@@ -333,9 +333,10 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
   const summary: SummaryPart[] = [];
   const add = (kind: SummaryPart['kind'], count: number) => {
     // Current activity and recorded history have independent coverage. A history gap cannot
-    // hide a currently active child when the host and every recorded child are fully loaded.
+    // hide a currently active child when the host and every recorded child are fully loaded. A
+    // truncated run traversal limits the recorded counts themselves, so it still qualifies them.
     const partial = kind === 'waiting' || kind === 'running'
-      ? !isComplete(v.census) || !!read && read.counts.children > loadedChildren
+      ? !isComplete(v.census) || !!read && (read.counts.children > loadedChildren || read.coverage.reasons.includes('traversal-limit'))
       : !!read && (!read.coverage.complete || read.capture.loss || read.recovery.state !== 'complete' || !!runs?.reconciling);
     if (count > 0) summary.push({ kind, count, partial, text: c.summary[kind](partial ? `${count}+` : count) });
   };
