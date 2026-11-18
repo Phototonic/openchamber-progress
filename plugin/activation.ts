@@ -71,8 +71,17 @@ function hintText(reasons: number) {
 const CODE_MODE_TOOL = 'execute';
 const restored = Symbol('agent-progress-note');
 interface Carrier { index: number; key: string; id?: string; apply: (text: string) => Record<string, any> }
-const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value) ?? '').digest('hex').slice(0, 32);
-function carrierAt(messages: unknown, index: number): Carrier | undefined {
+/** Binary parts are hashed by their raw bytes, never stringified element by element. */
+function digest(value: unknown) {
+  const text = JSON.stringify(value, function (this: any, name: string, current: unknown) {
+    const original = this?.[name];
+    if (original instanceof ArrayBuffer) return { bytes: createHash('sha256').update(new Uint8Array(original)).digest('hex') };
+    if (ArrayBuffer.isView(original)) return { bytes: createHash('sha256').update(new Uint8Array(original.buffer, original.byteOffset, original.byteLength)).digest('hex') };
+    return current;
+  });
+  return createHash('sha256').update(text ?? '').digest('hex').slice(0, 32);
+}
+function carrierAt(messages: unknown, index: number, positional = false, keyed = true): Carrier | undefined {
   if (!Array.isArray(messages)) return;
   const message = messages[index];
   if (!record(message) || !Array.isArray(message.content)) return;
@@ -83,15 +92,15 @@ function carrierAt(messages: unknown, index: number): Carrier | undefined {
   };
   try {
     if (message.role === 'user') {
-      const id = boundedID(message.id) ? message.id : undefined;
-      return { index, id, key: id !== undefined ? `user:${id}` : `user:${index}:${digest(message.content)}`, apply: text => copy([...message.content, { type: 'text', text }]) };
+      const id = !positional && boundedID(message.id) ? message.id : undefined;
+      return { index, id, key: !keyed ? '' : id !== undefined ? `user:${id}` : `user:${index}:${digest(message.content)}`, apply: text => copy([...message.content, { type: 'text', text }]) };
     }
     if (message.role !== 'tool') return;
     const at = message.content.findLastIndex((part: unknown) => record(part) && part.type === 'tool-result');
     const part = message.content[at], output = part?.result;
     if (part?.name === CODE_MODE_TOOL || typeof part?.id !== 'string' || !record(output) || !(output.type === 'text' ? typeof output.value === 'string' : output.type === 'content' && Array.isArray(output.value))) return;
     if (appended(output.value, '') === undefined) return;
-    return { index, key: `tool:${index}:${part.id}:${digest(output)}`, apply: text => copy(message.content.map((entry: unknown, i: number) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry)) };
+    return { index, key: keyed ? `tool:${index}:${part.id}:${digest(output)}` : '', apply: text => copy(message.content.map((entry: unknown, i: number) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry)) };
   } catch { /* an unhashable message has no carrier */ }
 }
 /** Put back every message this owner replaced on a reused host array. */
@@ -103,12 +112,17 @@ function restoreNotes(messages: unknown) {
 /** Sent after a delivered delegation refusal stops applying. Fixed text. */
 export const CLEARED_REFUSAL = 'Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.';
 const NOTE_SEPARATOR = '\n\n';
-const MAX_NOTE_SESSIONS = 128, MAX_NOTE_CARRIERS = 64, MAX_NOTE_BYTES = 64 * 1024;
+const MAX_NOTE_SESSIONS = 128, MAX_NOTE_CARRIERS = 256, MAX_NOTE_BYTES = 128 * 1024;
 /** One delivered note and where it sits. Text is exactly what was added. */
 interface DeliveredNote { key: string; id?: string; index: number; text: string }
 /** Last delivered standing text and the carrier it went out on. */
 interface Standing { text: string; key: string }
-interface NoteMemory { notes: Map<string, DeliveredNote>; capsule?: Standing; refusal?: Standing }
+/**
+ * `refusal` is the last refusal text of any kind delivered (a refusal, the omission text or the
+ * cleared line); `real` the last real refusal; `cleared` the cleared line delivered since.
+ */
+interface NoteMemory { notes: Map<string, DeliveredNote>; capsule?: Standing; refusal?: Standing; real?: Standing; cleared?: Standing }
+const REFUSAL_HEADER = '## Delegation not applied';
 
 const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const boundedID = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
@@ -308,12 +322,6 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     if (pending.size > 128) pending.delete(pending.keys().next().value!);
   }
   const key = (sessionID: string) => JSON.stringify([source.id, sessionID]);
-  function noteMemory(sessionKey: string): NoteMemory {
-    const memory: NoteMemory = memories.get(sessionKey) ?? { notes: new Map() };
-    memories.delete(sessionKey); memories.set(sessionKey, memory);
-    if (memories.size > MAX_NOTE_SESSIONS) memories.delete(memories.keys().next().value!);
-    return memory;
-  }
   function retain(sessionKey: string, attempt: Compaction, created: number) {
     compactions.delete(sessionKey); compactions.set(sessionKey, attempt);
     if (compactions.size > 128) {
@@ -428,7 +436,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         // nothing new is computed or consumed: the hint stays pending and an armed capsule
         // stays armed for the next request that has a carrier. Delivered notes are still
         // put back in place.
-        const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1) !== undefined;
+        const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1, false, false) !== undefined; // validity only; the keyed carrier is taken once after the awaits
         const rearm = () => { if (armed && compactions.get(sessionKey) === attempt) attempt.pending = true; };
         if (!carried) rearm();
         // Ordinary coordinators do not scan plans. Children reuse the bounded,
@@ -478,52 +486,76 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
         if (existing !== -1) event.system[existing] = section(); else event.system.push(section());
         const hint = (pending.get(sessionKey) ?? 0) & 7;
-        // One synchronous step from here: compare with the last delivery, update the
-        // memory and add every note, so concurrent requests each record their own carrier.
+        // One synchronous step from here: compare with the last delivery, add every note and
+        // then record the memory, so concurrent requests each record their own carrier and a
+        // failure while adding leaves no phantom note.
         const messages = event.messages;
-        const memory = noteMemory(sessionKey);
+        // An overlapping request on a reused array may have added its copies since the top.
+        restoreNotes(messages);
+        const current = memories.get(sessionKey);
+        const notes = new Map(current?.notes);
+        let { capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared } = current ?? {} as NoteMemory;
         const ids = new Map<string, number>();
         if (Array.isArray(messages)) messages.forEach((message, i) => { if (record(message) && message.role === 'user' && boundedID(message.id) && !ids.has(message.id)) ids.set(message.id, i); });
         const placed = new Map<string, Carrier>(); // remembered notes whose carrier this request still holds
-        for (const note of memory.notes.values()) {
-          const found = carrierAt(messages, note.id !== undefined ? ids.get(note.id) ?? -1 : note.index);
+        for (const note of notes.values()) {
+          // A shared user identifier: the position the note was delivered at wins.
+          const at = note.id === undefined ? note.index : record(messages?.[note.index]) && messages[note.index].id === note.id ? note.index : ids.get(note.id) ?? -1;
+          const found = carrierAt(messages, at);
           if (found?.key === note.key) placed.set(note.key, found);
         }
-        const latest = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
+        let latest = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
+        // A user identifier shared with a message that already holds a note is not this message's key.
+        if (latest?.id !== undefined && placed.has(latest.key) && placed.get(latest.key)!.index !== latest.index) latest = carrierAt(messages, messages.length - 1, true);
+        let consumed = false, recorded = false;
         if (!latest) rearm(); // the hint stays pending; an armed capsule stays armed; capsule and refusal are read again next request
         else {
           const due: string[] = [];
           if (hint) due.push(hintText(hint));
           const standing = (last: Standing | undefined, text: string) => !last || last.text !== text || !placed.has(last.key);
-          const capsuleDue = !!capsule && standing(memory.capsule, capsule);
+          const capsuleDue = !!capsule && standing(lastCapsule, capsule);
           if (capsuleDue) due.push(capsule);
           let refusalDue: string | undefined;
-          if (refusalRead === 'read' && standing(memory.refusal, refusal)) refusalDue = refusal;
-          else if (refusalRead === 'cleared' && memory.refusal && memory.refusal.text !== CLEARED_REFUSAL && placed.has(memory.refusal.key)) refusalDue = CLEARED_REFUSAL;
+          if (refusalRead === 'read' && standing(lastRefusal, refusal)) refusalDue = refusal;
+          else if (refusalRead === 'cleared' && lastReal && placed.has(lastReal.key) && !(lastCleared && placed.has(lastCleared.key))) refusalDue = CLEARED_REFUSAL;
           if (refusalDue !== undefined) due.push(refusalDue);
-          const before = memory.notes.get(latest.key);
+          const before = notes.get(latest.key);
           const text = [...(before ? [before.text] : []), ...(due.length ? [due.join(NOTE_SEPARATOR)] : [])].join(NOTE_SEPARATOR);
           if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
             if (due.length) {
               // A later note on a carrier follows the earlier ones; it is also the newest.
-              memory.notes.delete(latest.key);
-              memory.notes.set(latest.key, { key: latest.key, id: latest.id, index: latest.index, text });
+              notes.delete(latest.key);
+              notes.set(latest.key, { key: latest.key, id: latest.id, index: latest.index, text });
               placed.set(latest.key, latest);
-              if (capsuleDue) memory.capsule = { text: capsule, key: latest.key };
-              if (refusalDue !== undefined) memory.refusal = { text: refusalDue, key: latest.key };
+              if (capsuleDue) lastCapsule = { text: capsule, key: latest.key };
+              if (refusalDue !== undefined) {
+                lastRefusal = { text: refusalDue, key: latest.key };
+                if (refusalDue === CLEARED_REFUSAL) lastCleared = lastRefusal;
+                else if (refusalDue.startsWith(REFUSAL_HEADER)) { lastReal = lastRefusal; lastCleared = undefined; }
+              }
+              recorded = true;
             }
-            const remaining = (pending.get(sessionKey) ?? 0) & ~7;
-            if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
-          }
+            consumed = true;
+          } else rearm(); // too large for this carrier: the armed capsule waits for another
         }
         // Bound: carriers absent from this request go first, then the oldest.
         let bytes = 0;
-        for (const note of memory.notes.values()) bytes += Buffer.byteLength(note.text);
-        while (memory.notes.size > MAX_NOTE_CARRIERS || bytes > MAX_NOTE_BYTES) {
-          const victim = [...memory.notes.values()].find(note => !placed.has(note.key)) ?? memory.notes.values().next().value!;
-          memory.notes.delete(victim.key); placed.delete(victim.key); bytes -= Buffer.byteLength(victim.text);
+        for (const note of notes.values()) bytes += Buffer.byteLength(note.text);
+        while (notes.size > MAX_NOTE_CARRIERS || bytes > MAX_NOTE_BYTES) {
+          const victim = [...notes.values()].find(note => !placed.has(note.key)) ?? notes.values().next().value!;
+          notes.delete(victim.key); placed.delete(victim.key); bytes -= Buffer.byteLength(victim.text);
         }
-        for (const [noteKey, carrier] of placed) messages[carrier.index] = carrier.apply(memory.notes.get(noteKey)!.text) as typeof messages[number];
+        for (const [noteKey, carrier] of placed) messages[carrier.index] = carrier.apply(notes.get(noteKey)!.text) as typeof messages[number];
+        // Applied: now record. A session's memory exists only once it holds a note.
+        if (current || recorded) {
+          memories.delete(sessionKey);
+          memories.set(sessionKey, { notes, capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared });
+          if (memories.size > MAX_NOTE_SESSIONS) memories.delete(memories.keys().next().value!);
+        }
+        if (consumed) {
+          const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+          if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
+        }
       } catch { pending.delete(key(event.sessionID)); eligibility.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
     };
     registrations.push(await ctx.session.hook('context',context));

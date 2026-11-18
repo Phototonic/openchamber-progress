@@ -678,6 +678,157 @@ test('an assigned child gets its brief once, a changed brief after the latest me
   });
 });
 
+const OMISSION = 'Additional refusal evidence may be unavailable or omitted.';
+
+test('an incomplete empty read delivers the omission text but never opens the cleared line', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f);
+      refusals.set({ complete: false, refusals: [] }); t.user();
+      assert.deepEqual(t.added(await t.request()).map(([, text]) => text), [OMISSION], 'the existing omission text is still delivered');
+      refusals.set({ complete: true, refusals: [] }); t.user();
+      assert.equal(t.added(await t.request()).length, 1, 'no refusal was ever shown, so nothing is cleared');
+      // A real refusal followed by an omission still gets its cleared line.
+      const real = conversation(f); refusals.set(refusals.refused('d1')); real.user(); assert.equal(real.added(await real.request()).length, 1);
+      refusals.set({ complete: false, refusals: [] }); real.user(); assert.equal(real.added(await real.request()).length, 2);
+      refusals.set({ complete: true, refusals: [] }); real.user();
+      assert.equal(real.added(await real.request()).at(-1)![1], CLEARED);
+    } finally { refusals.restore(); }
+  });
+});
+
+test('a note too large for its carrier leaves an armed capsule armed', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f), long = Array.from({ length: 30 }, (_, i) => `T${String(i).padStart(2, '0')}-${'x'.repeat(140)}`);
+      t.user(); let skipped = false;
+      // Retries of one request append refusals to the same carrier until the next would not fit.
+      for (let i = 0; i < 200 && !skipped; i++) {
+        refusals.set(refusals.refused(`d${i}`, long));
+        const [[, text] = [0, '']] = t.added(await t.request(true, false));
+        assert.ok(Buffer.byteLength(text) <= 128 * 1024);
+        skipped = !text.includes(refusals.text(`d${i}`, long));
+      }
+      assert.ok(skipped, 'the carrier filled up');
+      await f.compact();
+      assert.ok(!t.added(await t.request(true, false)).some(([, text]) => text.includes('## Progress resume')), 'too large: nothing is added');
+      t.user();
+      assert.ok(t.added(await t.request(true, false)).at(-1)![1].includes('## Progress resume'), 'the capsule was not consumed by the skipped request');
+    } finally { refusals.restore(); }
+  });
+});
+
+test('a cleared line is delivered again when a revert removes it but keeps the refusal', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f); refusals.set(refusals.refused('d1')); t.user(); t.tool('read'); const refusedAt = t.last;
+      assert.deepEqual(t.added(await t.request()), [[refusedAt, refusals.text('d1')]]);
+      refusals.set({ complete: true, refusals: [] }); t.tool('read');
+      assert.equal(t.added(await t.request()).at(-1)![1], CLEARED);
+      // Revert the message that carried the cleared line.
+      const reverted = [...t.history.slice(0, -2), { role: 'user', content: [textPart('After the revert')] }];
+      const c = await t.request(true, false, reverted);
+      assert.deepEqual(t.added(c, reverted), [[refusedAt, refusals.text('d1')], [reverted.length - 1, CLEARED]]);
+      // Only once more while that carrier is present.
+      reverted.push({ role: 'user', content: [textPart('Next')] });
+      assert.equal(t.added(await t.request(true, false, reverted), reverted).length, 2);
+    } finally { refusals.restore(); }
+  });
+});
+
+test('user messages sharing an identifier keep their note on the message it was delivered on', async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f);
+    const first = { role: 'user', id: 'msg_shared', content: [textPart('First')] }, second = { role: 'user', id: 'msg_shared', content: [textPart('Second')] };
+    await f.after(writeEvent('docs/plans/search.md', 'w1'));
+    assert.deepEqual(t.added(await t.request(true, true, [first, second]), [first, second]), [[1, HINT]]);
+    const later = [first, second, { role: 'user', id: 'msg_other', content: [textPart('Third')] }];
+    assert.deepEqual(t.added(await t.request(true, false, later), later), [[1, HINT]], 'the first message with that identifier did not take the note');
+    // A shared identifier on the latest message is not its key: the earlier note is not appended to.
+    const same = [first, second, { role: 'user', id: 'msg_shared', content: [textPart('Fourth')] }];
+    await f.after(writeEvent('docs/plans/search.md', 'w2'));
+    assert.deepEqual(t.added(await t.request(true, false, same), same), [[1, HINT], [2, HINT]]);
+  });
+});
+
+test('a session has memory only once it holds a note', async () => {
+  await fixture(async f => {
+    f.seed();
+    const holder = conversation(f, false, 'ses_holder');
+    await f.after(writeEvent('docs/plans/search.md', 'h1', 'ses_holder')); holder.user(); holder.tool();
+    assert.equal(holder.added(await holder.request()).length, 1);
+    for (let i = 0; i < 130; i++) { const quiet = conversation(f, false, `ses_quiet${i}`); quiet.user(); assert.deepEqual(quiet.added(await quiet.request(true, false)), []); }
+    assert.equal(holder.added(await holder.request(true, false)).length, 1, 'sessions without notes never evict one that has them');
+  });
+});
+
+test('overlapping requests on one reused event do not feed their own copies to the next', async () => {
+  await fixture(async f => {
+    f.seed();
+    const refusals = refusalReads();
+    try {
+      const t = conversation(f); t.user();
+      await f.after(writeEvent('docs/plans/search.md', 'w1')); refusals.set(refusals.refused('d1'));
+      const c = context(); c.messages = [...t.history];
+      const gate = deferred(); let held = false;
+      f.lookup = async (id: string) => { if (!held) { held = true; await gate.promise; } return f.info(id); };
+      const slow = f.context(c); // waits on its first lookup, after restoring the array
+      await f.context(c);        // an overlapping request delivers the notes onto the same array
+      gate.resolve(); await slow; f.lookup = async (id: string) => f.info(id);
+      assert.deepEqual(t.added(c), [[0, `${HINT}\n\n${refusals.text('d1')}`]], 'one note, not a copy of a copy');
+    } finally { refusals.restore(); }
+  });
+});
+
+test('a failure while adding notes leaves no phantom note in the memory', async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f); t.user();
+    await f.after(writeEvent('docs/plans/search.md', 'w1'));
+    const frozen = context(); frozen.messages = Object.freeze([...t.history]);
+    await f.context(frozen);
+    assert.equal(parts(frozen).length, 0, 'the failed request carries no section');
+    assert.deepEqual(t.added(await t.request(true, false)), [], 'nothing was recorded for the failed request');
+  });
+});
+
+for (const mode of ['an epoch change', 'disposal'] as const) test(`${mode} while notes are present removes every note from the request`, async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f);
+    await f.after(writeEvent('docs/plans/search.md', 'w1')); t.user(); t.tool();
+    const c = await t.request(); assert.equal(t.added(c).length, 1);
+    const stored = JSON.stringify(t.history), gate = deferred(); let held = false;
+    f.lookup = async (id: string) => { if (!held) { held = true; await gate.promise; } return f.info(id); };
+    const task = f.context(c);
+    if (mode === 'disposal') await f.dispose();
+    else { f.store.setEnabled(false); await f.next('ses_other'); f.store.setEnabled(true); }
+    gate.resolve(); await task;
+    assert.equal(parts(c).length, 0); assert.deepEqual(t.added(c), []); assert.equal(JSON.stringify(t.history), stored);
+  });
+});
+
+test('binary parts are keyed by their raw bytes, so media keeps its note and different bytes are a different carrier', async () => {
+  await fixture(async f => {
+    f.seed();
+    const t = conversation(f);
+    const media = (fill: number) => ({ role: 'user', content: [textPart('Look at this'), { type: 'media', media: { source: { type: 'bytes', data: new Uint8Array(256 * 1024).fill(fill), mediaType: 'image/png' } } }] });
+    const first = media(1); await f.after(writeEvent('docs/plans/search.md', 'w1'));
+    assert.equal(t.added(await t.request(true, true, [first]), [first]).length, 1);
+    const grown = [first, { role: 'user', content: [textPart('More')] }];
+    assert.equal(t.added(await t.request(true, true, grown), grown).length, 1, 'the note stays on the media message');
+    const other = [media(2), { role: 'user', content: [textPart('More')] }];
+    assert.equal(t.added(await t.request(true, false, other), other).length, 0, 'different bytes are a different carrier');
+  });
+});
+
 test('a standing capsule or refusal is delivered again when its carrier is gone, and a gone carrier keeps nothing alive', async () => {
   await fixture(async f => {
     f.seed();
@@ -776,7 +927,7 @@ test('a user message identifier keeps its note across a shifted history; without
   });
 });
 
-test('memory is bounded: 128 sessions, 64 carriers and 64 KiB per session, absent carriers first', async () => {
+test('memory is bounded: 128 sessions, 256 carriers and 128 KiB per session, absent carriers first', async () => {
   await fixture(async f => {
     f.seed();
     // Sessions: the least recently used loses its notes.
@@ -785,10 +936,10 @@ test('memory is bounded: 128 sessions, 64 carriers and 64 KiB per session, absen
     assert.equal(sessions[1].added(await sessions[1].request(true, false)).length, 1);
     assert.equal(sessions[128].added(await sessions[128].request(true, false)).length, 1);
     assert.deepEqual(sessions[0].added(await sessions[0].request(true, false)), [], 'the least recently used session was evicted');
-    // Carriers: 65 carried hints on one session keep 64, oldest first.
+    // Carriers: 257 carried hints on one session keep 256, oldest first.
     const t = conversation(f);
-    for (let i = 0; i < 65; i++) { await f.after(writeEvent('docs/plans/search.md', `c${i}`)); t.user(); const c = await t.request(true, false); assert.equal(t.added(c).at(-1)![0], t.last); }
-    const full = t.added(await t.request(true, false)); assert.equal(full.length, 64);
+    for (let i = 0; i < 257; i++) { await f.after(writeEvent('docs/plans/search.md', `c${i}`)); t.user(); const c = await t.request(true, false); assert.equal(t.added(c).at(-1)![0], t.last); }
+    const full = t.added(await t.request(true, false)); assert.equal(full.length, 256);
     assert.ok(!full.some(([i]) => i === 0) && full.some(([i]) => i === 1), 'the first carrier lost its note');
     // A carrier absent from the latest request goes before older ones that are present.
     const trimmed = t.history.slice(); trimmed[40] = { role: 'user', content: [textPart('Edited')] };
@@ -801,22 +952,22 @@ test('memory is bounded: 128 sessions, 64 carriers and 64 KiB per session, absen
   });
 });
 
-test('memory is bounded to 64 KiB of note text per session, oldest first', async () => {
+test('memory is bounded to 128 KiB of note text per session, oldest first', async () => {
   await fixture(async f => {
     f.seed();
     const refusals = refusalReads();
     try {
       const t = conversation(f), long = Array.from({ length: 30 }, (_, i) => `T${String(i).padStart(2, '0')}-${'x'.repeat(40)}`);
       const sizes: number[] = [], carriers: number[] = [];
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 80; i++) {
         refusals.set(refusals.refused(`d${i}`, long)); t.user(); carriers.push(t.last);
         const added = t.added(await t.request(true, false)); sizes.push(Buffer.byteLength(added.at(-1)![1]));
         const total = added.reduce((n, [, text]) => n + Buffer.byteLength(text), 0);
-        assert.ok(total <= 64 * 1024, `note text stays within 64 KiB: ${total}`);
+        assert.ok(total <= 128 * 1024, `note text stays within 128 KiB: ${total}`);
       }
-      assert.ok(sizes.reduce((a, b) => a + b) > 64 * 1024 && Math.min(...sizes) > 1500, 'each refusal note is large enough to fill the bound');
+      assert.ok(sizes.reduce((a, b) => a + b) > 128 * 1024 && Math.min(...sizes) > 1500, 'each refusal note is large enough to fill the bound');
       const final = t.added(await t.request(true, false));
-      assert.ok(!final.some(([i]) => i === 0), 'the oldest note was evicted'); assert.ok(final.some(([i]) => i === t.last), 'the newest is kept'); assert.ok(final.some(([i]) => i === carriers[35]), 'recent notes stay in place on later requests');
+      assert.ok(!final.some(([i]) => i === 0), 'the oldest note was evicted'); assert.ok(final.some(([i]) => i === t.last), 'the newest is kept'); assert.ok(final.some(([i]) => i === carriers[75]), 'recent notes stay in place on later requests');
     } finally { refusals.restore(); }
   });
 });

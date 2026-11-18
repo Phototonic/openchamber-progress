@@ -1074,8 +1074,8 @@ valid carrier), and nothing on any other role or shape, where the hint stays
 pending, an armed capsule stays armed and the refusal is read again on the next
 request. Notes due together are one note: hint, capsule, then refusal or cleared
 line, joined by a blank line.
-A process-local memory (128 sessions least recently used first; per session 64
-carriers and 64 KiB of note text, carriers absent from the latest request first,
+A process-local memory (128 sessions least recently used first; per session 256
+carriers and 128 KiB of note text, carriers absent from the latest request first,
 then the oldest) keeps each delivered note with its carrier (tool: call identifier,
 position and a digest of the original output; user: message identifier, else
 position and a digest of the original content) and adds the same bytes in the same
@@ -1086,9 +1086,13 @@ run in one synchronous step after the request's last wait. A capsule or refusal 
 delivered again only when its text changed or its last carrier is absent (compaction,
 revert, eviction, restart, fork); a timeout adds nothing. A refusal that stops
 applying gets one fixed cleared line, only after a successful complete read that
-finds none while the last delivered refusal is still in the request. Every path that
-removes the section removes every added note; the memory is cleared only by capture
-off, a source binding change or disposal.
+finds none while the last real refusal delivered is still in the request with its
+note (an incomplete empty read delivers the existing omission text, which is not a
+refusal), and again if its carrier is later gone while the refusal's is not. The
+memory entry for a session is created only when a note is recorded, and recorded
+only after the notes were added to the request. Every path that removes the section
+removes every added note; the memory is cleared only by capture off or unavailable,
+a source binding change or disposal.
 Providers that drop plugin system sections therefore receive these notes too.
 The context section and inline/packaged skill share that checklist. The listing
 line names the plan/dispatch load boundary; detailed operation help stays in the

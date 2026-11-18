@@ -791,7 +791,8 @@ later request that holds its carrier, so each request begins with the previous o
 and the provider's cache entry written at the end of the latest message, and the
 thinking bound to it, stays readable. A capsule or refusal is delivered again only
 when its text changed or its carrier is gone, and a refusal that stops applying
-gets one fixed cleared line after a complete read. The system section remains for
+gets one fixed cleared line after a complete read that finds none (an incomplete empty read
+delivers the existing omission text and never opens that line). The system section remains for
 providers that forward it and is the fixed guidance only, identical on every
 request, so it does not defeat a provider's prompt cache. No provider identifier
 or custom instructions are required.

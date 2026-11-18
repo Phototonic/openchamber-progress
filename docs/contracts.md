@@ -621,7 +621,7 @@ same text in the same place on every later request whose messages still hold tha
 carrier. Each request's messages therefore begin with the previous request's
 messages byte for byte, and a later note on a carrier follows the earlier ones
 without rewriting them. The memory is process-local and bounded: 128 sessions,
-least recently used first, and per session 64 carriers and 64 KiB of note text,
+least recently used first, and per session 256 carriers and 128 KiB of note text,
 dropping carriers absent from the latest request first, then the oldest. An
 evicted carrier, a restart or a fork loses its note once, which changes the prefix
 once from that message on.
@@ -635,15 +635,18 @@ history after it stops applying, so one fixed line is delivered in the same way:
 `Agent Progress note (delegation): the earlier delegation refusal no longer
 applies; read the current plan before you declare or link.` It is delivered only
 after a successful, complete refusal read that finds no refusal while the last
-refusal delivered is still in the request; a failed or incomplete read adds
-nothing. It counts as the last refusal delivered, so the same refusal returning is
-delivered again. A capsule that becomes empty gets no cleared line: the capsule
+refusal delivered is still in the request with its note; a read that fails or is
+incomplete adds no cleared line, and an incomplete read with no refusal still
+delivers the existing omission text, which is not a refusal and does not open the
+cleared-line gate. It counts as the last refusal delivered, so the same refusal
+returning is delivered again, and it is delivered again when that refusal is still
+in the request with its note and the cleared line's carrier is not. A capsule that becomes empty gets no cleared line: the capsule
 already says to read current state first.
 
 Every path that removes the section (capture off, report tool unavailable, source
 unverified, caller lookup failed, an epoch change, disposal, a failure in the hook)
 also removes every added note from that request. The memory is cleared only when
-capture is turned off, the source binding changes or the companion is disposed; a
+capture is off or unavailable, the source binding changes or the companion is disposed; a
 transient failure, or a request without the report tool, keeps it and the notes
 return with the section.
 
