@@ -2,7 +2,7 @@ import {lstatSync,readFileSync,readdirSync} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
 import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile,readManagedBinding} from '../shared/managed-binding.ts';
-import {privatePaths,platformSecurityScope,isOwned,PlatformError,requirePlatformWriteBoundary,windows,windowsPaths} from '../shared/platform.ts';
+import {privatePaths,isOwned,PlatformError,requirePlatformWriteBoundary,windows,windowsPaths} from '../shared/platform.ts';
 import {Store,canonical,storageError,digest} from '../shared/store.ts';
 import {ProgressError} from '../shared/progress.ts';
 import {SetupError,migrationBinding,validateMigrationRemoval,type Targets} from './lifecycle.ts';
@@ -18,26 +18,24 @@ export interface MigrationRecord {
 export function migrationFile(env:NodeJS.ProcessEnv){return path.join(path.dirname(managedBindingFile(env)),'migration.json');}
 /** A fixed private same-target selection, never a search or recovery authority for foreign bytes. */
 export function readMigration(env:NodeJS.ProcessEnv):MigrationRecord|undefined {
-  return platformSecurityScope(()=>{
-    const file=migrationFile(env);if(!lstatSync(file,{throwIfNoEntry:false}))return;
-    managedPath(file);
-    if(!privatePaths([path.dirname(file),file]))throw new SetupError('managed-migration-conflict');
-    const raw=readBinding(file) as Binding&{migration?:{format:number;product:string;phase:MigrationRecord['phase'];legacyInstallId:string}};
-    const m=raw.migration,roots=managedSourceRoots(env);
-    if(!m||m.format!==1||m.product!=='openchamber-agent-progress-managed'||!['pending','removed','complete'].includes(m.phase)||
-      typeof m.legacyInstallId!=='string'||!m.legacyInstallId||m.legacyInstallId===raw.installId||raw.source.configRoot!==roots.configRoot||raw.source.dataRoot!==roots.dataRoot||!raw.source.verified||
-      [roots.configRoot,roots.dataRoot,path.dirname(file)].includes(path.dirname(raw.database))||
-      ![roots.configRoot,roots.dataRoot].every(root=>lstatSync(root).isDirectory()&&isOwned(root)))throw new SetupError('managed-migration-conflict');
-    const {protocolVersion,schemaVersion,installId,version,database,storeId,source}=raw;
-    const binding={protocolVersion,schemaVersion,installId,version,database,storeId,source};
-    const store=new Store(database,{readOnly:true});try{verifyStore(store,binding);store.subagentRunStorage();}finally{store.close();}
-    return {binding,phase:m.phase,legacyInstallId:m.legacyInstallId};
-  });
+  const file=migrationFile(env);if(!lstatSync(file,{throwIfNoEntry:false}))return;
+  managedPath(file);
+  if(!privatePaths([path.dirname(file),file]))throw new SetupError('managed-migration-conflict');
+  const raw=readBinding(file) as Binding&{migration?:{format:number;product:string;phase:MigrationRecord['phase'];legacyInstallId:string}};
+  const m=raw.migration,roots=managedSourceRoots(env);
+  if(!m||m.format!==1||m.product!=='openchamber-agent-progress-managed'||!['pending','removed','complete'].includes(m.phase)||
+    typeof m.legacyInstallId!=='string'||!m.legacyInstallId||m.legacyInstallId===raw.installId||raw.source.configRoot!==roots.configRoot||raw.source.dataRoot!==roots.dataRoot||!raw.source.verified||
+    [roots.configRoot,roots.dataRoot,path.dirname(file)].includes(path.dirname(raw.database))||
+    ![roots.configRoot,roots.dataRoot].every(root=>lstatSync(root).isDirectory()&&isOwned(root)))throw new SetupError('managed-migration-conflict');
+  const {protocolVersion,schemaVersion,installId,version,database,storeId,source}=raw;
+  const binding={protocolVersion,schemaVersion,installId,version,database,storeId,source};
+  const store=new Store(database,{readOnly:true});try{verifyStore(store,binding);store.subagentRunStorage();}finally{store.close();}
+  return {binding,phase:m.phase,legacyInstallId:m.legacyInstallId};
 }
 export function writeMigration(env:NodeJS.ProcessEnv,record:MigrationRecord) {
-  // One read-only preflight per publication. Never carry its security cache into
-  // the write or the next phase's revalidation.
-  const {prior,file}=platformSecurityScope(()=>({prior:readMigration(env),file:migrationFile(env)}));
+  // One read-only preflight per publication. Never carry its result into the
+  // write or the next phase's revalidation.
+  const {prior,file}=(({prior:readMigration(env),file:migrationFile(env)}));
   if(prior&&(canonical(prior.binding)!==canonical(record.binding)||prior.legacyInstallId!==record.legacyInstallId))throw new SetupError('managed-migration-conflict');
   publishPrivateJson(file,{...record.binding,migration:{format:1,product:'openchamber-agent-progress-managed',phase:record.phase,legacyInstallId:record.legacyInstallId}},!!prior);
 }
@@ -46,18 +44,13 @@ export function sameMigrationTarget(a:Binding,b:Binding) {
 }
 /** Ownership/identity evidence is distinct from inability to inspect it. */
 export function migrationError(e:unknown):SetupError|ProgressError|PlatformError {
-  if(e instanceof PlatformError&&e.code==='windows-security-unavailable')return e;
-  if(e instanceof SetupError&&e.code==='windows-security-unavailable')return new PlatformError(e.code);
   if(e instanceof ProgressError&&e.code!=='binding')return e;
   if(e instanceof SetupError||e instanceof PlatformError||e instanceof ManagedBindingError||e instanceof SyntaxError||e instanceof ProgressError||
     ['ENOENT','ENOTDIR','ELOOP'].includes((e as NodeJS.ErrnoException)?.code??''))return new SetupError('managed-migration-conflict');
   return storageError(e);
 }
 /** Canonical legacy location only; the full removal preflight validates it and the actual Store. */
-export function legacyMigration(env:NodeJS.ProcessEnv) {
-  return platformSecurityScope(()=>legacyMigrationInner(env));
-}
-function legacyMigrationInner(env:NodeJS.ProcessEnv):({targets:Targets}&ReturnType<typeof migrationBinding>)|undefined {
+export function legacyMigration(env:NodeJS.ProcessEnv):({targets:Targets}&ReturnType<typeof migrationBinding>)|undefined {
   const roots=managedSourceRoots(env),root=path.join(roots.configRoot,'plugins/agent-progress');
   if(!lstatSync(root,{throwIfNoEntry:false}))return;
   try{
@@ -68,9 +61,6 @@ function legacyMigrationInner(env:NodeJS.ProcessEnv):({targets:Targets}&ReturnTy
 }
 /** Removal can finish before the wrapper writes its next phase. Require its durable same-install receipt. */
 export function removalRecorded(record:MigrationRecord) {
-  return platformSecurityScope(()=>removalRecordedInner(record));
-}
-function removalRecordedInner(record:MigrationRecord) {
   const file=path.join(path.dirname(record.binding.database),'installation-history.jsonl');
   managedPath(file);
   const s=lstatSync(file);
@@ -85,45 +75,43 @@ export interface ManagedRemovalReceipt { history:ManagedPathClaim; entry:string 
  * removes, repairs or appends anything. An earlier true removalRecorded() result
  * is deliberately not accepted as authority, nor is a coarse removed phase. */
 export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemovalReceipt):ManagedRemovalReceipt|undefined {
-  return platformSecurityScope(()=>{
-    const b=record.binding;
-    const conflict=()=>{throw new SetupError('managed-migration-conflict');};
-    if(!b.source.verified||!record.legacyInstallId||record.legacyInstallId===b.installId)conflict();
-    for(const root of [b.source.configRoot,b.source.dataRoot,path.dirname(b.database)]){
-      managedPath(root);if(!lstatSync(root).isDirectory()||!isOwned(root))conflict();
-    }
-    const legacy=managedPath(path.join(b.source.configRoot,'plugins/agent-progress'),true);
-    // A receipt cannot authorize removing or overlooking remaining discovery.
-    if(lstatSync(legacy,{throwIfNoEntry:false}))conflict();
-    for(const file of [b.database,...['-journal','-wal','-shm'].map(suffix=>b.database+suffix)]){
-      const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)continue;
-      managedPath(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([file]))conflict();
-    }
-    const store=new Store(b.database,{readOnly:true});
-    try{verifyStore(store,b);store.subagentRunStorage();}finally{store.close();}
-    const file=managedPath(path.join(path.dirname(b.database),'installation-history.jsonl'));
-    const before=lstatSync(file,{bigint:true});
-    if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||!privatePaths([path.dirname(file),file]))conflict();
-    if(before.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
-    const object={device:String(before.dev),inode:String(before.ino),birthNs:String(before.birthtimeNs)};
-    if(retained&&(retained.history.path!==file||retained.history.kind!=='file'||
-      canonical(retained.history.object)!==canonical(object)))conflict();
-    const bytes=readFileSync(file),after=lstatSync(file,{bigint:true});
-    if([before.dev,before.ino,before.birthtimeNs,before.size,before.mtimeNs,before.ctimeNs,before.nlink].join(':')!==
-      [after.dev,after.ino,after.birthtimeNs,after.size,after.mtimeNs,after.ctimeNs,after.nlink].join(':'))conflict();
-    let text:string;
-    try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}
-    let entry:string|undefined;
-    for(const line of text.split('\n')){
-      if(retained&&line!==retained.entry)continue;
-      try{const event=JSON.parse(line);if(event?.action==='remove-capture'&&event.installId===record.legacyInstallId){entry=line;break;}}catch{/* Other historical lines grant no authority. */}
-    }
-    if(!entry){if(retained)conflict();return;}
-    // Later appends are allowed only in this same freshly validated owned file
-    // with the exact retained event still present. The old hash is a claim, not
-    // an ACL verdict or a requirement that unrelated history stop growing.
-    return {history:{path:file,kind:'file',object,digest:digest(bytes)},entry};
-  });
+  const b=record.binding;
+  const conflict=()=>{throw new SetupError('managed-migration-conflict');};
+  if(!b.source.verified||!record.legacyInstallId||record.legacyInstallId===b.installId)conflict();
+  for(const root of [b.source.configRoot,b.source.dataRoot,path.dirname(b.database)]){
+    managedPath(root);if(!lstatSync(root).isDirectory()||!isOwned(root))conflict();
+  }
+  const legacy=managedPath(path.join(b.source.configRoot,'plugins/agent-progress'),true);
+  // A receipt cannot authorize removing or overlooking remaining discovery.
+  if(lstatSync(legacy,{throwIfNoEntry:false}))conflict();
+  for(const file of [b.database,...['-journal','-wal','-shm'].map(suffix=>b.database+suffix)]){
+    const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)continue;
+    managedPath(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([file]))conflict();
+  }
+  const store=new Store(b.database,{readOnly:true});
+  try{verifyStore(store,b);store.subagentRunStorage();}finally{store.close();}
+  const file=managedPath(path.join(path.dirname(b.database),'installation-history.jsonl'));
+  const before=lstatSync(file,{bigint:true});
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||!privatePaths([path.dirname(file),file]))conflict();
+  if(before.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
+  const object={device:String(before.dev),inode:String(before.ino),birthNs:String(before.birthtimeNs)};
+  if(retained&&(retained.history.path!==file||retained.history.kind!=='file'||
+    canonical(retained.history.object)!==canonical(object)))conflict();
+  const bytes=readFileSync(file),after=lstatSync(file,{bigint:true});
+  if([before.dev,before.ino,before.birthtimeNs,before.size,before.mtimeNs,before.ctimeNs,before.nlink].join(':')!==
+    [after.dev,after.ino,after.birthtimeNs,after.size,after.mtimeNs,after.ctimeNs,after.nlink].join(':'))conflict();
+  let text:string;
+  try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}
+  let entry:string|undefined;
+  for(const line of text.split('\n')){
+    if(retained&&line!==retained.entry)continue;
+    try{const event=JSON.parse(line);if(event?.action==='remove-capture'&&event.installId===record.legacyInstallId){entry=line;break;}}catch{/* Other historical lines grant no authority. */}
+  }
+  if(!entry){if(retained)conflict();return;}
+  // Later appends are allowed only in this same freshly validated owned file
+  // with the exact retained event still present. The old hash is a claim, not
+  // a permission verdict or a requirement that unrelated history stop growing.
+  return {history:{path:file,kind:'file',object,digest:digest(bytes)},entry};
 }
 
 function journalSnapshot(file:string) {
@@ -147,58 +135,54 @@ export function managedJournalPaths(journal:ManagedSetupStepJournal):string[] {
 /** Observe a proposed target before storage exists, without ordinary Binding/Store
  * admission. Missing completed/retained resources are refused, never recreated. */
 export function readManagedFreshStepJournal(env:NodeJS.ProcessEnv):ManagedFreshStepJournal|undefined {
-  return platformSecurityScope(()=>{
-    const file=migrationFile(env),root=path.dirname(file);
-    if(!lstatSync(root,{throwIfNoEntry:false}))return;
-    if(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink!==1)throw new SetupError('managed-binding-invalid');
-    const names=readdirSync(root);
-    if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
-    if(names.some(n=>n.startsWith('migration.json.stage-')||n.startsWith('progress-binding.json.stage-')))throw new SetupError('managed-migration-conflict');
-    const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)return;
-    managedPath(file);
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
-    if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-    const before=journalSnapshot(file),journal=parseManagedFreshStepJournal(readFileSync(file)),roots=managedSourceRoots(env),m=journal.migration;
-    if(journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
-      [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
-      ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p)))throw new SetupError('managed-migration-conflict');
-    for(const [p,directory] of [[path.dirname(journal.database),true],[journal.database,false],...m.fresh.sidecars.map(c=>[c.path,false] as const)] as const){
-      managedPath(p,true);const s=lstatSync(p,{throwIfNoEntry:false});
-      if(s&&(!privatePaths([p])||s.isSymbolicLink()||(directory?!s.isDirectory():!s.isFile()||s.nlink!==1)))throw new SetupError('managed-migration-conflict');
-    }
-    if((m.fresh.directory.kind==='directory'||m.created.directory)&&!lstatSync(path.dirname(journal.database),{throwIfNoEntry:false})?.isDirectory()||
-      (m.fresh.database.kind==='file'||m.created.database)&&!lstatSync(journal.database,{throwIfNoEntry:false})?.isFile()||before!==journalSnapshot(file))
-      throw new SetupError('managed-migration-conflict');
-    return journal;
-  });
+  const file=migrationFile(env),root=path.dirname(file);
+  if(!lstatSync(root,{throwIfNoEntry:false}))return;
+  if(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink!==1)throw new SetupError('managed-binding-invalid');
+  const names=readdirSync(root);
+  if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
+  if(names.some(n=>n.startsWith('migration.json.stage-')||n.startsWith('progress-binding.json.stage-')))throw new SetupError('managed-migration-conflict');
+  const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)return;
+  managedPath(file);
+  if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
+  if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  const before=journalSnapshot(file),journal=parseManagedFreshStepJournal(readFileSync(file)),roots=managedSourceRoots(env),m=journal.migration;
+  if(journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
+    [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
+    ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p)))throw new SetupError('managed-migration-conflict');
+  for(const [p,directory] of [[path.dirname(journal.database),true],[journal.database,false],...m.fresh.sidecars.map(c=>[c.path,false] as const)] as const){
+    managedPath(p,true);const s=lstatSync(p,{throwIfNoEntry:false});
+    if(s&&(!privatePaths([p])||s.isSymbolicLink()||(directory?!s.isDirectory():!s.isFile()||s.nlink!==1)))throw new SetupError('managed-migration-conflict');
+  }
+  if((m.fresh.directory.kind==='directory'||m.created.directory)&&!lstatSync(path.dirname(journal.database),{throwIfNoEntry:false})?.isDirectory()||
+    (m.fresh.database.kind==='file'||m.created.database)&&!lstatSync(journal.database,{throwIfNoEntry:false})?.isFile()||before!==journalSnapshot(file))
+    throw new SetupError('managed-migration-conflict');
+  return journal;
 }
 /** Journal observation, not Store admission. This reader validates the private
  * envelope/roots and consistency only; each engine effect must freshly validate
  * its complete claims, lifecycle ownership and actual Store/source/schema. */
 export function readManagedStepJournal(env:NodeJS.ProcessEnv):ManagedStepJournal|undefined {
-  return platformSecurityScope(()=>{
-    const file=migrationFile(env),root=path.dirname(file);
-    if(!lstatSync(root,{throwIfNoEntry:false}))return;
-    if(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink!==1)throw new SetupError('managed-binding-invalid');
-    // Never sweep interrupted publication or a retained old configuration lock.
-    const names=readdirSync(root);
-    if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
-    if(names.some(name=>name.startsWith('migration.json.stage-')))throw new SetupError('managed-migration-conflict');
-    const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)return;
-    managedPath(file);
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
-    if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-    const before=journalSnapshot(file),journal=parseManagedStepJournal(readFileSync(file));
-    // Retain the existing Binding owner's native path/identity checks, including
-    // actual roots. Parsing the saved claims does not replace those checks.
-    const binding=readBinding(file),roots=managedSourceRoots(env);
-    if(canonical(managedJournalBinding(binding))!==canonical(managedJournalBinding(journal))||
-      journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
-      [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
-      ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p))||
-      before!==journalSnapshot(file))throw new SetupError('managed-migration-conflict');
-    return journal;
-  });
+  const file=migrationFile(env),root=path.dirname(file);
+  if(!lstatSync(root,{throwIfNoEntry:false}))return;
+  if(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink!==1)throw new SetupError('managed-binding-invalid');
+  // Never sweep interrupted publication or a retained old configuration lock.
+  const names=readdirSync(root);
+  if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
+  if(names.some(name=>name.startsWith('migration.json.stage-')))throw new SetupError('managed-migration-conflict');
+  const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)return;
+  managedPath(file);
+  if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
+  if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  const before=journalSnapshot(file),journal=parseManagedStepJournal(readFileSync(file));
+  // Retain the existing Binding owner's native path/identity checks, including
+  // actual roots. Parsing the saved claims does not replace those checks.
+  const binding=readBinding(file),roots=managedSourceRoots(env);
+  if(canonical(managedJournalBinding(binding))!==canonical(managedJournalBinding(journal))||
+    journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
+    [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
+    ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p))||
+    before!==journalSnapshot(file))throw new SetupError('managed-migration-conflict');
+  return journal;
 }
 
 /** Guard journal evolution as well as its syntax. This is not a writer lock or
@@ -257,14 +241,14 @@ export function validateManagedJournalChange(prior:ManagedSetupStepJournal,next:
  * expected is a compare-before-publication claim, not authority or an OS lock. */
 export function writeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedSetupStepJournal,expected?:ManagedSetupStepJournal,validate?:()=>void):void {
   publishManagedJournal(env,next,expected,validate);
-  const written=platformSecurityScope(()=>{if(windows)windowsPaths(managedJournalPaths(next),true);return next.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);});
+  const written=(()=>{if(windows)windowsPaths(managedJournalPaths(next),true);return next.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);})();
   if(!written||canonical(written)!==canonical(next))throw new SetupError('managed-step-unsettled');
 }
 
 /** Publish only an unsequenced intent. Unlike a settled checkpoint, this is not
  * a successful action receipt. The effect owner MUST read it back and compare
  * it in its fresh admission batch before any effect (see recordMigrationRemoval).
- * Combining those reads avoids a redundant launch without reusing authority
+ * Combining those reads avoids a redundant read without reusing authority
  * across a mutation. A crash here leaves running/unsettled, never completion. */
 export function publishManagedStepIntent(env:NodeJS.ProcessEnv,next:ManagedSetupStepJournal,expected:ManagedSetupStepJournal,validate:()=>void):void {
   if(next.migration.state!=='running'||!next.migration.intent||next.migration.sequence!==expected.migration.sequence)
@@ -273,7 +257,7 @@ export function publishManagedStepIntent(env:NodeJS.ProcessEnv,next:ManagedSetup
 }
 
 /** Read-only exact intent admission; caller may prebatch known paths in this
- * same scope, but must end it before the effect. No prior ACL verdict is used. */
+ * same read, and no result is carried across the effect. */
 export function validatePublishedManagedIntent(env:NodeJS.ProcessEnv,expected:ManagedSetupStepJournal):void {
   const current=expected.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);
   if(expected.migration.state!=='running'||!expected.migration.intent||!current||canonical(current)!==canonical(expected))
@@ -298,7 +282,7 @@ export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStep
   validateInitialManagedCheckpoint(checked);
   if(expected.phase==='complete'||canonical(managedJournalBinding(checked))!==canonical(expected.binding)||
     m.legacyInstallId!==expected.legacyInstallId||m.capture.state!=='unknown')throw new SetupError('managed-step-conflict');
-  const file=platformSecurityScope(()=>{
+  const file=(()=>{
     if(windows)windowsPaths(managedJournalPaths(checked),true);
     // Reuse the strict journal reader's container refusals even though its
     // format-2 parser cannot be used until after the upgrade.
@@ -322,9 +306,9 @@ export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStep
     }
     validate?.();
     return file;
-  });
+  })();
   requirePlatformWriteBoundary();publishPrivateJson(file,checked,true);
-  const written=platformSecurityScope(()=>{if(windows)windowsPaths(managedJournalPaths(checked),true);return readManagedStepJournal(env);});
+  const written=(()=>{if(windows)windowsPaths(managedJournalPaths(checked),true);return readManagedStepJournal(env);})();
   if(!written||canonical(written)!==canonical(checked))throw new SetupError('managed-step-unsettled');
 }
 
@@ -333,7 +317,7 @@ function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedSetupStepJourna
   // Parse serialized bytes before touching product state (also enforces limits).
   const checked=next.migration.format===3?parseManagedFreshStepJournal(JSON.stringify(next)):parseManagedStepJournal(JSON.stringify(next));
   const known=managedJournalPaths(checked);
-  const file=platformSecurityScope(()=>{
+  const file=(()=>{
     if(windows)windowsPaths(known,true);
     const current=checked.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);
     if(expected? !current||canonical(current)!==canonical(expected):!!current)throw new SetupError('managed-step-conflict');
@@ -344,11 +328,10 @@ function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedSetupStepJourna
     const roots=managedSourceRoots(env);
     if(checked.source.configRoot!==roots.configRoot||checked.source.dataRoot!==roots.dataRoot||
       [roots.configRoot,roots.dataRoot,root].includes(path.dirname(checked.database)))throw new SetupError('managed-migration-conflict');
-    // Engine-supplied lifecycle/Store verification shares only this fresh read
-    // batch. It is never run under the effect's earlier security scope.
+    // Engine-supplied lifecycle/Store verification runs in this same fresh read.
     validate?.();
     return file;
-  });
+  })();
   requirePlatformWriteBoundary();
   publishPrivateJson(file,checked,!!expected);
 }

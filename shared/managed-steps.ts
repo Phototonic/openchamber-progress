@@ -5,7 +5,6 @@ import type { ManagedReview, ManagedFreshReview } from './progress.ts';
 export const MANAGED_STEP_VERSION = 1;
 export const MANAGED_STEP_ROUTE = '/v1/setup/managed-step';
 export const MANAGED_STEP_LIMITS = {
-  securitySpawns: 6,
   workMs: 17_000,
   responseMs: 18_000,
   hostMs: 20_000,
@@ -223,18 +222,3 @@ export const MANAGED_OPERATION_TRANSITIONS = {
   abandoned: ['pending'],
   complete: [],
 } as const satisfies Record<ManagedOperationState, readonly ManagedOperationState[]>;
-
-/** Allocation ceilings, NOT measured costs. Retry consumes a spare slot or refuses.
- * Mutation slots include fresh checks for intent, effect and completion; scopes end
- * after each mutation. Cleanup never borrows from the next request's allowance. */
-export const MANAGED_STEP_SPAWN_ALLOCATION = {
-  prepare: { validation: 2, intent: 0, effect: 1, checkpoint: 2, cleanup: 1 },
-  expectation: { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  disable: { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  'remove-selector': { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  'remove-discovery': { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  'record-removal': { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  'publish-binding': { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  enable: { validation: 1, intent: 1, effect: 1, checkpoint: 2, cleanup: 1 },
-  reconcile: { validation: 2, intent: 1, effect: 0, checkpoint: 2, cleanup: 1 },
-} as const satisfies Record<ManagedMigrationStep, Record<'validation' | 'intent' | 'effect' | 'checkpoint' | 'cleanup', number>>;

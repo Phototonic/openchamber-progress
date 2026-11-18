@@ -3,7 +3,7 @@ import path from 'node:path';
 import {readManagedBinding,managedBindingFile,ManagedBindingError,managedSourceRoots,managedExpectationFile,readManagedExpectation} from '../shared/managed-binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {verifyStore,type Binding} from '../shared/binding.ts';
-import {platformSecurityScope,requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths,PlatformError} from '../shared/platform.ts';
+import {requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths,PlatformError} from '../shared/platform.ts';
 import {ProgressError,type SetupRead} from '../shared/progress.ts';
 import {MANAGED_STEP_LIMITS} from '../shared/managed-steps.ts';
 import {readManagedStepJournal,readManagedFreshStepJournal,readMigration,migrationFile,managedJournalPaths} from './managed-migration.ts';
@@ -78,70 +78,68 @@ export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:st
   }
 }
 function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?:(fresh:boolean)=>void) {
-  return platformSecurityScope(()=>{
-    const {binding:b,descriptor,journal,prior,legacy}=selection(env,expectedDescriptor,family);
-    const retained=b??journal??prior?.binding;
-    const base:SetupRead={configured:!!b,verified:false,installed:false,captureEnabled:null,targets:b?{configRoot:b.source.configRoot,dataRoot:b.source.dataRoot,storeRoot:path.dirname(b.database)}:null,
-      version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[],
-      delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,configuration:b?'configured':'unconfigured',migration:journal?journal.migration.state==='complete'?legacy?'conflict':'complete':'pending':prior?prior.phase==='complete'?legacy?'conflict':'complete':'pending':legacy?'available':'none',
-        ...((journal?journal.migration.format===3:!prior&&!legacy)?{planKind:'fresh' as const}:{}),
-        mode:'unknown',observation:'unknown',expectedVersion:null}};
-    if(journal){
-      if(journal.migration.format===3)base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal);
-      else base.delivery!.migrationProgress=managedJournalProgress(journal as ManagedStepJournal);
+  const {binding:b,descriptor,journal,prior,legacy}=selection(env,expectedDescriptor,family);
+  const retained=b??journal??prior?.binding;
+  const base:SetupRead={configured:!!b,verified:false,installed:false,captureEnabled:null,targets:b?{configRoot:b.source.configRoot,dataRoot:b.source.dataRoot,storeRoot:path.dirname(b.database)}:null,
+    version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[],
+    delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,configuration:b?'configured':'unconfigured',migration:journal?journal.migration.state==='complete'?legacy?'conflict':'complete':'pending':prior?prior.phase==='complete'?legacy?'conflict':'complete':'pending':legacy?'available':'none',
+      ...((journal?journal.migration.format===3:!prior&&!legacy)?{planKind:'fresh' as const}:{}),
+      mode:'unknown',observation:'unknown',expectedVersion:null}};
+  if(journal){
+    if(journal.migration.format===3)base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal);
+    else base.delivery!.migrationProgress=managedJournalProgress(journal as ManagedStepJournal);
+  }
+  if(!retained)return {status:base,descriptor,journal,subagentRuns:false};
+  // Selection is independently validated. A refused Store must not erase it
+  // or promote partial observations into capture/identity authority.
+  const unavailable=structuredClone(base);
+  try{
+    if(journal?.migration.format===3){
+      if(windows)windowsPaths(managedJournalPaths(journal),true);
+      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal);
+      base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,observed);
+      base.captureEnabled=observed.state==='unknown'?null:observed.state==='on';
+      // A proposed source/absent database is not ordinary Binding admission.
+      // Read-only progress can still honestly show unknown or initialized off.
+      if(!b)return {status:base,descriptor,journal,subagentRuns:false};
     }
-    if(!retained)return {status:base,descriptor,journal,subagentRuns:false};
-    // Selection is independently validated. A refused Store must not erase it
-    // or promote partial observations into capture/identity authority.
-    const unavailable=structuredClone(base);
+    storePaths(retained);
+    const store=new Store(retained.database,{readOnly:true});
     try{
-      if(journal?.migration.format===3){
-        if(windows)windowsPaths(managedJournalPaths(journal),true);
-        const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal);
-        base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,observed);
-        base.captureEnabled=observed.state==='unknown'?null:observed.state==='on';
-        // A proposed source/absent database is not ordinary Binding admission.
-        // Read-only progress can still honestly show unknown or initialized off.
-        if(!b)return {status:base,descriptor,journal,subagentRuns:false};
+      verifyStore(store,retained);const runs=store.subagentRunStorage();
+      base.captureEnabled=store.list({limit:1}).captureEnabled;
+      if(journal){
+        const capture={state:base.captureEnabled?'on' as const:'off' as const,observedAt:new Date().toISOString()};
+        if(journal.migration.format===3)base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,capture);
+        else base.delivery!.migrationProgress=managedJournalProgress(journal as ManagedStepJournal,capture);
       }
-      storePaths(retained);
-      const store=new Store(retained.database,{readOnly:true});
-      try{
-        verifyStore(store,retained);const runs=store.subagentRunStorage();
-        base.captureEnabled=store.list({limit:1}).captureEnabled;
-        if(journal){
-          const capture={state:base.captureEnabled?'on' as const:'off' as const,observedAt:new Date().toISOString()};
-          if(journal.migration.format===3)base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,capture);
-          else base.delivery!.migrationProgress=managedJournalProgress(journal as ManagedStepJournal,capture);
-        }
-        if(b){
-          base.verified=b.source.verified;base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
-          const expected=readManagedExpectation(b);
-          if(expected){base.version=expected.version;base.delivery!.expectedVersion=expected.version;
-            const loaded=store.loadedFingerprint(b.source.id,b.installId);base.delivery!.observation=loaded===null?'not-observed':loaded===expected.fingerprint?'matching':'different';}
-        }
-        return {status:base,descriptor,journal,subagentRuns:!!b&&['current','previous'].includes(runs)};
-      }finally{store.close();}
-    }catch(error){
-      unavailable.diagnostics=[observationDiagnostic(error)];
-      if(journal?.migration.format===3&&journal.migration.created.database===null&&journal.migration.state!=='complete'){
-        // Only uncheckpointed creation lacks the evidence for a Resume card.
-        // Later read failures retain pending/complete progress with unknown capture.
-        unavailable.delivery!.migration='unavailable';
-        delete unavailable.delivery!.freshProgress;
+      if(b){
+        base.verified=b.source.verified;base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
+        const expected=readManagedExpectation(b);
+        if(expected){base.version=expected.version;base.delivery!.expectedVersion=expected.version;
+          const loaded=store.loadedFingerprint(b.source.id,b.installId);base.delivery!.observation=loaded===null?'not-observed':loaded===expected.fingerprint?'matching':'different';}
       }
-      return {status:unavailable,descriptor,journal,subagentRuns:false};
+      return {status:base,descriptor,journal,subagentRuns:!!b&&['current','previous'].includes(runs)};
+    }finally{store.close();}
+  }catch(error){
+    unavailable.diagnostics=[observationDiagnostic(error)];
+    if(journal?.migration.format===3&&journal.migration.created.database===null&&journal.migration.state!=='complete'){
+      // Only uncheckpointed creation lacks the evidence for a Resume card.
+      // Later read failures retain pending/complete progress with unknown capture.
+      unavailable.delivery!.migration='unavailable';
+      delete unavailable.delivery!.freshProgress;
     }
-  });
+    return {status:unavailable,descriptor,journal,subagentRuns:false};
+  }
 }
 
 /** Ordinary capture-off remains available without full legacy ownership. Enable
  * cannot bypass unfinished migration. The supervisor holds the shared writer
- * fence; the fresh read scope ends before changing the capture bit. */
+ * fence; the fresh read ends before changing the capture bit. */
 export function controlManagedCapture(env:NodeJS.ProcessEnv,enabled:boolean,expectedDescriptor?:string|null) {
   requirePlatformWriteBoundary();let store:Store|undefined,descriptor:string|null=null;
   try{
-    platformSecurityScope(()=>{
+    {
       const current=enabled?selection(env,expectedDescriptor):{...selected(env,expectedDescriptor),journal:undefined,prior:undefined,legacy:false};
       const {binding,journal,prior,legacy}=current;descriptor=current.descriptor;
       if(!binding)throw new SetupError('binding');
@@ -149,7 +147,7 @@ export function controlManagedCapture(env:NodeJS.ProcessEnv,enabled:boolean,expe
       if(!binding.source.verified)throw new SetupError('source-unverified');
       if(enabled&&(legacy||(journal?journal.migration.state!=='complete':prior?prior.phase!=='complete':false)))throw new SetupError('managed-migration-required');
       storePaths(binding);store=new Store(binding.database);verifyStore(store,binding);store.subagentRunStorage();
-    });
+    }
     requirePlatformWriteBoundary();store!.setEnabled(enabled);
     return {value:{ok:true,captureEnabled:enabled},descriptor};
   }finally{store?.close();}

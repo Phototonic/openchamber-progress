@@ -97,12 +97,12 @@ test('expectation publication failure preserves enabled legacy discovery before 
 });
 
 test('legacy controller creation failures preserve fixed diagnostics; HTTP no longer invokes that path',async t=>{
-  for(const code of ['windows-security-unavailable','private-permissions','untrusted-message'] as const)await t.test(code,async t=>{
+  for(const code of ['private-permissions','untrusted-message'] as const)await t.test(code,async t=>{
     const f=fixture();try{
       const review=f.review(),before=fs.readFileSync(path.join(f.legacyRoot,'.ownership.json'));
       const original=fs.mkdirSync;
       const mock=t.mock.method(fs,'mkdirSync',((file:any,...args:any[])=>{
-        if(path.basename(String(file))==='agent-progress-managed')throw new PlatformError(code,'timeout');
+        if(path.basename(String(file))==='agent-progress-managed')throw new PlatformError(code);
         return(original as any)(file,...args);
       })as typeof fs.mkdirSync);syncBuiltinESMExports();
       const expected=code==='untrusted-message'?'storage':code;
@@ -279,11 +279,11 @@ test('confirmed managed capture-off survives modified legacy ownership without a
 });
 
 test('migration inspection preserves operational diagnostics instead of claiming an ownership conflict',async t=>{
-  for(const phase of ['legacy','record'])for(const code of ['busy','corrupt','schema','storage','windows-security-unavailable']as const)await t.test(`${phase}: ${code}`,async t=>{
+  for(const phase of ['legacy','record'])for(const code of ['busy','corrupt','schema','storage']as const)await t.test(`${phase}: ${code}`,async t=>{
     const f=fixture();try{
       if(phase==='record')f.migrate();
       const original=Store.prototype.subagentRunStorage;
-      t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw code==='windows-security-unavailable'?new PlatformError(code):new ProgressError(code);return original.call(this);});
+      t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw new ProgressError(code);return original.call(this);});
       const status=f.setup.status();assert.equal(status.delivery!.migration,'unavailable');assert.ok(status.diagnostics.includes(code));
       await http(f,async request=>{const r=await request('managed-inspect',{}),body=await r.json();
         if(r.status!==409)t.diagnostic(JSON.stringify({status:r.status,code:body.error,ports:f.setup.writerTargets().map(writerTargetPort)}));

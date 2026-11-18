@@ -7,7 +7,6 @@ import cp from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {lifecycle,migrationEvidence,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded} from '../../setup/lifecycle.ts';
 import {Store,canonical,digest} from '../../shared/store.ts';
-import {platformSecurityScope} from '../../shared/platform.ts';
 import {parseManagedStepJournal,managedTargetDigest,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
 import {createManagedBindingDirectory,publishPrivateJson} from '../../shared/managed-binding.ts';
@@ -99,13 +98,12 @@ test('missing files without the current intent or completed same-operation evide
   }finally{f.cleanup();}
 });
 
-test('removal requires durable exact intent, fresh off capture and no enclosing security scope',()=>{
+test('removal requires durable exact intent and fresh off capture',()=>{
   const f=fixture();try{
     assert.throws(()=>removeMigrationFile(f.journal),{code:'managed-step-conflict'});
     const file=authorize(f.journal);f.store.setEnabled(true);
     assert.throws(()=>removeMigrationFile(f.journal),{code:'managed-step-conflict'});assert.equal(fs.existsSync(file),true);
     f.store.setEnabled(false);
-    assert.throws(()=>platformSecurityScope(()=>removeMigrationFile(f.journal)),{code:'managed-step-conflict'});
     const before=f.journal.migration.intent!.before;f.journal.migration.intent!.before=[];
     assert.throws(()=>removeMigrationFile(f.journal),{code:'managed-step-conflict'});f.journal.migration.intent!.before=before;
     f.journal.migration.intent!.after[0]!.path=path.join(f.legacyRoot,'other');
@@ -229,12 +227,12 @@ test('record-removal tolerates later history appends only after its own exact ev
   }finally{f.cleanup();}
 });
 
-test('each one-file request fits six actual launches including both durable journal publications', {skip:process.platform==='win32'},async t=>{
+test('each one-file removal request and its journal publications start no process on the Windows path', {skip:process.platform==='win32'},async t=>{
   const f=fixture(),originalSystemRoot=process.env.SystemRoot;
   try{
-    // Source projection preserves the actual query/cache/publication owners.
-    // Only OS path dialect and the real process boundary are substituted. This
-    // establishes portable accounting, not native Windows ACL/timing evidence.
+    // Source projection preserves the actual publication owners. Only the OS
+    // path dialect is substituted, so this is portable evidence that nothing
+    // starts a process, not native Windows evidence.
     const source=path.join(f.root,'source');
     for(const dir of ['shared','setup'])fs.cpSync(path.resolve(dir),path.join(source,dir),{recursive:true});
     const platformFile=path.join(source,'shared/platform.ts');let text=fs.readFileSync(platformFile,'utf8');
@@ -245,22 +243,15 @@ test('each one-file request fits six actual launches including both durable jour
     fs.writeFileSync(platformFile,text);
     createManagedBindingDirectory(f.env);publishPrivateJson(migrationFile(f.env),f.journal);
     let spawns=0;
-    t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-      spawns++;const input=JSON.parse(String(options.input));
-      assert.deepEqual(input.create,[],'removal never creates a directory');
-      return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-    }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+    t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
     const platform=await import(pathToFileURL(platformFile).href) as typeof import('../../shared/platform.ts');
     const owner=await import(pathToFileURL(path.join(source,'setup/lifecycle.ts')).href) as typeof import('../../setup/lifecycle.ts');
     const migration=await import(pathToFileURL(path.join(source,'setup/managed-migration.ts')).href) as typeof import('../../setup/managed-migration.ts');
-    const counts:number[]=[];
     for(let batch=0;batch<6;batch++){
-      const budget=new platform.PlatformRequestBudget(),before=spawns;
+      const budget=new platform.PlatformRequestBudget();
       platform.withPlatformRequestBudget(budget,()=>{
-        const prior=platform.platformSecurityScope(()=>{
-          platform.windowsPaths(migration.managedJournalPaths(f.journal),true);
-          const current=migration.readManagedStepJournal(f.env)!;owner.validateMigrationRemoval(current);return current;
-        });
+        platform.windowsPaths(migration.managedJournalPaths(f.journal),true);
+        const prior=migration.readManagedStepJournal(f.env)!;owner.validateMigrationRemoval(prior);
         const intent=structuredClone(prior),layoutFile=path.join(f.legacyRoot,[...Object.keys(JSON.parse(prior.migration.legacy.ownership!).files).sort(),'.ownership.json'][batch]!);
         intent.migration.state='running';intent.migration.intent={requestDigest:'4'.repeat(64),expectedSequence:prior.migration.sequence,step:prior.migration.step!,effect:'intent',
           before:[prior.migration.legacy.claims.find(c=>c.path===layoutFile)!],after:[{path:layoutFile,kind:'absent',object:null,digest:null}],captureBefore:prior.migration.capture,captureReviewSequence:null};
@@ -270,16 +261,12 @@ test('each one-file request fits six actual launches including both durable jour
         migration.writeManagedStepJournal(f.env,next,intent,()=>{owner.validateMigrationRemoval(intent);});
         f.journal=next;
       });
-      counts.push(spawns-before);assert.equal(budget.securitySpawns,spawns-before);
-      assert.ok(spawns-before<=6,`discovery batch ${batch} exceeded six real security launches`);
+      assert.equal(spawns,0,`discovery batch ${batch}`);
     }
-    t.diagnostic(JSON.stringify({removeDiscoverySecuritySpawns:counts}));
-    const budget=new platform.PlatformRequestBudget(),before=spawns;
+    const budget=new platform.PlatformRequestBudget();
     platform.withPlatformRequestBudget(budget,()=>{
-      const {prior,claims}=platform.platformSecurityScope(()=>{
-        platform.windowsPaths(migration.managedJournalPaths(f.journal),true);
-        const current=migration.readManagedStepJournal(f.env)!;return {prior:current,claims:owner.migrationRemovalRecordClaims(current)};
-      });
+      platform.windowsPaths(migration.managedJournalPaths(f.journal),true);
+      const prior=migration.readManagedStepJournal(f.env)!,claims=owner.migrationRemovalRecordClaims(prior);
       const intent=structuredClone(prior);
       intent.migration.state='running';intent.migration.intent={requestDigest:'6'.repeat(64),expectedSequence:prior.migration.sequence,step:prior.migration.step!,effect:'intent',
         before:claims.before,after:claims.after,captureBefore:claims.capture,captureReviewSequence:null};
@@ -292,8 +279,7 @@ test('each one-file request fits six actual launches including both durable jour
       migration.writeManagedStepJournal(f.env,next,intent,()=>{assert.equal(owner.migrationRemovalRecorded(intent),true);});
       f.journal=next;
     });
-    assert.equal(budget.securitySpawns,spawns-before);assert.ok(spawns-before<=6);
-    t.diagnostic(JSON.stringify({recordRemovalSecuritySpawns:spawns-before}));
+    assert.equal(spawns,0);
   }finally{
     t.mock.restoreAll();syncBuiltinESMExports();
     if(originalSystemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=originalSystemRoot;

@@ -85,19 +85,18 @@ test('a legacy install identity cannot be adopted as the managed selection',()=>
   }finally{f.cleanup();}
 });
 
-for(const exhausted of ['spawns','time'] as const)test(`prepare reserves settlement ${exhausted} before directory creation`,()=>{
+test('prepare refuses an exhausted deadline before directory creation',()=>{
   const f=fixture();try{
-    const budget=new PlatformRequestBudget(process.hrtime.bigint()-(exhausted==='time'?4_000_000_000n:0n));
-    if(exhausted==='spawns')Atomics.store(budget.counter,0,2);
-    assert.throws(()=>begin(f,f.session,f.request,budget),{code:exhausted==='spawns'?'managed-step-budget':'managed-step-deadline'});
+    const budget=new PlatformRequestBudget(process.hrtime.bigint()-18_000_000_000n);
+    assert.throws(()=>begin(f,f.session,f.request,budget),{code:'managed-step-deadline'});
     assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
   }finally{f.cleanup();}
 });
 
-test('a slow directory helper stops before journal publication and permits explicit retry',t=>{
+test('a slow directory creation stops before journal publication and permits explicit retry',t=>{
   const f=fixture();try{
     const clock=process.hrtime.bigint,started=clock(),file=migrationFile(f.env);
-    const mock=t.mock.method(process.hrtime,'bigint',()=>fs.existsSync(path.join(path.dirname(file),'.ownership.json'))?started+12_000_000_000n:started);
+    const mock=t.mock.method(process.hrtime,'bigint',()=>fs.existsSync(path.join(path.dirname(file),'.ownership.json'))?started+18_000_000_000n:started);
     try{assert.throws(()=>begin(f,f.session,f.request,new PlatformRequestBudget(started)),{code:'managed-step-deadline'});}
     finally{mock.mock.restore();}
     assert.equal(fs.existsSync(file),false);assert.equal(fs.existsSync(path.join(path.dirname(file),'.ownership.json')),true);
@@ -132,7 +131,7 @@ test('status is read-only, reports no operation when absent, and refuses a diffe
   }finally{f.cleanup();}
 });
 
-test('integrated prepare, upgrade, retry and status obey the per-request launch ceiling',{skip:process.platform==='win32'},async t=>{
+test('integrated prepare, upgrade, retry and status start no process on the Windows path',{skip:process.platform==='win32'},async t=>{
   const original=process.env.SystemRoot;
   try{for(const kind of ['manifest','selected','upgrade','receipt'] as const){
     const f=fixture(kind);try{
@@ -142,20 +141,15 @@ test('integrated prepare, upgrade, retry and status obey the per-request launch 
       const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
       assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);fs.writeFileSync(platformFile,text);
       let spawns=0;
-      const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-        spawns++;const input=JSON.parse(String(options.input));for(const p of input.create)fs.mkdirSync(p,{mode:0o700});
-        return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-      }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+      const mock=t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
       try{
         const platform=await import(pathToFileURL(platformFile).href) as typeof import('../../shared/platform.ts');
         const engine=await import(pathToFileURL(path.join(source,'setup/managed-step-engine.ts')).href) as typeof import('../../setup/managed-step-engine.ts');
-        const counts:Record<string,number>={};
         for(const name of ['begin','retry','status'] as const){
-          spawns=0;const budget=new platform.PlatformRequestBudget();
+          const budget=new platform.PlatformRequestBudget();
           platform.withPlatformRequestBudget(budget,()=>name==='status'?engine.observeManagedStep(f.env,f.request.operationId):engine.beginManagedStep(f.env,payload,f.request,budget,name==='begin'?f.session:undefined));
-          assert.equal(budget.securitySpawns,spawns);assert.ok(spawns<=6);counts[name]=spawns;
+          assert.equal(spawns,0,`${kind} ${name}`);
         }
-        t.diagnostic(JSON.stringify({kind,...counts}));
       }finally{mock.mock.restore();syncBuiltinESMExports();}
     }finally{f.cleanup();}
   }}finally{if(original===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=original;}

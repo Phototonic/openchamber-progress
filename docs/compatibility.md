@@ -456,13 +456,19 @@ SDK upgrade nor a task-named event family may auto-enable capture.
 ### Managed startup and released migration regression gate
 
 The fix for [#99](https://github.com/Phototonic/openchamber-progress/issues/99)
-keeps construction and health free of security queries and moves legacy migration
-to negotiated, explicitly confirmed steps. Each migration request admits at most
-six PowerShell launches, with 17-second work and 18-second response deadlines
-under the host's 20-second boundary. The UI preserves progress and capture
-warnings, stops on failures (including failed replays), and offers explicit
-pause, resume, status and reviewed capture recovery. Portable fixtures and
-rendered synthetic-shell QA do not certify native Windows latency or ACLs.
+keeps construction and health free of filesystem validation and moves legacy
+migration to negotiated, explicitly confirmed steps, with 17-second work and
+18-second response deadlines under the host's 20-second boundary. Versions 1.4.0
+to 1.5.1 also bounded each request at six PowerShell launches. Version 1.5.2
+removed those launches altogether
+([#172](https://github.com/Phototonic/openchamber-progress/issues/172)): the
+companion started PowerShell synchronously on load, on every guarded report, tool
+hook and status request, and blocked the OpenCode event loop for 28 to 43 seconds.
+Windows now relies on the user profile's default permissions, no ACL is queried,
+applied or repaired, and existing private ACLs are left as found. The UI preserves
+progress and capture warnings, stops on failures (including failed replays), and
+offers explicit pause, resume, status and reviewed capture recovery. Portable
+fixtures and rendered synthetic-shell QA do not certify native Windows latency.
 
 Fresh setup now uses the same bounded worker on every supported OS, negotiating
 `managedFreshSteps:1` independently from migration support. Wire 2 and journal
@@ -470,25 +476,25 @@ format 3 are fresh-only; migration retains wire 1/format 2 and format-1 recovery
 Setup exposes optional `freshProgress`, never fresh data in `migrationProgress`.
 New UI/old service shows update-together guidance with no old-route fallback.
 Old UI/new Windows service receives exactly 409 `managed-action-required` from
-old inspect/configure, before workers/security queries/writes. Linux/macOS keep
+old inspect/configure, before workers or writes. Linux/macOS keep
 those compatibility routes only without legacy discovery or any journal. Old
 migrate refuses on all platforms. Older journal readers refuse format 3 even when
 complete; rollback retains all data/journals and uses fresh-capable recovery, not
 down-conversion or global-loader restoration.
 
-The former 1.4.0 fresh Windows 3/24-launch synchronous exception is replaced by
-portable measured prepare/folder/database requests at 6 launches each and later
-effects at 5. New databases initialize off; retained stores keep capture and IDs.
-These counters and rendered synthetic-shell checks do not certify native Windows
-latency/ACLs. Native CI exercises empty default and custom stores undelayed, the
-default store with 2.5-second helpers, and retained stores with matching sources
-(capture on/off) or a new source (capture off). Fresh default recovery covers
-prepare timeout, lost-reply replay, restart and pause/resume before/after creation;
-the migration cases additionally cover slower-helper and late-worker refusal.
-Every native request is gated at six launches and eight seconds undelayed or
-below twenty seconds delayed, with concurrent zero-query health. These are the
-job's assertions, not portable certification. Timeout never undoes changes or
-permits cleanup/permission repair. See
+The former 1.4.0 fresh Windows synchronous exception is replaced by bounded
+prepare/folder/database requests and later effects, none of which starts a
+process. New databases initialize off; retained stores keep capture and IDs.
+Rendered synthetic-shell checks do not certify native Windows latency. Native CI
+exercises empty default and custom stores, and retained stores with matching
+sources (capture on/off) or a new source (capture off). Fresh default recovery
+covers lost-reply replay, restart and pause/resume before/after creation. Every
+native request is gated at eight seconds with zero process launches. Deadline
+refusal, late-worker exclusion and injected faults are covered by portable
+fixtures only (`managed-step-http.test.ts`, `managed-request-worker.test.ts`);
+versions before 1.5.2 injected them natively through the slow helper. These are
+the job's assertions, not portable certification. Timeout never undoes changes or permits
+cleanup/permission repair. See
 [Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 
 The `Windows setup, storage and capture` CI job runs the native platform suite
@@ -497,13 +503,12 @@ account, as two processes at once, each in its own serial test runner and each w
 with everything it started (`Start-Process -Wait` inside a thread job). Ordinary PRs run it when backend/build/test inputs change (unknown
 paths conservatively run it); UI, documentation, OpenSpec and browser-test-only
 PRs skip it, as do duplicate same-repository main/dev heads outside promotion.
-Every `dev` push runs the fast set. This retains every native test except three
-full-only journeys: released 1.1.1 migration undelayed, released 1.1.1 migration
-with 2500ms helpers, and fresh setup `empty-delayed`.
+Every `dev` push runs the fast set. This retains every native test except one
+full-only journey: the released 1.1.1 migration.
 
 Every promotion PR into `main`, every `main` push, the weekly schedule and manual
 dispatch run all journeys, regardless of changed paths. Only these runs set
-`AP_WINDOWS_FULL=1`; without it the three full-only journeys skip with an
+`AP_WINDOWS_FULL=1`; without it the full-only journey skips with an
 explicit opt-in reason. The same opt-in is required for a local full native run.
 All assertions, budgets and deadlines inside each journey remain unchanged.
 Publication still requires the full Windows job on the exact `main` push.
@@ -514,9 +519,9 @@ administrator product operation or runtime dependency download is used.
 
 The test launches a fresh child using the unmodified built service, synthetic
 HOME and XDG folders with spaces/Unicode, and an intact legacy
-installation but no managed selector. A test-only preload records security-query
-and legacy-read counts over IPC. Before listen and first health must both have
-zero queries/legacy reads. First health must finish within 1.25 seconds and total
+installation but no managed selector. A test-only preload records child-process
+launch and legacy-read counts over IPC. Before listen and first health must both have
+zero launches/legacy reads. First health must finish within 1.25 seconds and total
 startup within 12 seconds. These margins are below OpenChamber **v2.7.1**
 [`packages/web/server/lib/guests/service.js`](https://github.com/openchamber/openchamber/blob/v2.7.1/packages/web/server/lib/guests/service.js):
 15-second startup deadline, 1.5-second authenticated health polls, 200 ms between
@@ -526,20 +531,18 @@ inspection, diagnostic status and migration timings are checked against it.
 Authenticated inspection pages and confirmed migration steps must preserve
 Store/source identity, seeded schema-2 history/run storage and retained releases,
 remove only verified legacy discovery, and enable capture on completion. Each
-request, including replay, stays within six launches and eight seconds on the
-undelayed runner. A second journey adds 2.5 seconds per helper, still below the
-20-second host boundary. Both exercise concurrent health and pause/reopen/resume
-before and after capture is off. Injected timeout/private-creation refusals and
-a worker that outlives its response must retain precise stage/code and fences,
-not authorize a competing writer. Fresh children also exercise selected and invalid
+request, including replay, starts no process and stays within eight seconds on the
+undelayed runner. The journey exercises pause/reopen/resume before and after
+capture is off. Fresh children also exercise selected and invalid
 hard-linked state: health never admits it, a real read refuses it, and legitimate
 restoration permits a fresh read. The existing Windows suite retains explicit-XDG,
-canonical-alias, ACL mutation, foreign-owner and unsafe-ancestor coverage.
+canonical-alias, junction and hard-link coverage, and checks that roots with an
+existing owner-only ACL keep working with that ACL unchanged.
 
 `Upload sanitized Windows migration trace` uploads `windows-migration-trace` even
 when tests fail. Its JSONL contains only fixed stages, error **classes** (platform,
-filesystem, storage, setup, test or timeout), allowlisted codes, timings, security
-query/legacy-read counts, marker/lock/expectation/record/selector booleans,
+filesystem, storage, setup, test or timeout), allowlisted codes, timings, process
+launch/legacy-read counts, marker/lock/expectation/record/selector booleans,
 capture-enabled and migration-phase observations. Fixed harness codes distinguish
 assertion/request/proxy-budget failures from product refusals. It contains no raw
 logs, paths, SIDs, auth, commands or database content. Expected injected failures
@@ -550,7 +553,7 @@ installation or managed companion-delivery certification.
 
 The native implementation adds no separate binary or compilation requirement for
 users. It uses the existing bundled JavaScript, ordinary Windows file identity
-checks, and Windows PowerShell 5.1/public .NET APIs for ownership and private ACLs.
+checks, with no ACL or ownership query and no child process.
 The [setup guide](setup.md#native-windows) defines its local-account, path and
 durability boundary. Historical Linux observations below remain scoped to their
 original configurations.
@@ -569,15 +572,12 @@ cross-runtime SQLite busy handling, disable/enable of loaded code, and fresh
 recapture all passed. No external model/provider requests were made. Scripted
 execution proves the integration, not universal model compliance.
 
-The Windows filesystem suite covers private creation/inheritance and refusal,
-Unicode/case/separators/junctions, ACL mutation/cache invalidation, unsafe storage
-parents, ordinary source reads, SQLite side files, binding, selector persistence,
-interrupted activation/removal, hard-linked state refusal, and missing PowerShell.
-Local runs explicitly skip two unavailable fixtures: the account cannot assign
-a foreign owner, and Windows/.NET refused a persisted canonical callback
-ACE fixture. Public .NET in-memory descriptors separately verify foreign-owner
-policy and rejection of null, callback, object and audit DACL forms. Persisting
-those unavailable fixtures is not claimed as tested.
+The Windows filesystem suite covers directory creation with default permissions,
+Unicode/case/separators/junctions, existing owner-only ACLs left unchanged,
+ordinary source reads, SQLite side files, binding, selector persistence,
+interrupted activation/removal and hard-linked state refusal. Versions before
+1.5.2 also covered ACL mutation, foreign-owner, unsafe-ancestor and missing
+PowerShell cases; those checks were removed with the queries they tested.
 
 Actual OpenChamber host startup opened the shared SQLite store under its bundled
 Node runtime. Panel, Work Status and full page showed matching reported counts,

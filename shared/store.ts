@@ -16,8 +16,8 @@ import { searchWindow, searchState } from './plan-task-search.ts';
 import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
-import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, platformSecurityScope, requirePlatformWriteBoundary,
-  requirePlatformStoreFence, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, requirePlatformWriteBoundary,
+  requirePlatformStoreFence, STEP_HEADROOM_MS, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 import { canonical } from './canonical.ts';
@@ -67,7 +67,6 @@ export class Store {
   constructor(file: string, options: { create?: boolean; busyMs?: number; readOnly?: boolean } = {}, fresh?:FreshStoreInitialization) {
     this.file=file;
     this.readOnly=options.readOnly??false;
-    const finish=fresh?()=>{}:beginPlatformSecurityScope();
     try {
       if(fresh){
         requirePlatformWriteBoundary();
@@ -100,7 +99,6 @@ export class Store {
       // Ordinary opens (including writable service handles) validate, never migrate.
       this.transaction(false,()=>receiptIndexInstalled(this.db));
     } catch (e) { this.db!?.close(); if(e instanceof PlatformError)throw e;throw storageError(e); }
-    finally{finish();}
   }
   /** Journaled fresh creation only: exclusive reservation followed by NEW object
    * admission before the initial off/schema transaction. Partial files survive
@@ -109,7 +107,7 @@ export class Store {
     requirePlatformWriteBoundary();requirePlatformStoreFence(file);
     need(identifier(options.storeId)&&typeof options.validate==='function','binding');
     const parent=path.dirname(file),sidecars=['-journal','-wal','-shm'].map(s=>file+s);
-    const directory=platformSecurityScope(()=>{
+    const directory=(()=>{
       options.validate();
       need(path.isAbsolute(file)&&path.resolve(file)===file&&path.basename(file)==='progress.sqlite','binding');
       if(windows)need(windowsPaths([parent,file,...sidecars],true).every((p,i)=>p===[parent,file,...sidecars][i]),'binding');
@@ -117,20 +115,17 @@ export class Store {
       const stat=lstatSync(parent,{bigint:true});need(stat.isDirectory()&&!stat.isSymbolicLink()&&privatePaths([parent]),'binding');
       need(![file,...sidecars].some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
       return storeObject(stat);
-    });
-    // The final preflight may have spent the earlier engine reservation. Leave
-    // room for new-object admission and the journal's validation/readback.
-    requirePlatformWriteBoundary(3,8_500);
+    })();
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
     const fd=openSync(file,'wx',0o600);
     try{
       const reserved=storeObject(fstatSync(fd,{bigint:true}));
-      platformSecurityScope(()=>{
-        // This is a new batch after reservation, never inherited pre-create ACLs.
+      {
         if(windows)windowsPaths([parent,file,...sidecars],true);
         const stat=lstatSync(file,{bigint:true});
         need(storeObject(lstatSync(parent,{bigint:true}))===directory&&storeObject(stat)===reserved&&stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1n&&
           stat.size===0n&&privatePaths([parent,file])&&!sidecars.some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
-      });
+      }
       requirePlatformWriteBoundary();
       const store=new Store(file,{}, {token:freshStoreToken,storeId:options.storeId,object:reserved});
       try{fsyncSync(fd);syncDirectory(parent);return store;}catch(e){store.close();throw e;}

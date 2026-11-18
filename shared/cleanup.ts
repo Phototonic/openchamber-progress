@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { openSync, closeSync, lstatSync, unlinkSync, realpathSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { identifier, ProgressError, requireProgress as need } from './progress.ts';
-import { windows, windowsPaths, sameWindowsObject, sameWindowsDirectory, privatePaths, platformSecurityScope } from './platform.ts';
+import { windows, windowsPaths, sameWindowsObject, sameWindowsDirectory, privatePaths } from './platform.ts';
 
 export type CleanupAction = 'archive' | 'restore' | 'delete';
 export interface CleanupRequest { storeId:string; source:string; plan:string; rev:number; cleanupRev:number; oid:string; confirmed?:true; active?:true }
@@ -70,9 +70,6 @@ function preflight(db:DatabaseSync,action:CleanupAction,r:CleanupRequest,install
 
 /** Consistent private recovery material, not a product undo or automatic restore. */
 function backup(db:DatabaseSync,file:string) {
-  return platformSecurityScope(()=>backupPrivate(db,file));
-}
-function backupPrivate(db:DatabaseSync,file:string) {
   const parent=path.dirname(file);const owned=lstatSync(parent);
   need(owned.isDirectory()&&!owned.isSymbolicLink()&&privatePaths([parent]),'binding');
   if(windows){
@@ -84,8 +81,8 @@ function backupPrivate(db:DatabaseSync,file:string) {
   const fd=openSync(destination,'wx',0o600);closeSync(fd);
   let copy:DatabaseSync|undefined;
   try {
-    // Windows files inherit the already-verified private parent DACL; never repair
-    // an existing ACL. Verify the exclusive empty file before copying any content.
+    // Windows files inherit the parent's default permissions. Verify the
+    // exclusive empty file before copying any content.
     if(windows)need(sameWindowsObject(windowsPaths([destination])[0]!,destination),'binding');
     need(privatePaths([destination]),'binding');
     db.prepare('VACUUM INTO ?').run(destination);

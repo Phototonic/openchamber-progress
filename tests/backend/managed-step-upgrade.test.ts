@@ -11,7 +11,6 @@ import {Store,canonical,digest} from '../../shared/store.ts';
 import {createManagedBindingDirectory,publishPrivateJson} from '../../shared/managed-binding.ts';
 import {migrationFile,readMigration,writeMigration,readRemovalReceipt,readManagedStepJournal,upgradeManagedStepJournal,type MigrationRecord} from '../../setup/managed-migration.ts';
 import {managedTargetDigest,managedRequestDigest,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
-import {platformSecurityScope} from '../../shared/platform.ts';
 
 function fixture(removed:boolean,phase:MigrationRecord['phase']='pending'){
   const root=fs.mkdtempSync('/tmp/opencode/step-upgrade-'),env=isolatedEnvironment(root);
@@ -92,9 +91,8 @@ for(const damage of ['receipt-missing','receipt-replaced','history-alias','remai
   });
 }
 
-test('intact format-1 upgrade refuses changed retained ownership and an enclosing authority scope',()=>{
+test('intact format-1 upgrade refuses changed retained ownership',()=>{
   const f=fixture(false);try{
-    assert.throws(()=>platformSecurityScope(()=>upgradeManagedStepJournal(f.env,f.journal,f.record)),{code:'managed-step-conflict'});
     fs.appendFileSync(path.join(f.legacyRoot,'index.js'),'changed');const before=fs.readFileSync(f.file);
     assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record),{code:'modified-owned-files'});
     assert.deepEqual(fs.readFileSync(f.file),before);
@@ -115,7 +113,7 @@ for(const after of [false,true])test(`format-1 upgrade interruption ${after?'aft
   }finally{f.cleanup();}
 });
 
-test('format-1 upgrade admission, replacement and checkpoint fit the six-launch ceiling', {skip:process.platform==='win32'},async t=>{
+test('format-1 upgrade admission, replacement and checkpoint start no process on the Windows path', {skip:process.platform==='win32'},async t=>{
   const originalSystemRoot=process.env.SystemRoot;
   try{
     for(const removed of [false,true]){
@@ -127,24 +125,18 @@ test('format-1 upgrade admission, replacement and checkpoint fit the six-launch 
         const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
         assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);
         fs.writeFileSync(platformFile,text);let spawns=0;
-        const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-          spawns++;const input=JSON.parse(String(options.input));assert.deepEqual(input.create,[],'upgrade never recreates the container');
-          return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-        }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+        const mock=t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
         try{
           const platform=await import(pathToFileURL(platformFile).href) as typeof import('../../shared/platform.ts');
           const migration=await import(pathToFileURL(path.join(source,'setup/managed-migration.ts')).href) as typeof import('../../setup/managed-migration.ts');
           const owner=await import(pathToFileURL(path.join(source,'setup/lifecycle.ts')).href) as typeof import('../../setup/lifecycle.ts');
           const budget=new platform.PlatformRequestBudget();
           platform.withPlatformRequestBudget(budget,()=>{
-            platform.platformSecurityScope(()=>{
-              platform.windowsPaths(migration.managedJournalPaths(f.journal),true);assert.deepEqual(migration.readMigration(f.env),f.record);
-              if(removed)assert.ok(migration.readRemovalReceipt(f.record));else owner.validateMigrationRemoval(f.journal);
-            });
+            platform.windowsPaths(migration.managedJournalPaths(f.journal),true);assert.deepEqual(migration.readMigration(f.env),f.record);
+            if(removed)assert.ok(migration.readRemovalReceipt(f.record));else owner.validateMigrationRemoval(f.journal);
             migration.upgradeManagedStepJournal(f.env,f.journal,f.record);
           });
-          assert.equal(budget.securitySpawns,spawns);assert.ok(spawns<=6);
-          t.diagnostic(JSON.stringify({format1Upgrade:removed?'receipt':'manifest',securitySpawns:spawns}));
+          assert.equal(spawns,0);
         }finally{mock.mock.restore();syncBuiltinESMExports();}
       }finally{f.cleanup();}
     }

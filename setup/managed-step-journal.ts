@@ -11,7 +11,7 @@ import { MANAGED_FRESH_STEPS, managedFreshPlan, type ManagedFreshStepRef, type M
   type ManagedFreshStepRequest, type ManagedFreshStepProgress, type ManagedFreshStepDiagnostic,
   type ManagedFreshStoreMode, type ManagedFreshSourceMode, type ManagedFreshCapturePolicy } from '../shared/managed-steps.ts';
 
-/** Claims only: fresh path/ACL/object/hash validation is mandatory before use. */
+/** Claims only: fresh path/object/hash validation is mandatory before use. */
 export interface ManagedPathClaim {
   path: string;
   kind: 'directory' | 'file' | 'absent';
@@ -90,7 +90,7 @@ export interface ManagedStepJournal extends Binding {
   };
 }
 
-/** Immutable review facts. Native identities/hashes are observations, not ACL authority.
+/** Immutable review facts. Native identities/hashes are observations, not authority.
  * Sidecars are always the three fixed SQLite suffixes in journal/wal/shm order. */
 export interface ManagedFreshFacts {
   storeMode: ManagedFreshStoreMode;
@@ -141,7 +141,7 @@ const text=(value:unknown,max=256):value is string=>typeof value==='string'&&val
 const version=(value:unknown)=>text(value)&&/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(value);
 function pathname(value:unknown):asserts value is string {
   need(text(value,MANAGED_STEP_LIMITS.pathBytes));
-  // Syntax only. Native canonical spelling, ancestors and ACLs are revalidated
+  // Syntax only. Native canonical spelling and ancestors are revalidated
   // by the filesystem owner, never by this portable journal parser.
   const dialect=/^[a-z]:[\\/]/i.test(value)?path.win32:path.posix;
   need(dialect.isAbsolute(value)&&dialect.normalize(value)===value);
