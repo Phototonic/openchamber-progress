@@ -26,11 +26,15 @@ The skill, the tool description and the inline guidance SHALL tell an agent that
 
 ### Requirement: The companion's system prompt section stays identical across requests
 
-The companion's section of the system prompt SHALL contain only text that does not change within a session, and SHALL be byte-identical on every request where it is present. The one-request hint, the sub-agent resume capsule and the delegation refusal note SHALL be added for that request only after the content of its latest message, with their text and eligibility unchanged. The stored conversation MUST NOT change.
+The companion's section of the system prompt SHALL contain only text that does not change within a session, and SHALL be byte-identical on every request where it is present. The one-request hint, the sub-agent resume capsule and the delegation refusal note SHALL be added for that request only after the content of its latest message, in a carrier valid for that message's role, with their text and eligibility unchanged, and MUST NOT be dropped. The stored conversation MUST NOT change.
 
 #### Scenario: A hint is due
 - **WHEN** a dispatch or a plan-file write makes the one-request hint due and the next request is built
 - **THEN** the system section is identical to the previous request's, and the hint is added after the latest message's content for that request only
+
+#### Scenario: Continuation after a plan-file write
+- **WHEN** a plan-file write succeeds and the next request continues the tool call, so its latest message is a tool message
+- **THEN** the system section is unchanged, and the hint is appended to the output of that message's last tool result for that request only, so the request stays valid for the provider
 
 #### Scenario: A sub-agent's plan moved on
 - **WHEN** a sub-agent session sends two requests and the plan's revision changed between them, or the capsule lookup timed out for one of them
