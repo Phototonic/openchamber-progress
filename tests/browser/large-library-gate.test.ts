@@ -17,6 +17,8 @@ interface Opt {
   railPlans?: number; firstWindow?: number; split?: boolean; before?: boolean;
   /** Wall-clock /v1/plans replies on the board, and the plan pages the driver attributed to its complete refreshes. */
   pagePlans?: number; completePlans?: number;
+  /** The previous driver: list starts and wall-clock inbox counts, no complete-refresh attribution. */
+  legacyDriver?: boolean;
 }
 function results(o: Opt = {}) {
   const page = o.page ?? 5, rail = o.rail ?? 5, split = o.split ?? true;
@@ -25,7 +27,8 @@ function results(o: Opt = {}) {
     traffic: {
       [`${surface} /health`]: row(refreshes), [`${surface} /v1/plans`]: row(plans), [`${surface} /v1/needs-you`]: row(refreshes), [`${surface} /v1/subagent-runs`]: row(refreshes),
     },
-    ...(split ? {
+    ...(split && o.legacyDriver ? { listStarts: { [surface]: starts }, inbox: { [surface]: { needsYouRoute: refreshes, plansFirstWindow: first } } } : {}),
+    ...(split && !o.legacyDriver ? {
       listStarts: { [surface]: starts },
       complete: { [surface]: { refreshes: Math.max(0, starts - 1), traffic: { '/v1/plans': completePlans, '/v1/needs-you': Math.max(0, starts - 1), '/v1/subagent-runs': Math.max(0, starts - 1) }, inbox: { needsYouRoute: Math.max(0, starts - 1), plansFirstWindow: Math.round(first * Math.max(0, starts - 1) / Math.max(1, refreshes)) } } },
     } : {}),
@@ -140,5 +143,22 @@ test('a legacy baseline still compares, and the report says its denominator fell
   assert.equal(doubled.status, 1);
   // A candidate without the attribution is reported too.
   const legacy = gate([{}, {}, { split: false }]);
-  assert.ok(legacy.info.some(n => /^Candidate traffic per refresh without complete-refresh attribution: run 3 \(\/health count\)/.test(n)), legacy.info.join('\n'));
+  assert.ok(legacy.info.some(n => /^Candidate traffic per refresh without complete-refresh attribution: run 3 \(\/health count/.test(n)), legacy.info.join('\n'));
+});
+
+test('a baseline with no complete refresh is insufficient evidence: it falls back to the wall-clock form instead of a zero budget', () => {
+  // One list start and a ten-page read: nothing closed it, so complete-refresh traffic is 0 over 0 refreshes.
+  const run = gate({}, { page: 1, pageStarts: 1, pagePlans: 10 });
+  assert.equal(run.status, 0, `${run.error}${run.failed.join('\n')}`);
+  assert.ok(run.info.includes('Baseline traffic per refresh uses its wall-clock list starts (no complete refresh recorded)'), run.info.join('\n'));
+});
+
+test('an older artifact\'s recorded wall-clock inbox form still sets the baseline for the split', () => {
+  const same = gate({}, { legacyDriver: true });
+  assert.equal(same.status, 0, `${same.error}${same.failed.join('\n')}`);
+  assert.ok(same.info.includes('Baseline inbox form uses wall-clock counts (older artifact)'), same.info.join('\n'));
+  // The baseline made no needsYou=1 list reads; candidates that opt in on every poll double the inbox work per refresh.
+  const more = gate({}, { legacyDriver: true, firstWindow: 0 });
+  assert.equal(more.status, 1);
+  assert.deepEqual(more.failed, ['Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)']);
 });

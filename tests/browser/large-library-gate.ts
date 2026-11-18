@@ -47,8 +47,12 @@ const REFRESH_MS = 3000;
 const idle = (r: any, surface: string) => measurement(r, surface, 'idle');
 const requests = (r: any, surface: string, route: string) => idle(r, surface).traffic[`${surface} ${route}`]?.count ?? 0;
 const listStarts = (r: any, surface: string): number | undefined => idle(r, surface).listStarts?.[surface];
-const settled = (r: any) => idle(r, 'page').complete?.page as { refreshes: number; traffic: Record<string, number>; inbox: { needsYouRoute: number; plansFirstWindow: number } } | undefined;
-const denominator = (r: any) => settled(r) ? 'complete refreshes' : listStarts(r, 'page') !== undefined ? 'wall-clock list starts' : '/health count';
+type Form = { needsYouRoute: number; plansFirstWindow: number };
+const recorded = (r: any) => idle(r, 'page').complete?.page as { refreshes: number; traffic: Record<string, number>; inbox: Form } | undefined;
+// Zero complete refreshes (a window with a single list start, or a stalled baseline) is insufficient evidence, not a zero budget.
+const settled = (r: any) => (recorded(r)?.refreshes ?? 0) >= 1 ? recorded(r) : undefined;
+const denominator = (r: any) => settled(r) ? 'complete refreshes'
+  : `${listStarts(r, 'page') !== undefined ? 'wall-clock list starts' : '/health count'}${recorded(r) ? ' (no complete refresh recorded)' : ' (complete-refresh attribution not recorded)'}`;
 const startsFallback: string[] = [];
 after.forEach((r, n) => {
   const violations: string[] = [];
@@ -63,7 +67,7 @@ after.forEach((r, n) => {
   rows.push({ name: `Idle cadence, run ${n + 1}: page and rail /health and list starts${violations.length ? ` (${violations.join('; ')})` : ''}`, before: 0, after: violations.length, budget: '== 0', pass: violations.length === 0 });
 });
 if (startsFallback.length) rows.push({ name: `Idle list starts not recorded (${startsFallback.join(', ')}): counted /v1/plans reads against the lower bound only`, before: 0, after: 0, budget: 'informational', pass: true });
-if (denominator(before) !== 'complete refreshes') rows.push({ name: `Baseline traffic per refresh uses its ${denominator(before)} (complete-refresh attribution not recorded)`, before: 0, after: 0, budget: 'informational', pass: true });
+if (!settled(before)) rows.push({ name: `Baseline traffic per refresh uses its ${denominator(before)}`, before: 0, after: 0, budget: 'informational', pass: true });
 {
   const fallback = after.map((r, n) => settled(r) ? null : `run ${n + 1} (${denominator(r)})`).filter(Boolean);
   if (fallback.length) rows.push({ name: `Candidate traffic per refresh without complete-refresh attribution: ${fallback.join(', ')}`, before: 0, after: 0, budget: 'informational', pass: true });
@@ -78,14 +82,21 @@ for (const route of ['/v1/plans', '/v1/needs-you', '/v1/subagent-runs']) {
 }
 {
   // Compare both inbox forms when the baseline and at least two candidates carry them; otherwise compare the
-  // /v1/needs-you route alone and say so.
-  const comparable = after.filter(settled);
-  const both = !!settled(before) && comparable.length >= 2;
-  const read = perRefresh(r => requests(r, 'page', '/v1/needs-you'), r => both ? settled(r)!.inbox.needsYouRoute + settled(r)!.inbox.plansFirstWindow : settled(r)!.traffic['/v1/needs-you'] ?? 0);
+  // /v1/needs-you route alone and say so. Complete-refresh counts are preferred; an older artifact's recorded wall-clock
+  // form (idle.inbox.page) is used, over its own wall-clock denominator, when it has no complete-refresh counts.
+  const form = (r: any): Form | undefined => settled(r)?.inbox ?? idle(r, 'page').inbox?.page;
+  const comparable = after.filter(form);
+  const both = !!form(before) && comparable.length >= 2;
+  if (form(before) && !settled(before)) rows.push({ name: 'Baseline inbox form uses wall-clock counts (older artifact)', before: 0, after: 0, budget: 'informational', pass: true });
+  const read = (r: any) => {
+    const f = both ? form(r) : undefined, done = settled(r);
+    const count = f ? f.needsYouRoute + f.plansFirstWindow : done ? done.traffic['/v1/needs-you'] ?? 0 : requests(r, 'page', '/v1/needs-you');
+    return count / Math.max(1, done?.refreshes ?? listStarts(r, 'page') ?? requests(r, 'page', '/health'));
+  };
   const value = median((both ? comparable : after).map(read));
   rows.push({
     name: both ? 'Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)'
-      : `Idle inbox requests/refresh (/v1/needs-you only: ${settled(before) ? 'fewer than two candidates carry' : 'baseline lacks'} the form split)`,
+      : `Idle inbox requests/refresh (/v1/needs-you only: ${form(before) ? 'fewer than two candidates carry' : 'baseline lacks'} the form split)`,
     before: read(before), after: value, budget: `<= ${read(before)}`, pass: value <= read(before),
   });
 }

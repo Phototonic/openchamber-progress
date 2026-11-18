@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { startSearchShell } from './plan-task-search-shell.ts';
 import { launchChromium } from './phone-cdp.ts';
 import { boardInput } from './board-qa.ts';
+import { attributeRefreshes } from './refresh-attribution.ts';
 import { searchStatusText } from '../../ui/shared/search.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 
@@ -81,38 +82,16 @@ const result: any = { shape: { bulkPlans: 500, tasksPerBulk: '30–80', historie
 const save = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(result, null, 2));
 async function window(s: string, label: string, run: () => Promise<unknown>) {
   await guest(s, `w.__p={frames:[],long:[],rootReplacements:0,mapReplacements:0,start:performance.now(),last:performance.now()};let root=d.querySelector('[data-testid="progress-root"]'),map=d.querySelector('[data-testid="map-region"]');const po=new w.PerformanceObserver(l=>{for(const e of l.getEntries())w.__p.long.push(e.duration)});po.observe({type:'longtask',buffered:false});const mo=new w.MutationObserver(()=>{const r=d.querySelector('[data-testid="progress-root"]'),m=d.querySelector('[data-testid="map-region"]');if(r!==root){w.__p.rootReplacements++;root=r}if(m!==map){w.__p.mapReplacements++;map=m}});mo.observe(d.body,{childList:true,subtree:true});const tick=t=>{w.__p.frames.push(t-w.__p.last);w.__p.last=t;w.__raf=w.requestAnimationFrame(tick)};w.__raf=w.requestAnimationFrame(tick);w.__stop=()=>{w.cancelAnimationFrame(w.__raf);po.disconnect();mo.disconnect();return {...w.__p,elapsed:performance.now()-w.__p.start,dom:d.querySelectorAll('*').length}};return true`);
-  const mark = await evaluate('qa.replies.length');
+  const mark = await evaluate('qa.replies.length'), requestMark = await evaluate('qa.requests.length');
   await run();
   const p = await guest(s, 'return w.__stop()');
   const frames = p.frames.sort((a: number, b: number) => a - b);
   const traffic: Record<string, { count: number; bytes: number }> = {};
-  // A refresh starts with a first-page /v1/plans read (no cursor); its continuation pages, /v1/needs-you windows and run
-  // reads follow it. Traffic is attributed to the refresh that started it, and only refreshes that a later first page
-  // closed inside the window count as complete, so a refresh split by the window edge adds nothing to either side.
-  // Inbox work travels as /v1/needs-you windows and as the first window on /v1/plans?needsYou=1. Every measured frame
-  // reports explicit counters, including zero.
-  const listStarts: Record<string, number> = { page: 0, panel: 0 };
-  const buckets: Record<string, { traffic: Record<string, number>; needsYouRoute: number; plansFirstWindow: number }[]> = { page: [], panel: [] };
   for (const r of await evaluate(`qa.replies.slice(${mark})`)) {
     const row = traffic[r.frame + ' ' + r.path] ??= { count: 0, bytes: 0 }; row.count++; row.bytes += r.bytes;
-    const refreshes = buckets[r.frame] ??= [];
-    const first = r.path === '/v1/plans' && !r.query?.cursor;
-    if (first) { listStarts[r.frame] = (listStarts[r.frame] ?? 0) + 1; refreshes.push({ traffic: {}, needsYouRoute: 0, plansFirstWindow: 0 }); }
-    const current = refreshes.at(-1);
-    if (!current) continue;
-    current.traffic[r.path] = (current.traffic[r.path] ?? 0) + 1;
-    if (r.path === '/v1/needs-you') current.needsYouRoute++;
-    else if (first && String(r.query?.needsYou) === '1') current.plansFirstWindow++;
   }
-  const complete: Record<string, { refreshes: number; traffic: Record<string, number>; inbox: { needsYouRoute: number; plansFirstWindow: number } }> = {};
-  for (const [frame, refreshes] of Object.entries(buckets)) {
-    const closed = refreshes.slice(0, -1), sum = { refreshes: closed.length, traffic: {} as Record<string, number>, inbox: { needsYouRoute: 0, plansFirstWindow: 0 } };
-    for (const b of closed) {
-      for (const [path, n] of Object.entries(b.traffic)) sum.traffic[path] = (sum.traffic[path] ?? 0) + n;
-      sum.inbox.needsYouRoute += b.needsYouRoute; sum.inbox.plansFirstWindow += b.plansFirstWindow;
-    }
-    complete[frame] = sum;
-  }
+  // Refresh attribution follows the order requests were sent (see refresh-attribution.ts), not the order replies arrived.
+  const { listStarts, complete } = attributeRefreshes(await evaluate(`qa.requests.slice(${requestMark})`));
   const m = { surface: s, label, elapsed: p.elapsed, dom: p.dom, rootReplacements: p.rootReplacements, mapReplacements: p.mapReplacements, longTasks: { count: p.long.length, total: p.long.reduce((a: number, b: number) => a + b, 0), max: Math.max(0, ...p.long) }, frames: { p99: frames[Math.min(frames.length - 1, Math.floor(frames.length * .99))], max: Math.max(...frames) }, traffic, listStarts, complete };
   result.measurements.push(m); save(); console.log(JSON.stringify(m));
 }
