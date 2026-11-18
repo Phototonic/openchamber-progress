@@ -1288,7 +1288,8 @@ document denial. The checks are not serialised with cleanup: an archive committi
 after the last check can still let the companion read the user's own bound document
 once. No further prompt is shown, and the write is refused if its transaction still
 sees the plan archived or deleted (an archive and restore that both commit between
-the last check and the write leave the plan reportable, so that report is accepted).
+the last check and the write do not by themselves cause a cleanup refusal; the write's
+other checks, such as a stale revision, still apply).
 Precedence is the same with or without a bound document and for a task-update
 handoff: an unverified source answers `source-unverified` (handoff), paused capture
 `disabled`, then cleanup `closed` or `not-found`.
