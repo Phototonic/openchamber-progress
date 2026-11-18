@@ -3,11 +3,12 @@
  * check: it only decides which groups may run side by side.
  *
  * The backend files that acquire target-derived Setup coordination ports stay in
- * one serial `--test-concurrency=1` invocation (see `scripts/ci-backend.ts`). They
- * spend most of their time waiting on deadlines and HTTP replies, and no other
- * group acquires those ports, so the other groups run beside them rather than
- * before them. */
-import { mkdirSync, readdirSync } from 'node:fs';
+ * one serial `--test-concurrency=1` invocation (see `scripts/ci-backend.ts`). It is
+ * a chain of requests, each starting a worker thread, with a few deliberate
+ * deadline waits, so it is bound by latency rather than by the number of cores. No
+ * other group acquires those ports (checked with a probe on the acquisition call),
+ * so the other groups run beside it rather than before it. */
+import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { availableParallelism } from 'node:os';
 import { backendTestCommands, nativeOnlyTests } from './ci-backend.ts';
@@ -15,24 +16,31 @@ import type { Lane } from './test-lanes.ts';
 
 export const testFiles = (dir: string) => readdirSync(dir).filter(f => f.endsWith('.test.ts')).sort().map(f => `${dir}/${f}`);
 
-/** Node's compile cache keeps V8's compiled code for each source it loads, keyed by
- * the source's content and the Node version, so a changed file is never served
- * stale. Every test file runs in its own process and the managed-step tests start a
- * worker per request, all loading the same modules: with the cache they compile
- * each module once. It sits in the ignored dependency folder, never in tracked or
- * packaged paths. A missing or unwritable folder only turns the cache off. */
-export function compileCacheEnv(root = process.cwd()): Record<string, string> {
+/** Node's compile cache keeps V8's compiled code for each source file it loads and
+ * checks it against the source's hash, so a changed file is recompiled, never
+ * served stale. Every test file runs in its own process and the managed-step tests
+ * start a worker per request, all loading the same modules: with the cache they
+ * compile each module once. Entries are keyed by file name and the fixtures run
+ * from fresh temporary folders, so a cache kept across runs only grows (about
+ * 30 MB a run); each run starts from an empty one instead. It sits in the ignored
+ * dependency folder, never in tracked or packaged paths. A missing or unwritable
+ * folder only turns the cache off. */
+export function freshCompileCache(root = process.cwd()): Record<string, string> {
   const directory = resolve(root, 'node_modules/.cache/agent-progress-compile');
-  try { mkdirSync(directory, { recursive: true }); } catch { return {}; }
+  try {
+    rmSync(directory, { recursive: true, force: true });
+    mkdirSync(directory, { recursive: true });
+  } catch { return {}; }
   return { NODE_COMPILE_CACHE: directory };
 }
 
-export function portableLanes(options: { fenced: boolean }): Lane[] {
-  const env = compileCacheEnv();
+export function portableLanes(options: { fenced: boolean; env?: Record<string, string> }): Lane[] {
+  const env = options.env ?? {};
   const backend = testFiles('tests/backend').filter(f => !nativeOnlyTests.includes(f.split('/').at(-1)!));
   const [parallel, serial] = backendTestCommands(backend);
-  // Leave two cores for the serial lane and the type checker; the lanes are
-  // short of waiting time, not of cores, and a starved timing test is a false failure.
+  // The serial group's chain keeps about two cores busy (its main thread and the
+  // workers it starts). Leave them free so its timing assertions keep their
+  // headroom, and run this lane under `nice` as well.
   const workers = `--test-concurrency=${Math.max(1, availableParallelism() - 2)}`;
   const withWorkers = (args: string[]) => [...args.slice(0, 2), workers, ...args.slice(2)];
   const node = (label: string, args: string[]) => ({ label, command: 'node', args, env });

@@ -6,7 +6,7 @@ import { eligibility, assetNames, validateReleaseNotes } from './release.ts';
 import { verifyCompanionEntry } from './companion-entry.ts';
 import { nativeOnlyTests } from './ci-backend.ts';
 import { runLanes } from './test-lanes.ts';
-import { portableLanes } from './test-plan.ts';
+import { freshCompileCache, portableLanes } from './test-plan.ts';
 import { buildAll, outputHashes, compareOutputs } from './build-all.ts';
 import { revisionKind, trackedOutputs } from './revision-kind.ts';
 
@@ -38,7 +38,7 @@ console.log(`Native-only tests NOT RUN: ${nativeOnlyTests.join(', ')}`);
 // Root and UI typechecks, the parallel backend group, and browser-model and
 // automation tests run beside the serial backend group that binds Setup ports.
 // Output is grouped per step and the first failure stops every lane.
-await runLanes(portableLanes({ fenced: true }));
+await runLanes(portableLanes({ fenced: true, env: freshCompileCache() }));
 buildAll();
 compareOutputs(before);
 // The SDK's own readiness check: manifest schema, page scripts and service entry.

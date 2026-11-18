@@ -1,7 +1,11 @@
 /** Runs independent groups of checks side by side. A lane is an ordered list of
  * steps that stop at the first failure; lanes share nothing but the checkout.
  * Output is captured per step and written whole when the step ends, so lines
- * from different lanes never interleave. The first failure stops every lane. */
+ * from different lanes never interleave. The first failure stops every lane, and
+ * so does SIGINT or SIGTERM: each step runs in its own process group, which a
+ * signal to this process would not otherwise reach, and a step left running
+ * would keep holding the Setup ports the next run needs. The output of steps
+ * still running is written before the runner exits. */
 import { spawn } from 'node:child_process';
 
 /** `lowPriority` runs the step under `nice`, so a lane that must keep its timing
@@ -22,7 +26,17 @@ function print(label: string, text: string, ok: boolean) {
 export async function runLanes(lanes: Lane[]): Promise<StepResult[]> {
   const results: StepResult[] = [];
   const children = new Set<number>();
+  const running = new Map<number, () => void>();
   let failed = false;
+  let interrupted: NodeJS.Signals | undefined;
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (interrupted) return;
+    interrupted = signal; failed = true;
+    for (const dump of running.values()) dump();
+    stopAll();
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   const stopAll = () => {
     for (const pid of children) { try { process.kill(-pid, 'SIGTERM'); } catch { /* already gone */ } }
     // A step that ignores SIGTERM must not outlive the run.
@@ -36,11 +50,14 @@ export async function runLanes(lanes: Lane[]): Promise<StepResult[]> {
     // Own process group, so stopping a step also stops the test files it started.
     const niced = step.lowPriority && process.platform !== 'win32';
     const child = spawn(niced ? 'nice' : step.command, niced ? ['-n', '10', step.command, ...step.args] : step.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, ...step.env } });
-    if (child.pid) children.add(child.pid);
+    if (child.pid) {
+      children.add(child.pid);
+      running.set(child.pid, () => print(label, `${Buffer.concat(chunks).toString('utf8')}Interrupted before it ended.\n`, false));
+    }
     child.stdout.on('data', chunk => chunks.push(chunk));
     child.stderr.on('data', chunk => chunks.push(chunk));
     const finish = (ok: boolean, note = '') => {
-      if (child.pid) children.delete(child.pid);
+      if (child.pid) { children.delete(child.pid); running.delete(child.pid); }
       const seconds = (performance.now() - started) / 1000;
       const status = ok ? 'passed' : failed ? 'stopped' : 'failed';
       if (!ok && !failed) { failed = true; stopAll(); }
@@ -58,8 +75,11 @@ export async function runLanes(lanes: Lane[]): Promise<StepResult[]> {
       if (!await runStep(lane, step)) break;
     }
   }));
+  process.off('SIGINT', onSignal);
+  process.off('SIGTERM', onSignal);
   console.log('\nStep timings');
   for (const r of results) console.log(`  ${r.status.padEnd(7)} ${stamp(r.seconds).padStart(7)}  ${r.lane}: ${r.label}`);
+  if (interrupted) throw new Error(`Portable check interrupted by ${interrupted}`);
   if (failed) throw new Error('Portable check failed');
   return results;
 }

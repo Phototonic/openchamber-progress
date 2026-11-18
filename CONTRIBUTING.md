@@ -103,23 +103,28 @@ concurrent writer. Keep new fenced HTTP/worker test files in the list in
 This isolates tests, not product requests; no port override or relaxed refusal
 is used.
 
-That serial group is the longest part of the run and mostly waits on deadlines
-and worker start-up, and no other group acquires Setup ports. `scripts/ci.ts`
+That serial group is the longest part of the run. It is one request after another,
+each starting a worker thread, plus a few deliberate deadline waits, so it is bound by
+latency rather than by cores; no other group acquires Setup ports (checked with a probe
+on the acquisition call). `scripts/ci.ts`
 and `bun run test:all` therefore run it in one lane beside a second lane that
 holds both typechecks, the parallel backend group and the browser-model and
 automation tests (`scripts/test-plan.ts`, `scripts/test-lanes.ts`). The second
 lane is capped at the machine's cores minus two and runs under `nice`, so the
 timing assertions in the serial group keep their headroom. Each step's output is printed whole under its
-own heading, the first failure stops both lanes, and the run ends with a
+own heading, the first failure (or Ctrl-C or a termination signal) stops both lanes and
+prints what the running steps had written, and the run ends with a
 per-step duration list. A file that takes a Setup port belongs in the serial
 group; never add one to the other lane.
 
 Both runners also turn on Node's compile cache for every step they start
 (`NODE_COMPILE_CACHE`, a folder under the ignored `node_modules/.cache/`). It keeps
-V8's compiled code per source, keyed by the source's content, so each test process and each
-request worker the managed-step tests start compiles a shared module once. It changes
-no test input and is safe to delete; a standalone `node --test` run does not use it
-unless you export the variable yourself.
+V8's compiled code per source file and checks it against the source's hash, so a changed
+file is recompiled rather than served stale, and each test process and each request
+worker the managed-step tests start compiles a shared module once. It changes no test
+input and is emptied at the start of every run (fixtures run from fresh temporary folders, so a
+kept cache only grows); a standalone `node --test` run does not use it unless you export the
+variable yourself.
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 

@@ -4,9 +4,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { backendTestCommands, nativeOnlyTests } from '../../scripts/ci-backend.ts';
-import { portableLanes } from '../../scripts/test-plan.ts';
+import { freshCompileCache, portableLanes } from '../../scripts/test-plan.ts';
 import { outputs } from '../../scripts/build-all.ts';
 
 test('package scripts that consume runtime entries build before invoking their readers',()=>{
@@ -57,7 +57,7 @@ test('portable backend groups isolate coordination ports without omitting or rep
     'setup-suggestions.test.ts','windows-service.test.ts',
   ]);
   const source=readFileSync('scripts/ci.ts','utf8');
-  assert.match(source,/await runLanes\(portableLanes\(\{ fenced: true \}\)\)/);
+  assert.match(source,/await runLanes\(portableLanes\(\{ fenced: true, env: freshCompileCache\(\) \}\)\)/);
 });
 
 test('portable lanes run every portable file once, keep the port-bound group serial and alone, and the fast loop drops only that group',()=>{
@@ -76,11 +76,6 @@ test('portable lanes run every portable file once, keep the port-bound group ser
   assert.equal(alone.length,1);assert.equal(alone[0].steps.length,1,'the port-bound group shares its lane with nothing that could take a port');
   assert.ok(!serial[0].lowPriority&&full.find(l=>l.steps.includes(serial[0]))!.steps.length===1,'the serial group never yields cores');
   assert.ok(full.flatMap(l=>l.steps).filter(s=>s!==serial[0]).every(s=>s.lowPriority),'the lane beside it yields cores to it');
-  // Every step shares one compile cache folder inside the ignored dependency folder, never a tracked path.
-  const caches=new Set(full.flatMap(l=>l.steps).map(s=>s.env?.NODE_COMPILE_CACHE));
-  assert.equal(caches.size,1);
-  assert.ok([...caches][0]?.endsWith(join('node_modules','.cache','agent-progress-compile')),'the cache lives under node_modules/.cache');
-  assert.equal(spawnSync('git',['check-ignore','-q',join('node_modules','.cache','agent-progress-compile','x')]).status,0,'git ignores the cache folder');
   // Every other test step is bounded by an explicit worker count rather than the host default.
   for(const step of every(full).filter(s=>s!==serial[0]))assert.ok(step.args.some(a=>/^--test-concurrency=[1-9]\d*$/.test(a)),step.label);
   assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files(serial).includes(f)));
@@ -88,6 +83,25 @@ test('portable lanes run every portable file once, keep the port-bound group ser
     const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
     assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),'both typechecks stay in every run');
   }
+});
+
+test('every step shares one compile cache folder that starts each run empty and stays out of tracked paths',()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-cache-'));
+  try {
+    const stale=join(root,'node_modules','.cache','agent-progress-compile','stale-entry');
+    mkdirSync(join(root,'node_modules','.cache','agent-progress-compile'),{recursive:true});writeFileSync(stale,'left by an earlier run');
+    const env=freshCompileCache(root);
+    assert.equal(env.NODE_COMPILE_CACHE,join(root,'node_modules','.cache','agent-progress-compile'));
+    assert.deepEqual(readdirSync(env.NODE_COMPILE_CACHE),[],'an earlier run leaves nothing behind');
+    for(const lanes of [portableLanes({fenced:true,env}),portableLanes({fenced:false,env})])
+      assert.deepEqual(new Set(lanes.flatMap(l=>l.steps).map(s=>s.env?.NODE_COMPILE_CACHE)),new Set([env.NODE_COMPILE_CACHE]),'every step, typechecks included, gets the folder');
+    // Without a cache folder, plans carry none: the plan tests above never touch a live cache.
+    assert.ok(portableLanes({fenced:true}).flatMap(l=>l.steps).every(s=>!s.env?.NODE_COMPILE_CACHE));
+    assert.equal(spawnSync('git',['check-ignore','-q',join('node_modules','.cache','agent-progress-compile','x')]).status,0,'git ignores the folder');
+    // An unusable location turns the cache off instead of failing the run.
+    writeFileSync(join(root,'blocked'),'a file where a folder is needed');
+    assert.deepEqual(freshCompileCache(join(root,'blocked')),{});
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('lane runner starts a yielding step at lower priority and an ordinary one at the usual priority',async()=>{
@@ -102,6 +116,34 @@ await runLanes([{name:'a',steps:[show('usual')]},{name:'b',steps:[show('yielding
     assert.equal(r.status,0,r.stderr);
     const seen=(label:string)=>Number(new RegExp(`=== ${label} ===\\nPRIORITY (-?\\d+)`).exec(r.stdout)?.[1]);
     assert.ok(seen('b: yielding')>seen('a: usual'),'the yielding step has the larger niceness');
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('lane runner stops every step when it is signalled, keeping their output and leaving no process behind',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-lanes-signal-'));
+  try {
+    const script=join(root,'lanes.ts');
+    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
+const hang=(label:string)=>({label,command:process.execPath,args:['-e',"console.log('CHILD-PID '+process.pid);setInterval(()=>{},1000)"]});
+try{await runLanes([{name:'a',steps:[hang('one')]},{name:'b',steps:[hang('two')]}]);}catch(error){console.log('REJECTED '+(error as Error).message);process.exit(1);}`);
+    const child=spawn(process.execPath,['--experimental-strip-types',script],{env:{...process.env,GITHUB_ACTIONS:''}});
+    let out='';child.stdout.on('data',c=>{out+=c;});
+    const exited=new Promise<number|null>(done=>child.on('close',code=>done(code)));
+    for(const end=Date.now()+10_000;!(/start  b: two/.test(out)&&/start  a: one/.test(out))&&Date.now()<end;)await new Promise(r=>setTimeout(r,25));
+    await new Promise(r=>setTimeout(r,500));
+    child.kill('SIGTERM');
+    const code=await Promise.race([exited,new Promise<string>(r=>setTimeout(()=>r('hung'),15_000))]);
+    assert.notEqual(code,'hung','the runner exits after the signal');
+    assert.equal(code,1);
+    assert.match(out,/REJECTED Portable check interrupted by SIGTERM/);
+    const pids=[...out.matchAll(/CHILD-PID (\d+)/g)].map(m=>Number(m[1]));
+    assert.equal(pids.length,2,'the output of both running steps is kept');
+    assert.match(out,/Interrupted before it ended/);
+    for(const pid of pids){
+      let alive=true;
+      for(const end=Date.now()+5000;alive&&Date.now()<end;){try{process.kill(pid,0);await new Promise(r=>setTimeout(r,50));}catch{alive=false;}}
+      assert.equal(alive,false,'a step outlives the runner');
+    }
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
