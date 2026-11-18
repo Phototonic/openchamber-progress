@@ -2,7 +2,7 @@
 
 ### Requirement: Possibly low counts are never shown as exact
 
-A positive count that an active reason can raise SHALL carry a plus mark directly after the number, in all three languages, whether or not the indicator is dismissed. A plus mark MUST NOT appear on zero, and MUST NOT appear on a count that no active reason can raise. A zero count SHALL have no badge. A count MUST NOT be shown as an exact positive number, and a zero MUST NOT be presented as a verified empty result, unless its own coverage is complete. When it cannot be shown that a reason leaves a count unaffected, that count SHALL stay marked.
+A positive count that an active reason can raise SHALL carry a plus mark directly after the number, in all three languages, dismissed or not. A plus mark MUST NOT appear on zero or on a count no reason can raise, and a zero count SHALL have no badge. A count MUST NOT be shown as an exact positive number, nor a zero as a verified empty result, unless its own coverage is complete. A count SHALL stay marked when no reason is shown to leave it unaffected.
 
 #### Scenario: Partial Needs you count
 - **WHEN** five items are known and some plans of the scope are unchecked
@@ -17,7 +17,7 @@ A positive count that an active reason can raise SHALL carry a plus mark directl
 - **THEN** only the first two rows show a count and the third shows no badge
 - **AND** a row whose plan's items were fully read shows its number without a plus mark, while a row whose plan may have more shows the plus
 
-#### Scenario: Sub-agent counts with incomplete recorded history
+#### Scenario: Partial sub-agent count
 - **WHEN** recorded history is only partly reconciled, while the host's current session list is complete and every recorded child is loaded
 - **THEN** the finished, failed, interrupted and unknown counts that are positive carry the plus mark
 - **AND** the running and waiting counts do not, because every currently active child is either recorded or listed by the host

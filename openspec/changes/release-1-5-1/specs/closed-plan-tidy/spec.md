@@ -113,7 +113,7 @@ Opening Tidy SHALL show an inline panel, not a modal, whose one short line state
 
 ### Requirement: Honest result with undo
 
-A run SHALL show one progress line with how many of the total are done and a Stop control. Its result SHALL be one line stating how many plans were archived or deleted and how many were skipped, and SHALL stay until the next action or refresh, not a timer. After Archive the result SHALL offer Undo, which restores each plan this run archived through the existing restore route. A deletion result MUST NOT offer Undo. Archive and Undo MUST NOT change a plan's lifecycle, counts or history. A plan SHALL be reported as done only when its receipt was validated, and a refused or unconfirmed plan MUST NOT be retried automatically.
+A run SHALL show a progress line of plans done, and Stop. Its result SHALL be one line counting plans archived or deleted and plans skipped, kept until the next action or refresh, not a timer. After Archive it SHALL offer Undo, restoring each plan it archived through the restore route; a deletion result MUST NOT offer Undo. Archive and Undo MUST NOT change a plan's lifecycle, counts or history. A plan SHALL be reported done only with its validated receipt; none SHALL be retried automatically.
 
 #### Scenario: All archived
 - **WHEN** 128 plans are archived

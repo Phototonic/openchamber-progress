@@ -2,7 +2,7 @@
 
 ### Requirement: Opening view fits the plan only when readable
 
-Once per reading, the map SHALL open showing the whole plan when the fit-all scale is at least the readability threshold of 70%. Otherwise it SHALL open at a readable zoom of 80% on current work. A coarse pointer SHALL keep its existing full-size opening zoom. Fit SHALL always show the whole plan. Opening MUST NOT select a task, move focus or repeat on polls. On a fine pointer the rail's map frame SHALL be at least 320 CSS pixels tall and SHALL grow with the plan's content at the readable zoom up to 60% of the rail's visible height.
+Once per reading, the map SHALL open on the whole plan when its fit-all scale is at least the 70% readability threshold, else at a readable 80% zoom on current work. A coarse pointer SHALL keep its full-size opening zoom. Fit SHALL always show the whole plan. Opening MUST NOT select a task, move focus or repeat on polls. On a fine pointer the rail's map frame SHALL be at least 320 CSS pixels tall and grow with the plan's content at the readable zoom up to 60% of the rail's visible height.
 
 #### Scenario: Plan fits readably
 - **WHEN** the whole plan fits the frame at 70% or more
@@ -41,7 +41,7 @@ Once per reading, the map SHALL open showing the whole plan when the fit-all sca
 - **WHEN** 60% of the rail's visible height is less than 320 CSS pixels
 - **THEN** the map frame is 320 CSS pixels tall
 
-#### Scenario: Board and coarse-pointer frame height
+#### Scenario: Frame height
 - **WHEN** the plan's content is shorter than the frame's maximum on the board, or the pointer is coarse on either surface
 - **THEN** the frame shrinks to the content, up to 64% of the viewport height on the board with a fine pointer and up to 300 CSS pixels with a coarse pointer
 
