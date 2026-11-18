@@ -1,0 +1,168 @@
+# large-library-responsiveness Specification
+
+## Purpose
+Keep the full page responsive and its plan list scrollable with a large plan library, without changing the facts shown, the read routes or the polling cadence.
+
+## Requirements
+
+### Requirement: The full page stays responsive with a large library
+
+With the reference library of 500 loaded plans, a background refresh on the full page SHALL stay within the release budget. A refresh that changes nothing shown MUST NOT rebuild the page, and the work of one refresh MUST NOT grow with the number of plan rows multiplied by the number of held Needs you items. The rail SHALL stay as responsive as before.
+
+#### Scenario: Idle page with nothing reported
+- **WHEN** the full page shows the reference library with a 60-task map open and no report arrives for 16 seconds
+- **THEN** main-thread tasks longer than 50 ms total at most 1,000 ms and none is longer than 250 ms
+
+#### Scenario: Selecting another plan
+- **WHEN** the user selects another loaded plan whose detail is not cached
+- **THEN** its complete detail and map are shown within 1,500 ms
+
+#### Scenario: Small library
+- **WHEN** the full page shows a library of about ten plans with the same map
+- **THEN** no main-thread task longer than 50 ms occurs while idle, as before the change
+
+#### Scenario: Rail
+- **WHEN** the rail shows the same map over the reference library, idle or during a map gesture
+- **THEN** no main-thread task longer than 50 ms occurs and the 99th-percentile frame gap is at most 50 ms
+
+#### Scenario: Budget missed
+- **WHEN** a measured figure exceeds its budget after the change
+- **THEN** the figure is reported with the baseline and the change is not released as meeting this requirement until the design is amended
+
+### Requirement: Map gestures are not stalled by refreshes
+
+On the full page, dragging, wheel panning and zooming the map SHALL stay smooth while background refreshes run. A refresh that does not change the selected plan's picture MUST NOT end the gesture, move the view or recompute the layout.
+
+#### Scenario: Dragging the map
+- **WHEN** the user drags the map with 150 pointer moves across several refreshes on the reference library
+- **THEN** the 99th-percentile frame gap is at most 150 ms and main-thread tasks longer than 50 ms total at most 1,000 ms
+
+#### Scenario: Wheel panning
+- **WHEN** the user pans with 120 wheel events across several refreshes
+- **THEN** the 99th-percentile frame gap is at most 150 ms
+
+#### Scenario: Keyboard zoom
+- **WHEN** the user zooms with thirty key presses
+- **THEN** no main-thread task is longer than 250 ms and the view ends at the zoom the keys asked for
+
+### Requirement: Scrolling the plan list survives refreshes
+
+The plan list's scroll container SHALL remain the same connected element across background refreshes, so a scrollbar drag, wheel or touch scroll in progress continues. Freshness MUST NOT be deferred without bound to protect a gesture, and a change of store, account, binding or board reading SHALL still replace the list at once.
+
+#### Scenario: Dragging the scrollbar across refreshes
+- **WHEN** the user drags the plan list's scrollbar with a mouse for longer than two refresh cycles on a list taller than its frame
+- **THEN** the list follows the pointer for the whole drag and reaches at least 90% of the distance the same drag reaches with refreshes paused
+
+#### Scenario: Release outside the frame
+- **WHEN** the mouse button is released outside the frame
+- **THEN** the drag ends and the next refresh paints normally
+
+#### Scenario: A plan changes during the drag
+- **WHEN** a plan's reported progress changes while the scrollbar is being dragged
+- **THEN** its row shows the new state without ending the drag
+
+#### Scenario: Authority changes during the drag
+- **WHEN** the store, account, binding or board reading changes during the drag
+- **THEN** the retired list is replaced at once and none of its rows stays actionable
+
+### Requirement: Faster painting shows the same facts
+
+Reused derived results SHALL give the same shown plans, order, grouping, selection, filter choices and per-plan Needs you counts as direct evaluation, and SHALL be recomputed whenever an input they depend on changes. They MUST NOT be keyed on the progress revision alone. Duplicate-identifier ambiguity, source trust and worktree placement rules MUST NOT be weakened.
+
+#### Scenario: Equal results
+- **WHEN** the fixture library is painted with reused results and evaluated directly
+- **THEN** the shown plans, their order and groups, the selection and each plan's Needs you count are identical
+
+#### Scenario: Live membership changes without a new report
+- **WHEN** a session or worktree appears or disappears while no plan revision changes
+- **THEN** the affected plans move to their new project or worktree group on the next paint
+
+#### Scenario: Other inputs change
+- **WHEN** the binding or source trust, a filter, the current or archived view, the search run or the interface language changes
+- **THEN** the next paint shows the plans, groups, choices and labels for the new value
+
+#### Scenario: An item is hidden on this device
+- **WHEN** the user hides a Needs you item
+- **THEN** that plan's row count drops on the next paint
+
+#### Scenario: Same identifier in two sources
+- **WHEN** two sources hold plans or sessions with equal identifiers
+- **THEN** each plan keeps its own source's placement and neither borrows the other's session title or project
+
+### Requirement: No new polling or larger reads
+
+The change MUST NOT add a timer, a polling loop, a route or a service capability, and MUST NOT raise the number or size of reads a refresh sends.
+
+#### Scenario: Idle traffic
+- **WHEN** the full page idles on the reference library
+- **THEN** each refresh sends no more than ten list pages, one health read, one inbox window and one runs page, as before the change
+
+#### Scenario: Hidden frame
+- **WHEN** the frame is hidden
+- **THEN** it sends nothing and paints nothing, as before the change
+
+### Requirement: Idle traffic is counted by when and in what order it was sent
+
+The release gate's idle-traffic comparison SHALL count only requests sent inside the timed window, taken from the request log in the order they were sent. List pages and inbox requests SHALL be kept with the refresh whose first list page precedes them. Run reads SHALL be counted per window and shown as not compared per refresh, because the log cannot show which refresh caused one. Health reads SHALL be judged by cadence only. These checks change no shipped behaviour.
+
+#### Scenario: Request logged after the window ends
+- **WHEN** a first-page list request is logged after the timed window stopped and before the driver read its logs
+- **THEN** it is not counted as a list start of that window and does not close the refresh that was still open
+
+#### Scenario: Run read sent after the next refresh started
+- **WHEN** a run read is sent after the next refresh's first list page, as the automatic follow-up of a run reconciliation can be
+- **THEN** it is counted in the window's run-read count, which the artifact records
+- **AND** it adds nothing to either refresh's per-refresh figures and is not lost with the final open refresh
+
+#### Scenario: Run read before the window's first list start
+- **WHEN** a run read is sent inside the window before the window's first list page, because the refreshes around it started before the window
+- **THEN** it is counted in the window's run-read count and is not dropped
+
+#### Scenario: Health read before its list page
+- **WHEN** a refresh reads health before its first list page
+- **THEN** that health read is not added to the previous refresh's traffic
+
+#### Scenario: Inbox request across a window edge
+- **WHEN** a standalone inbox request is sent before the window and answered inside it, and another is sent inside the window and answered after it
+- **THEN** only the second is counted in the window's inbox split, by when it was sent
+- **AND** per-refresh verdicts still rest on complete refreshes: a request of the refresh left open at the window's end changes no per-refresh verdict, like that refresh's list pages
+
+#### Scenario: Reply-ordered attribution is caught
+- **WHEN** attribution is changed to follow the order replies arrived
+- **THEN** a unit test fails
+
+### Requirement: The gate reports what it cannot compare
+
+An artifact SHALL record how it attributed traffic and SHALL keep the wall-clock split of both inbox request forms. The gate SHALL compare the inbox form carried by the list read on its own as well as in the combined figure. A budget the gate cannot compare SHALL be reported as unverified and MUST NOT be reported as passed. That includes a per-refresh budget whose baseline and candidate figures do not rest on the same denominator.
+
+#### Scenario: Older artifact that bucketed replies
+- **WHEN** the baseline artifact was produced by a driver that attributed replies instead of requests
+- **THEN** the gate names the difference and does not treat the two as equivalent complete samples
+
+#### Scenario: Window with one list start
+- **WHEN** an idle window holds a single list start, so no refresh completed inside it
+- **THEN** the artifact still carries the wall-clock split of both inbox forms, and the form carried by the list read is still compared per list start
+- **AND** no per-refresh budget is compared between that artifact's wall-clock figure and another artifact's complete refreshes
+
+#### Scenario: Extra boundary request on the standalone form
+- **WHEN** a baseline counts one more standalone inbox request than list starts, and a candidate adds one inbox window carried by the list read
+- **THEN** the comparison of the form carried by the list read fails
+
+#### Scenario: No comparable baseline
+- **WHEN** the baseline, or all but one candidate, lacks the inbox split
+- **THEN** the combined inbox budget is reported as unverified, the gate reports neither a pass nor a failed budget for it, and it exits unsuccessfully naming that state
+- **AND** the comparisons that can be made still run
+
+#### Scenario: Mixed denominators
+- **WHEN** the baseline completed no refresh inside its window, so its list-page figure rests on wall-clock counts, and the candidates' figures rest on complete refreshes
+- **THEN** the per-refresh budgets are reported as unverified and the gate exits unsuccessfully naming that state
+- **AND** a candidate that reads eleven list pages per refresh is not passed against a wall-clock baseline figure of nineteen
+
+#### Scenario: Per-refresh run-read budget
+- **WHEN** the gate compares a baseline and candidates in the current artifact format
+- **THEN** it shows each window's run-read count beside its list starts as a row that is not compared, and that row alone does not change the exit status
+- **AND** it does not judge those counts as a budget
+
+#### Scenario: Wrong denominator is caught
+- **WHEN** the gate divides by health replies where it should divide by list starts
+- **THEN** a unit test fails

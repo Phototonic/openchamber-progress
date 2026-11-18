@@ -2,7 +2,7 @@
 
 ### Requirement: Honest bounded inbox reads
 
-Inbox reads SHALL be read-only, bounded and continuable through every eligible task. A positive count SHALL be shown as exact only with complete coverage of what it counts and otherwise SHALL carry a plus mark. A zero count MUST NOT carry a plus mark or a badge; while coverage is incomplete it SHALL show no number and MUST NOT be presented as a verified empty result. This rule SHALL govern every Needs you count on every surface and scope, including the count on each board plan row. Continuation MAY run automatically within the existing per-window bounds, at most one window per existing refresh cycle and a fixed number per traversal. Refresh SHALL add no polling loop, per-task polling, notification or inference.
+Inbox reads SHALL be read-only, bounded and continuable through every eligible task. On every surface and scope, including each board plan row, a positive Needs you count SHALL be exact only with complete coverage of what it counts and otherwise carry a plus mark. A zero count MUST NOT carry a plus mark or a badge; while coverage is incomplete it SHALL show no number and MUST NOT be presented as a verified empty result.
 
 #### Scenario: Eligible task beyond the first read window
 - **WHEN** bounded traversal has found some items and has not reached an eligible task yet
@@ -32,3 +32,13 @@ Inbox reads SHALL be read-only, bounded and continuable through every eligible t
 #### Scenario: Hidden frame
 - **WHEN** a frame is hidden while its inbox is incomplete
 - **THEN** it requests no continuation and discards any reply still in flight
+
+## ADDED Requirements
+
+### Requirement: Automatic inbox continuation adds no polling
+
+Continuation MAY run automatically within the existing per-window bounds, at most one window per existing refresh cycle and a fixed number per traversal. Refresh SHALL add no polling loop, per-task polling, notification or inference.
+
+#### Scenario: Refresh of an incomplete inbox
+- **WHEN** a refresh runs while the inbox is incomplete
+- **THEN** it starts no polling loop, per-task polling, notification or inference beyond the bounded continuation
