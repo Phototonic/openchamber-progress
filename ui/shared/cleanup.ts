@@ -119,11 +119,14 @@ export interface TidyState {
 export function tidyEligible(plan: CleanupPlan, archived = false) {
   return cleanupClosed(plan) && (plan.cleanup?.state === 'archived') === archived;
 }
-/** Use a loaded list only when its scope is complete; otherwise use CleanupScan. */
-export function tidyConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived = false): TidyConfirmation {
+/**
+ * Use a loaded list only when its scope is complete; otherwise use CleanupScan. `unverified`: the list was
+ * read in several pages, so a plan that crossed a page boundary may be missing from it.
+ */
+export function tidyConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived = false, unverified = false): TidyConfirmation {
   const eligible = plans.filter(p => tidyEligible(p, archived));
   return { context, archived, total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT,
-    targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)) };
+    targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)), ...(unverified ? { unverified: true } : {}) };
 }
 export interface CleanupScanPage {
   plans: CleanupPlan[];
@@ -220,8 +223,12 @@ export class PlanSelection {
   private known = new Map<string, CleanupPlan>();
   private chosen = new Set<string>();
   private omitted = new Set<string>();
-  /** Plans a cleanup receipt took out of scope: not a user choice, so a plan back in scope is selected again. */
-  private departed = new Set<string>();
+  /**
+   * Plans a cleanup receipt (or a freshness reply) took out of scope: not a user choice, so a plan back in
+   * scope is selected again. The value is the cleanup generation that took the plan out; null when there is
+   * none to compare, and then only the other rules end the departure.
+   */
+  private departed = new Map<string, number | null>();
   private partial = false;
   private plans: CleanupPlan[] | null = null;
   private fresh = true;
@@ -231,7 +238,7 @@ export class PlanSelection {
     // Only rows the rule actually selects: not user exclusions, not receipt departures kept in a cached page.
     let out = 0;
     for (const k of this.omitted) if (this.known.has(k)) out++;
-    for (const k of this.departed) if (this.known.has(k) && !this.omitted.has(k)) out++;
+    for (const k of this.departed.keys()) if (this.known.has(k) && !this.omitted.has(k)) out++;
     this.selectedCount = this.known.size - out;
   }
   /** `fresh`: the plans are verified membership (a list read, a checked search page), not a cached page. */
@@ -265,12 +272,22 @@ export class PlanSelection {
     this.recount();
     this.version++;
   }
-  forget(keys: string[]) {
-    if (!keys.length) return;
-    for (const key of keys) {
+  /**
+   * Plans left the view. A map carries the cleanup generation that took each one out (a receipt's, or the
+   * freshness row that showed it gone); bare keys have none, so a count never takes them back by generation.
+   */
+  forget(departures: Iterable<string> | ReadonlyMap<string, number | null>) {
+    // Map by its tag, not instanceof: the page hooks run in other realms.
+    const entries: [string, number | null][] = Object.prototype.toString.call(departures) === '[object Map]' ? [...(departures as ReadonlyMap<string, number | null>)] : [...(departures as Iterable<string>)].map(key => [key, null]);
+    if (!entries.length) return;
+    for (const [key, generation] of entries) {
       this.known.delete(key); this.chosen.delete(key);
       // A Select all rule must not keep a departed plan pressed or target it in a later scan.
-      if (this.all) this.departed.add(key);
+      if (this.all) {
+        const had = this.departed.get(key);
+        // The newest departure decides; one with no generation to compare stays that way.
+        this.departed.set(key, had === undefined ? generation : had === null || generation === null ? null : Math.max(had, generation));
+      }
     }
     this.recount();
     this.version++;
@@ -282,14 +299,22 @@ export class PlanSelection {
     if (any) { this.recount(); this.version++; }
   }
   snapshot(): SelectionRequest {
-    const all = this.all, chosen = new Set(this.chosen), omitted = new Set([...this.omitted, ...this.departed]);
+    const all = this.all, chosen = new Set(this.chosen), omitted = new Set(this.omitted), departed = new Map(this.departed);
     return { all, plans: [...this.known.values()].filter(p => this.has(p.key)),
-      includes: p => all ? !omitted.has(p.key) : chosen.has(p.key) };
+      // A departed plan is counted again only where the view shows it at a newer cleanup generation than took it out.
+      includes: p => {
+        if (!all) return chosen.has(p.key);
+        if (omitted.has(p.key)) return false;
+        const left = departed.get(p.key);
+        return left === undefined || (left !== null && (p.cleanup?.revision ?? 0) > left);
+      } };
   }
 }
 export interface SelectionRequest {
   scope?: string;
   all: boolean;
+  /** Try again after a run: names the plans it left, looked up among the loaded rows. */
+  recount?: boolean;
   plans: CleanupPlan[];
   includes: (plan: CleanupPlan) => boolean;
 }
@@ -301,13 +326,13 @@ export function selectionTargets(c: TidyConfirmation, action: CleanupAction, act
   const targets = exclude ? c.targets.filter(cleanupClosed) : c.targets;
   return { ...c, selection: action, activeCount, excludedActive, targets, total: targets.length, deleting: action === 'delete' };
 }
-export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean) {
+export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean, unverified = false) {
   const matching = plans.filter(p => (p.cleanup?.state === 'archived') === archived);
   const exclude = action !== 'restore' && !active;
   const eligible = exclude ? matching.filter(cleanupClosed) : matching;
   return selectionTargets({ context, archived, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)),
     excludedActive: matching.length - eligible.length,
-    total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT }, action, active);
+    total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT, ...(unverified ? { unverified: true } : {}) }, action, active);
 }
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
  * Selection explicitly opts into active targets; Tidy never does. `admit` is asked right before each

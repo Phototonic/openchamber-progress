@@ -271,9 +271,16 @@ interface Run {
   status: { id: number; message: SearchStatus | null };
 }
 
+/**
+ * Plans a freshness reply showed gone (missing, deleted or across the archive boundary), each with the cleanup
+ * generation of the row that showed it; null when the reply holds no such generation (the plan no longer exists).
+ */
+export type GonePlans = ReadonlyMap<string, number | null>;
 export interface SearchHost {
   /** Guarded proxy: a retired caller can no longer send requests. */
   service: (current: () => boolean) => ServiceHost;
+  /** A frame-wide selection follows these plans out, whichever result page is shown. Called before `changed`. */
+  gone?: (plans: GonePlans) => void;
   /** Repaint request after a state change. */
   changed: () => void;
   visible: () => boolean;
@@ -351,6 +358,8 @@ export class SearchController {
    * out of date with Refresh search (cleanup, list eviction). A held reply can no longer act.
    */
   retire(reason: 'retired' | 'identity' = 'retired') {
+    // A freshness read already sent belongs to what was retired, also when the run was retired before.
+    this.freshness++;
     const r = this.run;
     if (!r) return;
     this.gate.retire();
@@ -378,6 +387,8 @@ export class SearchController {
     if (!r || r.busy || r.blocked || !this.continuable(r)) return;
     if (r.view !== r.pages.length - 1) { r.view = r.pages.length - 1; r.checked = false; }
     if (r.pages[r.view].length >= SEARCH_PAGE) {
+      // A new page is certified by a reply that covered its own plans, whatever the page before it was.
+      r.checked = false;
       r.pages.push([]);
       if (r.pages.length > SEARCH_PAGES) { r.pages.shift(); r.firstPage++; }
       r.view = r.pages.length - 1;
@@ -454,8 +465,9 @@ export class SearchController {
     const current = () => !this.disposed && this.run === r && generation === this.freshness && this.host.visible();
     if (!r || !keys.length || !current()) return { state: 'retired' };
     const rows = [];
-    // The keys above belong to the page shown now; a reply is evidence for that page only.
-    const view = r.view;
+    // The keys above belong to the page shown now; a reply is evidence for that page only, identified by its
+    // number in the run: retained pages shift when Load more drops the oldest, so a position is not an identity.
+    const asked = r.firstPage + r.view;
     let captureEnabled = true;
     let firstInbox: InboxFirst | undefined;
     for (let i = 0; i < keys.length; i += STATE_KEYS) {
@@ -471,11 +483,16 @@ export class SearchController {
       rows.push(...result.state.data);
     }
     let gone = 0, moved = 0, reselect = false;
+    const departures = new Map<string, number | null>();
     for (const row of rows) {
       const key = `${row.source}/${row.plan}`;
       const known = this.planOf(r, key);
       if (!known) continue;
-      if (!row.exists || row.cleanup.state === 'deleted' || (row.cleanup.state === 'archived') !== r.criteria.archived) { this.drop(r, key); gone++; continue; }
+      if (!row.exists || row.cleanup.state === 'deleted' || (row.cleanup.state === 'archived') !== r.criteria.archived) {
+        // The generation of the row that showed it gone; none when the plan no longer exists.
+        departures.set(key, row.exists && row.cleanup.state !== 'deleted' ? row.cleanup.revision : null);
+        this.drop(r, key); gone++; continue;
+      }
       if (row.revision !== known.revision || row.cleanup.revision !== known.cleanup.revision) {
         if (!r.changed.has(key)) moved++;
         r.changed.add(key);
@@ -484,8 +501,13 @@ export class SearchController {
         if (s?.key === key && (s.plan.revision !== row.revision || s.plan.cleanup.revision !== row.cleanup.revision)) { r.selected = { key, plan: { ...s.plan, revision: row.revision!, cleanup: { state: row.cleanup.state, revision: row.cleanup.revision } } }; reselect = true; }
       }
     }
+    // A selection held by the frame follows a plan out whichever page is shown, so it hears of every one.
+    if (departures.size) this.host.gone?.(departures);
     // Repaint only on a change: an unchanged poll leaves the DOM (focus, scroll, selection) alone.
-    const covers = r.view === view;
+    // The page shown now is certified only when it is the page asked about and every plan it shows was covered:
+    // a search still running can append hits the reply could not have seen.
+    const covered = new Set(rows.map((row) => `${row.source}/${row.plan}`));
+    const covers = r.firstPage + r.view === asked && r.pages[r.view].every((h) => covered.has(h.plan.key));
     const checked = covers && !r.checked && rows.length > 0;
     if (covers && rows.length) r.checked = true;
     if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) }; }
@@ -511,7 +533,8 @@ export class SearchController {
       busy: r.busy, stop: r.stop, failure: r.failure, exhausted: r.exhausted && !r.buffer.length,
       counts: { matchedPlans: r.matchedPlans, matchingTasks: r.matchingTasks }, countsCurrent: r.countsCurrent,
       coverage: { gapped: r.gapped, skippedRecords: r.skippedRecords, reasons: [...r.reasons] }, windows: r.windows,
-      page: { number: r.firstPage + r.view, hits, groups, contextRows: context.size, checked: r.checked },
+      // A page that shows no plan has nothing to check; derived from the hits each time, never stored.
+      page: { number: r.firstPage + r.view, hits, groups, contextRows: context.size, checked: r.checked || hits.length === 0 },
       hasPrevious: r.view > 0, hasNext: r.view < r.pages.length - 1,
       more: r.buffer.length > 0 || !r.exhausted,
       removed: r.removed, changedKeys: r.changed.size,
