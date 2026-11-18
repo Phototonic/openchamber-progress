@@ -1062,6 +1062,17 @@ for the parent's next observed qualifying call, not an inserted message or turn.
 No hook performs a missing-plan query, document read or progress mutation.
 Both system-forwarding and system-dropping providers get the checklist via the
 short report description; result notes do not depend on plugin system text.
+The owned system section is the fixed guidance only and stays byte-identical across
+requests, so it does not defeat a provider's prompt cache. The context hook adds
+the one-request hint, the resume capsule and the refusal note after the content
+of the request's latest message instead, on a copy of that message so the stored
+conversation is unchanged: a text part on a user message, the output of the last
+tool result on a tool message (native-proven string or content-array shapes, as for
+result notes; the Code Mode wrapper result stays the script's exact value, so a hint
+raised by an inner call waits for the next valid carrier), and nothing on any other
+role or shape, where the hint stays pending, an armed capsule stays armed and the
+refusal is read again on the next request.
+Providers that drop plugin system sections therefore receive these notes too.
 The context section and inline/packaged skill share that checklist. The listing
 line names the plan/dispatch load boundary; detailed operation help stays in the
 skill. Description budgets are 4,096 overall and 2,048 through the first example.
@@ -1136,7 +1147,7 @@ bun run typecheck
 
 The separately selected native `progress resume` case on OpenCode **2.2.2** loads the real production
 plugin with direct synthetic Store seeding, not an installer. It captures actual
-outgoing recovery from system parts with a credential-free scripted AISDK provider,
+outgoing recovery from the latest message with a credential-free scripted AISDK provider,
 fresh HOME/XDG and a rootless loopback-only network namespace. Source and built
 commands are in [compatibility](compatibility.md#progress-resume-capsule-verification).
 Proof includes a changed current revision, unconfirmed candidates, assigned child,
@@ -1513,7 +1524,8 @@ declaration evidence suppresses old
 refusals, as do bounded current assignments covering all refused tasks through
 linked children at a later revision; archived/deleted plans and
 disabled/unverified contexts expose none.
-The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
+The refreshed coordinator note, carried on the latest message and not in the
+system section, is capped at 4 KiB, uses fixed reasons
 and explicitly marks omissions, including an empty incomplete result. It is
 advisory and read-only: recovery requires
 an intentional fresh declaration or verified explicit link, never an automatic

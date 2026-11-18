@@ -549,7 +549,12 @@ no protocol/schema version, persisted field, read behavior or permission change.
 ## Advisory activation does not change the protocol
 
 The companion can add one owned section to an eligible outgoing primary context
-and one conditional possible-plan-file hint. Neither is a report receipt, plan,
+and one conditional possible-plan-file hint. The section is the fixed activation
+guidance only: its text never changes within a session and is byte-identical on
+every request where it is present, so it does not defeat a provider's prompt
+cache. Everything that varies per request (the one-request hint, the sub-agent
+resume capsule and the delegation refusal note) is carried on the latest message
+of that request instead, as described below. Neither is a report receipt, plan,
 assignment, review/acceptance, capture, or completion event. Existing explicit
 `agent_progress_report` operations, source-optional inputs, transactional control,
 authorization and outputs remain unchanged. Hidden/restricted tools are never
@@ -574,8 +579,8 @@ checks are repeated after awaited lookups; recipient flags publish synchronously
 
 The same process-local bounded state may coalesce three advisory reasons: possible
 plan write, native dispatch and tracker mutation. At most one conditional hint is
-added to the recipient's owned context section, consumed on eligible delivery,
-not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
+added after the content of the latest message of the recipient's next eligible
+request, consumed on delivery, not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
@@ -587,6 +592,24 @@ directory or a root/worktree directory listed by the host for that same project.
 Only lexical path and host metadata are used: no file, folder or repository
 metadata is read. A missing, failing, malformed or timed-out worktree list
 declines cross-directory observation and relay.
+
+Request-only text (the one-request hint, the resume capsule and the delegation
+refusal note, with their text and eligibility unchanged) is added for that request
+only, after the content of the request's latest message, in a carrier valid for
+that message's role. On a user message it is a text part after the content. On a
+tool message, the continuation after a tool call such as a plan-file write, a
+separate part is not valid, so it is appended to the output of the message's last
+tool result: the carrier the completed-result note below uses, with the same
+shape limits (a native-proven string or content-array result). The Code Mode
+wrapper (`execute`) result is the exact value its script returned and never
+carries the text. Any other role or shape has no valid carrier, and the text
+waits for the next request that has one; the hint stays pending, an armed capsule
+stays armed and the refusal is read again then, never dropped. The standing
+assigned-child brief and refusal note are read again on every request, so they
+ride any ordinary tool continuation, not only the tools that receive result notes. The message and part are copied: the stored conversation never
+carries the text, so a request rebuilt from history is identical up to its latest
+message and a reused host array loses a stale note. The text is therefore
+delivered even to providers that drop plugin system sections.
 
 Hints also travel in completed tool results, independently of forwarded system
 text. The latest verified eligible context must expose both the report tool and
@@ -601,7 +624,10 @@ parent on the parent's next qualifying call, including the returning dispatch.
 No plan-presence lookup suppresses notes on already-mirrored work.
 Code Mode inner calls still raise context hints, but receive no result note:
 they are absent from the direct tool inventory, and native proof shows their
-content note is lost on the way back to the script/model. Structured-only
+content note is lost on the way back to the script/model. Their hint cannot ride
+the wrapper's own result either, so it is delivered on the next request whose
+latest message is a valid carrier, usually the next user message, not on the
+continuation of that call. Structured-only
 results likewise stay unchanged. Neither carrier reports or grants authority.
 
 The dispatch hint conditionally asks coordinators of planned or multi-step work
@@ -640,7 +666,8 @@ than broaden history. Hints conditionally ask about unreported canonical state,
 never assert work start, review/owner approval, assignment or completion, and never
 map issue state to plan status. No receipt correlation or compliance promise exists.
 
-Recovery is an optional addition inside that same owned section, only after a
+Recovery is an optional request-only addition on the latest message, never part
+of the owned section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end
 must pair for the same session/source. Hook/start callback delivery order is not
@@ -654,7 +681,9 @@ precomputation or arbitrarily inverted durable streams. A start or hook alone is
 Accepted terminals retire open evidence; failure clears pending recovery.
 The first following primary context attempt consumes pending and incomplete
 evidence before awaits, retaining a creation-time fence against delayed backfill even if
-delivery safely declines. Ordinary turns and uncompacted resumes do no recovery
+delivery safely declines. The one exception is a request whose latest message has no
+valid carrier: it performs no lookup and leaves the pending completion armed for the
+next request that has one. Ordinary turns and uncompacted resumes do no recovery
 lookup and retain today's eligible generic guidance. Failed compactions retire
 pending recovery; title/generate and summarization requests receive no capsule.
 Observation never reads summary text or changes compaction inputs or `result`.
@@ -1930,8 +1959,10 @@ structure, not implementation completion or approval. Review and owner approval
 are separate; reflect only existing canonical gate/work items, never invent review
 tasks. Dispatch is not work start. No file or automatic per-turn report is required.
 No custom instructions or provider-specific branch is needed. System-dropping
-providers retain tool definitions and result notes; providers forwarding system
-text retain the owned section too. Clients can still omit/truncate descriptions
+providers retain tool definitions, result notes and the request-only hint,
+capsule and refusal note on the latest message; providers forwarding system
+text retain the owned section too, which stays identical across requests so it
+does not defeat a provider's prompt cache. Clients can still omit/truncate descriptions
 below the supported budget; delivery does not
 guarantee reporting or model compliance.
 

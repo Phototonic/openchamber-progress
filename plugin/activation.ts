@@ -33,17 +33,58 @@ function noteText(reasons: number) {
       ? 'Agent Progress note (agent_progress_report): If you coordinate planned work without a mirror, start one with op=start; declare op=delegate before the next dispatch, or op=link for verified returned children. Already-current state needs no report; dispatch is not work start or assignment.'
       : 'Agent Progress note (agent_progress_report): If this is tracked plan work with meaningful unreported canonical state, mirror only work you own or are authorized to coordinate. A tracker update is not a progress report or evidence of work start, approval or completion.';
 }
+/** Native-proven content carriers only: a string, or text/file parts. Anything else is left untouched. */
+function appended(content: unknown, text: string): string | any[] | undefined {
+  if (typeof content === 'string') return `${content}\n\n${text}`;
+  if (Array.isArray(content) && content.every(part => record(part) && (part.type === 'text' && typeof part.text === 'string' || part.type === 'file' && typeof part.uri === 'string' && typeof part.mime === 'string'))) {
+    return [...content, { type: 'text' as const, text }];
+  }
+}
 function notedResult(result: Extract<ToolHooks['execute.after'], { status: 'completed' }>['result'], text: string) {
   // Only native-proven content carriers. Structured-only and unknown shapes
   // stay untouched: content can otherwise replace the host's output projection.
-  const content = result.content;
-  if (typeof content === 'string') return { ...result, content: `${content}\n\n${text}` };
-  if (Array.isArray(content) && content.every(part => record(part) && (part.type === 'text' && typeof part.text === 'string' || part.type === 'file' && typeof part.uri === 'string' && typeof part.mime === 'string'))) {
-    return { ...result, content: [...content, { type: 'text' as const, text }] };
-  }
+  const content = appended(result.content, text);
+  if (content !== undefined) return { ...result, content };
 }
 function hintText(reasons: number) {
   return [reasons & PLAN ? PLAN_OBSERVATION : '', reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : '', reasons & TRACKER ? TRACKER_OBSERVATION : '', HINT_CONDITION].filter(Boolean).join(' ');
+}
+
+/**
+ * Where request-only text can ride on the latest message of a request, chosen
+ * by its role. A user message takes a text part after its content. A tool
+ * message, the continuation after a tool call, takes the text on the output of
+ * its last tool result: a separate part is not valid there, and this is the
+ * carrier the completed-result note already uses, so it has the same shape
+ * limits (a string, or text/file parts). The Code Mode wrapper's result is the
+ * exact structured value its script returned and never carries a note. Any
+ * other role, shape or result has no valid carrier. The stored message is never
+ * changed; the returned copy remembers its original so a reused host array can
+ * be restored.
+ */
+const CODE_MODE_TOOL = 'execute';
+const restored = Symbol('agent-progress-note');
+function carrier(messages: unknown): { index: number; apply: (text: string) => Record<string, any> } | undefined {
+  if (!Array.isArray(messages) || !messages.length) return;
+  const index = messages.length - 1, message = messages[index];
+  if (!record(message) || !Array.isArray(message.content)) return;
+  const copy = (content: unknown[]) => {
+    const value = Object.assign(Object.create(Object.getPrototypeOf(message)), message, { content });
+    Object.defineProperty(value, restored, { value: message });
+    return value;
+  };
+  if (message.role === 'user') return { index, apply: text => copy([...message.content, { type: 'text', text }]) };
+  if (message.role !== 'tool') return;
+  const at = message.content.findLastIndex((part: unknown) => record(part) && part.type === 'tool-result');
+  const part = message.content[at], output = part?.result;
+  if (part?.name === CODE_MODE_TOOL || !record(output) || !(output.type === 'text' ? typeof output.value === 'string' : output.type === 'content' && Array.isArray(output.value))) return;
+  if (appended(output.value, '') === undefined) return;
+  return { index, apply: text => copy(message.content.map((entry: unknown, i: number) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry)) };
+}
+/** Put back every message this owner replaced on a reused host array. */
+function restoreNotes(messages: unknown) {
+  if (!Array.isArray(messages)) return;
+  for (let i = 0; i < messages.length; i++) if (record(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored)) messages[i] = messages[i][restored];
 }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -199,9 +240,12 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   const eligibility = new Map<string, Set<string>>(); // latest context, max128 sessions
   const noted = new Set<string>(); // max256 source/session/model-message IDs
   const owned = Symbol('agent-progress-section');
-  function section(hint: number, capsule = '', refusal = '') {
-    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${hintText(hint)}` : '') + (capsule ? `\n\n${capsule}` : '') + (refusal ? `\n\n${refusal}` : '') };
-    Object.defineProperty(part, owned, { value: { hint } });
+  // The section is fixed text: it must be byte-identical on every request, or
+  // a provider's prompt cache misses from this point on. Anything that varies
+  // per request rides the latest message instead (see `carrier`).
+  function section() {
+    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE };
+    Object.defineProperty(part, owned, { value: true });
     return part;
   }
   const registrations: Array<{ dispose(): Promise<void> }> = [];
@@ -320,12 +364,13 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     const context = async (event:SessionHooks['context']) => {
       const removeOwned = () => {
         for (let i = event.system.length - 1; i >= 0; i--) if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) event.system.splice(i, 1);
+        restoreNotes(event.messages);
       };
       try {
-        // A reused host array may carry old text, but never a reusable recovery payload.
-        for (let i = 0; i < event.system.length; i++) if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
-          event.system[i] = section((event.system[i] as any)[owned].hint);
-        }
+        // A reused host array may carry an old section or note, never a reusable
+        // payload: drop both and rebuild from this request alone.
+        restoreNotes(event.messages);
+        for (let i = 0; i < event.system.length; i++) if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) event.system[i] = section();
         if (disposed) { removeOwned(); return; }
         if (!boundedID(event.sessionID)) return;
         const sessionKey = key(event.sessionID);
@@ -349,10 +394,16 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || epoch !== disableEpoch) { removeOwned(); return; }
         if (!caller || !control()) { pending.delete(sessionKey); removeOwned(); return; }
         let capsule = '';
+        // Request-only text needs a carrier valid for the latest message's role.
+        // Without one nothing is computed or consumed: the hint stays pending and
+        // an armed capsule stays armed for the next request that has a carrier.
+        const carried = carrier(event.messages) !== undefined;
+        const rearm = () => { if (armed && compactions.get(sessionKey) === attempt) attempt.pending = true; };
+        if (!carried) rearm();
         // Ordinary coordinators do not scan plans. Children reuse the bounded,
         // read-only identity/projection owner on naturally occurring contexts.
         const assignedOnly = !armed && !!caller.parentID;
-        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
+        if (carried && (armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
           const controller = new AbortController(); held = controller;
           const now = recovery.now ?? (() => performance.now());
           const deadline = now() + 1000;
@@ -382,17 +433,21 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) { removeOwned(); return; }
         let refusal='';
         try {
-          const selection=recovery?.refusals?.(event.sessionID);
+          const selection=carried?recovery?.refusals?.(event.sessionID):undefined;
           if(selection?.sourceId===source.id&&selection.sessionId===event.sessionID)refusal=delegationRefusalText(selection);
         } catch { /* Optional bounded receipt read never enables a report or blocks guidance. */ }
         if(disposed||!control()||epoch!==disableEpoch||!source.verified||!Object.prototype.hasOwnProperty.call(event.tools,REPORT_TOOL)){removeOwned();return;}
         if (eligibility.get(sessionKey) === effective) for (const tool of NOTE_TOOLS) {
           if (Object.prototype.hasOwnProperty.call(event.tools, tool)) effective.add(tool);
         }
+        // The section is the fixed guidance and nothing else, whatever this request carries.
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
-        if (existing !== -1) { event.system[existing] = section((event.system[existing] as any)[owned].hint, capsule, refusal); return; }
+        if (existing !== -1) event.system[existing] = section(); else event.system.push(section());
         const hint = (pending.get(sessionKey) ?? 0) & 7;
-        event.system.push(section(hint, capsule, refusal));
+        const target = carrier(event.messages);
+        if (!target) { rearm(); return; } // the hint stays pending; capsule and refusal are read again next request
+        const text = [hint ? hintText(hint) : '', capsule, refusal].filter(Boolean).join('\n\n');
+        if (text) event.messages[target.index] = target.apply(text) as typeof event.messages[number];
         const remaining = (pending.get(sessionKey) ?? 0) & ~7;
         if (remaining) pending.set(sessionKey, remaining); else pending.delete(sessionKey);
       } catch { pending.delete(key(event.sessionID)); eligibility.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }

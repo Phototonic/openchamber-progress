@@ -693,8 +693,9 @@ node --experimental-strip-types --test tests/backend/progress-activation-runtime
 The separately named `progress resume` native case verifies production activation
 and Store lookup on OpenCode **2.x >= 2.2.2** at the actual outgoing scripted-provider
 boundary. It uses direct synthetic Store construction and local plugin loading,
-not installation. The observer records metadata and the synthetic recovery section
-from actual outgoing system parts; it never manufactures recovery in regression
+not installation. The observer records metadata and the synthetic recovery text
+from the latest outgoing message, where the capsule rides for one request while
+the system section stays fixed; it never manufactures recovery in regression
 mode or retains conversation/summary text. No real model or provider credentials
 are used. Node 24.19.0 and OpenCode 2.2.2 are the tested baselines; later 24.x/2.x
 releases are accepted but not separately certified. The test requires Node 24.x
@@ -782,14 +783,23 @@ tool check is not the cause: host tool names are checked before proxy renaming.
 Tool descriptions and results survive under host-prefixed names. The companion
 therefore puts its checklist and start example inside the first 2,048 description
 characters (4,096 overall), and appends conditional fixed notes to qualifying
-completed direct calls. Its existing system section remains for providers that
-forward it; no provider identifier or custom instructions are required.
+completed direct calls. The one-request hint, the resume capsule and the
+delegation refusal note ride the latest message of their request (a text part on
+a user message, the last tool result's output on a tool message), so providers
+that drop plugin system sections now receive them too. The system section remains
+for providers that forward it and is the fixed guidance only, identical on every
+request, so it does not defeat a provider's prompt cache. No provider identifier
+or custom instructions are required.
 
 Credential-free native 2.2.2 probes establish result-content delivery for dispatch,
 write, edit and typed tracker results, with original content first and unchanged
 structured output. Code Mode inner result content does not reach the model:
-those calls retain context hints but get no result note. Adapter checks cover
-both run-observer orders and the provider view that drops system text. These
+those calls retain context hints but get no result note, and their hint waits for the
+next request whose latest message can carry it, since the wrapper result stays the
+script's exact value. Adapter checks cover
+both run-observer orders and the provider view that drops system text. The native
+activation case checks the outgoing request of a real plan-file write continuation:
+the hint ends the last tool result and the system section is unchanged. These
 checks establish delivery, not that a real model will mirror a plan unprompted.
 That live workflow remains an owner-only check, never a paid-model test.
 
