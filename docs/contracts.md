@@ -1279,9 +1279,28 @@ A pending or reserved declaration cannot bind afterwards. Archiving in-progress
 work retires its intent in the same cleanup transaction without rewriting the
 guarded plan receipts; deletion already removes intents with the plan. Retrying
 the declaration while archived answers `closed`, or `not-found` after deletion,
-before replay. Waiting-delegation notes disappear and recorded session runs remain.
-After restore, replay of a retired intent explains `retired`/`closed` without
-rewriting the earlier receipt or re-arming authority; a fresh declaration works.
+before replay. The companion makes the same check before it asks for document
+read permission, again before each further permission request and again after one
+resolves, before any bytes are read. Once a check observes the archive, no further
+prompt is asked, no bytes are read and the report answers `closed` or `not-found`;
+a Store refusal such as `busy` from a check is returned as is, never recorded as a
+document denial. The checks are not serialised with cleanup: an archive committing
+after the last check can still let the companion read the user's own bound document
+once. No further prompt is shown, and the write is refused if its transaction still
+sees the plan archived or deleted (an archive and restore that both commit between
+the last check and the write do not by themselves cause a cleanup refusal; the write's
+other checks, such as a stale revision, still apply).
+Precedence is the same with or without a bound document and for a task-update
+handoff: an unverified source answers `source-unverified` (handoff), paused capture
+`disabled`, then cleanup `closed` or `not-found`.
+Waiting-delegation notes disappear and recorded session runs remain.
+After restore, the guarded receipt stays untouched and the intent stays inactive:
+replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
+`retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
+a fresh declaration works. Only the explicit restore record explains a missing
+intent: a plan never archived whose pending receipt lost its intent is not reported
+as closed; the view is unavailable and guidance incomplete. A new unlinked dispatch ignores archived plans when it
+looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
 archived plans again. A 1.5.0 guest never sends the acknowledgement and its request
@@ -1889,9 +1908,17 @@ below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The inline and packaged skill explain that `closed` while a reported plan was
-in progress, a refused reopen, or `not-found` for a plan the agent started means
+in progress or on a reopen, or `not-found` for a plan the agent started, means
 the user archived or deleted it: stop reporting, do not retry, and do not recreate
-it (including under another identifier) unless the user specifically asks.
+it (including under another identifier) unless the user specifically asks. A
+reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
+and is not user cleanup: read the plan and retry at its current revision. A
+commit reads only its own upload ID and needs exactly the intended chunk set at the current revision:
+if every chunk already staged is valid for the current revision and intended layout,
+stage only the missing chunks under that upload ID; otherwise stage the whole
+intended set under a fresh upload ID, because chunks stay pinned to the revision
+they were staged at. `reopen:true` stays on every stage and the commit while the plan
+is closed. Other refusals, such as `assignment`, are not covered by this advice.
 Ordinary continuation of an agent-finished plan still uses the coordinator's
 explicit `revise`/`commit` with `reopen:true`. This is advisory guidance only;
 tool inputs, validation, replies and size limits are unchanged.

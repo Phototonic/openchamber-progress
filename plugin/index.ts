@@ -7,7 +7,7 @@ import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
 import { readManagedBinding, managedSourceRoots } from '../shared/managed-binding.ts';
 import { RELEASE } from '../shared/release.ts';
 import { Store, storageError, canonical } from '../shared/store.ts';
-import { parseReportRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, type Actor } from '../shared/progress.ts';
+import { parseReportRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, type Actor, type DocumentRef } from '../shared/progress.ts';
 import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
 import { activationFingerprint } from '../shared/activation.ts';
@@ -97,6 +97,18 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
         try {
             const r = parseReportRequest(value);need(await initialize(),'binding');guard();
             const current=store!;
+            // Reportability is checked before each permission request and after it resolves, before any bytes are read, so an observed archive stops the next prompt and the read. captureDocument turns any authorize error into `denied`, so a Store refusal is kept aside and rethrown: `denied` stays for permission and file failures only. An archive committing after the last check can still allow one read of the user's own document; the write is refused.
+            const captureReport=async(reference:string,directory:string,sourceId:string,plan:string,handoff:boolean,previous?:DocumentRef)=>{
+              let refusal:unknown;
+              const check=()=>{try{current.assertReportable(sourceId,plan,handoff);}catch(e){refusal=e;throw e;}};
+              const captured=await captureDocument(reference,directory,async resource=>{
+                check();
+                await ctx.permission.assert({sessionID:caller.sessionID,agent:caller.agent,source:{type:'tool',messageID:caller.messageID,id:caller.id},action:'read',resources:[resource]});
+                check();
+              },previous);
+              if(refusal)throw refusal;
+              return captured;
+            };
             const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);guard();
            if(r.op==='handoff') {
                // Explicit reporting follows verified native parentage across worktrees
@@ -104,9 +116,10 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
                const child=actor;
               const previous=r.taskUpdate?current.get(child.sourceId,r.taskUpdate.plan):undefined;
               const reference=previous?.document.path;
-              const capture=reference?await captureDocument(reference,child.directory,resource=>ctx.permission.assert({sessionID:caller.sessionID,agent:caller.agent,source:{type:'tool',messageID:caller.messageID,id:caller.id},action:'read',resources:[resource]}),{...previous!.document,canonicalPath:previous!.boundCanonicalPath}):undefined;
+              if(reference)current.assertReportable(child.sourceId,r.taskUpdate!.plan,true);
+              const captured=reference?await captureReport(reference,child.directory,child.sourceId,r.taskUpdate!.plan,true,{...previous!.document,canonicalPath:previous!.boundCanonicalPath}):undefined;
               guard();
-              return {content:JSON.stringify(current.handoff(r,child,observedAt,observedEpoch,capture))};
+              return {content:JSON.stringify(current.handoff(r,child,observedAt,observedEpoch,captured))};
            }
           if (r.op === 'read') {
              const view=current.detail(actor.sourceId,r.plan,r.page??0);
@@ -121,7 +134,8 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
           const childID = r.child ?? r.attributed;
           if (childID) { try { child = await identity(childID as typeof caller.sessionID,'unknown'); } catch { throw new ProgressError('assignment'); } }
           const reference = r.source ?? previous?.document.path;
-          const capture = reference && r.op !== 'stage' ? await captureDocument(reference,actor.directory,resource => ctx.permission.assert({sessionID:caller.sessionID,agent:caller.agent,source:{type:'tool',messageID:caller.messageID,id:caller.id},action:'read',resources:[resource]}),r.op === 'bind' || r.op === 'start' ? undefined : previous ? {...previous.document,canonicalPath:previous.boundCanonicalPath} : undefined) : undefined;
+          if (reference && r.op !== 'stage') current.assertReportable(actor.sourceId,r.plan);
+          const capture = reference && r.op !== 'stage' ? await captureReport(reference,actor.directory,actor.sourceId,r.plan,false,r.op === 'bind' || r.op === 'start' ? undefined : previous ? {...previous.document,canonicalPath:previous.boundCanonicalPath} : undefined) : undefined;
            guard();
            need(current.list({limit:1}).captureEnabled,'disabled');
            const receipt = current.apply(r,actor,capture,child);
@@ -173,4 +187,4 @@ ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
-Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or refuses a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. No inference, passive scraping, document rewriting or hidden assignments.`;
+Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
