@@ -61,10 +61,13 @@ export function cleanupMatches(target: CleanupTarget, plan: PlanView | null, sto
 export function cleanupEligible(action: CleanupAction, plan: PlanView) {
   return (cleanupClosed(plan) || plan.cleanup?.state === 'archived') && (action === 'delete' || (action === 'restore') === (plan.cleanup?.state === 'archived'));
 }
+const CHANGED_CODES = ['conflict', 'closed', 'operation-reused', 'not-found'];
+/** The service answered and refused the request (changed, closed, reused operation, not found, store busy). Any other failure of an attempted request may have been applied. */
+export const cleanupRefused = (code: string) => CHANGED_CODES.includes(code) || code === 'busy';
 export function cleanupError(code: string, locale = 'en') {
   const language = resolveLanguage('auto', locale);
   const text = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
-  if (['conflict', 'closed', 'operation-reused', 'not-found'].includes(code)) return text.changed;
+  if (CHANGED_CODES.includes(code)) return text.changed;
   if (code === 'busy') return text.busy;
   return text.uncertain;
 }
@@ -325,9 +328,9 @@ export async function runTidy(host: ServiceHost, action: CleanupAction, targets:
       ...target,
       request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
     });
-    // A refusal the single-plan messages call "changed" or "busy" is skipped. Any other failure of an attempted
-    // request, including one raised before the service could receive it, may have been applied: unconfirmed.
-    if (!result.ok && cleanupError(result.failure.code) === cleanupError('')) unconfirmed++;
+    // A refusal is skipped. Any other failure of an attempted request, including one raised before the
+    // service could receive it, may have been applied: unconfirmed.
+    if (!result.ok && !cleanupRefused(result.failure.code)) unconfirmed++;
     // Receipt-dependent side effects belong to this validated target, even if context moved.
     progress?.(succeeded.length, targets.length, result.ok ? succeeded.at(-1) : undefined);
   }
@@ -376,7 +379,7 @@ const tidyRu: typeof tidyEn = {
   count: (n, total) => `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов.`,
   result: (n, total, action, unconfirmed = 0) => {
     const restore = action === true || action === 'restore', deleting = action === 'delete';
-    const skipped = Math.max(0, total - n - unconfirmed), one = new Intl.PluralRules('ru').select(unconfirmed) === 'one';
+    const skipped = Math.max(0, total - n - unconfirmed), one = unconfirmed === 1;
     const done = restore ? one ? 'восстановлен' : 'восстановлены' : deleting ? one ? 'удалён' : 'удалены' : one ? 'архивирован' : 'архивированы';
     return `${restore ? 'Восстановлено' : deleting ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${skipped ? `; пропущено: ${formatCount(skipped, 'ru')}` : ''}${unconfirmed > 0 ? `; ${formatCount(unconfirmed, 'ru')} ${russianPlans(unconfirmed)} не удалось подтвердить: возможно, ${one ? 'он' : 'они'} ${done}` : ''}.`;
   },

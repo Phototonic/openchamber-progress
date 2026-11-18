@@ -12,7 +12,7 @@ import { isolatedEnvironment, publishFixtureBinding } from './managed.ts';
 
 /** A slow reply to a service call must not read as a lost one (it did in the selection driver), so calls wait this long. */
 const REQUEST_LIMIT=30000;
-/** Readiness probes: short, so a hung start still fails inside the 7 s start deadline. */
+/** Readiness probes: short, so a hung start fails in seconds rather than after a service-call wait. The 7 s deadline is checked between probes, so one pass can overrun it by up to two probe limits. */
 const PROBE_LIMIT=3000;
 /** All roots, history and bindings are disposable. No installation or real user config. */
 export async function launchCleanupService(built=false,pages=true) {

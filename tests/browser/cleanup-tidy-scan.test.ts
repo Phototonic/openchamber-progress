@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CleanupScan, TIDY_LIMIT, tidyConfirmation, runTidy } from '../../ui/shared/cleanup.ts';
+import { CleanupScan, TIDY_LIMIT, tidyConfirmation, runTidy, cleanupRefused, cleanupError } from '../../ui/shared/cleanup.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary } from './fixtures.ts';
 
@@ -124,6 +124,7 @@ const attemptedFailures: [name: string, reply: Reply, unconfirmed: number][] = [
   ['unreadable receipt', { status: 200, body: 'not a receipt' }, 1],
   ['receipt for another plan', { status: 200, body: JSON.stringify({ storeId: 'store', source: 'other', plan: 'p-1', oid: 'x', cleanup: { state: 'archived', revision: 1 } }) }, 1],
   ['service failure with no known refusal code', refusal(500, 'internal'), 1],
+  ['withdrawn store (503 storage)', refusal(503, 'storage'), 1],
   // The fake host's plain rejection stands for an attempt that fails before the service could receive it
   // (a refusal by the frame's own guard): the engine cannot tell it from a lost reply, so it is unconfirmed.
   ['attempt that failed before reaching the service', { throws: new Error('The frame refused the request.') }, 1],
@@ -135,6 +136,15 @@ for (const [name, reply, unconfirmed] of attemptedFailures) test(`run engine: ${
   assert.equal(result.succeeded.length, 1);
   assert.equal(result.unconfirmed ?? 0, unconfirmed);
   assert.deepEqual(result.remaining.map(t => t.key), [targets[1].key], 'the plan with no receipt stays in remaining, for Try again');
+});
+
+test('refusal classes: only a refusal the service answered is skipped; every other code, a withdrawn store and a lost reply are unconfirmed', () => {
+  for (const code of ['conflict', 'closed', 'operation-reused', 'not-found', 'busy']) assert.equal(cleanupRefused(code), true, code);
+  for (const code of ['storage', 'internal', 'http-500', 'HOST_TIMEOUT', 'CONTRACT', 'UNKNOWN', '']) assert.equal(cleanupRefused(code), false, code);
+  // The single-plan message agrees: a refusal never reads as "may have reached the service".
+  for (const code of ['conflict', 'closed', 'operation-reused', 'not-found', 'busy', 'storage', 'HOST_TIMEOUT']) {
+    assert.equal(cleanupRefused(code), cleanupError(code) !== cleanupError(''), code);
+  }
 });
 
 test('run engine: a plan left out before sending or after Stop is skipped, never unconfirmed', async () => {
