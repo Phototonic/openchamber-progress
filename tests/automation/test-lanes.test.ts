@@ -28,11 +28,13 @@ function safePid(text: string): number | undefined {
   return Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid && pid !== process.ppid && pid !== ownGroup ? pid : undefined;
 }
 type Send = (pid: number, signal: NodeJS.Signals) => void;
+type Command = (command: string, args: string[]) => void;
+const runCommand: Command = (command, args) => { spawnSync(command, args, { stdio: 'ignore' }); };
 /** Stop a fixture process and, on POSIX, the group it leads. With the harness's own group unknown no group signal is
  * sent at all, only one to the validated pid itself: it could otherwise be the harness's group. */
-function killTree(pid: number | undefined, harness: { group: number | undefined } = { group: ownGroup }, send: Send = (target, signal) => { process.kill(target, signal); }, platform: NodeJS.Platform = process.platform) {
+function killTree(pid: number | undefined, harness: { group: number | undefined } = { group: ownGroup }, send: Send = (target, signal) => { process.kill(target, signal); }, platform: NodeJS.Platform = process.platform, command: Command = runCommand) {
   if (pid === undefined || safePid(String(pid)) === undefined) return;
-  if (platform === 'win32') { spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' }); return; }
+  if (platform === 'win32') { command('taskkill', ['/T', '/F', '/PID', String(pid)]); return; }
   if (harness.group !== undefined && pid !== harness.group) { try { send(-pid, 'SIGKILL'); } catch { /* not a group leader */ } }
   try { send(pid, 'SIGKILL'); } catch { /* gone */ }
 }
@@ -280,21 +282,29 @@ test('a pass whose leftover process holds the pipes is abandoned after the grace
 
 test('a failed lookup of the harness group leaves it unknown, the module still loads, and cleanup then sends no group signal', () => {
   const failed = (() => ({ pid: 0, output: null, stdout: null, stderr: null, status: null, signal: null, error: Object.assign(new Error('spawn ps ENOENT'), { code: 'ENOENT' }) })) as unknown as typeof spawnSync;
-  assert.equal(lookupGroup(failed), undefined);
-  assert.equal(lookupGroup((() => undefined) as unknown as typeof spawnSync), undefined);
-  assert.equal(lookupGroup((() => ({ stdout: '' })) as unknown as typeof spawnSync), undefined, 'an empty answer is not group 0');
+  assert.equal(lookupGroup(failed, 'linux'), undefined);
+  assert.equal(lookupGroup((() => undefined) as unknown as typeof spawnSync, 'linux'), undefined);
+  assert.equal(lookupGroup((() => ({ stdout: '' })) as unknown as typeof spawnSync, 'linux'), undefined, 'an empty answer is not group 0');
   assert.equal(lookupGroup((() => ({ stdout: ' 4321\n' })) as unknown as typeof spawnSync, 'linux'), 4321);
   assert.equal(lookupGroup(failed, 'win32'), undefined);
+  // Every call below names its platform and injects both the signal and the command: none can reach a real kill or taskkill.
+  const noCommand: Command = (name) => { assert.fail(`${name} must not run on this platform`); };
+  const noSignal: Send = () => { assert.fail('no signal may be sent on this platform'); };
   const sent: number[] = [];
-  killTree(4242, { group: undefined }, pid => { sent.push(pid); });
+  killTree(4242, { group: undefined }, pid => { sent.push(pid); }, 'linux', noCommand);
   assert.deepEqual(sent, [4242], 'only the validated pid itself, never -4242');
-  killTree(0, { group: undefined }, pid => { sent.push(pid); }); killTree(process.pid, { group: undefined }, pid => { sent.push(pid); });
+  killTree(0, { group: undefined }, pid => { sent.push(pid); }, 'linux', noCommand); killTree(process.pid, { group: undefined }, pid => { sent.push(pid); }, 'linux', noCommand);
   assert.deepEqual(sent, [4242], 'an unsafe pid is not signalled at all');
   const known: number[] = [];
-  killTree(4242, { group: 777 }, pid => { known.push(pid); });
+  killTree(4242, { group: 777 }, pid => { known.push(pid); }, 'linux', noCommand);
   assert.deepEqual(known, [-4242, 4242], 'with the group known a leader is stopped as a group too');
-  killTree(777, { group: 777 }, pid => { known.push(pid); });
+  killTree(777, { group: 777 }, pid => { known.push(pid); }, 'linux', noCommand);
   assert.deepEqual(known, [-4242, 4242, 777], 'but never the harness group itself');
+  const commands: [string, string[]][] = [];
+  killTree(4242, { group: 777 }, noSignal, 'win32', (name, args) => { commands.push([name, args]); });
+  assert.deepEqual(commands, [['taskkill', ['/T', '/F', '/PID', '4242']]], 'on Windows a safe pid goes to taskkill, through the injected runner only');
+  killTree(0, { group: undefined }, noSignal, 'win32', (name, args) => { commands.push([name, args]); });
+  assert.equal(commands.length, 1, 'and an unsafe pid to nothing');
 });
 
 test('an empty or garbage pid file is ignored by the fixture cleanup and the harness survives', async () => {
