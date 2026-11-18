@@ -139,7 +139,11 @@ dispatch run the full set, even for UI/docs-only changes. The workflow sets
 `AP_WINDOWS_FULL=1` only for those full runs and fetches `v1.1.1` only then.
 Without that opt-in, the three journeys explicitly skip; no per-request
 assertion, budget or deadline is relaxed. Local full native runs must also set
-`AP_WINDOWS_FULL=1`. Weekly and manual CI runs target Windows only; the Linux
+`AP_WINDOWS_FULL=1`. The Windows job starts the platform file and the service file
+as two processes at once, each in its own serial test runner and as the same
+unprivileged principal, and waits for both before reading either exit code; only the
+service file starts a server and request workers, which take the Setup coordination
+ports. Weekly and manual CI runs target Windows only; the Linux
 jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the source on `dev` first, then prepare a promotion commit containing that source and its built outputs. Run the required host gates on the promotion checkout before its PR into `main` merges.
