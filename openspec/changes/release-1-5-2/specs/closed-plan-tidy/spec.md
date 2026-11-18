@@ -81,8 +81,8 @@ Cleanup controls SHALL follow the cleanup facts of the latest health reply the f
 - **THEN** the controls return with that reply, not earlier
 
 #### Scenario: Support granted after a view was remembered
-- **WHEN** Archived plans was last read while the service offered no cleanup, a later refresh in Current plans accepts a health reply that offers it, and the person switches back to Archived plans while its new read is pending
-- **THEN** Tidy and Select are offered while the remembered list is shown
+- **WHEN** Current plans was last read while the service offered no cleanup, a later refresh in Archived plans accepts a health reply that offers it, and the person switches back to Current plans while its new read is pending
+- **THEN** Tidy and Select are offered while the remembered Current plans list is shown
 
 ### Requirement: Background cleanup updates do not interrupt the person
 
