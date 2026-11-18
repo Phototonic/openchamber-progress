@@ -1294,6 +1294,10 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
     const cleanup = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
     if (["archived", "deleted"].includes(cleanup))
       continue;
+    if (["pending", "reserved"].includes(d.state) && (d.state === "reserved" !== (a.dispatch !== null) || !a.taskIds.length)) {
+      result.complete = false;
+      continue;
+    }
     const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
     if (orphaned && cleanup !== "visible") {
       result.complete = false;
@@ -4522,7 +4526,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.1";
+var RELEASE = "1.5.2";
 
 // setup/cli.ts
 try {

@@ -125,7 +125,8 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install ZIP tools
-        run: sudo apt-get update && sudo apt-get install -y zip unzip
+        # Hosted images already carry both tools; install only if one is missing.
+        run: command -v zip >/dev/null && command -v unzip >/dev/null || (sudo apt-get update && sudo apt-get install -y zip unzip)
       - name: Install project dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Run Linux tests, builds and package checks
@@ -172,7 +173,8 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install ZIP tools
-        run: sudo apt-get update && sudo apt-get install -y zip unzip
+        # Hosted images already carry both tools; install only if one is missing.
+        run: command -v zip >/dev/null && command -v unzip >/dev/null || (sudo apt-get update && sudo apt-get install -y zip unzip)
       - name: Install project dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Run Linux tests, builds and package checks
@@ -216,9 +218,23 @@ jobs:
           # ownership semantics without relaxing the product's SID policy.
           $name = 'progress' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
           $password = ConvertTo-SecureString ('Aa1!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
-          $output = Join-Path $env:RUNNER_TEMP ($name + '.stdout')
-          $errors = Join-Path $env:RUNNER_TEMP ($name + '.stderr')
           $trace = Join-Path $env:RUNNER_TEMP 'windows-migration-trace.jsonl'
+          # The two native files run side by side, each in its own serial test
+          # runner. Only the service file starts a server and request workers,
+          # which are what take Setup coordination ports; the platform file
+          # drives the setup controller directly. Each runs under Start-Process
+          # -Wait inside a thread job, so it is waited for with everything it
+          # started, exactly as when they ran one after the other. Starting the
+          # two at the same instant can be refused once, so the start is retried.
+          $runs = @('windows-platform', 'windows-service') | ForEach-Object {
+            [pscustomobject]@{
+              File = $_
+              Output = Join-Path $env:RUNNER_TEMP ($name + '.' + $_ + '.stdout')
+              Errors = Join-Path $env:RUNNER_TEMP ($name + '.' + $_ + '.stderr')
+              Job = $null
+              ExitCode = $null
+            }
+          }
           # Leave a fixed diagnostic even if principal/process creation fails.
           '{"request":"runner-start","completed":false}' | Set-Content -LiteralPath $trace -Encoding utf8
           $created = $false
@@ -227,23 +243,45 @@ jobs:
             $created = $true
             Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
             $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $name), $password)
-            $process = Start-Process -FilePath (Get-Command node).Source -ArgumentList '--experimental-strip-types --test --test-concurrency=1 tests/backend/windows-platform.test.ts tests/backend/windows-service.test.ts' -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $output -RedirectStandardError $errors
-            if (Test-Path $output) {
-              Get-Content -LiteralPath $output
+            foreach ($run in $runs) {
+              $run.Job = Start-ThreadJob -ArgumentList $run, $credential, $env:GITHUB_WORKSPACE, (Get-Command node).Source -ScriptBlock {
+                param($run, $credential, $workspace, $node)
+                # The secondary logon service creates one process at a time and
+                # refuses a second request while it is busy; retry only that refusal.
+                $process = $null
+                for ($attempt = 1; -not $process; $attempt++) {
+                  try {
+                    $process = Start-Process -FilePath $node -ArgumentList "--experimental-strip-types --test --test-concurrency=1 tests/backend/$($run.File).test.ts" -WorkingDirectory $workspace -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $run.Output -RedirectStandardError $run.Errors -ErrorAction Stop
+                  } catch {
+                    if ($attempt -ge 30 -or $_.Exception.Message -notmatch 'already running') { throw }
+                    Start-Sleep -Seconds 1
+                  }
+                }
+                $process.ExitCode
+              }
             }
-            if (Test-Path $errors) { Get-Content -LiteralPath $errors }
-            if ($process.ExitCode -ne 0) { throw 'Native Windows tests failed.' }
+            $null = $runs.Job | Wait-Job
+            foreach ($run in $runs) { $run.ExitCode = @(Receive-Job -Job $run.Job -ErrorAction Stop)[-1] }
+            foreach ($run in $runs) {
+              if (Test-Path $run.Output) {
+                Get-Content -LiteralPath $run.Output
+              }
+              if (Test-Path $run.Errors) { Get-Content -LiteralPath $run.Errors }
+            }
+            if (@($runs | Where-Object { $_.ExitCode -ne 0 }).Count -gt 0) { throw 'Native Windows tests failed.' }
           } finally {
             # Preserve per-request evidence even on an assertion/process failure.
             # Never upload raw stdout/stderr, local principal names or paths.
-            if (Test-Path $output) {
-              $traces = @(Get-Content -LiteralPath $output | ForEach-Object {
-                if ($_ -match '^\s*(?:#\s*)?WINDOWS_MIGRATION_TRACE (.+)$') { $Matches[1] }
-              })
-              if ($traces.Count -gt 0) { $traces | Add-Content -LiteralPath $trace -Encoding utf8 }
+            foreach ($run in $runs) {
+              if (Test-Path $run.Output) {
+                $traces = @(Get-Content -LiteralPath $run.Output | ForEach-Object {
+                  if ($_ -match '^\s*(?:#\s*)?WINDOWS_MIGRATION_TRACE (.+)$') { $Matches[1] }
+                })
+                if ($traces.Count -gt 0) { $traces | Add-Content -LiteralPath $trace -Encoding utf8 }
+              }
             }
             if ($created) { Remove-LocalUser -Name $name }
-            Remove-Item -LiteralPath $output, $errors -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath @($runs | ForEach-Object { $_.Output; $_.Errors }) -Force -ErrorAction SilentlyContinue
           }
           $requests = @(Get-Content -LiteralPath $trace | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.request -and $_.request -notin @('runner-start','summary') })
           if ($requests.Count -eq 0) { throw 'Native Windows request trace is missing.' }

@@ -21,7 +21,7 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
         let progress;
         try { progress = Object.fromEntries(['plans', 'revisions', 'receipts', 'sessions', 'chunks', 'captures', 'contributions'].map(table => [table, store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n])); }
         finally { store.close(); }
-        record({ type: 'context', sessionID: event.sessionID, agent: event.agent, tools: Object.keys(event.tools), system: event.system, progress });
+        record({ type: 'context', sessionID: event.sessionID, agent: event.agent, tools: Object.keys(event.tools), system: event.system, messageIds: event.messages.map((m: any) => [m.role, typeof m.id === 'string']), progress });
       });
       await ctx.tool.hook('execute.after', (event: any) => {
         // All inputs here are fixture-authored. Never ship this observer or transcript capture.

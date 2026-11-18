@@ -2,6 +2,7 @@
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { readManagedBinding } from '../../shared/managed-binding.ts';
+import { latestMessageTexts } from './latest-message-text.ts';
 
 export const RESUME_SENTINEL = 'SYNTHETIC_PROGRESS_RESUME_SENTINEL';
 // Fixed synthetic reply in the pinned host's Markdown checkpoint format. No conversation-derived content.
@@ -111,7 +112,8 @@ export default Plugin.define({ id: 'progress-resume-observer', async setup(ctx) 
         n + (typeof m.content === 'string' ? m.content.split(RESUME_SENTINEL).length - 1 : 0), 0);
       const invalidReply = latest?.kind === 'compaction' && existsSync(process.env.RESUME_FAIL!);
       const systems: string[] = options.prompt.filter((m: any) => m.role === 'system' && typeof m.content === 'string').map((m: any) => m.content);
-      const recovery = systems.flatMap(text => {
+      // The capsule rides the latest message for one request; the system section stays fixed.
+      const recovery = [...systems, ...latestMessageTexts(options.prompt)].flatMap(text => {
         const at = text.indexOf('## Progress resume —');
         return at < 0 ? [] : [text.slice(at)];
       });

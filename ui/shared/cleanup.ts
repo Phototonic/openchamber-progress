@@ -61,10 +61,13 @@ export function cleanupMatches(target: CleanupTarget, plan: PlanView | null, sto
 export function cleanupEligible(action: CleanupAction, plan: PlanView) {
   return (cleanupClosed(plan) || plan.cleanup?.state === 'archived') && (action === 'delete' || (action === 'restore') === (plan.cleanup?.state === 'archived'));
 }
+const CHANGED_CODES = ['conflict', 'closed', 'operation-reused', 'not-found'];
+/** The service answered and refused the request (changed, closed, reused operation, not found, store busy). Any other failure of an attempted request may have been applied. */
+export const cleanupRefused = (code: string) => CHANGED_CODES.includes(code) || code === 'busy';
 export function cleanupError(code: string, locale = 'en') {
   const language = resolveLanguage('auto', locale);
   const text = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
-  if (['conflict', 'closed', 'operation-reused', 'not-found'].includes(code)) return text.changed;
+  if (CHANGED_CODES.includes(code)) return text.changed;
   if (code === 'busy') return text.busy;
   return text.uncertain;
 }
@@ -94,6 +97,8 @@ export interface TidyResult {
   total: number;
   succeeded: CleanupTarget[];
   remaining: CleanupTarget[];
+  /** Attempted plans that got no valid answer and may have been applied. Absent when none; they are in `remaining`, never in `succeeded`. */
+  unconfirmed?: number;
   /** An Undo: its receipts put plans back in the view they left (also when retried after a partial Undo). */
   returned?: boolean;
 }
@@ -114,11 +119,14 @@ export interface TidyState {
 export function tidyEligible(plan: CleanupPlan, archived = false) {
   return cleanupClosed(plan) && (plan.cleanup?.state === 'archived') === archived;
 }
-/** Use a loaded list only when its scope is complete; otherwise use CleanupScan. */
-export function tidyConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived = false): TidyConfirmation {
+/**
+ * Use a loaded list only when its scope is complete; otherwise use CleanupScan. `unverified`: the list was
+ * read in several pages, so a plan that crossed a page boundary may be missing from it.
+ */
+export function tidyConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived = false, unverified = false): TidyConfirmation {
   const eligible = plans.filter(p => tidyEligible(p, archived));
   return { context, archived, total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT,
-    targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)) };
+    targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)), ...(unverified ? { unverified: true } : {}) };
 }
 export interface CleanupScanPage {
   plans: CleanupPlan[];
@@ -215,18 +223,28 @@ export class PlanSelection {
   private known = new Map<string, CleanupPlan>();
   private chosen = new Set<string>();
   private omitted = new Set<string>();
-  /** Plans a cleanup receipt took out of scope: not a user choice, so a plan back in scope is selected again. */
-  private departed = new Set<string>();
+  /**
+   * Plans a cleanup receipt (or a freshness reply) took out of scope: not a user choice, so a plan back in
+   * scope is selected again. The value is the cleanup generation that took the plan out; null when there is
+   * none to compare, and then only the other rules end the departure.
+   */
+  private departed = new Map<string, number | null>();
   private partial = false;
   private plans: CleanupPlan[] | null = null;
   private fresh = true;
   private selectedCount = 0;
+  /** A departure still holds unless the plan is known at a newer cleanup generation than took it out. */
+  private departedHolds(key: string) {
+    const left = this.departed.get(key);
+    if (left === undefined) return false;
+    return left === null || (this.known.get(key)?.cleanup?.revision ?? 0) <= left;
+  }
   private recount() {
     if (!this.all) { this.selectedCount = this.chosen.size; return; }
     // Only rows the rule actually selects: not user exclusions, not receipt departures kept in a cached page.
     let out = 0;
     for (const k of this.omitted) if (this.known.has(k)) out++;
-    for (const k of this.departed) if (this.known.has(k) && !this.omitted.has(k)) out++;
+    for (const k of this.departed.keys()) if (this.known.has(k) && !this.omitted.has(k) && this.departedHolds(k)) out++;
     this.selectedCount = this.known.size - out;
   }
   /** `fresh`: the plans are verified membership (a list read, a checked search page), not a cached page. */
@@ -245,7 +263,7 @@ export class PlanSelection {
     this.recount();
     this.version++;
   }
-  has(key: string) { return this.all ? !this.omitted.has(key) && !this.departed.has(key) : this.chosen.has(key); }
+  has(key: string) { return this.all ? !this.omitted.has(key) && !this.departedHolds(key) : this.chosen.has(key); }
   get count() { return this.selectedCount; }
   get incomplete() { return this.all && this.partial; }
   clear() { this.all = false; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = 0; this.version++; }
@@ -254,18 +272,28 @@ export class PlanSelection {
     this.known.set(p.key, p);
     // An explicit click on an unpressed departed row selects it at once (also when the user had excluded it);
     // passive receipt handling (forget, returned, reconcile) never touches exclusions.
-    if (this.all && this.departed.delete(p.key)) { this.omitted.delete(p.key); this.recount(); this.version++; return; }
+    if (this.all && this.departedHolds(p.key)) { this.departed.delete(p.key); this.omitted.delete(p.key); this.recount(); this.version++; return; }
+    // A departure that no longer holds shows the row pressed: the click is an ordinary toggle.
+    if (this.all) this.departed.delete(p.key);
     const set = this.all ? this.omitted : this.chosen;
     if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
     this.recount();
     this.version++;
   }
-  forget(keys: string[]) {
-    if (!keys.length) return;
-    for (const key of keys) {
+  /**
+   * Plans left the view, each with the cleanup generation that took it out (a receipt's, or the freshness row
+   * that showed it gone); null when there is none to compare, and a count never takes such a plan back.
+   */
+  forget(departures: ReadonlyMap<string, number | null>) {
+    if (!departures.size) return;
+    for (const [key, generation] of departures) {
       this.known.delete(key); this.chosen.delete(key);
       // A Select all rule must not keep a departed plan pressed or target it in a later scan.
-      if (this.all) this.departed.add(key);
+      if (this.all) {
+        const had = this.departed.get(key);
+        // The newest departure decides; one with no generation to compare stays that way.
+        this.departed.set(key, had === undefined ? generation : had === null || generation === null ? null : Math.max(had, generation));
+      }
     }
     this.recount();
     this.version++;
@@ -277,14 +305,22 @@ export class PlanSelection {
     if (any) { this.recount(); this.version++; }
   }
   snapshot(): SelectionRequest {
-    const all = this.all, chosen = new Set(this.chosen), omitted = new Set([...this.omitted, ...this.departed]);
+    const all = this.all, chosen = new Set(this.chosen), omitted = new Set(this.omitted), departed = new Map(this.departed);
     return { all, plans: [...this.known.values()].filter(p => this.has(p.key)),
-      includes: p => all ? !omitted.has(p.key) : chosen.has(p.key) };
+      // A departed plan is counted again only where the view shows it at a newer cleanup generation than took it out.
+      includes: p => {
+        if (!all) return chosen.has(p.key);
+        if (omitted.has(p.key)) return false;
+        const left = departed.get(p.key);
+        return left === undefined || (left !== null && (p.cleanup?.revision ?? 0) > left);
+      } };
   }
 }
 export interface SelectionRequest {
   scope?: string;
   all: boolean;
+  /** Try again after a run: names the plans it left, looked up among the loaded rows. */
+  recount?: boolean;
   plans: CleanupPlan[];
   includes: (plan: CleanupPlan) => boolean;
 }
@@ -296,13 +332,13 @@ export function selectionTargets(c: TidyConfirmation, action: CleanupAction, act
   const targets = exclude ? c.targets.filter(cleanupClosed) : c.targets;
   return { ...c, selection: action, activeCount, excludedActive, targets, total: targets.length, deleting: action === 'delete' };
 }
-export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean) {
+export function selectionConfirmation(plans: CleanupPlan[], storeId: string, context: string, archived: boolean, action: CleanupAction, active: boolean, unverified = false) {
   const matching = plans.filter(p => (p.cleanup?.state === 'archived') === archived);
   const exclude = action !== 'restore' && !active;
   const eligible = exclude ? matching.filter(cleanupClosed) : matching;
   return selectionTargets({ context, archived, targets: eligible.slice(0, TIDY_LIMIT).map(p => cleanupTarget(p, storeId, context)),
     excludedActive: matching.length - eligible.length,
-    total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT }, action, active);
+    total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT, ...(unverified ? { unverified: true } : {}) }, action, active);
 }
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
  * Selection explicitly opts into active targets; Tidy never does. `admit` is asked right before each
@@ -310,7 +346,7 @@ export function selectionConfirmation(plans: CleanupPlan[], storeId: string, con
 export async function runTidy(host: ServiceHost, action: CleanupAction, targets: CleanupTarget[], current: () => boolean,
   progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false, admit?: (target: CleanupTarget) => boolean): Promise<TidyResult> {
   const succeeded: CleanupTarget[] = [];
-  let attempted = 0;
+  let attempted = 0, unconfirmed = 0;
   for (const target of targets.slice(0, TIDY_LIMIT)) {
     if (!current()) break;
     if (!cleanupClosed(target) && !allowActive) continue;
@@ -323,11 +359,14 @@ export async function runTidy(host: ServiceHost, action: CleanupAction, targets:
       ...target,
       request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
     });
+    // A refusal is skipped. Any other failure of an attempted request, including one raised before the
+    // service could receive it, may have been applied: unconfirmed.
+    if (!result.ok && !cleanupRefused(result.failure.code)) unconfirmed++;
     // Receipt-dependent side effects belong to this validated target, even if context moved.
     progress?.(succeeded.length, targets.length, result.ok ? succeeded.at(-1) : undefined);
   }
   const keys = new Set(succeeded.map(t => t.key));
-  return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)) };
+  return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)), ...(unconfirmed ? { unconfirmed } : {}) };
 }
 
 const tidyEn = {
@@ -344,7 +383,11 @@ const tidyEn = {
   cancel: 'Cancel', confirm: (n: number) => `Archive ${plural(n, 'plan', 'plans')}`, pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
   progress: (n: number, total: number, action: CleanupAction) => `${action === 'archive' ? 'Archiving' : action === 'restore' ? 'Restoring' : 'Deleting'}: ${n} of ${total}.`,
   count: (n: number, total: number) => `${n} of ${total} closed plans.`,
-  result: (n: number, total: number, action: CleanupAction | boolean) => `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${action === true || action === 'restore' ? 'restored' : action === 'delete' ? 'deleted' : 'archived'}${n < total ? `; ${total - n} skipped` : ''}.`,
+  result: (n: number, total: number, action: CleanupAction | boolean, unconfirmed = 0) => {
+    const done = action === true || action === 'restore' ? 'restored' : action === 'delete' ? 'deleted' : 'archived';
+    const skipped = Math.max(0, total - n - unconfirmed);
+    return `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${done}${skipped ? `; ${skipped} skipped` : ''}${unconfirmed > 0 ? `; ${unconfirmed} could not be confirmed and may have been ${done}` : ''}.`;
+  },
 };
 const russianPlans = (n: number, closed = false) => {
   const form = new Intl.PluralRules('ru').select(n);
@@ -365,7 +408,12 @@ const tidyRu: typeof tidyEn = {
   cancel: 'Отмена', confirm: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n)}`, pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
   progress: (n, total, action) => `${action === 'archive' ? 'Архивируем' : action === 'restore' ? 'Восстанавливаем' : 'Удаляем'}: ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}.`,
   count: (n, total) => `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов.`,
-  result: (n, total, action) => `${action === true || action === 'restore' ? 'Восстановлено' : action === 'delete' ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${n < total ? `; пропущено: ${formatCount(total - n, 'ru')}` : ''}.`,
+  result: (n, total, action, unconfirmed = 0) => {
+    const restore = action === true || action === 'restore', deleting = action === 'delete';
+    const skipped = Math.max(0, total - n - unconfirmed), one = unconfirmed === 1;
+    const done = restore ? one ? 'восстановлен' : 'восстановлены' : deleting ? one ? 'удалён' : 'удалены' : one ? 'архивирован' : 'архивированы';
+    return `${restore ? 'Восстановлено' : deleting ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${skipped ? `; пропущено: ${formatCount(skipped, 'ru')}` : ''}${unconfirmed > 0 ? `; ${formatCount(unconfirmed, 'ru')} ${russianPlans(unconfirmed)} не удалось подтвердить: возможно, ${one ? 'он' : 'они'} ${done}` : ''}.`;
+  },
 };
 const tidyZh: typeof tidyEn = {
   menu: '整理', heading: n => `此处有 ${formatCount(n, 'zh-CN')} 个已关闭的计划。`,
@@ -381,7 +429,11 @@ const tidyZh: typeof tidyEn = {
   cancel: '取消', confirm: n => `归档 ${formatCount(n, 'zh-CN')} 个计划`, pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
   progress: (n, total, action) => `正在${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}：${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')}。`,
   count: (n, total) => `${formatCount(total, 'zh-CN')} 个已关闭计划中的 ${formatCount(n, 'zh-CN')} 个。`,
-  result: (n, total, action) => `已${action === true || action === 'restore' ? '恢复' : action === 'delete' ? '删除' : '归档'} ${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')} 个计划${n < total ? `；跳过 ${formatCount(total - n, 'zh-CN')} 个` : ''}。`,
+  result: (n, total, action, unconfirmed = 0) => {
+    const done = action === true || action === 'restore' ? '恢复' : action === 'delete' ? '删除' : '归档';
+    const skipped = Math.max(0, total - n - unconfirmed);
+    return `已${done} ${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')} 个计划${skipped ? `；跳过 ${formatCount(skipped, 'zh-CN')} 个` : ''}${unconfirmed > 0 ? `；${formatCount(unconfirmed, 'zh-CN')} 个无法确认，可能已${done}` : ''}。`;
+  },
 };
 export function tidyCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);

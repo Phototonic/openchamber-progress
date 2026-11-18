@@ -24888,7 +24888,7 @@ function readManagedBindingInner(env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.1";
+var RELEASE = "1.5.2";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -25572,6 +25572,10 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
     const cleanup = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
     if (["archived", "deleted"].includes(cleanup))
       continue;
+    if (["pending", "reserved"].includes(d.state) && (d.state === "reserved" !== (a.dispatch !== null) || !a.taskIds.length)) {
+      result3.complete = false;
+      continue;
+    }
     const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
     if (orphaned && cleanup !== "visible") {
       result3.complete = false;
@@ -28577,6 +28581,7 @@ function activationFingerprint(binding, plugin, guidance) {
 
 // plugin/activation.ts
 import path7 from "node:path";
+import { createHash as createHash6 } from "node:crypto";
 
 // plugin/subagent-runs.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -28948,19 +28953,78 @@ var NOTE_TOOLS = ["write", "edit", "subagent", "linear_save_issue", "linear_save
 function noteText(reasons) {
   return reasons & PLAN ? "Agent Progress note (agent_progress_report): If this canonical plan is ready and not mirrored, start its real tasks and prerequisites with op=start; otherwise mirror only meaningful unreported state you own. This observation is not readiness, approval or a report." : reasons & DISPATCH ? "Agent Progress note (agent_progress_report): If you coordinate planned work without a mirror, start one with op=start; declare op=delegate before the next dispatch, or op=link for verified returned children. Already-current state needs no report; dispatch is not work start or assignment." : "Agent Progress note (agent_progress_report): If this is tracked plan work with meaningful unreported canonical state, mirror only work you own or are authorized to coordinate. A tracker update is not a progress report or evidence of work start, approval or completion.";
 }
-function notedResult(result3, text) {
-  const content = result3.content;
+function appended(content, text) {
   if (typeof content === "string")
-    return { ...result3, content: `${content}
+    return `${content}
 
-${text}` };
+${text}`;
   if (Array.isArray(content) && content.every((part) => record2(part) && (part.type === "text" && typeof part.text === "string" || part.type === "file" && typeof part.uri === "string" && typeof part.mime === "string"))) {
-    return { ...result3, content: [...content, { type: "text", text }] };
+    return [...content, { type: "text", text }];
   }
+}
+function notedResult(result3, text) {
+  const content = appended(result3.content, text);
+  if (content !== undefined)
+    return { ...result3, content };
 }
 function hintText(reasons) {
   return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
 }
+var CODE_MODE_TOOL = "execute";
+var restored = Symbol("agent-progress-note");
+function digest2(value3) {
+  const text = JSON.stringify(value3, function(name2, current) {
+    const original = this?.[name2];
+    if (original instanceof ArrayBuffer)
+      return { bytes: createHash6("sha256").update(new Uint8Array(original)).digest("hex") };
+    if (ArrayBuffer.isView(original))
+      return { bytes: createHash6("sha256").update(new Uint8Array(original.buffer, original.byteOffset, original.byteLength)).digest("hex") };
+    return current;
+  });
+  return createHash6("sha256").update(text ?? "").digest("hex").slice(0, 32);
+}
+function carrierAt(messages, index2, positional = false, keyed = true) {
+  if (!Array.isArray(messages))
+    return;
+  const message = messages[index2];
+  if (!record2(message) || !Array.isArray(message.content))
+    return;
+  const copy3 = (content) => {
+    const value3 = Object.assign(Object.create(Object.getPrototypeOf(message)), message, { content });
+    Object.defineProperty(value3, restored, { value: message });
+    return value3;
+  };
+  try {
+    if (message.role === "user") {
+      const id2 = !positional && boundedID(message.id) ? message.id : undefined;
+      return { index: index2, id: id2, key: !keyed ? "" : id2 !== undefined ? `user:${id2}` : `user:${index2}:${digest2(message.content)}`, apply: (text) => copy3([...message.content, { type: "text", text }]) };
+    }
+    if (message.role !== "tool")
+      return;
+    const at = message.content.findLastIndex((part2) => record2(part2) && part2.type === "tool-result");
+    const part = message.content[at], output = part?.result;
+    if (part?.name === CODE_MODE_TOOL || typeof part?.id !== "string" || !record2(output) || !(output.type === "text" ? typeof output.value === "string" : output.type === "content" && Array.isArray(output.value)))
+      return;
+    if (appended(output.value, "") === undefined)
+      return;
+    return { index: index2, key: keyed ? `tool:${index2}:${part.id}:${digest2(output)}` : "", apply: (text) => copy3(message.content.map((entry2, i) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry2)) };
+  } catch {}
+}
+function restoreNotes(messages) {
+  if (!Array.isArray(messages))
+    return;
+  for (let i = 0;i < messages.length; i++)
+    if (record2(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored))
+      messages[i] = messages[i][restored];
+}
+var CLEARED_REFUSAL = "Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.";
+var NOTE_SEPARATOR = `
+
+`;
+var MAX_NOTE_SESSIONS = 128;
+var MAX_NOTE_CARRIERS = 256;
+var MAX_NOTE_BYTES = 128 * 1024;
+var REFUSAL_HEADER = "## Delegation not applied";
 var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
 var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
 var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
@@ -29099,16 +29163,11 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
   const recent = new Set;
   const eligibility = new Map;
   const noted = new Set;
+  const memories = new Map;
   const owned = Symbol("agent-progress-section");
-  function section(hint, capsule = "", refusal = "") {
-    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
-
-${hintText(hint)}` : "") + (capsule ? `
-
-${capsule}` : "") + (refusal ? `
-
-${refusal}` : "") };
-    Object.defineProperty(part, owned, { value: { hint } });
+  function section() {
+    const part = { type: "text", text: ACTIVATION_GUIDANCE };
+    Object.defineProperty(part, owned, { value: true });
     return part;
   }
   const registrations = [];
@@ -29136,6 +29195,7 @@ ${refusal}` : "") };
       pending.clear();
       eligibility.clear();
       noted.clear();
+      memories.clear();
       disableEpoch++;
     }
     try {
@@ -29145,6 +29205,7 @@ ${refusal}` : "") };
     pending.clear();
     eligibility.clear();
     noted.clear();
+    memories.clear();
     retireRecovery();
     disableEpoch++;
     return false;
@@ -29199,6 +29260,7 @@ ${refusal}` : "") };
     recent.clear();
     eligibility.clear();
     noted.clear();
+    memories.clear();
     retireRecovery();
     replay.clear();
     await stopRecovery?.();
@@ -29258,12 +29320,13 @@ ${refusal}` : "") };
         for (let i = event.system.length - 1;i >= 0; i--)
           if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
             event.system.splice(i, 1);
+        restoreNotes(event.messages);
       };
       try {
+        restoreNotes(event.messages);
         for (let i = 0;i < event.system.length; i++)
-          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
-            event.system[i] = section(event.system[i][owned].hint);
-          }
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
+            event.system[i] = section();
         if (disposed) {
           removeOwned();
           return;
@@ -29300,8 +29363,15 @@ ${refusal}` : "") };
           return;
         }
         let capsule = "";
+        const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1, false, false) !== undefined;
+        const rearm = () => {
+          if (armed && compactions.get(sessionKey) === attempt)
+            attempt.pending = true;
+        };
+        if (!carried)
+          rearm();
         const assignedOnly = !armed && !!caller.parentID;
-        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
+        if (carried && (armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
           const controller = new AbortController;
           held = controller;
           const now3 = recovery.now ?? (() => performance.now());
@@ -29345,12 +29415,17 @@ ${refusal}` : "") };
           removeOwned();
           return;
         }
-        let refusal = "";
+        let refusal = "", refusalRead = "failed";
         try {
-          const selection = recovery?.refusals?.(event.sessionID);
-          if (selection?.sourceId === source.id && selection.sessionId === event.sessionID)
+          const selection = carried ? recovery?.refusals?.(event.sessionID) : undefined;
+          if (selection?.sourceId === source.id && selection.sessionId === event.sessionID) {
             refusal = delegationRefusalText(selection);
-        } catch {}
+            refusalRead = refusal ? "read" : "cleared";
+          }
+        } catch {
+          refusal = "";
+          refusalRead = "failed";
+        }
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
           removeOwned();
           return;
@@ -29361,17 +29436,98 @@ ${refusal}` : "") };
               effective.add(tool);
           }
         const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
-        if (existing !== -1) {
-          event.system[existing] = section(event.system[existing][owned].hint, capsule, refusal);
-          return;
-        }
-        const hint = (pending.get(sessionKey) ?? 0) & 7;
-        event.system.push(section(hint, capsule, refusal));
-        const remaining = (pending.get(sessionKey) ?? 0) & ~7;
-        if (remaining)
-          pending.set(sessionKey, remaining);
+        if (existing !== -1)
+          event.system[existing] = section();
         else
-          pending.delete(sessionKey);
+          event.system.push(section());
+        const hint = (pending.get(sessionKey) ?? 0) & 7;
+        const messages = event.messages;
+        restoreNotes(messages);
+        const current = memories.get(sessionKey);
+        const notes = new Map(current?.notes);
+        let { capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared } = current ?? {};
+        const ids = new Map;
+        if (Array.isArray(messages))
+          messages.forEach((message, i) => {
+            if (record2(message) && message.role === "user" && boundedID(message.id) && !ids.has(message.id))
+              ids.set(message.id, i);
+          });
+        const placed = new Map;
+        for (const note of notes.values()) {
+          const at = note.id === undefined ? note.index : record2(messages?.[note.index]) && messages[note.index].id === note.id ? note.index : ids.get(note.id) ?? -1;
+          const found = carrierAt(messages, at);
+          if (found?.key === note.key)
+            placed.set(note.key, found);
+        }
+        let latest2 = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
+        if (latest2?.id !== undefined && placed.has(latest2.key) && placed.get(latest2.key).index !== latest2.index)
+          latest2 = carrierAt(messages, messages.length - 1, true);
+        let consumed = false, recorded = false;
+        if (!latest2)
+          rearm();
+        else {
+          const due = [];
+          if (hint)
+            due.push(hintText(hint));
+          const standing = (last, text2) => !last || last.text !== text2 || !placed.has(last.key);
+          const capsuleDue = !!capsule && standing(lastCapsule, capsule);
+          if (capsuleDue)
+            due.push(capsule);
+          let refusalDue;
+          if (refusalRead === "read" && standing(lastRefusal, refusal))
+            refusalDue = refusal;
+          else if (refusalRead === "cleared" && lastReal && placed.has(lastReal.key) && !(lastCleared && placed.has(lastCleared.key)))
+            refusalDue = CLEARED_REFUSAL;
+          if (refusalDue !== undefined)
+            due.push(refusalDue);
+          const before = notes.get(latest2.key);
+          const text = [...before ? [before.text] : [], ...due.length ? [due.join(NOTE_SEPARATOR)] : []].join(NOTE_SEPARATOR);
+          if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
+            if (due.length) {
+              notes.delete(latest2.key);
+              notes.set(latest2.key, { key: latest2.key, id: latest2.id, index: latest2.index, text });
+              placed.set(latest2.key, latest2);
+              if (capsuleDue)
+                lastCapsule = { text: capsule, key: latest2.key };
+              if (refusalDue !== undefined) {
+                lastRefusal = { text: refusalDue, key: latest2.key };
+                if (refusalDue === CLEARED_REFUSAL)
+                  lastCleared = lastRefusal;
+                else if (refusalDue.startsWith(REFUSAL_HEADER)) {
+                  lastReal = lastRefusal;
+                  lastCleared = undefined;
+                }
+              }
+              recorded = true;
+            }
+            consumed = true;
+          } else
+            rearm();
+        }
+        let bytes2 = 0;
+        for (const note of notes.values())
+          bytes2 += Buffer.byteLength(note.text);
+        while (notes.size > MAX_NOTE_CARRIERS || bytes2 > MAX_NOTE_BYTES) {
+          const victim = [...notes.values()].find((note) => !placed.has(note.key)) ?? notes.values().next().value;
+          notes.delete(victim.key);
+          placed.delete(victim.key);
+          bytes2 -= Buffer.byteLength(victim.text);
+        }
+        for (const [noteKey, carrier] of placed)
+          messages[carrier.index] = carrier.apply(notes.get(noteKey).text);
+        if (current || recorded) {
+          memories.delete(sessionKey);
+          memories.set(sessionKey, { notes, capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared });
+          if (memories.size > MAX_NOTE_SESSIONS)
+            memories.delete(memories.keys().next().value);
+        }
+        if (consumed) {
+          const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+          if (remaining)
+            pending.set(sessionKey, remaining);
+          else
+            pending.delete(sessionKey);
+        }
       } catch {
         pending.delete(key(event.sessionID));
         eligibility.delete(key(event.sessionID));
@@ -29770,14 +29926,14 @@ Valid start (replace synthetic values with the real plan; task-2 requires task-1
 Load the agent-progress skill when writing, receiving or coordinating plans and before dispatching sub-agents: it has delegation, staging, handoff and blocker rules.
 Tracker updates are not Agent Progress reports. Mirror actionable structure at PLAN_READY handoff; review approval and owner approval are separate, existing canonical gates only. A write is not readiness, dispatch is not work start, and worker completion is not accepted handoff. Repeated guidance or already-current state needs no report. Never invent review tasks, infer progress or report automatically per turn.
 Read uses only op=read, one concrete plan ID and optional 0-based page; no oid/rev. Read current revision before updating and after compaction/conflict. Batch changes. Report only real same-plan prerequisites; omit dependencies when none are known, and retain still-needed links in full structural replacements. Source is optional; never manufacture a file; document capture still needs read permission.
-For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Finish successfully only when all actionable work is resolved.`;
+For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. Before a handoff, and when a prerequisite finishes, read the current plan: once every prerequisite the task still lists is done, set the task you blocked this way back to working or pending, since an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds it; a still-listed skipped prerequisite counts as unfinished. Finish successfully only when all actionable work is resolved.`;
 var GUIDANCE = `${REPORT_CHECKLIST}
 Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
-Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
+Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. Before a handoff, and when a prerequisite finishes, read the current plan: once every prerequisite the task still lists is done, set the task you blocked this way back to working or pending, since an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds it; a still-listed skipped prerequisite counts as unfinished. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {

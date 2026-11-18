@@ -39,7 +39,7 @@ function frame() {
   const globals = createContext({ vc, ui: vc.ui, read: vc.read, selection, derivedBoard,
     visiblePlans: () => derivedBoard().plans, ownerOf: () => 'fixture', v: null,
     isSearching: () => !!vc.ui.search,
-    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionPage: '', selectionEpoch: 0 });
+    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionEpoch: 0 });
   for (const node of [scope, endWithoutCleanup]) if (node) runInContext(ts.transpileModule(node.getText(file),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
   return { vc, selection, derivedBoard, globals,
@@ -114,11 +114,35 @@ test('a cached search page does not reselect a plan a receipt took out; a checke
   const page = { hits, number: 1, checked: true };
   f.globals.v = { page, criteria: { ...NO_FILTERS } };
   f.paint(); f.selection.mode = true; f.selection.selectAll();
-  f.selection.forget([plans[0].key]);
+  f.selection.forget(new Map<string, number | null>([[plans[0].key, null]]));
   page.checked = false; f.globals.v = { page: { ...page, hits: [...hits] }, criteria: { ...NO_FILTERS } };
   f.paint();
   assert.equal(f.selection.has(plans[0].key), false, 'an unverified cached page is not evidence');
   f.globals.v = { page: { ...page, hits: [...hits], checked: true }, criteria: { ...NO_FILTERS } };
   f.paint();
   assert.equal(f.selection.has(plans[0].key), true);
+});
+
+// The page's own search host: a plan a freshness reply shows gone reaches the selection however the page is painted.
+function searchHost(selection: PlanSelection) {
+  let host: { gone?: (plans: ReadonlyMap<string, number | null>) => void } | undefined;
+  const declaration = file.statements.flatMap(n => ts.isVariableStatement(n) ? [...n.declarationList.declarations] : [])
+    .find(d => ts.isIdentifier(d.name) && d.name.text === 'search');
+  assert.ok(declaration?.initializer, 'the page constructs its search controller');
+  const globals = createContext({ SearchController: class { constructor(h: typeof host) { host = h; } }, frame: null, document: { visibilityState: 'visible' }, selection });
+  runInContext(ts.transpileModule(`(${declaration.initializer.getText(file)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
+  assert.ok(host, 'the controller received its host');
+  return host;
+}
+test('a plan a freshness reply shows gone leaves the selection with that reply\'s generation, whatever page is painted', () => {
+  const rows = ['a', 'b'].map(id => ({ ...plans[0], key: id, id, cleanup: { state: 'visible' as const, revision: 1 } }));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', rows, true); selection.mode = true; selection.selectAll();
+  const host = searchHost(selection);
+  assert.equal(typeof host.gone, 'function', 'the host passes departures on');
+  host.gone!(new Map<string, number | null>([['a', 3]]));
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.count, 1);
+  assert.equal(selection.snapshot().includes({ ...rows[0], cleanup: { state: 'visible', revision: 3 } }), false);
+  assert.equal(selection.snapshot().includes({ ...rows[0], cleanup: { state: 'visible', revision: 4 } }), true, 'restored elsewhere since');
 });

@@ -68,8 +68,8 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 10. Joined verification
 
-- [ ] 10.1 After the groups above have merged, run one rendered journey across rail, board, Work Status and Setup on the development branch at desktop width and 390 px in three languages, covering the main-session rule, scopes, actions, hide, bulk archive with Undo, the indicator and the More panels, with keyboard-only passes.
-- [ ] 10.2 Run portable CI in a fresh full-history disposable checkout with a cleared environment for each pull request and for the joined branch, and review each public diff for private data.
+- [x] 10.1 After the groups above have merged, run one rendered journey across rail, board, Work Status and Setup on the development branch at desktop width and 390 px in three languages, covering the main-session rule, scopes, actions, hide, bulk archive with Undo, the indicator and the More panels, with keyboard-only passes.
+- [x] 10.2 Run portable CI in a fresh full-history disposable checkout with a cleared environment for each pull request and for the joined branch, and review each public diff for private data.
 
 ## 11. Plan mirroring guidance
 
@@ -95,9 +95,9 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## Deferred acceptance and out-of-scope follow-up
 
-- [ ] Physical-phone and native-host acceptance of the new surfaces. Emulated and synthetic-host evidence does not establish them.
-- [ ] A host capability to open a session with a drafted reply. Requested upstream; not part of this change.
-- [ ] Live confirmation that an agent on a provider that drops plugin system text mirrors a plan unprompted. Delivery is verified here; model compliance is not, and needs the owner's own session.
-- [ ] A request to the Claude Code provider project to forward plugin-added system sections, and a plugin-facing per-session instruction entry in the host API. Not part of this change.
-- [ ] Release preparation (version, changelog, notes) and promotion to the distribution branch follow the release policy as changed by group 12, after this change is accepted. That promotion is the first real use of the promotion command; the release preparer rehearses it in a disposable clone first.
-- [ ] A required check on the distribution branch, so that a pull request with failing checks cannot be merged. It is a repository setting, not part of this change.
+- [ ] Physical-phone and native-host acceptance of the new surfaces. Emulated and synthetic-host evidence does not establish them. Deferred: it needs the owner's own devices and hosts, and the later release changes carry the same item forward.
+- [ ] A host capability to open a session with a drafted reply. Requested upstream; not part of this change. Out of scope.
+- [ ] Live confirmation that an agent on a provider that drops plugin system text mirrors a plan unprompted. Delivery is verified here; model compliance is not, and needs the owner's own session. Deferred.
+- [ ] A request to the Claude Code provider project to forward plugin-added system sections, and a plugin-facing per-session instruction entry in the host API. Not part of this change. Out of scope.
+- [x] Release preparation (version, changelog, notes) and promotion to the distribution branch follow the release policy as changed by group 12, after this change is accepted. That promotion is the first real use of the promotion command; the release preparer rehearses it in a disposable clone first. Shipped as Agent Progress 1.5.0.
+- [ ] A required check on the distribution branch, so that a pull request with failing checks cannot be merged. It is a repository setting, not part of this change. Out of scope.
