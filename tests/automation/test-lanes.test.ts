@@ -1,14 +1,23 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as lanes from '../../scripts/test-lanes.ts';
 
+// The runner is POSIX-first: its process groups and the catchable SIGINT, SIGHUP and SIGTERM these tests send
+// do not exist on Windows, where ChildProcess.kill() cannot deliver them. The stop-command test below runs everywhere.
+const posixOnly = { skip: process.platform === 'win32' && 'process groups and catchable signals are POSIX-only' };
 const moduleUrl = JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const killTree = (pid: number) => {
+  if (process.platform === 'win32') spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' });
+  else { try { process.kill(-pid, 'SIGKILL'); } catch { /* not a group leader */ } try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+};
+const launched = new Set<ChildProcess>();
+after(() => { for (const child of launched) if (child.pid) killTree(child.pid); });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 async function until(condition: () => boolean, ms = 10_000) {
   for (const end = Date.now() + ms; Date.now() < end;) { if (condition()) return true; await sleep(25); }
@@ -41,11 +50,17 @@ else if (!modes.includes('hang')) process.exit(Number(value('code') ?? 0));
   const step = (label: string, mode: string) =>
     `{label:${JSON.stringify(label)},command:process.execPath,args:[${JSON.stringify(join(root, 'child.cjs'))}],env:{ROOT:${JSON.stringify(root)},NAME:${JSON.stringify(label)},MODE:${JSON.stringify(mode)}}}`;
   const pid = (name: string) => (existsSync(join(root, name + '.pid')) ? Number(readFileSync(join(root, name + '.pid'), 'utf8')) : undefined);
-  return { root, step, pid, dispose: () => rmSync(root, { recursive: true, force: true }) };
+  // Every fixture process records its pid here: stop whatever a failed test left running, then delete the files.
+  const dispose = () => {
+    for (const name of readdirSync(root)) if (name.endsWith('.pid')) killTree(Number(readFileSync(join(root, name), 'utf8')));
+    rmSync(root, { recursive: true, force: true });
+  };
+  return { root, step, pid, dispose };
 }
 
 function launch(script: string, env: Record<string, string> = {}) {
   const child = spawn(process.execPath, ['--experimental-strip-types', script], { env: { ...process.env, GITHUB_ACTIONS: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  launched.add(child);
   let out = '';
   child.stdout.on('data', c => { out += c; });
   child.stderr.on('data', c => { out += c; });
@@ -64,7 +79,7 @@ catch (error) { console.log('REJECTED ' + (error as Error).message); process.exi
 const bounded = async <T>(promise: Promise<T>, ms: number) => Promise.race([promise, sleep(ms).then(() => 'hung' as const)]);
 
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
-  test(`${signal} stops every step, keeps what they wrote and exits ${code}`, async () => {
+  test(`${signal} stops every step, keeps what they wrote and exits ${code}`, posixOnly, async () => {
     const f = fixture();
     try {
       const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'print,hang')}]},{name:'b',steps:[${s('two', 'print,hang')}]}]`));
@@ -81,7 +96,7 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]
   });
 }
 
-test('a grandchild that ignores SIGTERM and a descendant that holds the pipes from its own session do not hold the runner', async () => {
+test('a grandchild that ignores SIGTERM and a descendant that holds the pipes from its own session do not hold the runner', posixOnly, async () => {
   const f = fixture();
   let session: number | undefined;
   try {
@@ -98,7 +113,35 @@ test('a grandchild that ignores SIGTERM and a descendant that holds the pipes fr
   } finally { if (session && alive(session)) process.kill(session, 'SIGKILL'); f.dispose(); }
 });
 
-test('a repeated SIGINT is not swallowed: it kills steps that ignore the first one', async () => {
+test('a leader that exits 0 leaving a same-group descendant on the pipes does not leave the descendant running when the runner returns', posixOnly, async () => {
+  const f = fixture();
+  try {
+    // The leader exits at once; its grandchild (same group, ignores SIGTERM) holds the pipes. The grace period
+    // abandons the pipes, and the step passes, but the group is still alive.
+    const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'grandchild')}]}]`, '{graceMs:400,sweepMs:600}'));
+    assert.ok(await until(() => f.pid('one-grandchild') !== undefined));
+    const descendant = f.pid('one-grandchild')!;
+    assert.equal(await bounded(run.exited, 15_000), 0, run.output());
+    assert.match(run.output(), /^passed a: one/m);
+    assert.ok(await until(() => !alive(descendant), 3000), 'the descendant outlives a passing run');
+  } finally { f.dispose(); }
+});
+
+test('an interrupt during the grace period, which ends before the kill timer, still stops the descendant of a leader that already exited', posixOnly, async () => {
+  const f = fixture();
+  try {
+    const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'grandchild')}]}]`, '{graceMs:1500,killAfterMs:30000,sweepMs:600}'));
+    assert.ok(await until(() => f.pid('one-grandchild') !== undefined));
+    const descendant = f.pid('one-grandchild')!;
+    await sleep(300);
+    assert.ok(alive(descendant), 'the grace period is still running');
+    run.child.kill('SIGTERM');
+    assert.equal(await bounded(run.exited, 15_000), 143, run.output());
+    assert.ok(await until(() => !alive(descendant), 3000), 'the descendant outlives the interrupted run');
+  } finally { f.dispose(); }
+});
+
+test('a repeated SIGINT is not swallowed: it kills steps that ignore the first one', posixOnly, async () => {
   const f = fixture();
   try {
     const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'ignore,hang,grandchild')}]}]`, '{killAfterMs:60000}'));
@@ -114,7 +157,7 @@ test('a repeated SIGINT is not swallowed: it kills steps that ignore the first o
   } finally { f.dispose(); }
 });
 
-test('a closed output pipe stops the steps instead of orphaning them', async () => {
+test('a closed output pipe stops the steps instead of orphaning them', posixOnly, async () => {
   const f = fixture();
   try {
     const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'ignore,hang')}]}]`, '{heartbeatMs:100,killAfterMs:1000}'));
@@ -126,7 +169,7 @@ test('a closed output pipe stops the steps instead of orphaning them', async () 
   } finally { f.dispose(); }
 });
 
-test('a crash of the runner still kills every group it started', async () => {
+test('a crash of the runner still kills every group it started', posixOnly, async () => {
   const f = fixture();
   try {
     const file = join(f.root, 'crash.ts');
@@ -200,7 +243,7 @@ test('a step keeps only the tail of its output and says what was dropped', async
   } finally { f.dispose(); }
 });
 
-test('a pass whose leftover process holds the pipes is abandoned after the grace period, not waited for', async () => {
+test('a pass whose leftover process holds the pipes is abandoned after the grace period, not waited for', posixOnly, async () => {
   const f = fixture();
   let session: number | undefined;
   try {
@@ -222,7 +265,7 @@ test('steps are stopped with a process group on POSIX and with taskkill /T /F on
   assert.equal(lanes.detachesSteps('win32'), false);
 });
 
-test('lane runner starts a yielding step at lower priority and an ordinary one at the usual priority', async () => {
+test('lane runner starts a yielding step at lower priority and an ordinary one at the usual priority', posixOnly, async () => {
   const f = fixture();
   try {
     const file = join(f.root, 'priority.ts');

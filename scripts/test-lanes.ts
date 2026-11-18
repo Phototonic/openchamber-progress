@@ -9,8 +9,9 @@
  * left running would keep holding the Setup ports the next run needs. A repeated
  * signal, or a step that ignores the first one for too long, is killed outright
  * and abandoned even if its output pipes are still held open; every group the
- * runner started is killed again once the steps settle and when the process
- * exits, however it exits. On Windows steps are not detached and are stopped with
+ * runner started is stopped again (SIGTERM, then SIGKILL) once the steps settle,
+ * passing or not, since a leader that exits 0 can leave descendants holding
+ * ports, and again when the process exits, however it exits. On Windows steps are not detached and are stopped with
  * `taskkill /T /F`; that path is untested on Windows. */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 
@@ -28,6 +29,8 @@ export type RunOptions = {
   graceMs?: number;
   /** The most output kept per step; the earliest is dropped first. */
   maxOutputBytes?: number;
+  /** How long the closing sweep waits for a group to leave after SIGTERM, and again after SIGKILL. */
+  sweepMs?: number;
 };
 
 const SIGNAL_NUMBER: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGPIPE: 13, SIGTERM: 15 };
@@ -50,6 +53,13 @@ export function stopPlan(platform: NodeJS.Platform, pid: number, force: boolean)
 
 /** Steps get their own process group everywhere but Windows, which has none to use. */
 export const detachesSteps = (platform: NodeJS.Platform) => platform !== 'win32';
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** Whether anything is left in the step's group. Only POSIX has groups to look in. */
+function groupAlive(pid: number) {
+  if (process.platform === 'win32') return false;
+  try { process.kill(-pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
 
 function stop(pid: number, force: boolean) {
   const plan = stopPlan(process.platform, pid, force);
@@ -94,7 +104,7 @@ function print(label: string, text: string, ok: boolean) {
 type Live = { label: string; started: number; child: ChildProcess; signalled: boolean; printed: boolean; dump: () => void; force: (note: string) => void };
 
 export async function runLanes(lanes: Lane[], options: RunOptions = {}): Promise<StepResult[]> {
-  const { heartbeatMs = 60_000, killAfterMs = 10_000, graceMs = 3_000, maxOutputBytes = 2 * 1024 * 1024 } = options;
+  const { heartbeatMs = 60_000, killAfterMs = 10_000, graceMs = 3_000, maxOutputBytes = 2 * 1024 * 1024, sweepMs = 2_000 } = options;
   const results: StepResult[] = [];
   const groups = new Set<number>();
   const live = new Map<number, Live>();
@@ -109,8 +119,9 @@ export async function runLanes(lanes: Lane[], options: RunOptions = {}): Promise
   };
   const beginStop = () => {
     for (const [pid, step] of live) {
-      // A step that has already exited on its own is not ours to call stopped.
-      if (step.child.exitCode === null && step.child.signalCode === null) { step.signalled = true; stop(pid, false); }
+      // A leader that has exited on its own is not ours to call stopped, but its group may still be running.
+      if (step.child.exitCode === null && step.child.signalCode === null) step.signalled = true;
+      stop(pid, false);
     }
     // Not unref'd: steps are still running, and the run must outlast them.
     killTimer ??= setTimeout(escalate, killAfterMs);
@@ -163,7 +174,6 @@ export async function runLanes(lanes: Lane[], options: RunOptions = {}): Promise
       settled = true; clearTimeout(grace);
       if (pid) {
         live.delete(pid);
-        if (ok) groups.delete(pid); // a clean pass leaves nothing to sweep
         if (!live.size) { clearTimeout(killTimer); killTimer = undefined; }
       }
       const seconds = (performance.now() - started) / 1000;
@@ -193,7 +203,13 @@ export async function runLanes(lanes: Lane[], options: RunOptions = {}): Promise
     }));
   } finally {
     clearInterval(heartbeat); clearTimeout(killTimer);
-    if (failed || interrupted) for (const pid of groups) stop(pid, true);
+    // However each step ended, and whatever its leader's exit status, nothing it started may outlive the
+    // run: a descendant still holding a Setup port would refuse the next one. ESRCH just means it is gone.
+    const left = [...groups];
+    for (const pid of left) stop(pid, false);
+    for (const end = Date.now() + sweepMs; Date.now() < end && left.some(groupAlive);) await sleep(25);
+    for (const pid of left) if (groupAlive(pid)) stop(pid, true);
+    for (const end = Date.now() + sweepMs; Date.now() < end && left.some(groupAlive);) await sleep(25);
     groups.clear();
     for (const [signal, handler] of handlers) process.off(signal, handler);
     process.stdout.off('error', onStdoutError);

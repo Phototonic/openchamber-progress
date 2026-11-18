@@ -127,13 +127,15 @@ SIGTERM, SIGHUP or a closed output pipe (`test:all | head`) stops both lanes and
 running steps had written. Each step runs in its own process group, so the runner stops the groups
 itself: a repeated signal, or a step that has not stopped ten seconds after the first, is killed
 outright and abandoned even if a leftover process still holds its output pipes, and every group
-the runner started is killed once the steps settle and again if the runner itself crashes. An
+the runner started is stopped (SIGTERM, then SIGKILL after a short bound) once the steps settle, whether they passed or not, because a leader that exits 0 can leave descendants holding a port, and killed again if the runner itself crashes. An
 interrupted run exits 128 plus the signal number (130, 143, 129, 141), a failed one 1. A step
 the runner stopped is reported as stopped; one that fails on its own is reported as failed with
 its output, whenever it does so. On Windows steps are not detached and are stopped with
 `taskkill /T /F`; that path is covered by a unit test of the stop command but has not been run on
 Windows, and the typecheck step's `./node_modules/.bin/tsc` is a POSIX path, so on Windows run the
-individual commands listed under Local development by hand.
+individual commands listed under Local development by hand. The process-group and signal cases of
+`tests/automation/test-lanes.test.ts` are skipped on Windows (its stop-command case runs), and every case
+stops the processes it started even when it fails.
 
 Both runners also turn on Node's compile cache for every step they start
 (`NODE_COMPILE_CACHE`, a folder under the ignored `node_modules/.cache/`). It keeps
