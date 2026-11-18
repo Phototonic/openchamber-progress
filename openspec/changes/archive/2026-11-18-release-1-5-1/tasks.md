@@ -53,11 +53,11 @@ Each numbered group is one pull request into the development branch. It carries 
 
 ## 8. Joined verification and release
 
-- [ ] 8.1 After the groups above have merged, run one rendered journey on the development branch across rail, board and Work Status at desktop width and 390 px in three languages: a large library idle and during map gestures, list scrolling, Tidy archive with Undo and delete, a mixed selection, the map bar and help, and the counts, with a keyboard-only pass. Not recorded as one joined journey: the rendered Tidy, selection, map and count drivers ran with each pull request and again on the review fixes. Superseded by the joined journey of the 1.5.2 change (its task 7.1).
+- [ ] 8.1 After the groups above have merged, run one rendered journey on the development branch across rail, board and Work Status at desktop width and 390 px in three languages: a large library idle and during map gestures, list scrolling, Tidy archive with Undo and delete, a mixed selection, the map bar and help, and the counts, with a keyboard-only pass. Deferred: it was not run as one joined journey. The rendered Tidy, selection, map and count drivers ran with each pull request, and the 1.5.2 change repeats a joined journey for Tidy and selection (its task 7.1).
 - [x] 8.2 Run the measuring driver on the joined branch and compare with the budgets again. Compare a larger real library locally with the same method; commit none of its data, counts or logs, and delete the copy afterwards.
 - [x] 8.3 Run portable CI in a fresh full-history disposable checkout with a cleared environment, and review every public diff for private data.
 - [x] 8.4 Prepare the release: version 1.5.1 in the package and the release constant, the changelog entry and curated release notes, then the promotion to the distribution branch and its host gates as the contributor guide describes. The nine generated outputs are built and committed by the promotion only.
-- [x] 8.5 Archive the 1.5.0 change before archiving this one, because this change modifies capabilities that change introduced.
+- [x] 8.5 Archive the 1.5.0 change before archiving this one, because this change modifies capabilities that change introduced. Done in the 1.5.2 release pull request, which archives the 1.5.0 change and then this one.
 
 ## Deferred acceptance and out-of-scope follow-up
 

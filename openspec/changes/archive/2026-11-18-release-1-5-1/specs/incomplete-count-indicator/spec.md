@@ -2,7 +2,7 @@
 
 ### Requirement: Possibly low counts are never shown as exact
 
-A positive count that an active reason can raise SHALL carry a plus mark directly after the number, in all three languages, dismissed or not. A plus mark MUST NOT appear on zero or on a count no reason can raise, and a zero count SHALL have no badge. A count MUST NOT be shown as an exact positive number, nor a zero as a verified empty result, unless its own coverage is complete. A count SHALL stay marked when no reason is shown to leave it unaffected.
+A positive count that an active reason can raise SHALL carry a plus mark directly after the number, in all three languages, dismissed or not. A plus mark MUST NOT appear on zero or on a count that no active reason can raise, and a zero count SHALL have no badge. A count MUST NOT be shown as an exact positive number, nor a zero as a verified empty result, unless its own coverage is complete. When it cannot be shown that a reason leaves a count unaffected, that count SHALL stay marked.
 
 #### Scenario: Partial Needs you count
 - **WHEN** five items are known and some plans of the scope are unchecked
