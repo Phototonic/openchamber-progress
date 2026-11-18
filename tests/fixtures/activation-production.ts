@@ -84,7 +84,25 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
   }
 }
 
-export const activationContext = (sessionID = 'ses_M', available = true): any => ({ sessionID, agent: 'coordinator-x', model: { providerID: 'fixture', id: 'script' }, system: [{ type: 'text', text: 'Other system section' }], messages: [{ role: 'user', content: 'Make a plan' }], tools: available ? { agent_progress_report: { description: 'fixture', input: {} } } : {}, options: { temperature: 0.2 } });
+let turns = 0;
+/** Each call is a new conversation turn: a distinct user message, so delivered notes of an earlier call stay with that call's own message. */
+export const activationContext = (sessionID = 'ses_M', available = true): any => ({ sessionID, agent: 'coordinator-x', model: { providerID: 'fixture', id: 'script' }, system: [{ type: 'text', text: 'Other system section' }], messages: [{ role: 'user', content: [{ type: 'text', text: `Make a plan (turn ${++turns})` }] }], tools: available ? { agent_progress_report: { description: 'fixture', input: {} } } : {}, options: { temperature: 0.2 } });
+/**
+ * Text the companion added to the latest message of this request: every
+ * text part after the original content of a user message, or the parts appended
+ * to the content of the last tool result of a tool message. Empty when nothing
+ * was added.
+ */
+export function requestNote(context: any, original = 1): string {
+  const message = context.messages?.at(-1);
+  if (!message || !Array.isArray(message.content)) return '';
+  if (message.role === 'user') return message.content.slice(original).map((part: any) => part.text).join('\n\n');
+  if (message.role === 'tool') {
+    const result = message.content.findLast((part: any) => part.type === 'tool-result')?.result;
+    if (result?.type === 'content') return result.value.slice(original).map((part: any) => part.text).join('\n\n');
+  }
+  return '';
+}
 export function writeEvent(file = 'docs/plans/search.md', id = 'call_write', sessionID = 'ses_M'): any {
   return { tool: 'write', sessionID, agent: 'coordinator-x', messageID: 'msg_write', id, input: { path: file, content: 'Incomplete synthetic draft' }, status: 'completed', result: { output: { operation: 'write', target: `/fixture/${file}`, resource: file, existed: false } } };
 }

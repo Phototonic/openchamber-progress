@@ -354,7 +354,13 @@ test('setup paths: POSIX and drive-qualified Windows folders reach service inspe
   });
   assert.deepEqual(state.form, { ...targets, dataRoot: '' }, 'late Windows hints preserve custom folders and a deliberate clear');
   assert.doesNotMatch(setupErrorText('store-permissions'), /700/);
-  assert.match(setupErrorText('windows-security-unavailable'), /Windows PowerShell/);
+  // The Windows permission check no longer exists: an old failure may be stale, so every language says to retry.
+  for (const [locale, retry] of [['en', /try again/i], ['ru', /повторите/i], ['zh-CN', /重试/]] as const) {
+    const text = setupErrorText('windows-security-unavailable', locale);
+    assert.doesNotMatch(text, /PowerShell/, locale);
+    assert.match(text, retry, locale);
+    assert.match(text, locale === 'en' ? /stale/i : locale === 'ru' ? /устарев/i : /过时/, locale);
+  }
   assert.doesNotMatch(setupErrorText('private-permissions'), /private-permissions/);
 });
 

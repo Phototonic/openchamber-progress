@@ -12,6 +12,7 @@ import {Store} from '../../shared/store.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_MIGRATION_STEPS,MANAGED_FRESH_INSPECTION_STEPS,MANAGED_FRESH_STEPS,MANAGED_STEP_CODES,type ManagedStepRequest,type ManagedStepResponse,type ManagedFreshStepRequest,type ManagedFreshStepResponse} from '../../shared/managed-steps.ts';
 import {MANAGED_ACTION_CODES} from '../../shared/progress.ts';
 import {nativeService,nativeHarnessCode,HEALTH_MS,type Observation} from '../fixtures/windows-service-driver.ts';
+import {makeOwnerOnly} from '../fixtures/windows-acl.ts';
 
 /** Released emitted lifecycle AND Store, not a current-source reconstruction. */
 async function released(root:string){
@@ -29,10 +30,10 @@ const fullJourneySkip=process.env.AP_WINDOWS_FULL==='1'?false:'Full Windows jour
 // EMPTY runs first: no released installer, selected binding, Store or journal may
 // accidentally supply authority to the new-store journey. Retained fixtures use
 // only the Store owner, never an install followed by test-owned discovery removal.
-for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','retained-on','retained-new'] as const)test(`Windows built fresh steps (${fixture})`,{skip:fixture==='empty-delayed'&&fullJourneySkip||process.platform!=='win32',timeout:600000},async()=>{
+for(const fixture of ['empty','empty-custom','retained-off','retained-on','retained-new'] as const)test(`Windows built fresh steps (${fixture})`,{skip:process.platform!=='win32',timeout:600000},async()=>{
   const root=path.join(path.parse(os.tmpdir()).root,`agent-progress-fresh-${randomUUID()}`);
   const retained=fixture.startsWith('retained'),newSource=fixture==='retained-new',custom=fixture==='empty-custom',
-    delayed=fixture==='empty-delayed',mode=delayed?'delayed':'undelayed',limitMs=delayed?19999:8000;
+    mode='undelayed',limitMs=8000;
   let running:Awaited<ReturnType<typeof nativeService>>|undefined;
   let database='',managed='',storeRoot='',phase='fixture',failed=false;
   const freshStages=new Set<string>([...MANAGED_FRESH_INSPECTION_STEPS,...MANAGED_FRESH_STEPS,'journal','lock']);
@@ -52,7 +53,7 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
     // Keep the existing prefix/artifact collector; only fixed vocabulary, booleans
     // and numeric observations enter the public trace, never review/identity data.
     console.log('WINDOWS_MIGRATION_TRACE '+JSON.stringify({journey:'fresh',fixture,mode,request:o.phase,stage:freshStages.has(stage)?stage:null,code:codes.has(code)?code:code?'unrecognized-code':null,
-      status:o.status,elapsedMs:o.counts.elapsedMs,spawns:o.counts.queries,legacyReads:o.counts.legacyReads,workers:o.counts.workers,concurrentHealth:o.concurrent,
+      status:o.status,elapsedMs:o.counts.elapsedMs,spawns:o.counts.queries,legacyReads:o.counts.legacyReads,workers:o.counts.workers,
       sequence:Number.isSafeInteger(p?.sequence)?p.sequence:null,state:['pending','running','paused','failed','complete','abandoned'].includes(p?.state)?p.state:null,
       capture:['on','off','unknown'].includes(p?.capture?.state)?p.capture.state:null,...facts()}));
     if(o.phase==='first-health')assert.equal(o.value.managedFreshSteps,1,'built service must advertise fresh support even while starting');
@@ -105,9 +106,8 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
       const refused=await request(`/v1/setup/${route}`,route==='managed-configure'?{confirmed:true,expected:'a'.repeat(64)}:{},`fresh-old-${route}`,{maxSpawns:0,expectedStatus:409});
       assert.deepEqual(refused.value,{error:'managed-action-required'});assert.equal(refused.counts.workers,0);assert.equal(refused.counts.legacyReads,0);pristine();
     }
-    await running.settings(null,delayed?2500:0);
     const step=async(body:ManagedFreshStepRequest,label:string,expectedStatus=200)=>{
-      const r=await request('/v1/setup/managed-step',body,`fresh-${label}`,{concurrent:true,expectedStatus});
+      const r=await request('/v1/setup/managed-step',body,`fresh-${label}`,{expectedStatus});
       const value=r.value as ManagedFreshStepResponse;assert.equal(value.version,2);
       if(expectedStatus===200)assert.equal(value.error,null,`${label}: success must not hide a refusal`);
       return {...r,value};
@@ -116,7 +116,7 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
       let cursor:string|undefined;
       for(const stage of MANAGED_FRESH_INSPECTION_STEPS){
         const r=await step({version:2,action:'inspect',...(cursor?{cursor}:custom?{storeRoot}:{})},`inspect-${stage}`);pristine();
-        assert.ok(r.counts.queries>0,'fresh inspection performs real security checks');assert.equal(r.value.inspection?.stage,stage);
+        assert.equal(r.counts.queries,0,'fresh inspection starts no process');assert.equal(r.value.inspection?.stage,stage);
         if(stage==='review'){assert.equal(r.value.inspection?.state,'complete');assert.ok(r.value.inspection?.review);return r.value.inspection.review;}
         assert.equal(r.value.inspection?.state,'incomplete');assert.equal(r.value.inspection?.review,undefined);assert.ok(r.value.inspection?.cursor);cursor=r.value.inspection.cursor;
       }
@@ -132,12 +132,6 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
       if(newSource)assert.notEqual(review.sourceId,retainedSourceId);else assert.equal(review.sourceId,retainedSourceId);
       assert.equal(review.capture.state,initialCapture?'on':'off');}
     const operationId=randomUUID();
-    if(fixture==='empty'){
-      await running.settings('timeout');
-      const refusal=await step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected},'prepare-timeout',503);
-      assert.equal(refusal.value.disposition,'refused');assert.deepEqual(refusal.value.error,{stage:'prepare',code:'managed-step-deadline'});assert.ok(refusal.counts.queries>0);pristine();
-      await running.settings();review=await inspect();
-    }
     const begin:ManagedFreshStepRequest={version:2,action:'begin',operationId,confirmed:true,expected:review.expected};
     let p=(await step(begin,'prepare')).value.progress!;
     assert.equal(p.sequence,1);assert.equal(p.state,'pending');assert.deepEqual(p.lastCompleted,{name:'prepare',batch:0});assert.deepEqual(p.plan,review.plan);
@@ -147,8 +141,8 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
       const current=p,enabled=fs.existsSync(database)?capture():null;
       p=(await step({version:2,action:'pause',operationId,expectedSequence:p.sequence},`pause-${label}`)).value.progress!;
       assert.equal(p.state,'paused');assert.deepEqual(p.step,current.step);
-      await running!.stop();running=await nativeService(env,observe);await running.settings(null,delayed?2500:0);
-      const reopened=await request('/v1/setup',undefined,`fresh-reopen-${label}`,{concurrent:true,expectedStatus:200});
+      await running!.stop();running=await nativeService(env,observe);
+      const reopened=await request('/v1/setup',undefined,`fresh-reopen-${label}`,{expectedStatus:200});
       assert.equal(reopened.value.delivery.managedFreshSteps,1);assert.equal(reopened.value.delivery.freshProgress.state,'paused');assert.equal(reopened.value.delivery.freshProgress.sequence,p.sequence);
       assert.equal(reopened.value.captureEnabled,enabled);assert.equal(fs.existsSync(database)?capture():null,enabled);
       p=(await step({version:2,action:'resume',operationId,expectedSequence:p.sequence},`resume-${label}`)).value.progress!;
@@ -177,7 +171,7 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
     assert.equal(readDatabase(db=>db.prepare('SELECT COUNT(*) AS n FROM sources WHERE id=? AND verified=1').get(review.sourceId)!.n),1);
     assert.equal(readDatabase(db=>db.prepare('SELECT COUNT(*) AS n FROM sources').get()!.n),newSource?2:1);
     if(custom)assert.equal(fs.existsSync(path.join(dataRoot,'openchamber-progress')),false,'custom selection must not create default storage');
-    const status=await request('/v1/setup',undefined,'fresh-complete-status',{concurrent:true,expectedStatus:200});
+    const status=await request('/v1/setup',undefined,'fresh-complete-status',{expectedStatus:200});
     assert.equal(status.value.delivery.managedFreshSteps,1);assert.equal(status.value.delivery.freshProgress.state,'complete');assert.equal(status.value.configured,true);
     assert.equal(status.value.captureEnabled,retained?initialCapture:true);assert.equal(status.value.reportingIdentity.storeId,review.storeId);assert.equal(status.value.reportingIdentity.sourceId,review.sourceId);
     assert.equal(fs.existsSync(legacyRoot),false);assert.equal(privatePaths([managed,path.join(managed,'.ownership.json'),path.join(managed,'progress-binding.json'),database]),true);
@@ -191,11 +185,11 @@ for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','ret
   }
 });
 
-for(const delayed of [false,true])test(`Windows built released 1.1.1 step migration (${delayed?'2500ms helpers':'undelayed'})`,{skip:fullJourneySkip||process.platform!=='win32',timeout:600000},async()=>{
+test('Windows built released 1.1.1 step migration',{skip:fullJourneySkip||process.platform!=='win32',timeout:600000},async()=>{
   const root=path.join(path.parse(os.tmpdir()).root,`agent-progress-service-${randomUUID()}`);
   let running:Awaited<ReturnType<typeof nativeService>>|undefined;
   let database='',managed='',storeRoot='',phase='fixture',failed=false;
-  const mode=delayed?'delayed':'undelayed',limitMs=delayed?19999:8000;
+  const mode='undelayed',limitMs=8000;
   const capture=()=>{const db=new DatabaseSync(database,{readOnly:true});try{const enabled=db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()?.enabled;assert.ok(enabled===0||enabled===1,'capture bit must be readable');return enabled===1;}finally{db.close();}};
   function facts(){
     let enabled:boolean|null=null;try{if(database&&fs.existsSync(database))enabled=capture();}catch{/* Unknown is not off. */}
@@ -208,7 +202,7 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     const stage=diagnostic?.stage??o.value.inspection?.stage??p?.lastCompleted?.name;
     const code=typeof error==='string'?error:diagnostic?.code;
     console.log('WINDOWS_MIGRATION_TRACE '+JSON.stringify({mode,request:o.phase,stage:stages.has(stage)?stage:null,code:codes.has(code)?code:code?'unrecognized-code':null,
-      status:o.status,elapsedMs:o.counts.elapsedMs,spawns:o.counts.queries,legacyReads:o.counts.legacyReads,workers:o.counts.workers,concurrentHealth:o.concurrent,
+      status:o.status,elapsedMs:o.counts.elapsedMs,spawns:o.counts.queries,legacyReads:o.counts.legacyReads,workers:o.counts.workers,
       sequence:Number.isSafeInteger(p?.sequence)?p.sequence:null,state:['pending','running','paused','failed','complete','abandoned'].includes(p?.state)?p.state:null,
       capture:['on','off','unknown'].includes(p?.capture?.state)?p.capture.state:null,...facts()}));
     if(p){
@@ -218,7 +212,10 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     }
   }
   try{
-    privateDirectory(root);const home=path.join(root,'home ü space');privateDirectory(home);
+    privateDirectory(root);
+    // The released 1.1.1 installer below still checks ACLs itself: give its root the
+    // owner-only ACL that version created, which every folder under it inherits.
+    makeOwnerOnly(root);const home=path.join(root,'home ü space');privateDirectory(home);
     const env:NodeJS.ProcessEnv={HOME:home,USERPROFILE:home,TEMP:path.join(root,'temp'),TMP:path.join(root,'temp'),
       XDG_CONFIG_HOME:path.join(home,'.config'),XDG_DATA_HOME:path.join(home,'.local','share'),XDG_STATE_HOME:path.join(root,'state'),XDG_CACHE_HOME:path.join(root,'cache'),XDG_RUNTIME_DIR:path.join(root,'runtime')};
     for(const key of ['SystemRoot','SYSTEMROOT','WINDIR'])if(process.env[key])env[key]=process.env[key];
@@ -262,9 +259,8 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
       assert.equal(refused.counts.workers,0);assert.equal(refused.counts.legacyReads,0);
       untouched();assert.equal(fs.existsSync(managed),false);
     }
-    await running.settings(null,delayed?2500:0);
     const step=async(body:ManagedStepRequest,label:string,expectedStatus=200)=>{
-      const r=await request('/v1/setup/managed-step',body,label,{concurrent:true,expectedStatus});
+      const r=await request('/v1/setup/managed-step',body,label,{expectedStatus});
       const value=r.value as ManagedStepResponse;assert.equal(value.version,1);
       if(expectedStatus===200)assert.equal(value.error,null,`${label}: successful step must not contain an error`);
       return {...r,value};
@@ -273,7 +269,7 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
       let cursor:string|undefined;
       for(const stage of MANAGED_INSPECTION_STEPS){
         const r=await step({version:1,action:'inspect',...(cursor?{cursor}:{})},`inspect-${stage}`);
-        assert.ok(r.counts.queries>0,'native inspection must perform real security checks');
+        assert.equal(r.counts.queries,0,'native inspection starts no process');
         assert.equal(r.value.inspection?.stage,stage);
         if(stage==='review'){assert.equal(r.value.inspection?.state,'complete');return r.value.inspection!.review!;}
         assert.equal(r.value.inspection?.state,'incomplete');assert.equal(r.value.inspection?.review,undefined);cursor=r.value.inspection!.cursor!;
@@ -281,34 +277,14 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
       throw new Error('native-inspection-incomplete');
     };
     const operationId=randomUUID();let review=await inspect();untouched();assert.equal(fs.existsSync(managed),false);
-    if(!delayed){
-      for(const [fault,code]of [['timeout','managed-step-deadline'],['private','private-permissions']] as const){
-        await running.settings(fault);
-        const refusal=await step({version:1,action:'begin',operationId,confirmed:true,expected:review.expected},`prepare-${fault}`,503);
-        assert.deepEqual(refusal.value.error,{stage:'prepare',code});assert.equal(refusal.value.disposition,'refused');
-        assert.ok(refusal.counts.queries>0);untouched();assert.equal(fs.existsSync(managed),false);
-        await running.settings();
-        const status=await request('/v1/setup',undefined,`${fault}-status`,{concurrent:true,expectedStatus:200});
-        assert.equal(status.value.delivery.migration,'available');assert.equal(status.value.captureEnabled,null,'unselected legacy capture is unknown');
-        review=await inspect(); // Refusal consumed the old ephemeral inspection.
-      }
-      // Late helper outlives the response deadline. No second writer may enter
-      // before actual worker exit; no timeout is treated as proof of rollback.
-      await running.settings('overrun');
-      const late=await request('/v1/setup/managed-step',{version:1,action:'begin',operationId,confirmed:true,expected:review.expected},'prepare-overrun',{concurrent:true,limitMs:19999,expectedStatus:503});
-      assert.deepEqual(late.value.error,{stage:'prepare',code:'managed-step-deadline'});untouched();
-      const competing=await step({version:1,action:'status'},'late-competing-status',503);
-      assert.equal(competing.value.error?.code,'managed-step-unsettled');assert.equal(competing.counts.queries,0);
-      await late.waitForWorkerExit();await running.settings();untouched();review=await inspect();
-    }
     let p=(await step({version:1,action:'begin',operationId,confirmed:true,expected:review.expected},'prepare')).value.progress!;
     assert.equal(p.sequence,1);assert.deepEqual(p.lastCompleted,{name:'prepare',batch:0});assert.equal(capture(),true);untouched();
     const pauseResume=async(label:string)=>{
       const current=p,enabled=capture();
       p=(await step({version:1,action:'pause',operationId,expectedSequence:p.sequence},`pause-${label}`)).value.progress!;
       assert.equal(p.state,'paused');assert.deepEqual(p.step,current.step);assert.equal(capture(),enabled);
-      await running!.stop();running=await nativeService(env,observe);await running.settings(null,delayed?2500:0);
-      const status=await request('/v1/setup',undefined,`reopen-${label}`,{concurrent:true,expectedStatus:200});
+      await running!.stop();running=await nativeService(env,observe);
+      const status=await request('/v1/setup',undefined,`reopen-${label}`,{expectedStatus:200});
       assert.equal(status.value.delivery.migrationProgress.state,'paused');assert.equal(status.value.delivery.migrationProgress.sequence,p.sequence);
       assert.equal(status.value.captureEnabled,enabled);assert.equal(capture(),enabled);
       p=(await step({version:1,action:'resume',operationId,expectedSequence:p.sequence},`resume-${label}`)).value.progress!;
@@ -329,7 +305,7 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     assert.equal(p.state,'complete','bounded driver must complete, not loop through refusals');assert.equal(p.step,null);assert.equal(p.capture.state,'on');
     assert.deepEqual([...new Set(completed.map(s=>s.name))],MANAGED_MIGRATION_STEPS);
     for(const name of ['remove-selector','remove-discovery']){const batches=completed.filter(s=>s.name===name).map(s=>s.batch);assert.ok(batches.length>1,'exercise multiple removal batches');assert.deepEqual(batches,batches.map((_,i)=>i));}
-    const migrated=await request('/v1/setup',undefined,'complete-status',{concurrent:true,expectedStatus:200});
+    const migrated=await request('/v1/setup',undefined,'complete-status',{expectedStatus:200});
     assert.equal(migrated.value.delivery.migration,'complete');assert.equal(migrated.value.captureEnabled,true);
     assert.equal(migrated.value.reportingIdentity.storeId,legacy.storeId);assert.equal(migrated.value.reportingIdentity.sourceId,legacy.source.id);
     assert.equal(fs.existsSync(legacyRoot),false);assert.deepEqual(historySnapshot(),history);assert.deepEqual(payloadSnapshot(path.join(storeRoot,'payloads')),payloads);
@@ -337,7 +313,7 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     const events=installationAfter.toString().trim().split('\n').map(line=>JSON.parse(line));assert.equal(events.filter(e=>e.action==='remove-capture').length,1);
     assert.equal(privatePaths([managed,path.join(managed,'.ownership.json'),path.join(managed,'progress-binding.json')]),true);
     const ready=await request('/health',undefined,'ready-health',{limitMs:HEALTH_MS,maxSpawns:0,expectedStatus:200});assert.equal(ready.value.ready,true);assert.equal(ready.counts.legacyReads,0);
-    if(!delayed){
+    {
       // Retain selected cold start and hard-link admission/refusal/recovery.
       await running.stop();running=await nativeService(env,observe);await running.stop();
       const alias=path.join(root,'database-alias.sqlite');fs.linkSync(database,alias);running=await nativeService(env,observe);

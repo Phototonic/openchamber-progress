@@ -314,7 +314,9 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert(!text.includes('pull_request_target'));assert(!text.includes('secrets.'));
   assert.match(text,/permissions:\n  contents: read/);assert.match(text,/publish:\n(?:    name: [^\n]+\n)?    needs: \[portable, windows-native\]/);
   assert.match(text,/windows-native:\n(?:    name: [^\n]+\n)?    runs-on: windows-2025/);
-  assert.match(text,/--experimental-strip-types --test --test-concurrency=1 tests\/backend\/windows-platform\.test\.ts tests\/backend\/windows-service\.test\.ts/);
+  // Both native files still run, each in its own serial runner, as the same unprivileged principal.
+  assert.match(text,/\$runs = @\('windows-platform', 'windows-service'\)/);
+  assert.match(text,/--experimental-strip-types --test --test-concurrency=1 tests\/backend\/\$\(\$run\.File\)\.test\.ts/);
   assert.match(text,/git fetch --no-tags origin tag v1\.1\.1/);
   assert.match(text,/name: Upload sanitized Windows migration trace\n        if: always\(\)/);
   assert.match(text,/name: windows-migration-trace\n          path: \$\{\{ runner.temp \}\}\/windows-migration-trace\.jsonl/);

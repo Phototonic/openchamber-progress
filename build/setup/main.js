@@ -9,18 +9,15 @@ import path2 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // shared/platform.ts
-import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
 var windows = process.platform === "win32";
 
 class PlatformError extends Error {
   code;
-  reason;
-  constructor(code, reason) {
+  constructor(code) {
     super(code);
     this.code = code;
-    this.reason = reason;
   }
 }
 function writerTarget(kind, value) {
@@ -37,36 +34,11 @@ function writerTarget(kind, value) {
   return `${kind}:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
 }
 var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
-var cache = new Map;
-var reparseCache = new Map;
-var scope = 0;
+var STEP_HEADROOM_MS = 2500;
 var requestBudget;
 var writerTargets;
-function platformSecurityScope(run) {
-  const finish = beginPlatformSecurityScope();
-  try {
-    return run();
-  } finally {
-    finish();
-  }
-}
-function beginPlatformSecurityScope() {
-  if (!scope) {
-    cache.clear();
-    reparseCache.clear();
-  }
-  scope++;
-  return () => {
-    if (!--scope) {
-      cache.clear();
-      reparseCache.clear();
-    }
-  };
-}
-function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
-  if (scope)
-    throw new PlatformError("managed-step-conflict");
-  requestBudget?.require(spawns, headroomMs);
+function requirePlatformWriteBoundary(headroomMs = 0) {
+  requestBudget?.require(headroomMs);
 }
 function requirePlatformStoreFence(database) {
   requestBudget?.require();
@@ -74,225 +46,14 @@ function requirePlatformStoreFence(database) {
   if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
     throw new PlatformError("managed-step-conflict");
 }
-var windowsPowerShellBootstrap = String.raw`
-$env:PSModulePath = $PSHOME + '\Modules'
-$PSModuleAutoLoadingPreference = 'None'
-Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
-`;
-var windowsDaclValidationScript = String.raw`
-function Test-OrdinaryDacl($binary) {
-  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
-  if ($null -eq $raw.DiscretionaryAcl) { return $false }
-  foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed, [Security.AccessControl.AceQualifier]::AccessDenied) -or ([int]$ace.AceFlags -band 224)) { return $false }
-  }
-  return $true
-}
-function Test-TrustedAncestorOwner($owner, $currentUser) {
-  # Owners can rewrite a DACL even without an explicit write ACE. The service
-  # SID below is Windows Modules Installer (TrustedInstaller), ancestor-only.
-  return $owner -in @($currentUser, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-}
-`;
-var securityScript = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-${windowsPowerShellBootstrap}
-${windowsDaclValidationScript}
-$writerMutex = $null
-$writerOwned = $false
-$failureCode = 'windows-security-unavailable'
-try {
-  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  if ($request.fence) {
-    $failureCode = 'managed-step-unsettled'
-    # The main service holds the TCP writer slot until its Node worker exits.
-    # This account-scoped mutex additionally fences a security child that might
-    # outlive that service. Obtain it BEFORE checking the current slot nonce.
-    # Every new writer's first fresh query crosses this barrier before effects.
-    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
-    try { $writerOwned = $writerMutex.WaitOne(15000) }
-    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
-      $client.Connect('127.0.0.1', [int]$request.fence.port)
-      $stream = $client.GetStream()
-      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
-      $stream.Write($bytes, 0, $bytes.Length)
-      $reply = [byte[]]::new(3); $offset = 0
-      while ($offset -lt 3) {
-        $count = $stream.Read($reply, $offset, 3 - $offset)
-        if ($count -le 0) { throw 'writer-unsettled' }
-        $offset += $count
-      }
-      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
-    } finally { $client.Dispose() }
-    $failureCode = 'windows-security-unavailable'
-  }
-  $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
-  if ($request.create) {
-    foreach ($target in $request.create) {
-      if ($request.exclusive -and [IO.Directory]::Exists($target)) { throw 'creation-conflict' }
-      if (-not [IO.Directory]::Exists($target)) {
-        $security = [Security.AccessControl.DirectorySecurity]::new()
-        $security.SetOwner($user)
-        $security.SetAccessRuleProtection($true, $false)
-        foreach ($value in $allowed) {
-          $sid = [Security.Principal.SecurityIdentifier]::new($value)
-          $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-          $security.AddAccessRule($rule)
-        }
-        [void][IO.Directory]::CreateDirectory($target, $security)
-      }
-    }
-  }
-  $results = @()
-  foreach ($target in $request.paths) {
-    $owned = $false; $private = $false; $reparse = $true; $unsafeParent = $true
-    try {
-      $attributes = [IO.File]::GetAttributes($target)
-      $reparse = [bool]($attributes -band [IO.FileAttributes]::ReparsePoint)
-      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($target) }
-      else { $acl = [IO.File]::GetAccessControl($target) }
-      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-      $owned = $owner -eq $user.Value
-      $ordinary = Test-OrdinaryDacl ($acl.GetSecurityDescriptorBinaryForm())
-      $private = $ordinary -and $owned -and $acl.AreAccessRulesCanonical -and -not $reparse
-      $unsafeParent = -not $ordinary -or -not (Test-TrustedAncestorOwner $owner $user.Value)
-      $granted = $false
-      $full = [Security.AccessControl.FileSystemRights]::FullControl
-      $replace = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000
-      if ($ordinary) { foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin $allowed) { $private = $false }
-        if (($attributes -band [IO.FileAttributes]::Directory) -and $rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $replace)) { $unsafeParent = $true }
-        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq $user.Value -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $full) -eq $full) { $granted = $true }
-      } }
-      $private = $private -and $granted
-    } catch { $private = $false; $unsafeParent = $true }
-    $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
-  }
-  [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
-finally {
-  if ($writerOwned) { $writerMutex.ReleaseMutex() }
-  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
-}
-`;
-function snapshot(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(":");
-}
-function objectIdentity(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.birthtimeNs].join(":");
-}
-function reparsePaths(paths, parents) {
-  const fresh = new Map;
-  const pending = paths.filter((p) => !scope || reparseCache.get(p)?.identity !== objectIdentity(p));
-  const before = pending.map(objectIdentity), stats = pending.map(snapshot), results = pending.length ? windowsSecurityQuery(pending) : [];
-  pending.forEach((p, i) => {
-    const after = objectIdentity(p);
-    if (after !== before[i])
-      throw new PlatformError("path-unverified");
-    const result = { identity: after, reparse: results[i].reparse, unsafeParent: results[i].unsafeParent };
-    fresh.set(p, result);
-    if (reparseCache.size < 1024 || reparseCache.has(p))
-      reparseCache.set(p, result);
-    if (snapshot(p) === stats[i] && (cache.size < 1024 || cache.has(p)))
-      cache.set(p, { snapshot: stats[i], result: results[i] });
-  });
-  if (paths.some((p) => parents.has(p) && (fresh.get(p) ?? reparseCache.get(p)).unsafeParent))
-    throw new PlatformError("unsafe-parent");
-  return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
-}
-var securityQueryAttempted = false;
-function windowsSecurityQuery(paths, create = [], spawn = spawnSync, exclusive = false) {
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
-    throw new PlatformError("windows-security-unavailable");
-  const env = {};
-  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA"]) {
-    if (process.env[key])
-      env[key] = process.env[key];
-  }
-  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create, ...exclusive ? { exclusive: true } : {}, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
-  const firstQuery = !securityQueryAttempted;
-  const run = () => {
-    const timeout = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
-    try {
-      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout, maxBuffer: 1024 * 1024 });
-    } finally {
-      securityQueryAttempted = true;
-    }
-  };
-  let child;
-  child = run();
-  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run();
-  requestBudget?.require();
-  if (requestBudget && child.error?.code === "ETIMEDOUT")
-    throw new PlatformError("managed-step-deadline", "timeout");
-  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
-    let failure;
-    try {
-      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-    } catch {}
-    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
-      throw new PlatformError("managed-step-unsettled", "exit");
-  }
-  if (child.error || child.status !== 0)
-    throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
-  let results;
-  try {
-    results = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-  } catch {
-    throw new PlatformError("windows-security-unavailable");
-  }
-  if (!Array.isArray(results) || results.length !== paths.length || results.some((r) => !r || ["owned", "private", "reparse", "unsafeParent"].some((k) => typeof r[k] !== "boolean")))
-    throw new PlatformError("windows-security-unavailable");
-  return results;
-}
-function windowsSecurity(paths) {
-  const pending = new Map;
-  const fresh = new Map;
-  for (const file of paths) {
-    const stat = snapshot(file);
-    if (!scope || cache.get(file)?.snapshot !== stat)
-      pending.set(file, stat);
-  }
-  const files = [...pending.keys()];
-  if (files.length) {
-    const results = windowsSecurityQuery(files);
-    files.forEach((file, i) => {
-      const after = snapshot(file), before = pending.get(file);
-      if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
-        throw new PlatformError("path-unverified");
-      fresh.set(file, results[i]);
-      if (reparseCache.size < 1024 || reparseCache.has(file))
-        reparseCache.set(file, { identity: objectIdentity(file), reparse: results[i].reparse, unsafeParent: results[i].unsafeParent });
-      if (after === before) {
-        if (cache.size < 1024 || cache.has(file))
-          cache.set(file, { snapshot: before, result: results[i] });
-      } else
-        cache.delete(file);
-    });
-  }
-  return paths.map((file) => fresh.get(file) ?? cache.get(file).result);
-}
 function windowsPath(value, allowMissing = false) {
   return windowsPaths([value], allowMissing)[0];
 }
 function windowsPaths(values, allowMissing = false) {
-  return platformSecurityScope(() => windowsPathsInner(values, allowMissing));
+  return windowsPathsInner(values, allowMissing);
 }
-function windowsPathsInner(values, allowMissing = false, privateState = true) {
-  const ancestors = new Set, parents = new Set;
-  const resolved = values.map((value) => {
+function windowsPathsInner(values, allowMissing = false) {
+  return values.map((value) => {
     if (value.includes("\x00") || value.length > 4096 || !/^[a-z]:[\\/]/i.test(value))
       throw new PlatformError("path-unverified");
     const normalized = value.replaceAll("/", "\\");
@@ -314,42 +75,34 @@ function windowsPathsInner(values, allowMissing = false, privateState = true) {
       current = parent;
     }
     for (let p = current;; p = path.dirname(p)) {
-      const stat = lstatSync(p);
-      if (stat.isSymbolicLink())
+      if (lstatSync(p).isSymbolicLink())
         throw new PlatformError("symlink-escape");
-      ancestors.add(p);
-      if (path.dirname(p) === p)
-        break;
-    }
-    for (let p = tail.length ? current : path.dirname(current);; p = path.dirname(p)) {
-      parents.add(p);
       if (path.dirname(p) === p)
         break;
     }
     return path.join(realpathSync.native(current), ...tail);
   });
-  if (reparsePaths([...ancestors], privateState ? parents : new Set))
-    throw new PlatformError("symlink-escape");
-  return resolved;
 }
 function isOwned(file) {
-  return windows ? windowsSecurity([file])[0].owned : lstatSync(file).uid === process.getuid?.();
+  if (windows) {
+    lstatSync(file);
+    return true;
+  }
+  return lstatSync(file).uid === process.getuid?.();
 }
 function sameWindowsDirectory(left, right) {
   return sameWindowsObject(left, right, true);
 }
 function sameWindowsObject(left, right, directory = false) {
-  return platformSecurityScope(() => {
-    const [a, b] = windowsPaths([left, right]);
-    const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
-    return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
-  });
+  const [a, b] = windowsPaths([left, right]);
+  const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
+  return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
 }
 function privatePaths(files) {
   return windows ? files.every((file) => {
     const s = lstatSync(file);
-    return !s.isFile() || s.nlink === 1;
-  }) && windowsSecurity(files).every((s) => s.private) : files.every((file) => {
+    return !s.isSymbolicLink() && (!s.isFile() || s.nlink === 1);
+  }) : files.every((file) => {
     const s = lstatSync(file);
     return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
   });
@@ -359,45 +112,44 @@ function privateDirectory(file, recursive = false, creation) {
     requirePlatformWriteBoundary();
     if (recursive || creation.exclusive !== true || typeof creation.validate !== "function")
       throw new PlatformError("managed-step-conflict");
-    const target = platformSecurityScope(() => {
-      creation.validate();
-      const target2 = windows ? windowsPath(file, true) : file, parent = path.dirname(target2);
-      if (!path.isAbsolute(target2) || path.resolve(target2) !== target2 || !lstatSync(parent).isDirectory() || !windows && realpathSync(parent) !== parent || lstatSync(target2, { throwIfNoEntry: false }))
+    creation.validate();
+    const target2 = windows ? windowsPath(file, true) : file, parent = path.dirname(target2);
+    if (!path.isAbsolute(target2) || path.resolve(target2) !== target2 || !lstatSync(parent).isDirectory() || !windows && realpathSync(parent) !== parent || lstatSync(target2, { throwIfNoEntry: false }))
+      throw new PlatformError("path-unverified");
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
+    try {
+      if (windows)
+        mkdirSync(target2);
+      else
+        mkdirSync(target2, { mode: 448 });
+    } catch (error) {
+      if (windows && error.code === "EEXIST")
         throw new PlatformError("path-unverified");
-      return target2;
-    });
-    requirePlatformWriteBoundary(3, 8500);
-    if (windows) {
-      const [result] = windowsSecurityQuery([target], [target], undefined, true);
-      if (!result?.owned || !result.private || result.reparse || result.unsafeParent)
-        throw new PlatformError("private-permissions");
-    } else
-      mkdirSync(target, { mode: 448 });
-    syncDirectory(path.dirname(target));
+      throw error;
+    }
+    syncDirectory(path.dirname(target2));
     return;
   }
   if (!windows) {
     mkdirSync(file, { recursive, mode: 448 });
     return;
   }
-  platformSecurityScope(() => {
-    const target = windowsPath(file, true);
-    const missing = [];
-    let parent = target;
-    while (!existsSync(parent)) {
-      missing.unshift(parent);
-      parent = path.dirname(parent);
+  const target = windowsPath(file, true);
+  let missing = 0;
+  for (let parent = target;!existsSync(parent); parent = path.dirname(parent))
+    missing++;
+  if (!recursive && missing > 1)
+    throw new PlatformError("path-unverified");
+  if (missing) {
+    try {
+      mkdirSync(target, { recursive });
+    } catch (error) {
+      if (["EEXIST", "ENOTDIR"].includes(error.code ?? ""))
+        throw new PlatformError("path-unverified");
+      throw error;
     }
-    if (!recursive && missing.length > 1)
-      throw new PlatformError("path-unverified");
-    if (missing.length) {
-      const results = windowsSecurityQuery(missing, missing);
-      if (results.some((r) => !r.private))
-        throw new PlatformError("private-permissions");
-      missing.forEach((p) => cache.delete(p));
-    } else if (!lstatSync(target).isDirectory() || !privatePaths([target]))
-      throw new PlatformError("private-permissions");
-  });
+  } else if (!lstatSync(target).isDirectory())
+    throw new PlatformError("path-unverified");
 }
 function syncFile(file) {
   const fd = openSync(file, windows ? "r+" : "r");
@@ -575,9 +327,6 @@ function validRequest(value, hint) {
 
 // shared/binding.ts
 function readBinding(file) {
-  return platformSecurityScope(() => readBindingInner(file));
-}
-function readBindingInner(file) {
   const p = file instanceof URL ? file : path2.resolve(file);
   const stat = lstatSync2(p);
   requireProgress(!stat.isSymbolicLink() && stat.isFile() && (windows ? sameWindowsObject(windowsPath(file instanceof URL ? fileURLToPath(file) : file), realpathSync2.native(p)) && privatePaths([realpathSync2.native(p)]) : stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
@@ -752,9 +501,6 @@ function preflight(db, action, r, installed) {
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
-  return platformSecurityScope(() => backupPrivate(db, file));
-}
-function backupPrivate(db, file) {
   const parent = path3.dirname(file);
   const owned = lstatSync3(parent);
   requireProgress(owned.isDirectory() && !owned.isSymbolicLink() && privatePaths([parent]), "binding");
@@ -1294,6 +1040,10 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
     const cleanup = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
     if (["archived", "deleted"].includes(cleanup))
       continue;
+    if (["pending", "reserved"].includes(d.state) && (d.state === "reserved" !== (a.dispatch !== null) || !a.taskIds.length)) {
+      result.complete = false;
+      continue;
+    }
     const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
     if (orphaned && cleanup !== "visible") {
       result.complete = false;
@@ -1941,12 +1691,12 @@ function readRuns(db, binding, r, now = Date.now()) {
     out.coverage.reasons.push(job && ["partial", "failed"].includes(String(job.state)) ? "partial-history" : "history-not-reconciled");
   if (f?.loss === 1)
     out.coverage.reasons.push("capture-loss");
-  const scope2 = scopedParents(db, r.source, r.root);
-  if (!scope2.complete)
+  const scope = scopedParents(db, r.source, r.root);
+  if (!scope.complete)
     out.coverage.reasons.push("traversal-limit");
-  const placeholders = scope2.ids.map(() => "?").join(",");
+  const placeholders = scope.ids.map(() => "?").join(",");
   const where = `source=? AND parent IN (${placeholders})`;
-  const args = [r.source, ...scope2.ids];
+  const args = [r.source, ...scope.ids];
   const counts = db.prepare(`SELECT count(DISTINCT child) AS children,sum(message IS NOT NULL) AS runs,sum(message IS NULL) AS history,
     sum(json_extract(payload,'$.ran.state')='running') AS running,sum(json_extract(payload,'$.ran.state')='succeeded') AS succeeded,
     sum(json_extract(payload,'$.ran.state')='failed') AS failed,sum(json_extract(payload,'$.ran.state')='interrupted') AS interrupted,sum(json_extract(payload,'$.ran.state')='unknown') AS unknown FROM runs_rows WHERE ${where}`).get(...args);
@@ -1978,14 +1728,14 @@ function readRuns(db, binding, r, now = Date.now()) {
     FROM ranked AS runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
   out.data = rows.slice(0, RUN_LIMITS.page).map((v) => ({ ...row(v.payload), latestForChild: v.latest === 1 }));
   if (r.plan) {
-    const snapshot2 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
+    const snapshot = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
       AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
       json_object('revision',json_extract(snapshot,'$.revision'),'links',json_extract(snapshot,'$.links'),
         'items',json((SELECT json_group_array(json_object('id',json_extract(i.value,'$.id'),'kind',json_extract(i.value,'$.kind'),
           'status',json_extract(i.value,'$.status'),'assigneeSessionId',json_extract(i.value,'$.assigneeSessionId')))
           FROM json_each(snapshot,'$.items') i))) END AS snapshot FROM plans WHERE source=? AND id=?`).get(r.source, r.plan);
-    requireProgress(typeof snapshot2?.snapshot === "string", "corrupt");
-    const p = JSON.parse(snapshot2.snapshot);
+    requireProgress(typeof snapshot?.snapshot === "string", "corrupt");
+    const p = JSON.parse(snapshot.snapshot);
     requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");
     for (const run of out.data) {
       const linked = p.links.find((l) => l.sessionId === run.childSessionId);
@@ -2248,32 +1998,32 @@ function compareTasks(before, after) {
   return changes;
 }
 function endpointCounts(before, after) {
-  const scope2 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const scope = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
   const a = tasks(before), b = tasks(after);
   for (const id of new Set([...a.keys(), ...b.keys()])) {
     const old = a.get(id), next = b.get(id);
     if (!old) {
       if (next.status !== "skipped")
-        scope2.addedCounted++;
+        scope.addedCounted++;
       if (next.status === "done")
-        scope2.addedDone++;
+        scope.addedDone++;
     } else if (!next) {
       if (old.status !== "skipped")
-        scope2.removedCounted++;
+        scope.removedCounted++;
       if (old.status === "done")
-        scope2.removedDone++;
+        scope.removedDone++;
     } else {
       if (old.status !== "skipped" && next.status === "skipped")
-        scope2.skipped++;
+        scope.skipped++;
       if (old.status === "skipped" && next.status !== "skipped")
-        scope2.unskipped++;
+        scope.unskipped++;
       if (old.status !== "done" && next.status === "done")
-        scope2.completed++;
+        scope.completed++;
       if (old.status === "done" && next.status !== "done")
-        scope2.reopened++;
+        scope.reopened++;
     }
   }
-  return { before: countItems(before.items), after: countItems(after.items), scope: scope2 };
+  return { before: countItems(before.items), after: countItems(after.items), scope };
 }
 function aggregatePair(result, before, after, target) {
   for (const { id, reference } of compareTasks(before, after)) {
@@ -2401,8 +2151,8 @@ function disjointLink(previous, next, c, assigned) {
   const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
   const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
   requireProgress(canonical(oldFacts) === canonical(newFacts), "conflict");
-  const scope2 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
-  requireProgress(scope2.size > 0 && assigned.every((id) => !scope2.has(id)), "conflict");
+  const scope = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
+  requireProgress(scope.size > 0 && assigned.every((id) => !scope.has(id)), "conflict");
   requireProgress(canonical(next.links) === canonical([...previous.links.filter((l) => l.sessionId !== child), ...newLink ? [newLink] : []]), "conflict");
   const bound = next.items.filter((i) => i.assignmentBinding?.boundRevision === next.revision);
   if (bound.length) {
@@ -2419,7 +2169,7 @@ function disjointLink(previous, next, c, assigned) {
     const a = previous.items[index], b = next.items[index];
     taskFacts(a, previous);
     const expected = structuredClone(a);
-    if (scope2.has(a.id)) {
+    if (scope.has(a.id)) {
       if (newLink?.itemIds.includes(a.id))
         expected.assigneeSessionId = child;
       else
@@ -2466,11 +2216,11 @@ function delegationRevision(db, binding, intent) {
   if (revision === r.rev)
     return revision;
   requireProgress(revision > r.rev && revision - r.rev < DELEGATION_PROOF_LIMITS.snapshots, "conflict");
-  const snapshot2 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
+  const snapshot = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
   const contribution = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END AS payload FROM contributions WHERE source=? AND plan=? AND revision=?");
   let previous;
   for (let rev = r.rev;rev <= revision; rev++) {
-    const next = plan(admit(snapshot2.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
+    const next = plan(admit(snapshot.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
     requireProgress(next.structuralRevision === current.structuralRevision, "conflict");
     if (previous) {
       const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.payload);
@@ -3132,7 +2882,6 @@ class Store {
   constructor(file, options = {}, fresh) {
     this.file = file;
     this.readOnly = options.readOnly ?? false;
-    const finish = fresh ? () => {} : beginPlatformSecurityScope();
     try {
       if (fresh) {
         requirePlatformWriteBoundary();
@@ -3195,8 +2944,6 @@ class Store {
       if (e instanceof PlatformError)
         throw e;
       throw storageError(e);
-    } finally {
-      finish();
     }
   }
   static createFresh(file, options) {
@@ -3204,7 +2951,7 @@ class Store {
     requirePlatformStoreFence(file);
     requireProgress(identifier(options.storeId) && typeof options.validate === "function", "binding");
     const parent = path4.dirname(file), sidecars = ["-journal", "-wal", "-shm"].map((s) => file + s);
-    const directory = platformSecurityScope(() => {
+    const directory = (() => {
       options.validate();
       requireProgress(path4.isAbsolute(file) && path4.resolve(file) === file && path4.basename(file) === "progress.sqlite", "binding");
       if (windows)
@@ -3215,17 +2962,17 @@ class Store {
       requireProgress(stat.isDirectory() && !stat.isSymbolicLink() && privatePaths([parent]), "binding");
       requireProgress(![file, ...sidecars].some((p) => lstatSync4(p, { throwIfNoEntry: false })), "binding");
       return storeObject(stat);
-    });
-    requirePlatformWriteBoundary(3, 8500);
+    })();
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
     const fd = openSync3(file, "wx", 384);
     try {
       const reserved = storeObject(fstatSync(fd, { bigint: true }));
-      platformSecurityScope(() => {
+      {
         if (windows)
           windowsPaths([parent, file, ...sidecars], true);
         const stat = lstatSync4(file, { bigint: true });
         requireProgress(storeObject(lstatSync4(parent, { bigint: true })) === directory && storeObject(stat) === reserved && stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === 0n && privatePaths([parent, file]) && !sidecars.some((p) => lstatSync4(p, { throwIfNoEntry: false })), "binding");
-      });
+      }
       requirePlatformWriteBoundary();
       const store = new Store(file, {}, { token: freshStoreToken, storeId: options.storeId, object: reserved });
       try {
@@ -3475,7 +3222,7 @@ class Store {
       let source = "", id = "";
       const installed = cleanupInstalled(this.db);
       const next = this.db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1");
-      const snapshot2 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
+      const snapshot = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
       let exhausted = false;
       while (r.work.planSlots < 512 && checkpoint()) {
         const row2 = next.get(source, id);
@@ -3499,7 +3246,7 @@ class Store {
           r.limited = true;
           break;
         }
-        const text = snapshot2.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id)?.snapshot;
+        const text = snapshot.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id)?.snapshot;
         requireProgress(typeof text === "string", "corrupt");
         r.work.inputBytes += bytes;
         let p;
@@ -4089,9 +3836,9 @@ class Store {
         else if (item.blocker)
           item.blocker.validAtRevision = p.revision;
       }
-      const snapshot2 = JSON.stringify(p);
-      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);
-      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot2, JSON.stringify(actor));
+      const snapshot = JSON.stringify(p);
+      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot);
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot, JSON.stringify(actor));
       this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
       if (child)
         this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, child.sessionId, JSON.stringify(child));
@@ -4153,10 +3900,8 @@ function activationFingerprint(binding, plugin, guidance) {
 function normalizeTargets(targets) {
   if (windows)
     try {
-      return platformSecurityScope(() => {
-        const [configRoot, dataRoot, storeRoot] = windowsPaths([targets.configRoot, targets.dataRoot, targets.storeRoot, path5.join(targets.configRoot, "plugins", "agent-progress"), path5.join(targets.storeRoot, "payloads")], true);
-        return { ...targets, configRoot, dataRoot, storeRoot };
-      });
+      const [configRoot, dataRoot, storeRoot] = windowsPaths([targets.configRoot, targets.dataRoot, targets.storeRoot, path5.join(targets.configRoot, "plugins", "agent-progress"), path5.join(targets.storeRoot, "payloads")], true);
+      return { ...targets, configRoot, dataRoot, storeRoot };
     } catch (e) {
       throw e instanceof PlatformError ? new SetupError(e.code) : e;
     }
@@ -4292,9 +4037,6 @@ function verifyFiles(root, expected, extras = []) {
   }
 }
 function inspect(targets) {
-  return platformSecurityScope(() => inspectInner(targets));
-}
-function inspectInner(targets) {
   targets = normalizeTargets(targets);
   safe2(targets.configRoot);
   safe2(targets.dataRoot);
@@ -4395,7 +4137,7 @@ function matchesRetainedSource(source, targets) {
 }
 function lifecycle(action, targets, payload, testBoundary) {
   try {
-    return platformSecurityScope(() => lifecycleInner(action, targets, payload, testBoundary));
+    return lifecycleInner(action, targets, payload, testBoundary);
   } catch (e) {
     throw e instanceof PlatformError ? new SetupError(e.code) : e;
   }
@@ -4522,7 +4264,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.1";
+var RELEASE = "1.5.2";
 
 // setup/cli.ts
 try {

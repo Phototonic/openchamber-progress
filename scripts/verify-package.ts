@@ -49,8 +49,8 @@ async function verifyPackage() {
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
     service=spawn(process.execPath,[path.join(folder,'build/service/main.js')],{env:{...fixtureEnv,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'package-fixture-only'},cwd:root,stdio:'ignore'});
     const request=async(route:string,body?:unknown,method:'GET'|'POST'=body===undefined?'GET':'POST')=>{
-      // Undelayed portable package smoke budget, not the host's 20s limit or
-      // native slow-PowerShell certification (covered by the Windows suite).
+      // Portable package smoke budget, not the host's 20s limit or native
+      // Windows certification (covered by the Windows suite).
       const r=await fetch(`http://127.0.0.1:${port}${route}`,{method,headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
       lastHttpStatus=r.status;const value=await r.clone().json(),code=typeof value.error==='string'?value.error:value.error?.code;
       lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found','body-not-allowed'].includes(code)?code:code?'unrecognized-code':null;
@@ -61,7 +61,7 @@ async function verifyPackage() {
     const action=async(name:string,storeRoot?:string)=>{const r=await request('/v1/setup/managed-inspect',storeRoot?{storeRoot}:{});assert.equal(r.status,200);const reviewed=await r.json();return request(`/v1/setup/${name}`,{...(storeRoot?{storeRoot}:{}),confirmed:true,expected:reviewed.delivery.review.expected});};
     const step=async(body:ManagedStepRequest)=>{
       const response=await request('/v1/setup/managed-step',body),value=await response.json() as ManagedStepResponse;
-      assert.equal(value.version,1);assert.ok(value.accounting.securitySpawns<=6);assert.equal(response.status===200,value.error===null);
+      assert.equal(value.version,1);assert.equal(value.accounting.securitySpawns,0);assert.equal(response.status===200,value.error===null);
       return {status:response.status,value};
     };
     const inspectMigration=async()=>{

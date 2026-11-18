@@ -102,7 +102,7 @@ test('ordinary source service entry still listens before cheap authenticated hea
   } finally {child.kill('SIGTERM');await exited;rmSync(root,{recursive:true,force:true});}
 });
 
-test('supervisor refuses overlap and uses shared attempt accounting',{skip:process.platform==='win32'},async()=>{
+test('supervisor refuses overlap and reports its own accounting, never the worker message',{skip:process.platform==='win32'},async()=>{
   const {root,env}=fixture();
   try {
     const entry=path.join(root,'held-worker.mjs');
@@ -115,22 +115,21 @@ setTimeout(()=>parentPort.close(),50);\n`,{mode:0o600});
     const overlap=await worker.run(env,payload,{action:'health'});
     assert.equal(overlap.ok,false);if(!overlap.ok)assert.equal(overlap.code,'managed-step-unsettled');
     const result=await first;assert.equal(result.ok,true);assert.equal(worker.busy,false);
-    assert.equal(result.accounting.securitySpawns,0,'supervisor uses the shared attempt counter, not message accounting');
+    assert.equal(result.accounting.securitySpawns,0,'supervisor accounting, not message accounting');
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
-test('payload-free status shares one run and spawn budget only in the identical context',async()=>{
+test('payload-free status shares one run and its budget only in the identical context',async()=>{
   const {root,env}=fixture();
   try{
     const entry=path.join(root,'counted-status.mjs');
     writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
-Atomics.add(new Int32Array(workerData.counter),0,3);
 parentPort.postMessage({requestId:workerData.requestId,result:{ok:true,value:'synthetic',accounting:{securitySpawns:99,elapsedMs:99}}});
 parentPort.close();\n`,{mode:0o600});
     const worker=new SetupRequestWorker(pathToFileURL(entry));
     const first=worker.run(env,undefined,{action:'status'});
     const shared=Array.from({length:4},()=>worker.run({...env},undefined,{action:'status'}));
-    for(const promise of shared)assert.equal(promise,first,'same run, not another worker or counter');
+    for(const promise of shared)assert.equal(promise,first,'same run, not another worker');
     for(const [otherEnv,otherPayload,request] of [
       [{...env,LANG:'synthetic'},undefined,{action:'status'}],
       [env,undefined,{action:'status',descriptor:'changed'}],
@@ -145,10 +144,10 @@ parentPort.close();\n`,{mode:0o600});
       assert.ok(!refused.ok);assert.equal(refused.code,'managed-step-unsettled');
     }
     const results=await Promise.all([first,...shared]);
-    for(const result of results){assert.equal(result,results[0]);assert.equal(result.accounting.securitySpawns,3);}
+    for(const result of results){assert.equal(result,results[0]);assert.equal(result.accounting.securitySpawns,0);}
     assert.equal(worker.busy,false);
     const fresh=worker.run(env,undefined,{action:'status'});assert.notEqual(fresh,first,'no settled-result cache');
-    assert.equal((await fresh).accounting.securitySpawns,3);
+    assert.equal((await fresh).accounting.securitySpawns,0);
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
@@ -276,7 +275,7 @@ test('target-derived slots permit unrelated targets but fence same scopes and sh
     const shared=setupWriterTargets(b.env,path.join(a.root,'store/progress.sqlite'));
     await assert.rejects(acquireWriterSlots(shared),{code:'managed-step-port-busy'},'different discovery roots still serialize shared capture');
     const store=writerTarget('store',path.join(a.root,'store'));
-    const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:writerTargetPort(first[0]!),nonce:'a'.repeat(64),targets:first});
+    const budget=new PlatformRequestBudget(process.hrtime.bigint(),{targets:first});
     withPlatformRequestBudget(budget,()=>{
       requirePlatformStoreFence(path.join(a.root,'store/progress.sqlite'));
       assert.throws(()=>requirePlatformStoreFence(path.join(b.root,'store/progress.sqlite')),{code:'managed-step-conflict'});

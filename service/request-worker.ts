@@ -1,9 +1,8 @@
 import {Worker,isMainThread,parentPort,workerData} from 'node:worker_threads';
 import path from 'node:path';
-import {type Socket} from 'node:net';
-import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {SetupController} from './setup-controller.ts';
-import {PlatformRequestBudget,withPlatformRequestBudget,writerTargetPort} from '../shared/platform.ts';
+import {PlatformRequestBudget,withPlatformRequestBudget} from '../shared/platform.ts';
 import {MANAGED_STEP_LIMITS,MANAGED_FRESH_INSPECTION_STEPS,managedSetupStepRequest,type ManagedStepAccounting,type ManagedSetupStepResponse,type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedInspection,type ManagedFreshInspection} from '../shared/managed-steps.ts';
 import {type ManagedSetupAction} from '../shared/progress.ts';
 import {canonical,digest} from '../shared/store.ts';
@@ -36,8 +35,7 @@ interface SetupWorkerInput {
   payload:Payload|undefined;
   request:SetupWorkerRequest;
   startedAt:bigint;
-  counter:SharedArrayBuffer;
-  fence:{port:number;nonce:string;targets:string[]};
+  fence:{targets:string[]};
   inspection?:InspectionSession;
   journal?:ManagedSetupStepJournal;
 }
@@ -80,7 +78,7 @@ function stepResponse(version:1|2,fields:{disposition:ManagedSetupStepResponse['
 export function runSetupRequestWorker():void {
   if(!isSetupRequestWorker()||!parentPort)throw new Error('managed-step-unsupported');
   const input=workerData as SetupWorkerInput;
-  const budget=new PlatformRequestBudget(input.startedAt,input.counter,input.fence);
+  const budget=new PlatformRequestBudget(input.startedAt,input.fence);
   let setup:SetupController|undefined;
   let value:unknown,code:string|undefined;
   let inspection:InspectionSession|undefined;
@@ -170,8 +168,7 @@ export function runSetupRequestWorker():void {
 /** One run at a time (identical payload-free status reads may share its reply),
  * no autonomous continuation and no terminate-on-timeout.
  * A timeout settles the reply, NOT the worker: busy remains true until exit.
- * The TCP writer slot is retained over that whole interval. Windows security
- * children also cross the account-scoped mutex/nonce barrier in platform.ts. */
+ * The TCP writer slot is retained over that whole interval. */
 export class SetupRequestWorker {
   private active=false;
   private statusRun?:{context:string;promise:Promise<SetupWorkerResult>};
@@ -215,26 +212,9 @@ export class SetupRequestWorker {
       const timer=setTimeout(()=>finish(refused('managed-step-deadline')),remaining);
       // Separate scope and Store slots also fence distinct discovery roots
       // sharing capture control. Routing claims are checked by the fresh owner.
-      const fence={port:writerTargetPort(targets[0]!),nonce:randomBytes(32).toString('hex'),targets};
-      const expected=Buffer.from(fence.nonce+'\n');
-      const sockets=new Set<Socket>();
-      const connection=(socket:Socket)=>{
-        sockets.add(socket);socket.once('close',()=>sockets.delete(socket));
-        socket.setTimeout(1000,()=>socket.destroy());
-        let bytes=Buffer.alloc(0);
-        socket.on('error',()=>socket.destroy());
-        socket.on('data',chunk=>{
-          bytes=Buffer.concat([bytes,chunk]);
-          if(bytes.length>expected.length){socket.destroy();return;}
-          if(bytes.length!==expected.length)return;
-          let admitted=false;
-          try{budget.require();admitted=timingSafeEqual(bytes,expected);}catch{/* Expired workers receive no new effect admission. */}
-          socket.end(admitted?'ok\n':'no\n');
-        });
-      };
-      acquireWriterSlots(targets,connection,()=>{result=refused('managed-step-unsettled');finish(result);}).then(unlock=>{
+      const fence={targets};
+      acquireWriterSlots(targets,undefined,()=>{result=refused('managed-step-unsettled');finish(result);}).then(unlock=>{
         const release=(reply:SetupWorkerResult)=>{
-          for(const socket of sockets)socket.destroy();
           void unlock().then(()=>{this.active=false;finish(reply);}).catch(()=>{
             this.active=false;this.inspection=undefined;this.journal=undefined;
             finish(refused('managed-step-unsettled'));
@@ -244,7 +224,7 @@ export class SetupRequestWorker {
         try {
           budget.require();
           worker=new Worker(this.entry,{workerData:{kind:'agent-progress-setup-request',requestId,env,payload,request,
-            startedAt,counter:budget.counter.buffer,fence,...(saved&&consumesInspection?{inspection:saved}:{}),...(journal?{journal}:{})} satisfies SetupWorkerInput});
+            startedAt,fence,...(saved&&consumesInspection?{inspection:saved}:{}),...(journal?{journal}:{})} satisfies SetupWorkerInput});
         } catch(error) {release(refused(diagnostic(error)));return;}
         worker.on('message',(message:SetupWorkerMessage)=>{
           // A received message alone is not worker settlement. Wait for exit.

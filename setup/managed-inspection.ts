@@ -5,7 +5,7 @@ import {type Binding,verifyStore} from '../shared/binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {activationFingerprint} from '../shared/activation.ts';
 import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile} from '../shared/managed-binding.ts';
-import {windows,windowsPaths,privatePaths,isOwned,platformSecurityScope} from '../shared/platform.ts';
+import {windows,windowsPaths,privatePaths,isOwned} from '../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_STEP_LIMITS,type ManagedInspection,type ManagedCaptureObservation,type ManagedStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedReview} from '../shared/progress.ts';
 import {SetupError,discoverMigrationPaths,migrationEvidence,validateMigrationRemoval,type Payload} from './lifecycle.ts';
@@ -18,7 +18,7 @@ import {readManagedFreshStepJournal} from './managed-migration.ts';
 import {managedFreshJournalProgress,type ManagedFreshStepJournal} from './managed-step-journal.ts';
 
 /** Private supervisor/worker state. NEVER accept this object from an HTTP body.
- * Paths and hashes are discovery claims only, not reusable security verdicts. */
+ * Paths and hashes are discovery claims only, not reusable verdicts. */
 export interface ManagedInspectionSession {
   nonce:string;
   cursor:string;
@@ -117,21 +117,19 @@ function reviewFor(session:ManagedInspectionSession,observed:ManagedCaptureObser
 /** Mutation admission calls this again under its OWN fresh batch/fence. An
  * opaque token alone, or a worker's earlier observation, never authorizes it. */
 export function validateManagedInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,session:ManagedInspectionSession) {
-  return platformSecurityScope(()=>{
-    need(session.stage===MANAGED_INSPECTION_STEPS.length&&session.review&&session.candidate,'managed-inspection-expired');
-    batch(paths(session));sameDiscovery(env,session);
-    const observed=validateCandidate(session,payload),review=reviewFor(session,observed);
-    need(review.expected===session.review.expected);
-    return {candidate:structuredClone(session.candidate),prior:session.prior&&structuredClone(session.prior),
-      operation:session.operation&&structuredClone(session.operation),capture:observed,review};
-  });
+  need(session.stage===MANAGED_INSPECTION_STEPS.length&&session.review&&session.candidate,'managed-inspection-expired');
+  batch(paths(session));sameDiscovery(env,session);
+  const observed=validateCandidate(session,payload),review=reviewFor(session,observed);
+  need(review.expected===session.review.expected);
+  return {candidate:structuredClone(session.candidate),prior:session.prior&&structuredClone(session.prior),
+    operation:session.operation&&structuredClone(session.operation),capture:observed,review};
 }
 
 /** Exactly one read-only stage. The supervisor supplies prior state, never the
- * caller. Every stage gets a new opaque cursor and a fresh security scope. */
+ * caller. Every stage gets a new opaque cursor and revalidates its paths. */
 export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedInspectionSession,storeRoot?:string):ManagedInspectionResult {
   let stage:typeof MANAGED_INSPECTION_STEPS[number]='roots',known:ManagedStepJournal|undefined;
-  try{return platformSecurityScope(()=>{
+  try{
     let session:ManagedInspectionSession;
     if(!prior){
       const roots=managedSourceRoots(env);batch(basePaths(roots));
@@ -218,7 +216,7 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
     }
     session.stage++;session.cursor=randomUUID();
     return {session,progress:session.operation?managedJournalProgress(session.operation):null,inspection:{state:'incomplete',stage,cursor:session.cursor}};
-  });}catch(error){throw new ManagedStepFailure(error,stage,known);}
+  }catch(error){throw new ManagedStepFailure(error,stage,known);}
 }
 
 export interface ManagedFreshInspectionSession {
@@ -302,82 +300,78 @@ function freshReview(s:ManagedFreshInspectionSession,observed:ManagedCaptureObse
     storeMode:f.storeMode,sourceMode:f.sourceMode,capturePolicy:f.capturePolicy,packageVersion:m.expectation.version,capture:observed,plan:structuredClone(m.plan)};
 }
 export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,s:ManagedFreshInspectionSession) {
-  return platformSecurityScope(()=>{
-    need(s.family===2&&s.stage===MANAGED_FRESH_INSPECTION_STEPS.length&&s.review&&s.candidate,'managed-inspection-expired');
-    batch(freshPaths(s));freshDiscovery(env,s);
-    const j=s.candidate;
-    need(canonical(j.migration.expectation)===canonical(expectation(j,payload)));
-    if(s.operation)need(canonical(readManagedFreshStepJournal(env))===canonical(s.operation));
-    const observed=observeManagedFreshStore(j),review=freshReview(s,observed);
-    need(review.expected===s.review.expected);
-    return {candidate:structuredClone(j),operation:s.operation&&structuredClone(s.operation),capture:observed,review};
-  });
+  need(s.family===2&&s.stage===MANAGED_FRESH_INSPECTION_STEPS.length&&s.review&&s.candidate,'managed-inspection-expired');
+  batch(freshPaths(s));freshDiscovery(env,s);
+  const j=s.candidate;
+  need(canonical(j.migration.expectation)===canonical(expectation(j,payload)));
+  if(s.operation)need(canonical(readManagedFreshStepJournal(env))===canonical(s.operation));
+  const observed=observeManagedFreshStore(j),review=freshReview(s,observed);
+  need(review.expected===s.review.expected);
+  return {candidate:structuredClone(j),operation:s.operation&&structuredClone(s.operation),capture:observed,review};
 }
 
 /** Fresh pages share the existing inspection owner, private cursor transport and
  * review nonce rules. No filesystem/DB/source/binding write occurs here. */
 export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string):ManagedFreshInspectionResult {
-  return platformSecurityScope(()=>{
-    let s:ManagedFreshInspectionSession;
-    if(!prior){
-      const roots=managedSourceRoots(env),selected=storeRoot??path.join(roots.dataRoot,'openchamber-progress');
-      batch([...basePaths(roots),selected]);const target=managedPath(selected,true);
-      need(![roots.configRoot,roots.dataRoot,path.join(roots.dataRoot,'agent-progress-managed')].includes(target),'managed-selection-conflict');
-      for(const root of Object.values(roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');
-      s={family:2,nonce:randomUUID(),cursor:randomUUID(),stage:1,roots,storeRoot:target,...(storeRoot!==undefined?{explicitStoreRoot:true as const}:{}),selection:claim(container(env)),record:claim(migrationFile(env))};
-      return {session:s,progress:null,inspection:{state:'incomplete',stage:'roots',cursor:s.cursor}};
-    }
-    s=structuredClone(prior);need(s.family===2&&s.stage>0&&s.stage<MANAGED_FRESH_INSPECTION_STEPS.length,'managed-inspection-expired');
-    const stage=MANAGED_FRESH_INSPECTION_STEPS[s.stage]!;batch(freshPaths(s));
-    // Existing operations may have published a selector since the initial review;
-    // this inspection freezes the CURRENT descriptor/journal claims per session.
-    need(canonical(managedSourceRoots(env))===canonical(s.roots));
-    need(canonical(claim(container(env)))===canonical(s.selection)&&canonical(claim(migrationFile(env)))===canonical(s.record));
-    if(stage==='managed-state'){
-      if(s.record.kind==='file'){
-        s.operation=readManagedFreshStepJournal(env);need(s.operation,'managed-journal-unsupported');
-        if(s.explicitStoreRoot)need(s.storeRoot===path.dirname(s.operation.database),'managed-selection-conflict');
-        s.storeRoot=path.dirname(s.operation.database);s.candidate=structuredClone(s.operation);
-      }else need(s.selection.kind==='absent','managed-step-conflict');
-    }else if(stage==='legacy-discovery')freshDiscovery(env,s);
-    else if(stage==='store'){
-      if(!s.operation){
-        const database=path.join(s.storeRoot,'progress.sqlite'),directory=managedFreshObjectClaim(s.storeRoot,true),db=managedFreshObjectClaim(database);
-        const sidecars=['-journal','-wal','-shm'].map(x=>managedFreshObjectClaim(database+x));
-        let storeId:string=randomUUID(),source:Binding['source']={id:randomUUID(),...s.roots,verified:true},sourceMode:'create'|'reuse'='create',captureState:'unknown'|'on'|'off'='unknown';
-        if(db.kind==='absent'){
-          need(sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
-          if(directory.kind==='directory')need(readdirSync(s.storeRoot).length===0,'foreign-files');
-          else need(lstatSync(path.dirname(s.storeRoot),{throwIfNoEntry:false})?.isDirectory(),'managed-path-unverified');
-        }else{
-          const store=new Store(database,{readOnly:true});try{
-            store.subagentRunStorage();const e=store.list({limit:1});storeId=e.storeId;captureState=e.captureEnabled?'on':'off';
-            const matches=e.sources.filter(x=>x.configRoot===s.roots.configRoot&&x.dataRoot===s.roots.dataRoot);
-            need(matches.length<=1&&matches.every(x=>x.verified),'managed-source-conflict');
-            if(matches[0]){source={...matches[0]};sourceMode='reuse';}
-            need(!e.sources.some(x=>x.id===source.id&&canonical(x)!==canonical(source)),'managed-source-conflict');
-          }finally{store.close();}
-        }
-        const storeMode=db.kind==='absent'?'create':'retain',plan=managedFreshPlan(storeMode,directory.kind==='absent',sourceMode);
-        const binding:Binding={protocolVersion:2,schemaVersion:2,installId:`managed-${digest(JSON.stringify([storeId,source]))}`,version:payload.version,database,storeId,source};
-        s.candidate={...binding,migration:{format:3,planKind:'fresh',product:'openchamber-agent-progress-managed',phase:'pending',
-          operationId:s.nonce,sequence:1,state:'pending',step:plan[1]!,lastCompleted:plan[0]!,
-          consent:{reviewDigest:'0'.repeat(64),targetDigest:'0'.repeat(64),planDigest:digest(canonical(plan))},expectation:expectation(binding,payload),plan,
-          fresh:{storeMode,sourceMode,capturePolicy:storeMode==='create'?'enable-new':'preserve',directory,database:db,sidecars,
-            source:sourceMode==='reuse'?source:null,capture:captureState,selection:s.selection,journal:s.record,
-            legacy:{path:path.join(s.roots.configRoot,'plugins','agent-progress'),kind:'absent',object:null,digest:null}},
-          created:{directory:null,database:null},intent:null,receipt:null,captureRenewals:[],capture:{state:'unknown',observedAt:null},diagnostic:null}};
-        s.candidate.migration.consent.targetDigest=managedTargetDigest(s.candidate);
+  let s:ManagedFreshInspectionSession;
+  if(!prior){
+    const roots=managedSourceRoots(env),selected=storeRoot??path.join(roots.dataRoot,'openchamber-progress');
+    batch([...basePaths(roots),selected]);const target=managedPath(selected,true);
+    need(![roots.configRoot,roots.dataRoot,path.join(roots.dataRoot,'agent-progress-managed')].includes(target),'managed-selection-conflict');
+    for(const root of Object.values(roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');
+    s={family:2,nonce:randomUUID(),cursor:randomUUID(),stage:1,roots,storeRoot:target,...(storeRoot!==undefined?{explicitStoreRoot:true as const}:{}),selection:claim(container(env)),record:claim(migrationFile(env))};
+    return {session:s,progress:null,inspection:{state:'incomplete',stage:'roots',cursor:s.cursor}};
+  }
+  s=structuredClone(prior);need(s.family===2&&s.stage>0&&s.stage<MANAGED_FRESH_INSPECTION_STEPS.length,'managed-inspection-expired');
+  const stage=MANAGED_FRESH_INSPECTION_STEPS[s.stage]!;batch(freshPaths(s));
+  // Existing operations may have published a selector since the initial review;
+  // this inspection freezes the CURRENT descriptor/journal claims per session.
+  need(canonical(managedSourceRoots(env))===canonical(s.roots));
+  need(canonical(claim(container(env)))===canonical(s.selection)&&canonical(claim(migrationFile(env)))===canonical(s.record));
+  if(stage==='managed-state'){
+    if(s.record.kind==='file'){
+      s.operation=readManagedFreshStepJournal(env);need(s.operation,'managed-journal-unsupported');
+      if(s.explicitStoreRoot)need(s.storeRoot===path.dirname(s.operation.database),'managed-selection-conflict');
+      s.storeRoot=path.dirname(s.operation.database);s.candidate=structuredClone(s.operation);
+    }else need(s.selection.kind==='absent','managed-step-conflict');
+  }else if(stage==='legacy-discovery')freshDiscovery(env,s);
+  else if(stage==='store'){
+    if(!s.operation){
+      const database=path.join(s.storeRoot,'progress.sqlite'),directory=managedFreshObjectClaim(s.storeRoot,true),db=managedFreshObjectClaim(database);
+      const sidecars=['-journal','-wal','-shm'].map(x=>managedFreshObjectClaim(database+x));
+      let storeId:string=randomUUID(),source:Binding['source']={id:randomUUID(),...s.roots,verified:true},sourceMode:'create'|'reuse'='create',captureState:'unknown'|'on'|'off'='unknown';
+      if(db.kind==='absent'){
+        need(sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
+        if(directory.kind==='directory')need(readdirSync(s.storeRoot).length===0,'foreign-files');
+        else need(lstatSync(path.dirname(s.storeRoot),{throwIfNoEntry:false})?.isDirectory(),'managed-path-unverified');
+      }else{
+        const store=new Store(database,{readOnly:true});try{
+          store.subagentRunStorage();const e=store.list({limit:1});storeId=e.storeId;captureState=e.captureEnabled?'on':'off';
+          const matches=e.sources.filter(x=>x.configRoot===s.roots.configRoot&&x.dataRoot===s.roots.dataRoot);
+          need(matches.length<=1&&matches.every(x=>x.verified),'managed-source-conflict');
+          if(matches[0]){source={...matches[0]};sourceMode='reuse';}
+          need(!e.sources.some(x=>x.id===source.id&&canonical(x)!==canonical(source)),'managed-source-conflict');
+        }finally{store.close();}
       }
-      observeManagedFreshStore(s.candidate!);
-    }else if(stage==='review'){
-      need(s.candidate,'managed-inspection-expired');freshDiscovery(env,s);
-      need(canonical(s.candidate.migration.expectation)===canonical(expectation(s.candidate,payload)));
-      const observed=observeManagedFreshStore(s.candidate);s.review=freshReview(s,observed);s.stage++;s.cursor=randomUUID();
-      return {session:s,inspection:{state:'complete',stage:'review',cursor:null,review:s.review},
-        progress:s.operation?managedFreshJournalProgress(s.operation,observed):null};
+      const storeMode=db.kind==='absent'?'create':'retain',plan=managedFreshPlan(storeMode,directory.kind==='absent',sourceMode);
+      const binding:Binding={protocolVersion:2,schemaVersion:2,installId:`managed-${digest(JSON.stringify([storeId,source]))}`,version:payload.version,database,storeId,source};
+      s.candidate={...binding,migration:{format:3,planKind:'fresh',product:'openchamber-agent-progress-managed',phase:'pending',
+        operationId:s.nonce,sequence:1,state:'pending',step:plan[1]!,lastCompleted:plan[0]!,
+        consent:{reviewDigest:'0'.repeat(64),targetDigest:'0'.repeat(64),planDigest:digest(canonical(plan))},expectation:expectation(binding,payload),plan,
+        fresh:{storeMode,sourceMode,capturePolicy:storeMode==='create'?'enable-new':'preserve',directory,database:db,sidecars,
+          source:sourceMode==='reuse'?source:null,capture:captureState,selection:s.selection,journal:s.record,
+          legacy:{path:path.join(s.roots.configRoot,'plugins','agent-progress'),kind:'absent',object:null,digest:null}},
+        created:{directory:null,database:null},intent:null,receipt:null,captureRenewals:[],capture:{state:'unknown',observedAt:null},diagnostic:null}};
+      s.candidate.migration.consent.targetDigest=managedTargetDigest(s.candidate);
     }
-    s.stage++;s.cursor=randomUUID();
-    return {session:s,inspection:{state:'incomplete',stage,cursor:s.cursor},progress:s.operation?managedFreshJournalProgress(s.operation):null};
-  });
+    observeManagedFreshStore(s.candidate!);
+  }else if(stage==='review'){
+    need(s.candidate,'managed-inspection-expired');freshDiscovery(env,s);
+    need(canonical(s.candidate.migration.expectation)===canonical(expectation(s.candidate,payload)));
+    const observed=observeManagedFreshStore(s.candidate);s.review=freshReview(s,observed);s.stage++;s.cursor=randomUUID();
+    return {session:s,inspection:{state:'complete',stage:'review',cursor:null,review:s.review},
+      progress:s.operation?managedFreshJournalProgress(s.operation,observed):null};
+  }
+  s.stage++;s.cursor=randomUUID();
+  return {session:s,inspection:{state:'incomplete',stage,cursor:s.cursor},progress:s.operation?managedFreshJournalProgress(s.operation):null};
 }

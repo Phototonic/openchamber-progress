@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { startSearchShell } from './plan-task-search-shell.ts';
 import { launchChromium } from './phone-cdp.ts';
 import { boardInput } from './board-qa.ts';
-import { attributeRefreshes } from './refresh-attribution.ts';
+import { summarizeWindow } from './refresh-attribution.ts';
 import { searchStatusText } from '../../ui/shared/search.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 
@@ -81,18 +81,16 @@ const select = async (s: string, title: string, id: string) => {
 const result: any = { shape: { bulkPlans: 500, tasksPerBulk: '30–80', histories: 12, selectedTasks: 60, selectedHistory: 80, runs: 600, projects: 6, sources: 2 }, measurements: [] };
 const save = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(result, null, 2));
 async function window(s: string, label: string, run: () => Promise<unknown>) {
-  await guest(s, `w.__p={frames:[],long:[],rootReplacements:0,mapReplacements:0,start:performance.now(),last:performance.now()};let root=d.querySelector('[data-testid="progress-root"]'),map=d.querySelector('[data-testid="map-region"]');const po=new w.PerformanceObserver(l=>{for(const e of l.getEntries())w.__p.long.push(e.duration)});po.observe({type:'longtask',buffered:false});const mo=new w.MutationObserver(()=>{const r=d.querySelector('[data-testid="progress-root"]'),m=d.querySelector('[data-testid="map-region"]');if(r!==root){w.__p.rootReplacements++;root=r}if(m!==map){w.__p.mapReplacements++;map=m}});mo.observe(d.body,{childList:true,subtree:true});const tick=t=>{w.__p.frames.push(t-w.__p.last);w.__p.last=t;w.__raf=w.requestAnimationFrame(tick)};w.__raf=w.requestAnimationFrame(tick);w.__stop=()=>{w.cancelAnimationFrame(w.__raf);po.disconnect();mo.disconnect();return {...w.__p,elapsed:performance.now()-w.__p.start,dom:d.querySelectorAll('*').length}};return true`);
-  const mark = await evaluate('qa.replies.length'), requestMark = await evaluate('qa.requests.length');
+  // The log offsets are read in the evaluation that starts the timer and in the one that stops it, so whatever is logged
+  // after the window ends and before the driver reads the logs is not part of the window (see refresh-attribution.ts).
+  const start = await guest(s, `const offsets={requests:qa.requests.length,replies:qa.replies.length};w.__p={frames:[],long:[],rootReplacements:0,mapReplacements:0,start:performance.now(),last:performance.now()};let root=d.querySelector('[data-testid="progress-root"]'),map=d.querySelector('[data-testid="map-region"]');const po=new w.PerformanceObserver(l=>{for(const e of l.getEntries())w.__p.long.push(e.duration)});po.observe({type:'longtask',buffered:false});const mo=new w.MutationObserver(()=>{const r=d.querySelector('[data-testid="progress-root"]'),m=d.querySelector('[data-testid="map-region"]');if(r!==root){w.__p.rootReplacements++;root=r}if(m!==map){w.__p.mapReplacements++;map=m}});mo.observe(d.body,{childList:true,subtree:true});const tick=t=>{w.__p.frames.push(t-w.__p.last);w.__p.last=t;w.__raf=w.requestAnimationFrame(tick)};w.__raf=w.requestAnimationFrame(tick);w.__stop=()=>{w.cancelAnimationFrame(w.__raf);po.disconnect();mo.disconnect();return {...w.__p,elapsed:performance.now()-w.__p.start,dom:d.querySelectorAll('*').length}};return offsets`);
   await run();
-  const p = await guest(s, 'return w.__stop()');
+  const p = await guest(s, 'const offsets={requests:qa.requests.length,replies:qa.replies.length};return {...w.__stop(),offsets}');
   const frames = p.frames.sort((a: number, b: number) => a - b);
-  const traffic: Record<string, { count: number; bytes: number }> = {};
-  for (const r of await evaluate(`qa.replies.slice(${mark})`)) {
-    const row = traffic[r.frame + ' ' + r.path] ??= { count: 0, bytes: 0 }; row.count++; row.bytes += r.bytes;
-  }
-  // Refresh attribution follows the order requests were sent (see refresh-attribution.ts), not the order replies arrived.
-  const { listStarts, complete } = attributeRefreshes(await evaluate(`qa.requests.slice(${requestMark})`));
-  const m = { surface: s, label, elapsed: p.elapsed, dom: p.dom, rootReplacements: p.rootReplacements, mapReplacements: p.mapReplacements, longTasks: { count: p.long.length, total: p.long.reduce((a: number, b: number) => a + b, 0), max: Math.max(0, ...p.long) }, frames: { p99: frames[Math.min(frames.length - 1, Math.floor(frames.length * .99))], max: Math.max(...frames) }, traffic, listStarts, complete };
+  // Every count comes from the logs between the captured offsets. Refresh attribution follows the order requests were sent, not the
+  // order replies arrived; the reply log keeps status, size and timing (see refresh-attribution.ts).
+  const summary = summarizeWindow(await evaluate("({requests:qa.requests,replies:qa.replies})"), { start, stop: p.offsets });
+  const m = { surface: s, label, elapsed: p.elapsed, dom: p.dom, rootReplacements: p.rootReplacements, mapReplacements: p.mapReplacements, longTasks: { count: p.long.length, total: p.long.reduce((a: number, b: number) => a + b, 0), max: Math.max(0, ...p.long) }, frames: { p99: frames[Math.min(frames.length - 1, Math.floor(frames.length * .99))], max: Math.max(...frames) }, ...summary };
   result.measurements.push(m); save(); console.log(JSON.stringify(m));
 }
 async function searchJourney() {

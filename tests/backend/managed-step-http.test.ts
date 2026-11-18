@@ -24,24 +24,16 @@ const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',remov
 const operationId='11111111-1111-4111-8111-111111111111';
 const projection=fs.mkdtempSync('/tmp/opencode/managed-http-source-');
 const spawnSync=cp.spawnSync,systemRoot=process.env.SystemRoot;
-let legacySpawns=0;
-let legacySpawnDelay=0;
-let legacySpawnLaterDelay=0,legacySpawnTimeout=false;
-let legacySpawnEffect:(()=>void)|undefined;
+let legacySpawns=0,priorUmask=0o022;
 let Controller:typeof import('../../service/setup-controller.ts').SetupController,serverFactory:typeof import('../../service/server.ts').createProgressServer,windowsServerFactory:typeof serverFactory;
 before(async()=>{
-  // The compatibility routes remain in the controller on the main thread.
-  // Count their actual process boundary too, without using native PowerShell.
+  // The compatibility routes remain in the controller on the main thread. No
+  // permission check may start a process: count any attempt and refuse it.
   process.env.SystemRoot='C:\\Windows';
-  cp.spawnSync=((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-    legacySpawns++;
-    const ms=legacySpawnDelay||legacySpawnLaterDelay;legacySpawnDelay=0;
-    if(ms)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);
-    if(legacySpawnTimeout)return {pid:1,output:[],stdout:'',stderr:'',status:null,signal:null,error:Object.assign(new Error('synthetic timeout'),{code:'ETIMEDOUT'})};
-    const effect=legacySpawnEffect;legacySpawnEffect=undefined;effect?.();
-    const input=JSON.parse(String(options.input));for(const p of input.create)fs.mkdirSync(p,{mode:0o700});
-    return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-  }) as typeof cp.spawnSync;
+  // The projected Windows path creates ordinary directories; a restrictive umask
+  // keeps this test's POSIX-side readers satisfied.
+  priorUmask=process.umask(0o077);
+  cp.spawnSync=(()=>{legacySpawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync;
   syncBuiltinESMExports();
   for(const dir of ['shared','setup','service'])fs.cpSync(path.resolve(dir),path.join(projection,dir),{recursive:true});
   fs.symlinkSync(path.resolve('node_modules'),path.join(projection,'node_modules'),'dir');
@@ -68,7 +60,7 @@ before(async()=>{
   fs.writeFileSync(path.join(projection,'service/server-windows.ts'),serverSource.replace("process.platform==='win32'",'true'));
   windowsServerFactory=(await import(pathToFileURL(path.join(projection,'service/server-windows.ts')).href)).createProgressServer;
 });
-after(()=>{cp.spawnSync=spawnSync;syncBuiltinESMExports();if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(projection,{recursive:true,force:true});});
+after(()=>{process.umask(priorUmask);cp.spawnSync=spawnSync;syncBuiltinESMExports();if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(projection,{recursive:true,force:true});});
 
 async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest',windowsRoutes=false){
   const root=fs.mkdtempSync('/tmp/opencode/managed-http-fixture-'),env=isolatedEnvironment(root);
@@ -85,7 +77,7 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest',w
     writeMigration(env,{binding:{...evidence.binding,installId:'managed-synthetic'},legacyInstallId:evidence.binding.installId,phase:'pending'});
     lifecycle('remove-capture',targets);
   }
-  Object.assign(env,{TEST_WINDOWS:'1',TEST_FAULT_FILE:path.join(root,'fault.json'),TEST_READY_FILE:path.join(root,'ready'),TEST_RELEASE_FILE:path.join(root,'release')});
+  Object.assign(env,{TEST_FAULT_FILE:path.join(root,'fault.json'),TEST_READY_FILE:path.join(root,'ready'),TEST_RELEASE_FILE:path.join(root,'release')});
   const worker=pathToFileURL(path.join(projection,'tests/backend/managed-http-worker.ts'));
   const setup=new Controller({env},()=>payload,undefined,undefined,worker),server=(windowsRoutes?windowsServerFactory:serverFactory)(undefined,'synthetic-http-fixture',undefined,setup);
   server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -98,13 +90,13 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest',w
   const counts:Array<{step:string;spawns:number}>=[];
   const dispatch=setup.request.bind(setup);
   setup.request=async(request,startedAt)=>{
-    const result=await dispatch(request,startedAt);assert.ok(result.accounting.securitySpawns<=6);
+    const result=await dispatch(request,startedAt);assert.equal(result.accounting.securitySpawns,0);
     if(request.action!=='managed-step')counts.push({step:request.action,spawns:result.accounting.securitySpawns});
     return result;
   };
   const step=async(request:ManagedStepRequest)=>{
     const response=await http('/v1/setup/managed-step',request),body=response.body as ManagedStepResponse;
-    assert.equal(body.version,1);assert.ok(body.accounting.securitySpawns<=6);counts.push({step:request.action==='advance'?`${request.step.name}:${request.step.batch}`:request.action,spawns:body.accounting.securitySpawns});
+    assert.equal(body.version,1);assert.equal(body.accounting.securitySpawns,0);counts.push({step:request.action==='advance'?`${request.step.name}:${request.step.batch}`:request.action,spawns:body.accounting.securitySpawns});
     if('operationId' in request&&body.progress)assert.equal(body.progress.operationId,request.operationId);
     if(body.disposition==='applied'||body.disposition==='replayed'){
       assert.equal(body.progress!.sequence,request.action==='begin'?1:'expectedSequence' in request?request.expectedSequence+1:NaN);
@@ -149,7 +141,7 @@ async function freshHttpFixture(kind:'default'|'custom'|'retained-new'|'retained
   }
   const step=async(request:ManagedFreshStepRequest)=>{
     const r=await f.http('/v1/setup/managed-step',request),body=r.body as ManagedFreshStepResponse;
-    assert.equal(body.version,2);assert.ok(body.accounting.securitySpawns<=6);
+    assert.equal(body.version,2);assert.equal(body.accounting.securitySpawns,0);
     assert.equal(body.error===null,r.status===200);if(body.progress)assert.equal(body.progress.planKind,'fresh');
     f.counts.push({step:request.action==='advance'?request.step.name:request.action,spawns:body.accounting.securitySpawns});
     return {...r,body};
@@ -319,7 +311,7 @@ test('fresh wire refuses a retained migration journal without translating or mut
     for(const body of [{version:2,action:'status',operationId},{version:2,action:'pause',operationId,expectedSequence:p.sequence},
       {version:2,action:'begin',operationId,confirmed:true,expected:'a'.repeat(64)}]){
       const r=await f.http('/v1/setup/managed-step',body);assert.equal(r.status,409);assert.equal(r.body.version,2);assert.equal(r.body.progress,null);
-      assert.equal(r.body.error.code,'managed-journal-unsupported');assert.ok(r.body.accounting.securitySpawns<=6);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+      assert.equal(r.body.error.code,'managed-journal-unsupported');assert.equal(r.body.accounting.securitySpawns,0);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
     }
   }finally{await f.close();}
 });
@@ -495,7 +487,7 @@ for(const kind of ['receipt','empty'] as const)test(`Setup UI client capture con
       assert.deepEqual(result,{ok:false,code:'managed-step-port-busy'});
     }finally{await release();}
     assert.equal((await f.http('/v1/setup')).body.captureEnabled,true);
-    for(const code of ['private-permissions','windows-security-unavailable']){
+    for(const code of ['private-permissions','path-unverified']){
       f.fault({platformCode:code});
       assert.deepEqual(await setupCall(host,'managed-disable',null,true,undefined,capability),{ok:false,code});
     }
@@ -551,7 +543,7 @@ test('HTTP legacy compatibility refusal has zero writes or worker launches',asyn
       const r=await f.http('/v1/setup/'+route,route==='managed-inspect'?{}:{confirmed:true,expected:'a'.repeat(64)});
       assert.equal(r.status,409);assert.deepEqual(r.body,{error:'managed-action-required'});
       const spawns=legacySpawns-before;counts.push({route,spawns});
-      assert.ok(spawns<=(route==='managed-migrate'?0:6));assert.ok(performance.now()-started<=8000);
+      assert.equal(spawns,0);assert.ok(performance.now()-started<=8000);
     }
     assert.equal(fs.existsSync(f.env.TEST_READY_FILE!),false);assert.equal(fs.existsSync(migrationFile(f.env)),false);
     assert.deepEqual(fs.readFileSync(path.join(f.targets.storeRoot,'progress.sqlite')),before);
@@ -559,7 +551,7 @@ test('HTTP legacy compatibility refusal has zero writes or worker launches',asyn
   }finally{await f.close();}
 });
 
-test('HTTP fresh inspection and configuration retain legacy consent and spawn budgets',async t=>{
+test('HTTP fresh inspection and configuration retain legacy consent and start no process',async t=>{
   const f=await fixture('empty');try{
     const before=legacySpawns;
     const inspected=await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot});
@@ -583,49 +575,10 @@ test('HTTP fresh inspection and configuration retain legacy consent and spawn bu
     assert.equal(configured.body.configured,true);assert.equal(configured.body.verified,true);
     assert.equal(configured.body.delivery.migration,'none');
     assert.equal(configured.body.captureEnabled,true);assert.equal(fs.existsSync(migrationFile(f.env)),false);
-    assert.ok(inspectSpawns<=3,`inspect: ${inspectSpawns}`);assert.ok(configureSpawns<=24,`configure: ${configureSpawns}`);
+    assert.equal(inspectSpawns,0);assert.equal(configureSpawns,0);
     assert.equal((await f.http('/v1/setup')).body.configured,true);
     t.diagnostic(JSON.stringify({kind:'fresh',inspectSpawns,configureSpawns}));
   }finally{await f.close();}
-});
-
-for(const kind of ['manifest','empty'] as const)test(`HTTP cold security query on ${kind} compatibility inspection`,async()=>{
-  const f=await fixture(kind);try{
-    legacySpawnDelay=4500;legacySpawnLaterDelay=350;
-    const started=performance.now(),before=legacySpawns;
-    const r=await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot});
-    assert.equal(r.status,kind==='manifest'?409:200,JSON.stringify(r.body));
-    if(kind==='manifest'){
-      assert.deepEqual(r.body,{error:'managed-action-required'});
-      assert.equal(legacySpawns-before,0,'refusal needs no security authority');
-      assert.ok(performance.now()-started<8000);
-    }else{
-      assert.ok(r.body.delivery.review.expected);
-      assert.ok(performance.now()-started>5000,'request receipt timeout is not a handler deadline');
-      assert.ok(performance.now()-started<18000);
-      assert.equal(fs.existsSync(f.targets.storeRoot),false);
-      legacySpawnDelay=4500;
-      const configuring=performance.now();
-      const configured=await f.http('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:r.body.delivery.review.expected});
-      assert.equal(configured.status,200,JSON.stringify(configured.body));
-      assert.equal(configured.body.configured,true);assert.equal(configured.body.captureEnabled,true);
-      assert.ok(performance.now()-configuring>5000);
-      assert.ok(performance.now()-configuring<18000,'cold configure fits the host budget in this representative latency case');
-    }
-    assert.equal(fs.existsSync(migrationFile(f.env)),false);
-  }finally{legacySpawnDelay=0;legacySpawnLaterDelay=0;await f.close();}
-});
-
-for(const action of ['managed-inspect','managed-configure'] as const)test(`HTTP fresh ${action} helper timeout retains its precise code without writes`,async()=>{
-  const f=await fixture('empty');try{
-    const expected=action==='managed-configure'?(await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).body.delivery.review.expected:undefined;
-    legacySpawnTimeout=true;
-    const r=await f.http('/v1/setup/'+action,{storeRoot:f.targets.storeRoot,...(expected?{confirmed:true,expected}:{})});
-    assert.equal(r.status,503);assert.deepEqual(r.body,{error:'windows-security-unavailable'});
-    assert.equal(fs.existsSync(f.targets.storeRoot),false);assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
-    legacySpawnTimeout=false;
-    assert.equal((await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).status,200,'retry validates afresh');
-  }finally{legacySpawnTimeout=false;await f.close();}
 });
 
 test('HTTP legacy refusal with the native concurrent-health observer never enters its main-thread hold',async t=>{
@@ -658,14 +611,14 @@ test('HTTP fresh routes refuse ambiguous legacy plus managed selection without c
 test('HTTP fresh routes never treat an existing unknown journal as fresh configuration',async()=>{
   const f=await fixture('empty');try{
     createManagedBindingDirectory(f.env);fs.writeFileSync(migrationFile(f.env),'unknown journal',{mode:0o600});
-    const before=legacySpawns;legacySpawnTimeout=true;
+    const before=legacySpawns;
     for(const route of ['managed-inspect','managed-configure']){
       const r=await f.http('/v1/setup/'+route,route==='managed-inspect'?{}:{confirmed:true,expected:'a'.repeat(64)});
       assert.equal(r.status,409);assert.deepEqual(r.body,{error:'managed-action-required'});
     }
     assert.equal(fs.readFileSync(migrationFile(f.env),'utf8'),'unknown journal');assert.equal(fs.existsSync(f.targets.storeRoot),false);
-    assert.equal(legacySpawns,before,'journal presence refusal needs no security query');
-  }finally{legacySpawnTimeout=false;await f.close();}
+    assert.equal(legacySpawns,before,'journal presence refusal starts no process');
+  }finally{await f.close();}
 });
 
 test('HTTP fresh confirmation refuses legacy discovery appearing after review',async()=>{
@@ -679,16 +632,20 @@ test('HTTP fresh confirmation refuses legacy discovery appearing after review',a
   }finally{await f.close();}
 });
 
-test('HTTP absent presence hint cannot authorize configuration when legacy appears during fresh validation',async()=>{
+test('HTTP absent presence hint cannot authorize configuration when legacy appears during fresh validation',async t=>{
   const f=await fixture('empty');try{
     const review=(await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).body.delivery.review;
     const legacy=path.join(f.targets.configRoot,'plugins/agent-progress');
-    legacySpawnEffect=()=>fs.mkdirSync(legacy,{recursive:true,mode:0o700});
+    // The first canonical path resolution happens only in the full validation,
+    // after the presence hint found nothing: make legacy appear exactly then.
+    const real=fs.realpathSync.native;let appeared=false;
+    t.mock.method(fs.realpathSync,'native',((...args:Parameters<typeof real>)=>{if(!appeared){appeared=true;fs.mkdirSync(legacy,{recursive:true,mode:0o700});}return real(...args);}) as typeof real);
     const result=await f.http('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected});
+    assert.equal(appeared,true,'legacy appeared during fresh validation');
     assert.equal(result.status,409);assert.deepEqual(result.body,{error:'managed-action-required'});
     assert.equal(fs.existsSync(f.targets.storeRoot),false);assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
     assert.deepEqual(fs.readdirSync(legacy),[]);
-  }finally{legacySpawnEffect=undefined;await f.close();}
+  }finally{t.mock.restoreAll();await f.close();}
 });
 
 test('HTTP empty Setup omits progress and does not create metadata',async()=>{
@@ -696,7 +653,7 @@ test('HTTP empty Setup omits progress and does not create metadata',async()=>{
     const read=await f.http('/v1/setup');assert.equal(read.status,200);assert.equal(read.body.delivery.managedMigrationSteps,1);
     assert.equal(Object.hasOwn(read.body.delivery,'migrationProgress'),false);assert.equal(read.body.captureEnabled,null);
     assert.equal((await f.http('/health')).body.state,'unconfigured');assert.equal(fs.existsSync(migrationFile(f.env)),false);
-    assert.ok(f.counts.every(c=>c.spawns<=6));
+    assert.ok(f.counts.every(c=>c.spawns===0));
   }finally{await f.close();}
 });
 
@@ -731,7 +688,7 @@ test('HTTP capture enable refuses an idle paused migration while disable remains
 test('HTTP capture routes preserve precise platform fault codes without changing capture',async()=>{
   const f=await fixture('receipt');try{
     let p=(await f.begin()).body.progress!;while(p.state!=='complete')p=(await f.advance(p)).body.progress!;
-    for(const code of ['private-permissions','windows-security-unavailable']){
+    for(const code of ['private-permissions','path-unverified']){
       f.fault({platformCode:code});
       for(const enabled of [false,true]){
         const r=await f.http(`/v1/capture/${enabled?'enable':'disable'}`,{});
@@ -778,7 +735,7 @@ for(const recovery of ['interrupted','capture-review'] as const)test(`real HTTP 
     assert.deepEqual(requests[resumeAt+1],{version:1,action:'advance',operationId,expectedSequence:p.sequence+1,step:p.step});
     assert.equal(driver.state.progress?.state,'complete');assert.equal(driver.state.outcome,null);
     assert.equal(maxInflight,1);assert.equal(f.capture(),true);
-    assert.ok(replies.every(r=>r.accounting.securitySpawns<=6));
+    assert.ok(replies.every(r=>r.accounting.securitySpawns===0));
   }finally{await f.close();}
 });
 
@@ -901,7 +858,6 @@ test('HTTP diagnostics preserve owner failures, corrupt journals and missing mar
       f.fault({ownerCode});const r=await f.advance(p);assert.equal(r.status,status);assert.equal(r.body.error!.code,code);assert.equal(r.body.error!.stage,'expectation');assert.equal(r.body.progress!.sequence,p.sequence);
       assert.ok(!JSON.stringify(r.body).includes('not public'));assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);f.fault({});p=await f.status();
     }
-    f.fault({securityError:'managed-step-unsettled'});const fence=await f.advance(p);assert.equal(fence.status,503);assert.equal(fence.body.error!.code,'managed-step-unsettled');f.fault({});
     fs.writeFileSync(migrationFile(f.env),'corrupt',{mode:0o600});
     const first=await f.step({version:1,action:'inspect'});assert.equal(first.status,200);
     const corrupt=await f.step({version:1,action:'inspect',cursor:first.body.inspection!.cursor!});assert.equal(corrupt.status,409);assert.equal(corrupt.body.error!.code,'managed-journal-unsupported');assert.equal(corrupt.body.error!.stage,'managed-state');
@@ -911,12 +867,12 @@ test('HTTP diagnostics preserve owner failures, corrupt journals and missing mar
   }finally{await f.close();}
 });
 
-for(const exhausted of ['spawns','time'] as const)test(`HTTP pre-effect ${exhausted} exhaustion is a bounded refusal, not partial success`,async()=>{
+test('HTTP pre-effect deadline exhaustion is a bounded refusal, not partial success',async()=>{
   const f=await fixture();try{
     const p=(await f.begin()).body.progress!,before=fs.readFileSync(migrationFile(f.env));
-    f.fault(exhausted==='spawns'?{spentSpawns:3}:{clockOffset:7000});
-    const r=await f.advance(p);assert.equal(r.status,503);assert.equal(r.body.error!.code,exhausted==='spawns'?'managed-step-budget':'managed-step-deadline');
-    assert.equal(r.body.progress!.sequence,p.sequence);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(f.capture(),true);
+    f.fault({clockOffset:18000});
+    const r=await f.advance(p);assert.equal(r.status,503);assert.equal(r.body.error!.code,'managed-step-deadline');
+    assert.ok(r.body.progress===null||r.body.progress.sequence===p.sequence);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(f.capture(),true);
   }finally{await f.close();}
 });
 
