@@ -94,6 +94,8 @@ export interface TidyResult {
   total: number;
   succeeded: CleanupTarget[];
   remaining: CleanupTarget[];
+  /** Attempted plans that got no valid answer and may have been applied. Absent when none; they are in `remaining`, never in `succeeded`. */
+  unconfirmed?: number;
   /** An Undo: its receipts put plans back in the view they left (also when retried after a partial Undo). */
   returned?: boolean;
 }
@@ -310,7 +312,7 @@ export function selectionConfirmation(plans: CleanupPlan[], storeId: string, con
 export async function runTidy(host: ServiceHost, action: CleanupAction, targets: CleanupTarget[], current: () => boolean,
   progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false, admit?: (target: CleanupTarget) => boolean): Promise<TidyResult> {
   const succeeded: CleanupTarget[] = [];
-  let attempted = 0;
+  let attempted = 0, unconfirmed = 0;
   for (const target of targets.slice(0, TIDY_LIMIT)) {
     if (!current()) break;
     if (!cleanupClosed(target) && !allowActive) continue;
@@ -323,11 +325,14 @@ export async function runTidy(host: ServiceHost, action: CleanupAction, targets:
       ...target,
       request: { ...target.request, cleanupRev: result.cleanup.revision, oid: crypto.randomUUID() },
     });
+    // A refusal the single-plan messages call "changed" or "busy" is skipped. Any other failure of an attempted
+    // request, including one raised before the service could receive it, may have been applied: unconfirmed.
+    if (!result.ok && cleanupError(result.failure.code) === cleanupError('')) unconfirmed++;
     // Receipt-dependent side effects belong to this validated target, even if context moved.
     progress?.(succeeded.length, targets.length, result.ok ? succeeded.at(-1) : undefined);
   }
   const keys = new Set(succeeded.map(t => t.key));
-  return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)) };
+  return { action, attempted, total: targets.length, succeeded, remaining: targets.filter(t => !keys.has(t.key)), ...(unconfirmed ? { unconfirmed } : {}) };
 }
 
 const tidyEn = {
@@ -344,7 +349,11 @@ const tidyEn = {
   cancel: 'Cancel', confirm: (n: number) => `Archive ${plural(n, 'plan', 'plans')}`, pending: 'Archiving…', undo: 'Undo', retry: 'Try again', restoring: 'Restoring…',
   progress: (n: number, total: number, action: CleanupAction) => `${action === 'archive' ? 'Archiving' : action === 'restore' ? 'Restoring' : 'Deleting'}: ${n} of ${total}.`,
   count: (n: number, total: number) => `${n} of ${total} closed plans.`,
-  result: (n: number, total: number, action: CleanupAction | boolean) => `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${action === true || action === 'restore' ? 'restored' : action === 'delete' ? 'deleted' : 'archived'}${n < total ? `; ${total - n} skipped` : ''}.`,
+  result: (n: number, total: number, action: CleanupAction | boolean, unconfirmed = 0) => {
+    const done = action === true || action === 'restore' ? 'restored' : action === 'delete' ? 'deleted' : 'archived';
+    const skipped = Math.max(0, total - n - unconfirmed);
+    return `${n < total ? `${n} of ${total} plans` : plural(n, 'plan', 'plans')} ${done}${skipped ? `; ${skipped} skipped` : ''}${unconfirmed > 0 ? `; ${unconfirmed} could not be confirmed and may have been ${done}` : ''}.`;
+  },
 };
 const russianPlans = (n: number, closed = false) => {
   const form = new Intl.PluralRules('ru').select(n);
@@ -365,7 +374,12 @@ const tidyRu: typeof tidyEn = {
   cancel: 'Отмена', confirm: n => `Архивировать ${formatCount(n, 'ru')} ${russianPlans(n)}`, pending: 'Архивируем…', undo: 'Отменить', retry: 'Повторить', restoring: 'Восстанавливаем…',
   progress: (n, total, action) => `${action === 'archive' ? 'Архивируем' : action === 'restore' ? 'Восстанавливаем' : 'Удаляем'}: ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}.`,
   count: (n, total) => `${formatCount(n, 'ru')} из ${formatCount(total, 'ru')} закрытых планов.`,
-  result: (n, total, action) => `${action === true || action === 'restore' ? 'Восстановлено' : action === 'delete' ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${n < total ? `; пропущено: ${formatCount(total - n, 'ru')}` : ''}.`,
+  result: (n, total, action, unconfirmed = 0) => {
+    const restore = action === true || action === 'restore', deleting = action === 'delete';
+    const skipped = Math.max(0, total - n - unconfirmed), one = new Intl.PluralRules('ru').select(unconfirmed) === 'one';
+    const done = restore ? one ? 'восстановлен' : 'восстановлены' : deleting ? one ? 'удалён' : 'удалены' : one ? 'архивирован' : 'архивированы';
+    return `${restore ? 'Восстановлено' : deleting ? 'Удалено' : 'Архивировано'} ${formatCount(n, 'ru')} из ${formatCount(total, 'ru')}${skipped ? `; пропущено: ${formatCount(skipped, 'ru')}` : ''}${unconfirmed > 0 ? `; ${formatCount(unconfirmed, 'ru')} ${russianPlans(unconfirmed)} не удалось подтвердить: возможно, ${one ? 'он' : 'они'} ${done}` : ''}.`;
+  },
 };
 const tidyZh: typeof tidyEn = {
   menu: '整理', heading: n => `此处有 ${formatCount(n, 'zh-CN')} 个已关闭的计划。`,
@@ -381,7 +395,11 @@ const tidyZh: typeof tidyEn = {
   cancel: '取消', confirm: n => `归档 ${formatCount(n, 'zh-CN')} 个计划`, pending: '正在归档…', undo: '撤销', retry: '重试', restoring: '正在恢复…',
   progress: (n, total, action) => `正在${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}：${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')}。`,
   count: (n, total) => `${formatCount(total, 'zh-CN')} 个已关闭计划中的 ${formatCount(n, 'zh-CN')} 个。`,
-  result: (n, total, action) => `已${action === true || action === 'restore' ? '恢复' : action === 'delete' ? '删除' : '归档'} ${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')} 个计划${n < total ? `；跳过 ${formatCount(total - n, 'zh-CN')} 个` : ''}。`,
+  result: (n, total, action, unconfirmed = 0) => {
+    const done = action === true || action === 'restore' ? '恢复' : action === 'delete' ? '删除' : '归档';
+    const skipped = Math.max(0, total - n - unconfirmed);
+    return `已${done} ${formatCount(n, 'zh-CN')} / ${formatCount(total, 'zh-CN')} 个计划${skipped ? `；跳过 ${formatCount(skipped, 'zh-CN')} 个` : ''}${unconfirmed > 0 ? `；${formatCount(unconfirmed, 'zh-CN')} 个无法确认，可能已${done}` : ''}。`;
+  },
 };
 export function tidyCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);

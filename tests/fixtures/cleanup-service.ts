@@ -10,6 +10,10 @@ import { RELEASE } from '../../shared/release.ts';
 import { cleanupFixture } from './cleanup.ts';
 import { isolatedEnvironment, publishFixtureBinding } from './managed.ts';
 
+/** A slow reply to a service call must not read as a lost one (it did in the selection driver), so calls wait this long. */
+const REQUEST_LIMIT=30000;
+/** Readiness probes: short, so a hung start still fails inside the 7 s start deadline. */
+const PROBE_LIMIT=3000;
 /** All roots, history and bindings are disposable. No installation or real user config. */
 export async function launchCleanupService(built=false,pages=true) {
   const f=cleanupFixture(pages);f.store.bindReads(f.source.id,true);
@@ -37,11 +41,13 @@ export async function launchCleanupService(built=false,pages=true) {
       server=createProgressServer(f.store,'fixture-only');server.listen(0,'127.0.0.1');await once(server,'listening');port=(server.address()as {port:number}).port;
     }
     const url=`http://127.0.0.1:${port}`;
-    const request=(route:string,body?:unknown,options:RequestInit={})=>fetch(`${url}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(3000),...options});
+    const request=(route:string,body?:unknown,options:RequestInit={})=>fetch(`${url}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(REQUEST_LIMIT),...options});
+    // Readiness probes keep a short bound so a hung start fails fast; service calls get the long one.
+    const probe=(route:string)=>request(route,undefined,{signal:AbortSignal.timeout(PROBE_LIMIT)});
     async function waitReady(){const deadline=Date.now()+7000;let ready=false;
     while(Date.now()<deadline){
       if(child&&(child.exitCode!==null||child.signalCode))throw new Error('fixture-service-exited');
-      try{const response=await request('/health');const health=await response.json();if(response.ok&&health.ready&&health.planCleanup===1){ready=true;break;}if(response.ok&&health.state==='starting')await request('/v1/plans');}catch{}
+      try{const response=await probe('/health');const health=await response.json();if(response.ok&&health.ready&&health.planCleanup===1){ready=true;break;}if(response.ok&&health.state==='starting')await probe('/v1/plans');}catch{}
       await delay(25);
     }
     if(!ready)throw new Error('fixture-service-readiness');}
