@@ -1146,10 +1146,20 @@ account, store/binding and board reading, and are discarded when that changes.
 Offset pages shift when a plan behind the cursor is archived or deleted elsewhere,
 so each later `/v1/plans` page of a count is requested one row early (cursor minus
 one) and must begin with the plan that ended the previous page; otherwise the
-count fails and is retired rather than skipping plans. Plans a user explicitly
-chose, and the remaining plans of a retry, are not searched for: they are
-validated with `/v1/search-state` point lookups (at most 50 keys each) and, for a
-plan whose revision moved, one `/v1/plan` head read.
+count fails and is retired rather than skipping plans. Matching ends cannot prove
+that no other plan crossed the cursor (offsets are not a snapshot and the list
+envelope carries no change token), so a count that crossed such a boundary is
+qualified as possibly missing plans, never presented as verified complete; an
+overlap anchor that changed is counted at its new version. Plans a user
+explicitly chose, and the remaining plans of a retry, are not searched for: they
+are validated with `/v1/search-state` point lookups (at most 50 keys and the
+service's 16 KiB encoded-query limit each, pinned to the expected store and
+binding). Where the view's scope depends on content the client cannot evaluate
+(a search, a session scope) a plan whose revision moved is skipped as changed;
+elsewhere it is re-read with one `/v1/plan` head read, verified against the
+expected store and binding, and a missing plan is dropped only after the pinned
+lookup confirms its absence. Each lookup and each head read is one request of the
+per-action budget; unfinished plans wait for Check more.
 The count distinguishes a target ceiling with a confirmed further match (**more
 remain**) from unchecked plans that may or may not match: a full set keeps scanning
 within the budget until one more match proves overflow, and a remaining cursor

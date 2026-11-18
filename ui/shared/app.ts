@@ -251,7 +251,7 @@ export interface ViewSpec<U> {
   /** Whether a counted target is still in the view's scope right now; asked before each cleanup request. */
   tidyMember?: (vc: ViewContext<U>, target: CleanupTarget) => boolean;
   /** `confirmed`: keys whose cleanup receipt succeeded, given only when a cleanup action ended. */
-  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlySet<string>) => Partial<U>;
+  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => Partial<U>;
   /**
    * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
    * selected session; board: its own list scope, never the host session). Its task-reading state
@@ -767,11 +767,13 @@ export function startView<U>(spec: ViewSpec<U>) {
   /** Without cleanup support a count or confirmation must not return with it; a finished result stays (its actions need support). */
   const retirePendingTidy = (h: { planCleanup?: 1 }) => {
     if (h.planCleanup === 1 || !cleanup.tidy || cleanup.tidy.result || cleanupBusy) return;
-    cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.ui++;
+    // The old callbacks die with the state; the repaint is background data, never an explicit UI action.
+    cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.data++;
   };
-  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>) => {
+  /** `confirmed`: plans a cleanup receipt took out of view; `returned`: plans a receipt put back (Undo). */
+  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
-    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed) }; versions.ui++; }
+    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) }; versions.ui++; }
   };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
@@ -974,6 +976,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else {
       if (!failure || failure.kind !== result.failure.kind) versions.data++;
       failure = result.failure;
+      // The health reply read before the failure still says what the service offers.
+      if (result.health) retirePendingTidy(result.health);
     }
     schedule();
     plan(failure ? RETRY_MS : REFRESH_MS);
@@ -1012,7 +1016,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       : spec.tidyScan?.(vc, key)) ?? undefined;
     const listed = (spec.tidyPlans?.(vc) ?? []).filter(p => !keys || keys.has(p.key));
     const confirmation = scan ? undefined : { ...tidyConfirmation(listed, read.storeId, key, spec.tidyArchived?.(vc)), matching: spec.tidyMatching?.(vc) };
-    cleanup = { ...initialCleanup(), tidy: { context: key, confirmation, scan } };
+    cleanup = { ...initialCleanup(), tidy: { context: key, confirmation, scan, ...(remaining ? { recount: remaining } : {}) } };
     cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
     if (scan) void moreTidy();
   }
@@ -1098,7 +1102,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     const same = cleanup.tidy === state && state.context === tidyContext();
     if (same && document.activeElement?.closest('[data-testid="tidy-stop"]')) cleanupFocus = 'tidy-open';
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
-    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), new Set(result.succeeded.map(t => t.key)));
+    const receipts = new Set(result.succeeded.map(t => t.key));
+    // Undo of an archive puts plans back in view; every other successful receipt takes them out.
+    const back = undo && state.result?.action === 'archive';
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined);
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
     tidyReconcile = same;
@@ -1423,7 +1430,7 @@ export function startView<U>(spec: ViewSpec<U>) {
           } : tidyState.selectionRequest;
           requestSelection(tidyState.selection, selection);
         }
-        else requestTidy(tidyState?.result?.remaining.length ? tidyState.result.remaining : undefined);
+        else requestTidy(tidyState?.result?.remaining.length ? tidyState.result.remaining : tidyState?.recount);
       },
       requestSelection: (action, selection) => { if (actionContext === cleanupContext()) requestSelection(action, selection); },
       cancelTidy: () => { if (tidyState === cleanup.tidy) cancelTidy(); },
@@ -1671,7 +1678,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (cleanupFocus) {
       const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
       const target = owner?.querySelector<HTMLElement>('button') ?? owner;
-      if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
+      // Never pull focus out of the host or a sibling frame; a document that is not focused keeps the request unused.
+      if (target && (document.hasFocus?.() ?? true)) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
     }
     const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');

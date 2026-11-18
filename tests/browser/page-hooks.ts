@@ -1,7 +1,7 @@
 // Runs the production startView hooks of the board page with supplied globals.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { runInNewContext } from 'node:vm';
+import { createContext, runInContext, runInNewContext } from 'node:vm';
 import ts from 'typescript';
 
 const file = ts.createSourceFile('page.ts', readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -19,4 +19,12 @@ export function pageHook(name: string, globals: Record<string, unknown>) {
   visit(file);
   assert.ok(expression, name);
   return runInNewContext(ts.transpileModule(`(${expression})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
+}
+
+/** Defines a module-level page function in the globals' context, so hooks and the function share page state. */
+export function pageFunction(name: string, globals: Record<string, unknown>) {
+  const node = file.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name);
+  assert.ok(node, name);
+  createContext(globals);
+  runInContext(ts.transpileModule(node.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
 }

@@ -20,7 +20,7 @@ import { inPlace, scopeAvailability } from '../../ui/shared/search.ts';
 import type { PlanSummary } from '../../shared/progress.ts';
 const { EMPTY_LIVE } = liveModule;
 import { HEALTH, plansPage, summary, S } from './fixtures.ts';
-import { pageHook } from './page-hooks.ts';
+import { pageHook, pageFunction } from './page-hooks.ts';
 
 const APP = ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const drain = async () => { for (let n = 0; n < 40; n++) await new Promise<void>(r => setImmediate(r)); };
@@ -51,6 +51,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   const listeners: Record<string, (v?: any) => void> = {};
   const focusables = new Map<string, { focused: number; tagName: string; focus(): void; querySelector(): null }>();
   let focused: unknown = null;
+  let ownsFrame = true;
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
     get firstElementChild() { return this.children[0] ?? null; }
@@ -61,11 +62,13 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     replaceChildren(node: Node) { this.children = [node]; }
   }
   const mount = new Node();
-  const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', get activeElement() { return focused; }, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {} };
+  const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', get activeElement() { return focused; }, hasFocus: () => ownsFrame, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(type: string, fn: (e: unknown) => void) { docListeners[type] = fn; } };
   const plans = opts.plans ?? [summary('one', [], { lifecycle: active ? 'active' : 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
   const feed = opts.live ? liveFeed(opts.live) : null;
   let capability = true;
   let setupLost = false;
+  let plansFail = false;
+  const docListeners: Record<string, (e: unknown) => void> = {};
   const posts: string[] = [];
   const bodies: any[] = [];
   let release: (() => void) | undefined;
@@ -77,7 +80,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   const host = {
     async serviceRequest(q: { path: string; body?: string }) {
       if (q.path === '/health') return { status: 200, body: JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) }) };
-      if (q.path === '/v1/plans') return { status: 200, body: JSON.stringify(plansPage(plans)) };
+      if (q.path === '/v1/plans') return plansFail ? { status: 500, body: '{"error":"storage"}' } : { status: 200, body: JSON.stringify(plansPage(plans)) };
        if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
@@ -119,7 +122,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
        return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
          visited: 50, nextCursor: offset === 2000 ? null : String(offset + 50) };
      }) : undefined,
-    wantProjects: () => [], wantDetails: () => [], paint: (_root, c) => { vc = c; }, ...extra,
+    wantProjects: () => [], wantDetails: () => [], ...extra, paint: (root, c) => { vc = c; (extra as any).paint?.(root, c); },
   };
   exports.startView(spec);
   listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: null, theme: {} });
@@ -127,6 +130,8 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     get vc() { return vc; }, posts, markers, bodies, live: feed,
     capability(on: boolean) { capability = on; },
     setup(lost: boolean) { setupLost = lost; },
+    failPlans(on: boolean) { plansFail = on; },
+    press(target: unknown) { docListeners.pointerdown({ button: 0, target }); },
     refuse(plan: string) { refused = plan; },
     addPlan(plan: (typeof plans)[number]) { plans.push(plan); },
     /** The control painted with this test id; counts the times the controller moved focus to it. */
@@ -135,6 +140,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
       focusables.set(`[data-testid="${id}"]`, node); return node;
     },
     focusAt(element: unknown) { focused = element; },
+    ownsFocus(on: boolean) { ownsFrame = on; },
     normalizeScope(value: string) { effectiveScope = value; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
     session(id: string) { listeners.session({ id }); },
@@ -439,6 +445,7 @@ const placed = (extra: Record<string, unknown> = {}) => {
     derivedBoard: (c: any) => board.get({ plans: c.read?.plans ?? [], live: c.env.live, filters: c.ui.filters, bound: c.env.boundSource, locale: 'en', archived: c.ui.archived, reading: 'fixture' }),
     isSearching: () => false, inPlace, scopeAvailability, NO_FILTERS, selectionEpoch: 0, tidyEffective: '', tidyFilters: null, ...extra,
   };
+  pageFunction('scopeAdmits', globals);
   return { globals, extra: { tidyScope: pageHook('tidyScope', globals), tidyMember: pageHook('tidyMember', globals),
     initialUi: () => ({ filter: 'all', filters: { ...NO_FILTERS }, archived: false, search: null }), wantProjects: () => ['proj'] } as Partial<ViewSpec<any>> };
 };
@@ -698,5 +705,116 @@ for (const [name, focus, restored] of [
     await until(() => !!f.vc.cleanup.tidy?.confirmation);
     await drain();
     assert.equal(cancel.focused > opened, restored);
+  } finally { f.stop(); }
+});
+
+test('a failed list read after cleanup support was lost still retires an open Delete confirmation', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.deleteTidy(); await drain();
+    const stale = f.vc;
+    f.capability(false); f.failPlans(true); f.vc.retry();
+    await until(() => !!f.vc.failure);
+    f.capability(true); f.failPlans(false); f.vc.retry();
+    await until(() => !f.vc.failure && f.vc.health?.planCleanup === 1);
+    stale.confirmTidyDelete(); f.vc.confirmTidyDelete(); await drain();
+    assert.equal(f.posts.length, 0);
+    assert.equal(f.vc.cleanup.tidy, undefined);
+  } finally { f.stop(); }
+});
+
+test('ending Select mode without cleanup support keeps the finished archive result through later paints', async () => {
+  const selection = new cleanup.PlanSelection();
+  const globals: Record<string, unknown> = { selection, selectionEpoch: 0, derivedBoard: () => ({ filters: NO_FILTERS }), isSearching: () => false, tidyEffective: '', tidyFilters: null };
+  pageFunction('endSelectionWithoutCleanup', globals);
+  const f = frame('page', false, false, true, { tidyScope: pageHook('tidyScope', globals), paint: (_r: unknown, c: unknown) => (globals.endSelectionWithoutCleanup as (c: unknown) => void)(c) });
+  try {
+    await until(() => !!f.vc?.read);
+    selection.reconcile('scope', f.vc.read!.plans, false); selection.mode = true; selection.selectAll();
+    f.vc.requestSelection('archive', { ...selection.snapshot() });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.hold(); f.vc.confirmTidy(); await until(() => f.posts.length === 1);
+    f.capability(false); f.release();
+    await until(() => !f.vc.cleanup.pending);
+    await until(() => f.vc.health?.planCleanup !== 1);
+    for (let n = 0; n < 3; n++) { f.vc.invalidate(); await drain(); }
+    assert.equal(selection.mode, false, 'Select mode ended with support');
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the result and its receipts are not tied to that teardown');
+  } finally { f.stop(); }
+});
+
+test('Undo of a Select all archive puts plans back under the rule, keeping explicit exclusions', async () => {
+  const selection = new cleanup.PlanSelection();
+  const globals = { selection, captures: { retire() {} }, reporting: { retire() {} }, search: { select() {} } };
+  const f = frame('page', false, false, true, { forgetPlans: pageHook('forgetPlans', globals) });
+  try {
+    await until(() => !!f.vc?.read);
+    const plans = f.vc.read!.plans;
+    selection.reconcile('scope', plans, true); selection.mode = true; selection.selectAll(); selection.toggle(plans[1]);
+    f.vc.requestSelection('archive', { ...selection.snapshot() });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidy(); await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(selection.has(plans[0].key), false, 'archived: out of the rule');
+    f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
+    assert.equal(selection.has(plans[0].key), true, 'restored by receipt: back under the rule, though no read lists it');
+    assert.equal(selection.has(plans[1].key), false, 'the explicit exclusion stays');
+  } finally { f.stop(); }
+});
+
+test('losing setup while a confirmation is open leaves an unrelated press to complete', async () => {
+  let paints = 0;
+  const f = frame('page', false, false, true, { paint: () => { paints++; } });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    await drain();
+    f.press({ closest: () => ({}), isConnected: true, setPointerCapture() {} });
+    const before = paints;
+    f.setup(true); f.vc.retry(); await drain();
+    assert.equal(paints, before, 'the background retirement waits for the press to finish');
+  } finally { f.stop(); }
+});
+
+test('a failed recount keeps the remaining plans, so Try again never widens to the whole scope', async () => {
+  const asked: (readonly unknown[] | undefined)[] = [];
+  const f = frame('page', false, false, true, {
+    tidyScan: (c: any, key: string, includes: any, _a: unknown, known: readonly unknown[] | undefined) => {
+      asked.push(known);
+      return new cleanup.CleanupScan(key, c.read.storeId, false, async () => {
+        if (asked.length === 2) throw Error('count failed');
+        return { plans: c.read.plans, visited: 1, nextCursor: null };
+      }, false, 50, includes, false);
+    },
+  });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.refuse('two'); f.vc.confirmTidy(); await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(f.vc.cleanup.tidy?.result?.remaining.length, 1);
+    f.vc.retryTidy(); await until(() => !!f.vc.cleanup.tidy?.countFailed);
+    f.vc.retryTidy(); await drain();
+    assert.equal(asked.length, 3);
+    assert.equal(asked[2]?.length, 1, 'the second attempt still names only the remaining plan');
+  } finally { f.stop(); }
+});
+
+test('a held count finishing after focus left the frame does not take focus back', async () => {
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  const f = frame('page', false, false, true, {
+    tidyScan: (c: any, key: string) => new cleanup.CleanupScan(key, c.read.storeId, false, async () => { await held; return { plans: c.read.plans, visited: 1, nextCursor: null }; }),
+  });
+  try {
+    await until(() => !!f.vc?.read);
+    const cancel = f.focusable('tidy-cancel');
+    f.vc.requestTidy(); await drain();
+    assert.ok(cancel.focused >= 1, 'opening the panel from this frame takes focus');
+    const opened = cancel.focused;
+    // Focus moved to the host or a sibling frame; this document still reports Cancel as its active element.
+    f.ownsFocus(false); f.focusAt({ closest: (s: string) => s.includes('tidy-actions') ? {} : null });
+    release(); await until(() => !!f.vc.cleanup.tidy?.confirmation); await drain();
+    assert.equal(cancel.focused, opened, 'the frame does not call focus() without owning focus');
   } finally { f.stop(); }
 });

@@ -6,7 +6,9 @@ import { freezeLive, inPlace, scopeAvailability } from '../../ui/shared/search.t
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC, S } from './fixtures.ts';
-import { pageHook } from './page-hooks.ts';
+import { pageHook, pageFunction } from './page-hooks.ts';
+import { cleanupKnownReader } from '../../ui/shared/source.ts';
+import { identity, view, service, closed } from './cleanup-known-service.ts';
 
 // Execute the production page callbacks, with the real board normalization and scan engine.
 const hook = pageHook;
@@ -25,13 +27,14 @@ for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gon
     const derivedBoard = () => board.get({ plans: vc.read.plans, live, filters: vc.ui.filters, bound: SRC, locale: 'en', archived: false, reading: 'board' });
     assert.equal(derivedBoard().filters.project, ALL);
     assert.equal(derivedBoard().filters.worktree, ALL);
-    const globals = {
+    const globals: Record<string, unknown> = {
       isSearching: () => false, derivedBoard, ALL, freezeLive, inPlace, scopeAvailability, pageListScope, CleanupScan,
       readCleanupListPage: async (_host: unknown, scope: unknown) => {
         assert.equal(JSON.stringify(scope), JSON.stringify({ archived: 'exclude' }));
         return { plans: [...loaded, ...older], visited: 2, nextCursor: null };
       },
     };
+    pageFunction('scopeAdmits', globals);
     const scan = hook('tidyScan', globals)(vc, 'board') as CleanupScan;
     const counted = await scan.more(() => true);
     assert.deepEqual(counted?.targets.map(p => p.request.plan), ['older']);
@@ -65,11 +68,12 @@ function outsideRoots() {
     service: () => ({ serviceRequest: async () => { throw Error('Unexpected transport'); } }),
   };
   const derivedBoard = () => board.get({ plans: vc.read.plans, live, filters: vc.ui.filters, bound: SRC, locale: 'en', archived: false, reading: 'board' });
-  const globals = {
-    isSearching: () => !!vc.ui.search, derivedBoard, ALL, freezeLive, inPlace, scopeAvailability, pageListScope, CleanupScan,
+  const globals: Record<string, unknown> = {
+    isSearching: () => !!vc.ui.search, derivedBoard, ALL, freezeLive, inPlace, scopeAvailability, pageListScope, CleanupScan, cleanupKnownReader,
     cleanupSearchReader: () => async () => { throw Error('Unexpected search'); },
     readCleanupListPage: async () => ({ plans, visited: 2, nextCursor: null }),
   };
+  pageFunction('scopeAdmits', globals);
   return { vc, plans, derivedBoard, globals };
 }
 test('a truncated browse Tidy follows browse placement for a worktree outside the discovered roots', async () => {
@@ -83,4 +87,53 @@ test('a search scan still refuses locations this window cannot classify', async 
   const { vc, globals } = outsideRoots();
   vc.ui.search = { criteria: { q: 'x', source: ALL, session: ALL, lifecycle: ALL, status: ALL, project: 'p:gone', worktree: ALL } };
   await assert.rejects((hook('tidyScan', globals)(vc, 'search') as CleanupScan).more(() => true), { message: 'The selected locations are unavailable.' });
+});
+
+// One predicate decides what a count offers and what a request may reach.
+const target = (vc: any, globals: Record<string, unknown>, plan: any) =>
+  ({ request: { source: plan.sourceId }, where: { owner: plan.ownerSessionId, directory: plan.directory } }) as any;
+test('a named plan that stopped matching the search is not offered, whatever its new revision', async () => {
+  const { vc, globals } = outsideRoots();
+  const rows = [closed('Blocked-1', { directory: '/elsewhere/wt' }), closed('Blocked-2', { directory: '/elsewhere/wt' })];
+  vc.ui.search = { criteria: { q: '', source: ALL, session: ALL, lifecycle: ALL, status: 'blocked', project: ALL, worktree: ALL } };
+  (vc as any).health = { planTaskSearch: 1 };
+  // The last blocked task of the first plan is unblocked after it was chosen: its revision moved.
+  const s = service({ revisions: new Map([['Blocked-1', 2], ['Blocked-2', 1]]) }, rows);
+  (vc as any).service = () => s.host;
+  const scan = hook('tidyScan', globals)(vc, 'selection', () => true, true, view(rows)) as CleanupScan;
+  const counted = await scan.more(() => true);
+  assert.deepEqual(counted?.targets.map(t => t.request.plan), ['Blocked-2']);
+  assert.ok(s.requests.every(r => r.path === '/v1/search-state'), 'the moved plan is not re-read and adopted');
+});
+test('named plans are placed and availability-checked like every other count', async () => {
+  const { vc, globals } = outsideRoots();
+  (vc as any).health = { planTaskSearch: 1 };
+  const rows = [closed('in', { directory: '/elsewhere/wt' }), closed('out', { directory: '/somewhere/else' })];
+  const s = service({ revisions: new Map(rows.map(r => [r.id, r.revision])) }, rows);
+  (vc as any).service = () => s.host;
+  const placed = await (hook('tidyScan', globals)(vc, 'selection', () => true, true, view(rows)) as CleanupScan).more(() => true);
+  assert.deepEqual(placed?.targets.map(t => t.request.plan), ['in'], 'a named plan outside the displayed location is not offered');
+  vc.ui.search = { criteria: { q: '', source: ALL, session: ALL, lifecycle: ALL, status: ALL, project: 'p:gone', worktree: ALL } };
+  await assert.rejects((hook('tidyScan', globals)(vc, 'selection', () => true, true, view(rows)) as CleanupScan).more(() => true), { message: 'The selected locations are unavailable.' });
+});
+test('the send-time guard and the count agree on every predicate dimension', async () => {
+  const { vc, globals } = outsideRoots();
+  (vc as any).health = { planTaskSearch: 1 };
+  const guard = hook('tidyMember', { ...globals, tidyFilters: vc.ui.filters, NO_FILTERS }) as (vc: unknown, t: unknown) => boolean;
+  const rows = [closed('in', { directory: '/elsewhere/wt' }), closed('out', { directory: '/somewhere/else' })];
+  const s = service({ revisions: new Map(rows.map(r => [r.id, r.revision])) }, rows);
+  (vc as any).service = () => s.host;
+  const known = view(rows);
+  // Browse placement.
+  const counted = await (hook('tidyScan', globals)(vc, 'selection', () => true, true, known) as CleanupScan).more(() => true);
+  for (const plan of known) assert.equal(guard(vc, target(vc, globals, plan)), counted!.targets.some(t => t.key === plan.key), `placement: ${plan.id}`);
+  // Search availability: the chosen worktree is not discoverable, though placement alone would still pass.
+  const missing = { q: '', source: ALL, session: ALL, lifecycle: ALL, status: ALL, project: ALL, worktree: 'w:/elsewhere/wt' };
+  vc.ui.search = { criteria: missing };
+  const gone = { ...globals, isSearching: () => true, tidyFilters: null, NO_FILTERS };
+  const searchGuard = hook('tidyMember', gone) as (vc: unknown, t: unknown) => boolean;
+  assert.equal(scopeAvailability(missing, freezeLive(vc.live)) === 'ok', false);
+  assert.equal(inPlace(missing, known[0] as any, vc.live, SRC), true);
+  assert.equal(searchGuard(vc, target(vc, globals, known[0])), false, 'availability is part of the same predicate');
+  await assert.rejects((hook('tidyScan', gone)(vc, 'selection', () => true, true, known) as CleanupScan).more(() => true));
 });

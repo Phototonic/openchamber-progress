@@ -87,7 +87,7 @@ for (const searching of [false, true]) test(`Select mode ends when the service s
   paintTop(); f.paint();
   assert.equal(f.selection.mode, false);
   assert.equal(f.selection.count, 0);
-  assert.equal(f.globals.selectionEpoch, 1, 'a pending selection confirmation is retired with the selection');
+  assert.equal(f.globals.selectionEpoch, 0, 'ending the mode leaves a finished result bound to its scope; the controller retires pending counts');
 });
 // The production paint, driven with a null read (Archived on a service without cleanup): anything the paint
 // builds beyond its selection handling is a no-op stub, so only real page state is observed.
@@ -104,5 +104,21 @@ test('the production paint ends Select mode on an Archived read-less frame witho
   paint({ append() {} }, vc);
   assert.equal(selection.mode, false);
   assert.equal(selection.count, 0);
-  assert.equal(base.selectionEpoch, 1);
+  assert.equal(base.selectionEpoch, 0);
+});
+
+test('a cached search page does not reselect a plan a receipt took out; a checked one does', () => {
+  const f = frame();
+  const hits: { plan: typeof plans[number] }[] = [{ plan: plans[0] }, { plan: plans[1] }];
+  f.vc.ui.search = { key: 'search' };
+  const page = { hits, number: 1, checked: true };
+  f.globals.v = { page, criteria: { ...NO_FILTERS } };
+  f.paint(); f.selection.mode = true; f.selection.selectAll();
+  f.selection.forget([plans[0].key]);
+  page.checked = false; f.globals.v = { page: { ...page, hits: [...hits] }, criteria: { ...NO_FILTERS } };
+  f.paint();
+  assert.equal(f.selection.has(plans[0].key), false, 'an unverified cached page is not evidence');
+  f.globals.v = { page: { ...page, hits: [...hits], checked: true }, criteria: { ...NO_FILTERS } };
+  f.paint();
+  assert.equal(f.selection.has(plans[0].key), true);
 });

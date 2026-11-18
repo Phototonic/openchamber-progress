@@ -117,3 +117,28 @@ test('a plan confirmed back in scope after Undo is selected again; an explicit e
   assert.equal(selection.count, 2);
   assert.equal(selection.snapshot().includes(plans[0]), true);
 });
+
+test('a cached, unchecked page cannot clear a receipt departure; a click on a departed row selects it', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true, false);
+  assert.equal(selection.has('a'), false, 'no evidence that it returned');
+  selection.toggle(plans[0]);
+  assert.equal(selection.has('a'), true, 'an unpressed row is chosen by a click');
+  assert.equal(selection.snapshot().includes(plans[0]), true, 'not recorded as an exclusion');
+  selection.forget(['a']);
+  selection.reconcile('scope', [...plans], true, true);
+  assert.equal(selection.has('a'), true, 'a checked page is evidence');
+});
+test('an Undo receipt clears only the departure, not explicit exclusions', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll(); selection.toggle(plans[1]);
+  selection.forget(['a', 'b']);
+  selection.returned(['a', 'b']);
+  assert.equal(selection.has('a'), true);
+  assert.equal(selection.has('b'), false);
+  assert.equal(selection.snapshot().includes(plans[0]), true);
+});

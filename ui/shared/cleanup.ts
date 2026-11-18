@@ -84,6 +84,8 @@ export interface TidyConfirmation {
   matching?: boolean;
   limited?: boolean;
   unchecked?: boolean;
+  /** Every page was read, but offsets between pages are not a snapshot: other plans may have been missed. */
+  unverified?: boolean;
   deleting?: boolean;
 }
 export interface TidyResult {
@@ -96,6 +98,8 @@ export interface TidyResult {
 export interface TidyState {
   selectionRequest?: SelectionRequest;
   selection?: CleanupAction;
+  /** The remaining plans a Try again is recounting, kept so a failed recount retries the same set. */
+  recount?: CleanupTarget[];
   opener?: string;
   context: string;
   confirmation?: TidyConfirmation;
@@ -119,12 +123,15 @@ export interface CleanupScanPage {
   /** Work visited by the service, including nonmatches, not the number of hits. */
   visited: number;
   nextCursor: string | null;
+  /** The page followed an offset boundary whose stability cannot be proven. */
+  unverified?: boolean;
 }
 /** A panel-local traversal. It never mutates the ordinary list or its caches. */
 export class CleanupScan {
   private cursor: string | null = null;
   private exhausted = false;
   private overflow = false;
+  private qualified = false;
   private busy = false;
   private retired = false;
   private targets = new Map<string, CleanupTarget>();
@@ -169,7 +176,11 @@ export class CleanupScan {
         if (!Number.isSafeInteger(page.visited) || page.visited < 1 || page.visited > this.windowBound ||
           (page.nextCursor !== null && page.nextCursor === this.cursor)) throw new Error('Invalid cleanup scan continuation.');
         visited += page.visited;
+        if (page.unverified) this.qualified = true;
         for (const p of page.plans) {
+          // A plan met again (an overlap anchor) replaces its target when it changed, and is otherwise kept as is.
+          const had = this.targets.get(p.key);
+          if (had && (had.request.rev !== p.revision || had.request.cleanupRev !== (p.cleanup?.revision ?? 0))) this.targets.delete(p.key);
           if (!(this.includes ? (p.cleanup?.state === 'archived') === this.archived && this.includes(p) : tidyEligible(p, this.archived))) continue;
           if (this.targets.has(p.key) || this.excludedActive.has(p.key)) continue;
           if (!this.allowActive && !cleanupClosed(p)) { this.excludedActive.add(p.key); continue; }
@@ -182,7 +193,8 @@ export class CleanupScan {
       return { context: this.context, targets: [...this.targets.values()], total: this.targets.size,
         ...(this.excludedActive.size ? { excludedActive: this.excludedActive.size } : {}),
         archived: this.archived, matching: this.matching,
-        limited: this.overflow, unchecked: !this.overflow && !this.exhausted };
+        limited: this.overflow, unchecked: !this.overflow && !this.exhausted,
+        ...(!this.overflow && this.exhausted && this.qualified ? { unverified: true } : {}) };
     } finally { this.busy = false; }
   }
 }
@@ -199,22 +211,24 @@ export class PlanSelection {
   private departed = new Set<string>();
   private partial = false;
   private plans: CleanupPlan[] | null = null;
+  private fresh = true;
   private selectedCount = 0;
   private recount() {
     this.selectedCount = this.all ? this.known.size - [...this.omitted].filter(k => this.known.has(k)).length : this.chosen.size;
   }
-  reconcile(reading: string, plans: CleanupPlan[], incomplete: boolean) {
+  /** `fresh`: the plans are verified membership (a list read, a checked search page), not a cached page. */
+  reconcile(reading: string, plans: CleanupPlan[], incomplete: boolean, fresh = true) {
     if (reading !== this.reading) {
       this.clear(); this.mode = false; this.known.clear(); this.plans = null; this.reading = reading;
     }
-    if (this.plans === plans && this.partial === incomplete) return;
-    this.plans = plans; this.partial = incomplete;
+    if (this.plans === plans && this.partial === incomplete && this.fresh === fresh) return;
+    this.plans = plans; this.partial = incomplete; this.fresh = fresh;
     if (!incomplete) {
       const keys = new Set(plans.map(p => p.key));
       for (const key of this.chosen) if (!keys.has(key)) this.chosen.delete(key);
       this.known.clear();
     }
-    for (const p of plans) { this.known.set(p.key, p); this.departed.delete(p.key); }
+    for (const p of plans) { this.known.set(p.key, p); if (fresh) this.departed.delete(p.key); }
     this.recount();
     this.version++;
   }
@@ -225,6 +239,8 @@ export class PlanSelection {
   selectAll() { this.all = true; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = this.known.size; this.version++; }
   toggle(p: CleanupPlan) {
     this.known.set(p.key, p);
+    // An unpressed departed row is chosen by a click, not recorded as an exclusion.
+    if (this.all && this.departed.delete(p.key)) { this.recount(); this.version++; return; }
     const set = this.all ? this.omitted : this.chosen;
     if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
     this.recount();
@@ -239,6 +255,12 @@ export class PlanSelection {
     }
     this.recount();
     this.version++;
+  }
+  /** A receipt put these plans back in view (Undo): they belong to a Select all rule again; exclusions stay. */
+  returned(keys: Iterable<string>) {
+    let any = false;
+    for (const key of keys) if (this.departed.delete(key)) any = true;
+    if (any) { this.recount(); this.version++; }
   }
   snapshot(): SelectionRequest {
     const all = this.all, chosen = new Set(this.chosen), omitted = new Set([...this.omitted, ...this.departed]);

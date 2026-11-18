@@ -96,10 +96,17 @@ test('a list that shifts between pages retires the count instead of silently ski
     await assert.rejects(scan.more(() => true), /changed/);
     // Without a change the same guarded traversal still completes and sees every closed plan once.
     reads = -1000;
+    const starts: string[] = [];
+    const watching: ServiceHost = { serviceRequest: async q => { if (q.path === '/v1/plans') starts.push(String(q.query?.cursor ?? '')); return host.serviceRequest(q); } };
+    const reused = {};
     const stable = new CleanupScan('board', read.storeId, false,
-      cursor => readCleanupListPage(host, { archived: 'exclude' }, cursor, read, {}));
+      cursor => readCleanupListPage(watching, { archived: 'exclude' }, cursor, read, reused));
     const all = await stable.more(() => true);
     assert.equal(all?.unchecked, false);
+    assert.ok(starts.length > 1, 'the traversal crossed a page boundary');
+    // The first page ended at cursor N; the next starts one row early to re-read that plan.
+    const firstPage = await readCleanupListPage(raw, { archived: 'exclude' }, null, read);
+    assert.equal(starts[1], String(Number(firstPage.nextCursor) - 1));
     assert.ok(all!.targets.every(t => t.where), 'overlapped pages keep the placement facts');
     assert.equal(new Set(all?.targets.map(t => t.key)).size, all?.targets.length);
     const whole = await readList(raw, { archived: 'exclude' }, 20);
