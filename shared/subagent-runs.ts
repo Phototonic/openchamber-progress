@@ -404,10 +404,13 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     if(!identifier(row.plan)||r.plan!==row.plan||a.oid!==row.oid||!identifier(a.oid)||!Number.isSafeInteger(a.declaredRevision)||a.declaredRevision<1||r.rev!==a.declaredRevision||!Array.isArray(a.taskIds)||a.taskIds.length>DELEGATION_VIEW_LIMITS.tasks||!a.taskIds.every(identifier)||new Set(a.taskIds).size!==a.taskIds.length||a.dispatch!==null&&(!a.dispatch||a.dispatch.tool!=='subagent'||!identifier(a.dispatch.messageId)||!identifier(a.dispatch.callId))){result.complete=false;continue;}
     // Only the latest declaration per plan matters. A fresh pending/bound/cancel
     // declaration must not resurrect an older refusal in coordinator guidance.
-    if(cleanupInstalled(db)&&['archived','deleted'].includes(String(cleanupState(db,sourceId,r.plan)?.state??'')))continue;
-    // Cleanup retires an intent without rewriting its guarded receipt: a visible
-    // plan whose pending/reserved receipt has no active intent is retired as closed.
+    const cleanup=cleanupInstalled(db)?String(cleanupState(db,sourceId,r.plan)?.state??''):'';
+    if(['archived','deleted'].includes(cleanup))continue;
+    // Cleanup retires an intent without rewriting its guarded receipt. Only a
+    // restored plan (explicit visible cleanup record, as replay requires) explains
+    // a pending/reserved receipt with no active intent; otherwise it is incomplete.
     const orphaned=['pending','reserved'].includes(d.state)&&!db.prepare('SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?').get(sourceId,sessionId,r.plan,row.oid);
+    if(orphaned&&cleanup!=='visible'){result.complete=false;continue;}
     const reason=orphaned?'closed':d.reason;
     if(!orphaned&&d.state!=='retired'||reason==='cancelled'||!a.taskIds.length)continue;
     // Explicit links have no delegation receipt. Read the bounded current

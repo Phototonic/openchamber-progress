@@ -102,12 +102,47 @@ test('a report to an archived plan is refused before any document permission req
   }finally{await dispose?.();f.cleanup();}
 });
 
-test('the reopen guidance limits the stop-reporting rule to closed and not-found',()=>{
+test('an archive during a pending document permission stops the next prompt and the read',async()=>{
+  const f=fixture();let dispose:any;
+  try{
+    f.configure();fs.writeFileSync(`${f.root}/project/plan.md`,'# Synthetic plan');fs.symlinkSync(`${f.root}/project/plan.md`,`${f.root}/project/link.md`);
+    dispose=await plugin.setup(f.ctx);
+    assert.equal((await f.report({...start(),source:'link.md'})).rev,1);
+    const held=deferred(),entered=deferred();let asked=0;
+    f.ctx.permission.assert=async()=>{if(++asked===1){entered.resolve();await held.promise;}};
+    const work=f.report({op:'change',plan:'P-managed',oid:'late',rev:1,changes:[{id:'work',status:'done'}]});await entered.promise;
+    const b=readManagedBinding(f.env)!,store=new Store(b.database);
+    try{store.cleanup('archive',{storeId:store.list().storeId,source:b.source.id,plan:'P-managed',rev:1,cleanupRev:0,oid:'archive',active:true});}finally{store.close();}
+    held.resolve();
+    assert.equal((await work).error,'closed');assert.equal(asked,1,'the canonical-path prompt is never asked after the archive');
+  }finally{await dispose?.();f.cleanup();}
+});
+
+test('paused capture answers disabled for an archived plan with or without a bound document, with no prompt',async()=>{
+  const f=fixture();let dispose:any;
+  try{
+    f.configure();fs.writeFileSync(`${f.root}/project/plan.md`,'# Synthetic plan');
+    let asked=0;f.ctx.permission.assert=async()=>{asked++;};
+    dispose=await plugin.setup(f.ctx);
+    assert.equal((await f.report({...start('P-bound'),source:'plan.md'})).rev,1);assert.equal((await f.report(start('P-plain'))).rev,1);
+    const b=readManagedBinding(f.env)!,store=new Store(b.database);
+    try{
+      for(const plan of ['P-bound','P-plain'])store.cleanup('archive',{storeId:store.list().storeId,source:b.source.id,plan,rev:1,cleanupRev:0,oid:`archive-${plan}`,active:true});
+      store.setEnabled(false);
+    }finally{store.close();}
+    asked=0;
+    for(const plan of ['P-bound','P-plain'])assert.equal((await f.report({op:'change',plan,oid:`late-${plan}`,rev:1,changes:[{id:'work',status:'done'}]})).error,'disabled',plan);
+    assert.equal(asked,0);
+  }finally{await dispose?.();f.cleanup();}
+});
+
+test('the reopen guidance limits the stop-reporting rule to closed and not-found and explains staging',()=>{
   for(const file of ['plugin/SKILL.md','plugin/index.ts']){
     const text=fs.readFileSync(file,'utf8').replace(/\s+/g,' ');
     assert.match(text,/`?closed`? while in progress or on a reopen/,file);
-    assert.match(text,/`?conflict`? or `?stage-incomplete`?/,file);
-    assert.doesNotMatch(text,/refuses a reopen/,file);
+    assert.match(text,/`?stage-incomplete`?, stage the missing chunks, or restage the whole structure under a fresh upload ID/,file);
+    assert.match(text,/`?reopen=true`? on every stage and the commit/,file);
+    assert.doesNotMatch(text,/refuses a reopen|conflict`? or `?stage-incomplete`? is recoverable/,file);
   }
 });
 

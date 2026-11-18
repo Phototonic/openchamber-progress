@@ -1280,13 +1280,18 @@ work retires its intent in the same cleanup transaction without rewriting the
 guarded plan receipts; deletion already removes intents with the plan. Retrying
 the declaration while archived answers `closed`, or `not-found` after deletion,
 before replay. The companion makes the same check before it asks for document
-read permission or captures the bound document, so an archived plan never causes a
-permission prompt for a write that cannot succeed; the transaction still decides.
+read permission, again before each further permission request and again after one
+resolves, before any bytes are read, so an archived plan never causes a prompt or a
+read for a write that cannot succeed; the transaction still decides. Precedence is
+the same with or without a bound document and for a task-update handoff: paused
+capture answers `disabled`, then cleanup answers `closed` or `not-found`.
 Waiting-delegation notes disappear and recorded session runs remain.
 After restore, the guarded receipt stays untouched and the intent stays inactive:
 replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
 `retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
-a fresh declaration works. A new unlinked dispatch ignores archived plans when it
+a fresh declaration works. Only the explicit restore record explains a missing
+intent: a plan never archived whose pending receipt lost its intent is not reported
+as closed; the view is unavailable and guidance incomplete. A new unlinked dispatch ignores archived plans when it
 looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
@@ -1899,7 +1904,12 @@ in progress or on a reopen, or `not-found` for a plan the agent started, means
 the user archived or deleted it: stop reporting, do not retry, and do not recreate
 it (including under another identifier) unless the user specifically asks. A
 reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
-and is not user cleanup: read the plan and retry.
+and is not user cleanup. For `conflict`, read the plan and retry at its current
+revision. For `stage-incomplete`, stage the missing chunks, or restage the whole
+structure under a fresh upload ID if the revision changed since staging (a chunk
+is pinned to its staging revision and cannot be overwritten under the same
+upload ID); `reopen:true` stays on every stage and the commit while the plan is
+closed.
 Ordinary continuation of an agent-finished plan still uses the coordinator's
 explicit `revise`/`commit` with `reopen:true`. This is advisory guidance only;
 tool inputs, validation, replies and size limits are unchanged.

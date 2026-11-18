@@ -82,6 +82,31 @@ test(`restore after active archive shows a ${state} delegation as retired in bot
   }finally{f.cleanup();}
 });
 
+test('a never-archived plan that lost its intent is not reported as closed',()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.bindReads(f.source.id,true);f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'declare',assign:['A']},f.actor);
+    f.store.db.exec('DELETE FROM runs_intents');
+    const detail=f.store.detail(f.source.id,'P-active');
+    const result=delegationView(f.store,detail,detail.plan).view!.result as any;
+    assert.equal(result.availability,'unavailable');assert.equal(result.reason,'invalid');
+    const guidance=f.store.delegationRefusals(f.source.id,'M');
+    assert.equal(guidance.complete,false);assert.deepEqual(guidance.refusals,[]);
+    assert.equal(f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'declare',assign:['A']},f.actor).delegation.state,'pending','replay agrees');
+  }finally{f.cleanup();}
+});
+
+test('the early report refusal has the write path precedence: disabled, then closed',()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.cleanup('archive',{...f.body('P-active',0,'cleanup',1),active:true});
+    assert.throws(()=>f.store.assertReportable(f.source.id,'P-active'),(e:any)=>e.code==='closed');
+    f.store.setEnabled(false);
+    assert.throws(()=>f.store.assertReportable(f.source.id,'P-active'),(e:any)=>e.code==='disabled');
+  }finally{f.cleanup();}
+});
+
 test('an unlinked dispatch keeps its visible plan when other active plans are archived',()=>{
   const f=cleanupFixture();
   try{

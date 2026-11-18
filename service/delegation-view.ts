@@ -73,8 +73,8 @@ export function delegationView(store: Store, envelope: Envelope, plan: PlanSumma
         };
         if (d.state === 'pending' || d.state === 'reserved') {
           if (!a.taskIds.length || (d.state === 'pending') !== (a.dispatch === null)) { unavailable('invalid'); break; }
-          // Cleanup retires the intent without rewriting the guarded receipt. This visible plan has no active intent for it: show the retirement.
-          if (!intentRow || intentRow.plan !== plan.id || intentRow.oid !== a.oid) { refused('closed'); break; }
+          // Cleanup retires the intent without rewriting the guarded receipt. Only a restored plan (an explicit visible cleanup record, as replay requires) explains a missing intent; anything else stays unavailable.
+          if (!intentRow || intentRow.plan !== plan.id || intentRow.oid !== a.oid) { if (cleanup?.state === 'visible') refused('closed'); else unavailable('invalid'); break; }
           if (typeof intentRow.payload !== 'string') { unavailable('invalid'); break; }
           try {
             const intent = activeIntent(db, plan.sourceId, plan.sessionId);
