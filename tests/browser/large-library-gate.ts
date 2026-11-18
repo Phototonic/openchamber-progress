@@ -1,6 +1,6 @@
 // Usage: node --experimental-strip-types tests/browser/large-library-gate.ts <before> <after-1> <after-2> <after-3>
 // Each argument is an artifact directory containing large-library-qa.ts results.json.
-// Exit status: 0 when every budget passed, 1 when a budget failed, 2 when none failed but a budget could not be compared.
+// Exit status: 0 when every budget passed, 1 when a budget failed or the gate aborted (an uncaught error also exits 1), 2 when none failed but a budget could not be compared.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { ATTRIBUTION_METHOD, HEALTH_ROUTE, INBOX_ROUTE, type CompleteRefreshes } from './refresh-attribution.ts';
@@ -65,8 +65,11 @@ const recorded = (r: any) => idle(r, 'page').complete?.page as CompleteRefreshes
 const labelled = (r: any) => idle(r, 'page').attribution === ATTRIBUTION_METHOD;
 // Zero complete refreshes (a window with a single list start, or a stalled baseline) is insufficient evidence, not a zero budget.
 const settled = (r: any): CompleteRefreshes | undefined => labelled(r) && (recorded(r)?.refreshes ?? 0) >= 1 && recorded(r)?.inbox ? recorded(r) : undefined;
-const why = (r: any) => !labelled(r) ? 'attribution method not recorded (an older driver, which may have bucketed replies)'
-  : `no complete refresh inside its idle window (${listStarts(r, 'page') ?? 0} list start${listStarts(r, 'page') === 1 ? '' : 's'})`;
+const why = (r: any) => {
+  if (!labelled(r)) return 'attribution method not recorded (an older driver, which may have bucketed replies)';
+  if ((recorded(r)?.refreshes ?? 0) < 1) return `no complete refresh inside its idle window (${listStarts(r, 'page') ?? 0} list start${listStarts(r, 'page') === 1 ? '' : 's'})`;
+  return 'no inbox split recorded for its complete refreshes';
+};
 const names = ['baseline', ...after.map((_, n) => `run ${n + 1}`)];
 const all = [before, ...after];
 {
@@ -115,7 +118,10 @@ budget('Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)', per
 budget('Idle list-carried inbox windows per list start (/v1/plans?needsYou=1)', r => {
   const form = idle(r, 'page').inbox?.page, starts = listStarts(r, 'page');
   return form && starts ? form.plansFirstWindow / starts : undefined;
-}, r => listStarts(r, 'page') ? 'no inbox split recorded' : 'no list starts recorded');
+}, r => [
+  ...idle(r, 'page').inbox?.page ? [] : ['no inbox split recorded'],
+  ...listStarts(r, 'page') === undefined ? ['no list starts recorded'] : listStarts(r, 'page') === 0 ? ['no list start in its idle window'] : [],
+].join(' and '));
 {
   // Run reads cannot be tied to the refresh that caused them (the request log holds no cause), so each window's count is shown
   // beside its list starts and judged by no one. This row never changes the exit.

@@ -77,10 +77,9 @@ function gate(after: Opt | [Opt, Opt, Opt], before: Opt = {}): Report {
     });
     const run = spawnSync(process.execPath, ['--experimental-strip-types', 'tests/browser/large-library-gate.ts', ...dirs], { encoding: 'utf8' });
     const report = run.stdout ? JSON.parse(run.stdout) : null;
-    // Rows carry a status; the previous report shape had a pass flag and an informational budget, which the same checks read.
-    const rows: Row[] = (report?.rows ?? []).map((r: any) => ({ ...r, status: r.status ?? (r.budget === 'informational' ? 'informational' : r.pass ? 'pass' : 'fail') }));
+    const rows: Row[] = report?.rows ?? [];
     const named = (status: Row['status']) => rows.filter(r => r.status === status).map(r => r.name);
-    return { status: run.status, failed: named('fail'), unverified: named('unverified'), info: named('informational'), rows, summary: report?.unverified ? { passed: report.passed, failed: report.failed, unverified: report.unverified } : null, error: run.stderr };
+    return { status: run.status, failed: named('fail'), unverified: named('unverified'), info: named('informational'), rows, summary: report ? { passed: report.passed, failed: report.failed, unverified: report.unverified } : null, error: run.stderr };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 const cadence = (names: string[]) => names.filter(n => n.startsWith('Idle cadence'));
@@ -197,6 +196,10 @@ test('one candidate that cannot be compared is named and left out; two such cand
   const plans = one.rows.find(r => r.name === PLANS);
   assert.equal(plans?.status, 'pass');
   assert.match(plans?.note ?? '', /run 3: attribution method not recorded/);
+  // Two comparable candidates give the larger of the two as their median, so an over-budget one cannot hide behind the other.
+  const over = gate([{ pagesPerRefresh: 11 }, {}, { format: 'unlabelled' }]);
+  assert.equal(over.status, 1, `${over.error}`);
+  assert.deepEqual(over.failed, [PLANS]);
   const two = gate([{}, { format: 'unlabelled' }, { format: 'unlabelled' }]);
   assert.equal(two.status, 2, `${two.error}${two.failed.join('\n')}`);
   assert.deepEqual(two.unverified.sort(), [...perRefresh].sort());
