@@ -1512,7 +1512,9 @@ at most three current-per-plan refusals and marks incomplete evidence. Newer
 declaration evidence suppresses old
 refusals, as do bounded current assignments covering all refused tasks through
 linked children at a later revision; archived/deleted plans and
-disabled/unverified contexts expose none.
+disabled/unverified contexts expose none. A pending or reserved receipt whose
+state disagrees with its dispatch, or that names no task, marks evidence
+incomplete instead of yielding a refusal.
 The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
 and explicitly marks omissions, including an empty incomplete result. It is
 advisory and read-only: recovery requires

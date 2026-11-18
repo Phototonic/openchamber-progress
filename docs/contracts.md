@@ -1331,7 +1331,9 @@ replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
 `retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
 a fresh declaration works. Only the explicit restore record explains a missing
 intent: a plan never archived whose pending receipt lost its intent is not reported
-as closed; the view is unavailable and guidance incomplete. A new unlinked dispatch ignores archived plans when it
+as closed; the view is unavailable and guidance incomplete. A pending or reserved
+receipt whose state disagrees with its dispatch, or that names no task, is
+unreadable evidence: guidance is incomplete and reports no refusal for it. A new unlinked dispatch ignores archived plans when it
 looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
