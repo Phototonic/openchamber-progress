@@ -419,10 +419,10 @@ test('restricted or disabled proxy recipients lose only their actor flags withou
   });
 });
 
-test('request-only note picks its carrier by the latest message role, defers without one and never mutates stored objects', async () => {
+test('a context note picks its carrier by the message role, defers without one, stays in place and never mutates stored objects', async () => {
   await activationFixture(async f => {
     const text = (value: string) => ({ type: 'text', text: value });
-    const user = { role: 'user', content: [text('Make a plan')] };
+    let turn = 0; const user = () => ({ role: 'user', content: [text(`Make a plan ${++turn}`)] });
     const result = (id: string, value: unknown, type = 'content') => ({ type: 'tool-result', id, name: 'write', result: { type, value } });
     const tool = (...results: any[]) => ({ role: 'tool', content: results });
     const call = { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'write', input: {} }] };
@@ -432,70 +432,70 @@ test('request-only note picks its carrier by the latest message role, defers wit
     let n = 0; const trigger = () => f.after(write('docs/plans/search.md', `trigger-${++n}`));
     const baseline = system(await next(f));
 
-    // User message: a text part after its content, on a copy.
+    // User message: a text part after its content, on a copy, in the same array the host passed.
     await trigger();
-    const history = [user], before = stored(user), c1 = request(...history);
+    const first = user(), history = [first], before = stored(first), c1 = request(...history), array = c1.messages;
     await f.context(c1);
-    assert.deepEqual(c1.messages[0].content, [text('Make a plan'), text(HINT)]);
-    assert.notEqual(c1.messages[0], user); assert.deepEqual(history, before); assert.equal(c1.messages, c1.messages);
+    assert.equal(c1.messages, array, 'the host array is updated in place');
+    assert.deepEqual(c1.messages[0].content, [first.content[0], text(HINT)]);
+    assert.notEqual(c1.messages[0], first); assert.deepEqual(history, before);
     assert.equal(system(c1), baseline);
-    // Rebuilt from history, the next request carries nothing; a reused event loses its stale note.
+    // Rebuilt from the same history the note is in the same place, once; the stored message is unchanged.
     const rebuilt = request(...history); await f.context(rebuilt);
-    assert.deepEqual(rebuilt.messages, before); assert.equal(system(rebuilt), baseline);
-    await f.context(c1); assert.deepEqual(c1.messages, before); assert.equal(system(c1), baseline);
+    assert.deepEqual(rebuilt.messages, c1.messages); assert.equal(system(rebuilt), baseline); assert.deepEqual(history, before);
+    await f.context(c1); assert.deepEqual(c1.messages[0].content, [first.content[0], text(HINT)], 'a reused event keeps one note, not two');
     assert.equal(copy(c1)[0].text, BASE);
 
     // Tool message with a content result: appended after the content of its last result only.
     await trigger();
     const one = tool(result('c1', [text('Created file')]), result('c2', [text('Edited file')]));
-    const toolHistory = [user, call, one], toolBefore = stored(...toolHistory), c2 = request(...toolHistory);
+    const toolHistory = [user(), call, one], toolBefore = stored(...toolHistory), c2 = request(...toolHistory);
     await f.context(c2);
     assert.deepEqual(c2.messages[2].content[0], one.content[0]);
     assert.deepEqual(c2.messages[2].content[1].result, { type: 'content', value: [text('Edited file'), text(HINT)] });
-    assert.deepEqual(toolHistory, toolBefore); assert.equal(c2.messages[0], user); assert.equal(c2.messages[1], call); assert.equal(system(c2), baseline);
+    assert.deepEqual(toolHistory, toolBefore); assert.equal(c2.messages[1], call); assert.equal(system(c2), baseline);
 
     // Tool message with a text result: same newline-separated carrier as the completed-result note.
     await trigger();
-    const plain = tool(result('c1', 'Created file', 'text')), plainBefore = stored(plain), c3 = request(user, call, plain);
+    const plain = tool(result('c1', 'Created file', 'text')), plainBefore = stored(plain), c3 = request(user(), call, plain);
     await f.context(c3);
     assert.deepEqual(c3.messages[2].content[0].result, { type: 'text', value: `Created file\n\n${HINT}` });
     assert.deepEqual([plain], plainBefore); assert.equal(system(c3), baseline);
 
     // Any other tool's result carries it too: a child's standing brief must not vanish behind a read.
     await trigger();
-    const read = tool({ ...result('c1', [text('File contents')]), name: 'read' }), c4 = request(user, call, read);
+    const read = tool({ ...result('c1', [text('File contents')]), name: 'read' }), c4 = request(user(), call, read);
     await f.context(c4);
     assert.deepEqual(c4.messages[2].content[0].result, { type: 'content', value: [text('File contents'), text(HINT)] });
 
     // Roles and results with no valid carrier keep the text pending, never dropped.
     await trigger();
     const unusable = [
-      [user, { role: 'assistant', content: [text('Partial answer')] }],
-      [user, call, tool(result('c1', { ok: true }, 'json'))],
-      [user, call, tool(result('c1', 'failed', 'error'))],
-      [user, call, tool(result('c1', [{ type: 'unknown' }]))],
+      () => [user(), { role: 'assistant', content: [text('Partial answer')] }],
+      () => [user(), call, tool(result('c1', { ok: true }, 'json'))],
+      () => [user(), call, tool(result('c1', 'failed', 'error'))],
+      () => [user(), call, tool(result('c1', [{ type: 'unknown' }]))],
       // The Code Mode wrapper's result stays the exact value its script returned.
-      [user, call, tool({ ...result('c1', '{"ok":true}', 'text'), name: 'execute' })],
-      [user, { role: 'system', content: [text('Operator note')] }],
-      [{ role: 'user', content: 'raw string content' }],
-      [],
+      () => [user(), call, tool({ ...result('c1', '{"ok":true}', 'text'), name: 'execute' })],
+      () => [user(), { role: 'system', content: [text('Operator note')] }],
+      () => [{ role: 'user', content: 'raw string content' }],
+      () => [],
     ];
-    for (const messages of unusable) {
-      const snapshot = stored(...messages), c = request(...messages); await f.context(c);
+    for (const build of unusable) {
+      const messages = build(), snapshot = stored(...messages), c = request(...messages); await f.context(c);
       assert.deepEqual(c.messages, snapshot, 'nothing is added without a valid carrier');
       assert.equal(system(c), baseline); assert.equal(hint(c), false);
     }
-    const delivered = request(user); await f.context(delivered);
-    assert.deepEqual(delivered.messages[0].content, [text('Make a plan'), text(HINT)], 'deferred text arrives on the next valid carrier');
-    await f.context(delivered); assert.deepEqual(delivered.messages, [user]);
+    const later = user(), delivered = request(later); await f.context(delivered);
+    assert.deepEqual(delivered.messages[0].content, [later.content[0], text(HINT)], 'deferred text arrives on the next valid carrier');
     assert.equal(hint(await next(f)), false, 'delivered once');
 
     // Removal paths leave neither a section nor a note.
-    await trigger(); const reused = request(user); await f.context(reused); assert.equal(reused.messages[0].content.length, 2);
+    await trigger(); const reusedUser = user(), reused = request(reusedUser); await f.context(reused); assert.equal(reused.messages[0].content.length, 2);
     f.store.setEnabled(false); await f.context(reused);
-    assert.equal(copy(reused).length, 0); assert.deepEqual(reused.messages, [user]);
+    assert.equal(copy(reused).length, 0); assert.deepEqual(reused.messages, [reusedUser]);
     f.store.setEnabled(true);
-    const missing = request(user); delete missing.tools.agent_progress_report; await trigger(); await f.context(missing);
-    assert.equal(copy(missing).length, 0); assert.deepEqual(missing.messages, [user]);
+    const missingUser = user(), missing = request(missingUser); delete missing.tools.agent_progress_report; await trigger(); await f.context(missing);
+    assert.equal(copy(missing).length, 0); assert.deepEqual(missing.messages, [missingUser]);
   });
 });

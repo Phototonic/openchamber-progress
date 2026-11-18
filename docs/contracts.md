@@ -553,8 +553,8 @@ and one conditional possible-plan-file hint. The section is the fixed activation
 guidance only: its text never changes within a session and is byte-identical on
 every request where it is present, so it does not defeat a provider's prompt
 cache. Everything that varies per request (the one-request hint, the sub-agent
-resume capsule and the delegation refusal note) is carried on the latest message
-of that request instead, as described below. Neither is a report receipt, plan,
+resume capsule and the delegation refusal note) is carried on messages instead and
+stays in place on later requests, as described below. Neither is a report receipt, plan,
 assignment, review/acceptance, capture, or completion event. Existing explicit
 `agent_progress_report` operations, source-optional inputs, transactional control,
 authorization and outputs remain unchanged. Hidden/restricted tools are never
@@ -580,7 +580,7 @@ checks are repeated after awaited lookups; recipient flags publish synchronously
 The same process-local bounded state may coalesce three advisory reasons: possible
 plan write, native dispatch and tracker mutation. At most one conditional hint is
 added after the content of the latest message of the recipient's next eligible
-request, consumed on delivery, not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
+request that has a valid carrier, consumed on delivery, not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
@@ -593,23 +593,62 @@ Only lexical path and host metadata are used: no file, folder or repository
 metadata is read. A missing, failing, malformed or timed-out worktree list
 declines cross-directory observation and relay.
 
-Request-only text (the one-request hint, the resume capsule and the delegation
-refusal note, with their text and eligibility unchanged) is added for that request
-only, after the content of the request's latest message, in a carrier valid for
-that message's role. On a user message it is a text part after the content. On a
-tool message, the continuation after a tool call such as a plan-file write, a
-separate part is not valid, so it is appended to the output of the message's last
-tool result: the carrier the completed-result note below uses, with the same
-shape limits (a native-proven string or content-array result). The Code Mode
-wrapper (`execute`) result is the exact value its script returned and never
-carries the text. Any other role or shape has no valid carrier, and the text
-waits for the next request that has one; the hint stays pending, an armed capsule
-stays armed and the refusal is read again then, never dropped. The standing
-assigned-child brief and refusal note are read again on every request, so they
-ride any ordinary tool continuation, not only the tools that receive result notes. The message and part are copied: the stored conversation never
-carries the text, so a request rebuilt from history is identical up to its latest
-message and a reused host array loses a stale note. The text is therefore
-delivered even to providers that drop plugin system sections.
+Context notes (the one-request hint, the resume capsule and the delegation
+refusal note, with their text and eligibility unchanged) are added after the content
+of a message, in a carrier valid for that message's role. On a user message a note
+is a text part after the content. On a tool message, the continuation after a tool
+call such as a plan-file write, a separate part is not valid, so it is appended to
+the output of the message's last tool result: the carrier the completed-result
+note below uses, with the same shape limits (a native-proven string or
+content-array result). The Code Mode wrapper (`execute`) result is the exact value
+its script returned and never carries a note. Any other role or shape has no valid
+carrier, and a due note waits for the next request that has one: the hint stays
+pending, an armed capsule stays armed, and the capsule and refusal are read again
+then, never dropped. Notes due together form one note, in the order hint, capsule,
+refusal or cleared line, joined by a blank line. The message and part are copied:
+the stored conversation never carries a note. The text is therefore delivered even
+to providers that drop plugin system sections.
+
+A delivered note stays where it was put. A provider writes its cache at the end of
+the latest message, which is where the note sits, and reads it only when a later
+request repeats that prefix byte for byte; with extended thinking the reply's
+thinking is bound to that prefix as well. So the companion remembers, per session,
+each note it delivered with its carrier (a tool carrier by its call identifier,
+position and a digest of its original output, because providers do not keep call
+identifiers unique across turns; a user carrier by the message identifier when it
+has one, else by its position and a digest of its original content) and adds the
+same text in the same place on every later request whose messages still hold that
+carrier. Each request's messages therefore begin with the previous request's
+messages byte for byte, and a later note on a carrier follows the earlier ones
+without rewriting them. The memory is process-local and bounded: 128 sessions,
+least recently used first, and per session 256 carriers and 128 KiB of note text,
+dropping carriers absent from the latest request first, then the oldest. An
+evicted carrier, a restart or a fork loses its note once, which changes the prefix
+once from that message on.
+
+A resume capsule or refusal note is delivered again only when its text differs from
+the last one delivered in the session, or when the carrier of that delivery is not
+in this request with its note (after compaction, a reverted message, an evicted
+carrier, a restart or a fork). A capsule lookup that times out adds nothing, and a
+note left out as unchanged counts as delivered. A delivered refusal stays in
+history after it stops applying, so one fixed line is delivered in the same way:
+`Agent Progress note (delegation): the earlier delegation refusal no longer
+applies; read the current plan before you declare or link.` It is delivered only
+after a successful, complete refusal read that finds no refusal while the last
+refusal delivered is still in the request with its note; a read that fails or is
+incomplete adds no cleared line, and an incomplete read with no refusal still
+delivers the existing omission text, which is not a refusal and does not open the
+cleared-line gate. It counts as the last refusal delivered, so the same refusal
+returning is delivered again, and it is delivered again when that refusal is still
+in the request with its note and the cleared line's carrier is not. A capsule that becomes empty gets no cleared line: the capsule
+already says to read current state first.
+
+Every path that removes the section (capture off, report tool unavailable, source
+unverified, caller lookup failed, an epoch change, disposal, a failure in the hook)
+also removes every added note from that request. The memory is cleared only when
+capture is off or unavailable, the source binding changes or the companion is disposed; a
+transient failure, or a request without the report tool, keeps it and the notes
+return with the section.
 
 Hints also travel in completed tool results, independently of forwarded system
 text. The latest verified eligible context must expose both the report tool and
@@ -666,8 +705,8 @@ than broaden history. Hints conditionally ask about unreported canonical state,
 never assert work start, review/owner approval, assignment or completion, and never
 map issue state to plan status. No receipt correlation or compliance promise exists.
 
-Recovery is an optional request-only addition on the latest message, never part
-of the owned section, only after a
+Recovery is an optional note on the latest message, never part of the owned
+section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end
 must pair for the same session/source. Hook/start callback delivery order is not
@@ -1971,10 +2010,10 @@ structure, not implementation completion or approval. Review and owner approval
 are separate; reflect only existing canonical gate/work items, never invent review
 tasks. Dispatch is not work start. No file or automatic per-turn report is required.
 No custom instructions or provider-specific branch is needed. System-dropping
-providers retain tool definitions, result notes and the request-only hint,
-capsule and refusal note on the latest message; providers forwarding system
-text retain the owned section too, which stays identical across requests so it
-does not defeat a provider's prompt cache. Clients can still omit/truncate descriptions
+providers retain tool definitions, result notes and the hint, capsule and
+refusal note carried on messages; providers forwarding system text retain the
+owned section too, which stays identical across requests so it does not defeat a
+provider's prompt cache. Clients can still omit/truncate descriptions
 below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
