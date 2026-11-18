@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { backendTestCommands } from '../../scripts/ci-backend.ts';
+import { backendTestCommands, nativeOnlyTests } from '../../scripts/ci-backend.ts';
+import { freshCompileCache, portableLanes } from '../../scripts/test-plan.ts';
 import { outputs } from '../../scripts/build-all.ts';
 
 test('package scripts that consume runtime entries build before invoking their readers',()=>{
   const {scripts}=JSON.parse(readFileSync('package.json','utf8'));
-  for(const name of ['test:backend','package','verify:package','prepare:probe','setup','check'])
+  for(const name of ['test:backend','test:all','test:fast','package','verify:package','prepare:probe','setup','check'])
     assert.equal(scripts[name].split('&&')[0].trim(),'bun run build:all',`${name} must build before its readers`);
 });
 
@@ -44,7 +45,7 @@ test('Windows service tests have an explicit same-job backend build prerequisite
 
 test('portable backend groups isolate coordination ports without omitting or repeating tests',()=>{
   const files=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
-  const [parallel,serial]=backendTestCommands(files);
+  const [parallel,serial]=backendTestCommands(files,{});
   assert.deepEqual(parallel.slice(0,2),['--experimental-strip-types','--test']);
   assert.deepEqual(serial.slice(0,3),['--experimental-strip-types','--test','--test-concurrency=1']);
   assert.deepEqual([...parallel.slice(2),...serial.slice(3)].sort(),files.sort());
@@ -55,7 +56,77 @@ test('portable backend groups isolate coordination ports without omitting or rep
     'setup-suggestions.test.ts','windows-service.test.ts',
   ]);
   const source=readFileSync('scripts/ci.ts','utf8');
-  assert.match(source,/for \(const args of backendTestCommands\([^\n]+\)\) run\('node',args\)/);
+  assert.match(source,/await runLanes\(portableLanes\(\{ fenced: true, env: freshCompileCache\(\) \}\)\)/);
+});
+
+test('portable lanes run every portable file once, keep the port-bound group serial and alone, and the fast loop drops only that group, on any core count',()=>{
+  const names=(dir:string)=>readdirSync(dir).filter(f=>f.endsWith('.test.ts')).map(f=>`${dir}/${f}`).sort();
+  const native=new Set(nativeOnlyTests);
+  const backend=names('tests/backend').filter(f=>!native.has(f.split('/').at(-1)!));
+  const every=(lanes:ReturnType<typeof portableLanes>)=>lanes.flatMap(l=>l.steps).filter(s=>s.command==='node');
+  const files=(steps:{args:string[]}[])=>steps.flatMap(s=>s.args.filter(a=>a.endsWith('.test.ts'))).sort();
+  // On one to three cores the other lane's worker count is also 1, so the serial group
+  // cannot be told apart by its --test-concurrency=1; it is the sole step of its own lane.
+  for(const cpus of [1,2,3,4,24]){
+    const at=`on ${cpus} cpus`;
+    const full=portableLanes({fenced:true,cpus,environment:{}}),fast=portableLanes({fenced:false,cpus,environment:{}});
+    assert.deepEqual(files(every(full)),[...backend,...names('tests/browser'),...names('tests/automation')].sort(),at);
+    assert.equal(new Set(files(every(full))).size,files(every(full)).length,`no file runs twice ${at}`);
+    const serialLanes=full.filter(l=>l.name==='port-bound backend');
+    assert.equal(serialLanes.length,1,at);assert.equal(serialLanes[0].steps.length,1,`the port-bound group shares its lane with nothing that could take a port ${at}`);
+    const serial=serialLanes[0].steps[0];
+    assert.ok(serial.args.includes('--test-concurrency=1'),at);
+    assert.deepEqual(serial.args.slice(0,3),backendTestCommands(backend,{})[1].slice(0,3),at);
+    assert.deepEqual(files([serial]).map(f=>f.split('/').at(-1)),backendTestCommands(backend,{})[1].slice(3).map(f=>f.split('/').at(-1)).sort(),at);
+    assert.ok(!serial.lowPriority,`the serial group never yields cores ${at}`);
+    const others=full.filter(l=>l!==serialLanes[0]).flatMap(l=>l.steps);
+    assert.ok(others.every(s=>s.lowPriority),`the lane beside it yields cores to it ${at}`);
+    // Every other test step is bounded by an explicit worker count: the cores minus two, never below one.
+    const workers=Math.max(1,cpus-2);
+    for(const step of others.filter(s=>s.command==='node'))assert.ok(step.args.includes(`--test-concurrency=${workers}`),`${step.label} ${at}`);
+    assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files([serial]).includes(f)),at);
+    assert.equal(fast.some(l=>l.steps.some(s=>s.args.includes('--test-concurrency=1')&&files([s]).some(f=>files([serial]).includes(f)))),false,`the fast loop has no serial group ${at}`);
+    for(const lanes of [full,fast]){
+      const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
+      assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),`both typechecks stay in every run ${at}`);
+    }
+  }
+  // Without a core count the host's is used.
+  assert.deepEqual(portableLanes({fenced:true,environment:{}}),portableLanes({fenced:true,cpus:availableParallelism(),environment:{}}));
+});
+
+test('a file that takes Setup ports only when CP_BUILT_SERVICE=1 runs in the serial group in that configuration and only there',()=>{
+  const names=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
+  const opted='tests/backend/plan-cleanup-service.test.ts';
+  const [parallelOff,serialOff]=backendTestCommands(names,{});
+  assert.ok(parallelOff.includes(opted)&&!serialOff.includes(opted),'without the opt-in it stays parallel: it takes no port');
+  const [parallelOn,serialOn]=backendTestCommands(names,{CP_BUILT_SERVICE:'1'});
+  assert.ok(serialOn.includes(opted)&&!parallelOn.includes(opted),'with the opt-in its built service takes writer slots');
+  assert.deepEqual([...parallelOn.slice(2),...serialOn.slice(3)].sort(),names.sort(),'still no file omitted or repeated');
+  assert.ok(!backendTestCommands(names,{CP_BUILT_SERVICE:'0'})[1].includes(opted),'only 1 opts in');
+  const plan=(environment:NodeJS.ProcessEnv)=>portableLanes({fenced:true,cpus:4,environment}).find(l=>l.name==='port-bound backend')!.steps[0].args;
+  assert.ok(plan({CP_BUILT_SERVICE:'1'}).includes(opted)&&!plan({}).includes(opted));
+  const rest=(environment:NodeJS.ProcessEnv)=>portableLanes({fenced:true,cpus:4,environment}).filter(l=>l.name!=='port-bound backend').flatMap(l=>l.steps).flatMap(s=>s.args);
+  assert.ok(!rest({CP_BUILT_SERVICE:'1'}).includes(opted),'the lane beside the serial group never holds it');
+});
+
+test('every step shares one compile cache folder that starts each run empty and stays out of tracked paths',()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-cache-'));
+  try {
+    const stale=join(root,'node_modules','.cache','agent-progress-compile','stale-entry');
+    mkdirSync(join(root,'node_modules','.cache','agent-progress-compile'),{recursive:true});writeFileSync(stale,'left by an earlier run');
+    const env=freshCompileCache(root);
+    assert.equal(env.NODE_COMPILE_CACHE,join(root,'node_modules','.cache','agent-progress-compile'));
+    assert.deepEqual(readdirSync(env.NODE_COMPILE_CACHE),[],'an earlier run leaves nothing behind');
+    for(const lanes of [portableLanes({fenced:true,env}),portableLanes({fenced:false,env})])
+      assert.deepEqual(new Set(lanes.flatMap(l=>l.steps).map(s=>s.env?.NODE_COMPILE_CACHE)),new Set([env.NODE_COMPILE_CACHE]),'every step, typechecks included, gets the folder');
+    // Without a cache folder, plans carry none: the plan tests above never touch a live cache.
+    assert.ok(portableLanes({fenced:true}).flatMap(l=>l.steps).every(s=>!s.env?.NODE_COMPILE_CACHE));
+    assert.equal(spawnSync('git',['check-ignore','-q',join('node_modules','.cache','agent-progress-compile','x')]).status,0,'git ignores the folder');
+    // An unusable location turns the cache off instead of failing the run.
+    writeFileSync(join(root,'blocked'),'a file where a folder is needed');
+    assert.deepEqual(freshCompileCache(join(root,'blocked')),{});
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('actual portable CLI refuses nonfresh artifacts before entry reads or checks, preserving archives',()=>{

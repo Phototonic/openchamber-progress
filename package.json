@@ -30,6 +30,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test:backend": "bun run build:all && node --experimental-strip-types --test tests/backend/*.test.ts",
+    "test:all": "bun run build:all && node --experimental-strip-types scripts/test.ts",
+    "test:fast": "bun run build:all && node --experimental-strip-types scripts/test.ts --fast",
     "build:backend": "bun scripts/build.ts",
     "build:all": "node --experimental-strip-types scripts/build-all.ts",
     "build": "bun run build:all",

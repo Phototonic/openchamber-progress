@@ -40,6 +40,20 @@ Released-writer delegation fixtures require the local `v1.3.0` tag. Run
 skip with a prerequisite diagnostic when the tag is unavailable. Full portable
 CI requires full history and tags, so these cases run there.
 
+Two scripts run the portable groups side by side after building every entry, and print each step's duration at the end:
+
+```sh
+# Edit-and-check loop: both typechecks, the parallel backend group, browser-model
+# and automation tests. It skips the serial Setup-port backend group (below),
+# which holds most of the full run's time, so it is not what CI runs.
+bun run test:fast
+
+# Everything portable CI tests, minus packaging and the rebuild comparison
+bun run test:all
+```
+
+Both leave out the five native-only backend tests (see [Portable CI](#portable-ci--fresh-disposable-checkout-only)) and say so. Run `bun run test:all` or the commands below before a pull request when you touched backend, setup or service code; `test:fast` can pass where the serial group would fail. They are not replacements for `node --experimental-strip-types scripts/ci.ts` in a fresh checkout.
+
 Run the checks relevant to your change:
 
 ```sh
@@ -89,6 +103,56 @@ concurrent writer. Keep new fenced HTTP/worker test files in the list in
 This isolates tests, not product requests; no port override or relaxed refusal
 is used.
 
+That serial group is the longest part of the run. It is one request after another,
+each starting a worker thread, plus a few deliberate deadline waits, so it is bound by
+latency rather than by cores; no other group acquires Setup ports (checked with a probe
+on the acquisition call). `scripts/ci.ts`
+and `bun run test:all` therefore run it in one lane beside a second lane that
+holds both typechecks, the parallel backend group and the browser-model and
+automation tests (`scripts/test-plan.ts`, `scripts/test-lanes.ts`). The second
+lane is capped at the machine's cores minus two and runs under `nice`, so the
+timing assertions in the serial group keep their headroom (the cap never goes below
+one worker, so on one to three cores the lane runs one worker at a time). A file that takes
+a Setup port belongs in the serial group; never add one to the other lane. A listen probe
+(a preload on `net.Server.prototype.listen`, covering worker threads, child processes and the
+bundled `build/service/main.js`) found that no file in the parallel group or the browser and
+automation tests takes one in the CI configuration. One file does in one configuration CI does
+not use: `plan-cleanup-service.test.ts` runs the built service when `CP_BUILT_SERVICE=1`, and the
+plan then moves it into the serial group (`fencedWhenSet` in `scripts/ci-backend.ts`).
+
+The runner (`scripts/test-lanes.ts`) is POSIX-first: it prints each step's output whole under its
+own heading (the last 2 MB if a step is noisier, saying what was dropped), names the steps still
+running about every minute, and ends with a per-step duration list. The first failure, SIGINT,
+SIGTERM, SIGHUP or a closed output pipe (`test:all | head`) stops both lanes and prints what the
+running steps had written. Each step runs in its own process group, so the runner stops the groups
+itself: a repeated signal, or a step that has not stopped ten seconds after the first, is killed
+outright and abandoned even if a leftover process still holds its output pipes, and every group
+the runner started is swept as soon as its leader has exited and its pipes have closed (SIGTERM, a short
+bound, SIGKILL, a short bound, then a probe that finds the group empty), whether the step passed or not,
+because a leader that exits 0 can leave descendants holding a port. A group leaves the record the moment a
+probe finds it empty and is never signalled afterwards, since its id may then belong to an unrelated
+process; every signal is preceded by a fresh probe, and the closing sweep and the exit hook touch only
+groups not yet confirmed empty. Group ids are checked before use (a whole number above 1 that is neither
+the runner nor its parent), and a crash of the runner kills what is still recorded. On Windows `taskkill`
+goes only to a child whose `exit` has not fired. An
+interrupted run exits 128 plus the signal number (130, 143, 129, 141), a failed one 1. A step
+the runner stopped is reported as stopped; one that fails on its own is reported as failed with
+its output, whenever it does so. On Windows steps are not detached and are stopped with
+`taskkill /T /F`; that path is covered by a unit test of the stop command but has not been run on
+Windows, and the typecheck step's `./node_modules/.bin/tsc` is a POSIX path, so on Windows run the
+individual commands listed under Local development by hand. The process-group and signal cases of
+`tests/automation/test-lanes.test.ts` are skipped on Windows (its stop-command case runs), and every case
+stops the processes it started even when it fails.
+
+Both runners also turn on Node's compile cache for every step they start
+(`NODE_COMPILE_CACHE`, a folder under the ignored `node_modules/.cache/`). It keeps
+V8's compiled code per source file and checks it against the source's hash, so a changed
+file is recompiled rather than served stale, and each test process and each request
+worker the managed-step tests start compiles a shared module once. It changes no test
+input and is emptied at the start of every run (fixtures run from fresh temporary folders, so a
+kept cache only grows); a standalone `node --test` run does not use it unless you export the
+variable yourself.
+
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
 The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, on every pull request whatever branch it targets, weekly on Tuesday at 04:17 UTC, and on manual dispatch. A PR stacked on another feature branch gets the same selection as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the full Windows job on its `main` push. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
@@ -114,7 +178,12 @@ dispatch run the full set, even for UI/docs-only changes. The workflow sets
 `AP_WINDOWS_FULL=1` only for those full runs and fetches `v1.1.1` only then.
 Without that opt-in, the three journeys explicitly skip; no per-request
 assertion, budget or deadline is relaxed. Local full native runs must also set
-`AP_WINDOWS_FULL=1`. Weekly and manual CI runs target Windows only; the Linux
+`AP_WINDOWS_FULL=1`. The Windows job starts the platform file and the service file
+as two processes at once, each in its own serial test runner and as the same
+unprivileged principal, each started with `Start-Process -Wait` inside a PowerShell thread job so
+it is waited for together with everything it started, and reads both exit codes after both end; only the
+service file starts a server and request workers, which take the Setup coordination
+ports. Weekly and manual CI runs target Windows only; the Linux
 jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the source on `dev` first, then prepare a promotion commit containing that source and its built outputs. Run the required host gates on the promotion checkout before its PR into `main` merges.
