@@ -976,8 +976,11 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else {
       if (!failure || failure.kind !== result.failure.kind) versions.data++;
       failure = result.failure;
-      // The health reply read before the failure still says what the service offers.
-      if (result.health) retirePendingTidy(result.health);
+      // The health reply read before the failure still says what the service offers: the page learns a loss too.
+      if (result.health) {
+        if (result.health.planCleanup !== 1 && health?.planCleanup === 1) { const { planCleanup: _lost, planCleanupActive: _active, ...kept } = health; health = kept; versions.data++; }
+        retirePendingTidy(result.health);
+      }
     }
     schedule();
     plan(failure ? RETRY_MS : REFRESH_MS);
@@ -1104,10 +1107,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
     const receipts = new Set(result.succeeded.map(t => t.key));
     // Undo of an archive puts plans back in view; every other successful receipt takes them out.
-    const back = undo && state.result?.action === 'archive';
+    const back = undo && (state.result?.action === 'archive' || !!state.result?.returned);
     gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined);
     read = null; readScope = ''; readSig = ''; failure = null;
-    cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
+    cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result: back ? { ...result, returned: true } : result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
     tidyReconcile = same;
     versions.ui++; versions.data++; schedule(); retry();
   }
@@ -1678,8 +1681,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (cleanupFocus) {
       const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
       const target = owner?.querySelector<HTMLElement>('button') ?? owner;
-      // Never pull focus out of the host or a sibling frame; a document that is not focused keeps the request unused.
-      if (target && (document.hasFocus?.() ?? true)) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
+      // Never pull focus out of the host or a sibling frame; that request is dropped, not kept for a later paint.
+      if (!(document.hasFocus?.() ?? true)) cleanupFocus = null;
+      else if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
     }
     const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');

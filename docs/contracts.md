@@ -1150,15 +1150,23 @@ count fails and is retired rather than skipping plans. Matching ends cannot prov
 that no other plan crossed the cursor (offsets are not a snapshot and the list
 envelope carries no change token), so a count that crossed such a boundary is
 qualified as possibly missing plans, never presented as verified complete; an
-overlap anchor that changed is counted at its new version. Plans a user
+overlap anchor that changed is counted at its new version, or dropped when its
+new version no longer belongs to the view. A fully read count of that kind says
+plans may have been missed, rather than that more plans were not checked. Plans a user
 explicitly chose, and the remaining plans of a retry, are not searched for: they
 are validated with `/v1/search-state` point lookups (at most 50 keys and the
 service's 16 KiB encoded-query limit each, pinned to the expected store and
-binding). Where the view's scope depends on content the client cannot evaluate
-(a search, a session scope) a plan whose revision moved is skipped as changed;
-elsewhere it is re-read with one `/v1/plan` head read, verified against the
-expected store and binding, and a missing plan is dropped only after the pinned
-lookup confirms its absence. Each lookup and each head read is one request of the
+binding). This applies to scans that use the named reader: a truncated or searched
+scope on a service that advertises `planTaskSearch`. A complete non-search list
+counts from the displayed metadata without a lookup, and an older service still
+counts a truncated browse scope with the list scan. In the named reader, where the
+view's scope depends on content the client cannot evaluate (a search, a session
+scope) a plan whose revision moved since the count began (the revision captured
+when the count was requested, not necessarily when the rows were chosen) is
+skipped as changed; elsewhere it is re-read with one `/v1/plan` head read,
+verified against the expected store and binding, and a missing plan is dropped
+only after the pinned lookup confirms its absence. Every request carries the
+captured revision and the service enforces it. Each lookup and each head read is one request of the
 per-action budget; unfinished plans wait for Check more.
 The count distinguishes a target ceiling with a confirmed further match (**more
 remain**) from unchecked plans that may or may not match: a full set keeps scanning

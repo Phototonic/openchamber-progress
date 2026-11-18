@@ -59,3 +59,16 @@ for (const locale of ['en', 'ru', 'zh-CN']) test(`a permanent-delete confirmatio
   assert.ok(lines({ context: 'scope', selection: 'delete', confirmation: { ...chosen, limited: true } }).includes(s.scope(1, true, undefined)));
   assert.ok(lines({ context: 'scope', selection: 'delete', confirmation: { ...chosen, unchecked: true } }).includes(s.scope(1, undefined, true)));
 });
+
+for (const locale of ['en', 'ru', 'zh-CN']) test(`a fully read but unverifiable count says plans may have been missed, with no Check more (${locale})`, () => {
+  const p: cleanup.CleanupPlan = { key: 'fixture/p', sourceId: 'fixture', id: 'p', title: 'Sample', revision: 1, lifecycle: 'completed' };
+  const t = cleanup.tidyCopy(locale);
+  const base = cleanup.tidyConfirmation([p], 'store', 'scope');
+  for (const deleting of [false, true]) {
+    const h = panel(); h.render({ context: 'scope', confirmation: { ...base, unverified: true, deleting } }, locale, { delete() {}, cancel() {}, archive() {}, deleteStep() {}, more() {} });
+    assert.ok(h.texts.includes(t.missed(1, false)), `${deleting ? 'final step' : 'count'} qualifies the count`);
+    assert.ok(!h.texts.includes(t.unchecked(1, false)), 'it does not claim plans were left unchecked');
+    assert.equal(h.buttons.some(b => b.id === 'tidy-check-more'), false);
+  }
+  assert.notEqual(t.missed(1, false), t.unchecked(1, false));
+});

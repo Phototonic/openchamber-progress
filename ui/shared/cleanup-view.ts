@@ -148,15 +148,15 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
     const confirm = testid(el('div', 'ap-cleanup-confirm'), 'tidy-confirm');
     confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-labelledby', 'tidy-heading');
     const line = c.selection ? c.deleting ? selection.deleteHeading(c.targets.length, c.activeCount ?? 0, !!c.excludedActive)
-      : selection.scope(c.targets.length, c.limited, c.unchecked || c.unverified, c.selection === 'restore' ? 0 : c.activeCount, !!c.excludedActive)
+      : selection.scope(c.targets.length, c.limited, c.unchecked, c.selection === 'restore' ? 0 : c.activeCount, !!c.excludedActive, c.unverified)
       : c.deleting ? text.deleteHeading(c.targets.length)
-      : c.limited ? text.limited(c.targets.length, c.matching) : c.unchecked || c.unverified ? text.unchecked(c.targets.length, c.matching)
+      : c.limited ? text.limited(c.targets.length, c.matching) : c.unchecked ? text.unchecked(c.targets.length, c.matching) : c.unverified ? text.missed(c.targets.length, c.matching)
       : !c.targets.length ? text.empty : c.matching ? text.matching(c.targets.length) : text.heading(c.targets.length);
     const heading = el('p', '', line); heading.id = 'tidy-heading';
     confirm.append(heading);
     // The final destructive step keeps the count's qualification: a subset is never presented as everything.
     if (c.deleting && (c.limited || c.unchecked || c.unverified)) {
-      const subset = el('p', 'ap-note', c.selection ? selection.scope(c.targets.length, c.limited, c.unchecked || c.unverified) : c.limited ? text.limited(c.targets.length, c.matching) : text.unchecked(c.targets.length, c.matching));
+      const subset = el('p', 'ap-note', c.selection ? selection.scope(c.targets.length, c.limited, c.unchecked, 0, false, c.unverified) : c.limited ? text.limited(c.targets.length, c.matching) : c.unchecked ? text.unchecked(c.targets.length, c.matching) : text.missed(c.targets.length, c.matching));
       subset.id = 'tidy-subset'; confirm.setAttribute('aria-describedby', 'tidy-subset'); confirm.append(subset);
     }
     if (c.deleting) {

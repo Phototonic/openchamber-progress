@@ -229,6 +229,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
         startingUnsettled = true;
       }
       health = parseHealth(await call(host, ROUTES.health));
+      seen = health;
       // Older services can echo that same transient refusal into their health
       // snapshot. It still grants no data access; preserve any other diagnostic.
       if (startingUnsettled && !health.ready && health.state === 'refused' && health.diagnostics.length === 1 && health.diagnostics[0] === 'managed-step-unsettled') return { ok: true, health, read: null };
@@ -242,7 +243,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
         : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
         const failure = classify(new HttpError(503, failed));
-        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
+        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` }, health };
       }
     }
     if (!health.ready || scope === null) return { ok: true, health, read: null };

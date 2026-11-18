@@ -142,3 +142,25 @@ test('an Undo receipt clears only the departure, not explicit exclusions', () =>
   assert.equal(selection.has('b'), false);
   assert.equal(selection.snapshot().includes(plans[0]), true);
 });
+
+test('a departed row kept in a cached page is not counted as selected', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(['a']);
+  assert.equal(selection.count, 1);
+  selection.reconcile('scope', [...plans], true, false);
+  assert.equal(selection.count, 1, 'the cached row is known but not selected');
+});
+test('one click selects a row that was both excluded by the user and taken out by a receipt', () => {
+  const plans = ['a', 'b'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.toggle(plans[0]);
+  selection.forget(['a']);
+  selection.returned(['a']);
+  assert.equal(selection.has('a'), false, 'passive handling keeps the exclusion');
+  selection.forget(['a']);
+  selection.toggle(plans[0]);
+  assert.equal(selection.has('a'), true, 'an explicit click selects it in one step');
+});

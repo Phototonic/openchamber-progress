@@ -94,6 +94,8 @@ export interface TidyResult {
   total: number;
   succeeded: CleanupTarget[];
   remaining: CleanupTarget[];
+  /** An Undo: its receipts put plans back in the view they left (also when retried after a partial Undo). */
+  returned?: boolean;
 }
 export interface TidyState {
   selectionRequest?: SelectionRequest;
@@ -142,6 +144,7 @@ export class CleanupScan {
   private matching: boolean;
   private windowBound: number;
   private includes?: (plan: CleanupPlan) => boolean;
+  private admit?: (plan: CleanupPlan) => boolean;
   private allowActive: boolean;
   private excludedActive = new Set<string>();
   constructor(
@@ -154,11 +157,14 @@ export class CleanupScan {
     windowBound = 50,
     includes?: (plan: CleanupPlan) => boolean,
     allowActive = true,
+    /** The view's own scope (placement): applied after an earlier version of the same plan has been invalidated. */
+    admit?: (plan: CleanupPlan) => boolean,
   ) {
     this.context = context; this.storeId = storeId; this.archived = archived;
     this.read = read; this.matching = matching; this.windowBound = windowBound;
     this.includes = includes;
     this.allowActive = allowActive;
+    this.admit = admit;
   }
   cancel() { this.retired = true; }
   async more(current: () => boolean): Promise<TidyConfirmation | null> {
@@ -180,9 +186,11 @@ export class CleanupScan {
         for (const p of page.plans) {
           // A plan met again (an overlap anchor) replaces its target when it changed, and is otherwise kept as is.
           const had = this.targets.get(p.key);
-          if (had && (had.request.rev !== p.revision || had.request.cleanupRev !== (p.cleanup?.revision ?? 0))) this.targets.delete(p.key);
+          if (had && (had.request.rev !== p.revision || had.request.cleanupRev !== (p.cleanup?.revision ?? 0) || (this.admit && !this.admit(p)))) this.targets.delete(p.key);
+          // An earlier in-progress exclusion is judged again by the version read now.
+          this.excludedActive.delete(p.key);
           if (!(this.includes ? (p.cleanup?.state === 'archived') === this.archived && this.includes(p) : tidyEligible(p, this.archived))) continue;
-          if (this.targets.has(p.key) || this.excludedActive.has(p.key)) continue;
+          if (this.targets.has(p.key) || (this.admit && !this.admit(p))) continue;
           if (!this.allowActive && !cleanupClosed(p)) { this.excludedActive.add(p.key); continue; }
           if (this.targets.size >= TIDY_LIMIT) { this.overflow = true; break; }
           this.targets.set(p.key, cleanupTarget(p, this.storeId, this.context));
@@ -214,7 +222,12 @@ export class PlanSelection {
   private fresh = true;
   private selectedCount = 0;
   private recount() {
-    this.selectedCount = this.all ? this.known.size - [...this.omitted].filter(k => this.known.has(k)).length : this.chosen.size;
+    if (!this.all) { this.selectedCount = this.chosen.size; return; }
+    // Only rows the rule actually selects: not user exclusions, not receipt departures kept in a cached page.
+    let out = 0;
+    for (const k of this.omitted) if (this.known.has(k)) out++;
+    for (const k of this.departed) if (this.known.has(k) && !this.omitted.has(k)) out++;
+    this.selectedCount = this.known.size - out;
   }
   /** `fresh`: the plans are verified membership (a list read, a checked search page), not a cached page. */
   reconcile(reading: string, plans: CleanupPlan[], incomplete: boolean, fresh = true) {
@@ -239,8 +252,9 @@ export class PlanSelection {
   selectAll() { this.all = true; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = this.known.size; this.version++; }
   toggle(p: CleanupPlan) {
     this.known.set(p.key, p);
-    // An unpressed departed row is chosen by a click, not recorded as an exclusion.
-    if (this.all && this.departed.delete(p.key)) { this.recount(); this.version++; return; }
+    // An explicit click on an unpressed departed row selects it at once (also when the user had excluded it);
+    // passive receipt handling (forget, returned, reconcile) never touches exclusions.
+    if (this.all && this.departed.delete(p.key)) { this.omitted.delete(p.key); this.recount(); this.version++; return; }
     const set = this.all ? this.omitted : this.chosen;
     if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
     this.recount();
@@ -322,6 +336,7 @@ const tidyEn = {
   matching: (n: number) => `${plural(n, 'matching closed plan', 'matching closed plans')}.`,
   limited: (n: number, matching = false) => `First ${n} ${matching ? 'matching ' : ''}closed plans; more remain.`,
   unchecked: (n: number, matching = false) => `${plural(n, matching ? 'matching closed plan found' : 'closed plan found', matching ? 'matching closed plans found' : 'closed plans found')}; more plans weren’t checked.`,
+  missed: (n: number, matching = false) => `${plural(n, matching ? 'matching closed plan found' : 'closed plan found', matching ? 'matching closed plans found' : 'closed plans found')}; some plans may have been missed.`,
   checkMore: 'Check more', stop: 'Stop', details: 'What deletion removes',
   deleteMenu: 'Delete permanently…',
   deleteHeading: (n: number) => `Delete ${plural(n, 'plan', 'plans')}? This cannot be undone.`,
@@ -342,6 +357,7 @@ const tidyRu: typeof tidyEn = {
   matching: n => `Подходящих закрытых планов: ${formatCount(n, 'ru')}.`,
   limited: (n, matching) => `Первые ${formatCount(n, 'ru')} ${matching ? 'подходящих ' : ''}закрытых планов; есть ещё.`,
   unchecked: (n, matching) => `Найдено ${matching ? 'подходящих ' : ''}закрытых планов: ${formatCount(n, 'ru')}; остальные ещё не проверены.`,
+  missed: (n, matching) => `Найдено ${matching ? 'подходящих ' : ''}закрытых планов: ${formatCount(n, 'ru')}; некоторые планы могли быть пропущены.`,
   checkMore: 'Проверить ещё', stop: 'Остановить', details: 'Что удаляется',
   deleteMenu: 'Удалить навсегда…',
   deleteHeading: n => `Удалить ${formatCount(n, 'ru')} ${russianPlans(n)}? Это нельзя отменить.`,
@@ -357,6 +373,7 @@ const tidyZh: typeof tidyEn = {
   matching: n => `${formatCount(n, 'zh-CN')} 个匹配的已关闭计划。`,
   limited: (n, matching) => `前 ${formatCount(n, 'zh-CN')} 个${matching ? '匹配的' : ''}已关闭的计划；还有更多。`,
   unchecked: (n, matching) => `找到 ${formatCount(n, 'zh-CN')} 个${matching ? '匹配的' : ''}已关闭的计划；更多计划尚未检查。`,
+  missed: (n, matching) => `找到 ${formatCount(n, 'zh-CN')} 个${matching ? '匹配的' : ''}已关闭的计划；部分计划可能被遗漏。`,
   checkMore: '检查更多', stop: '停止', details: '删除的内容',
   deleteMenu: '永久删除…',
   deleteHeading: n => `删除 ${formatCount(n, 'zh-CN')} 个计划？此操作无法撤销。`,
@@ -377,7 +394,7 @@ const selectionEn = {
   count: (n: number, more: boolean) => !n && more ? 'Matching plans selected' : `${formatCount(n, 'en')}${more ? '+' : ''} selected`,
   confirm: (n: number, action: 'archive' | 'restore') => `${action === 'archive' ? 'Archive' : 'Restore'} ${plural(n, 'plan', 'plans')}`,
   deleteHeading: (n: number, active: number, excluded: boolean) => `Delete ${plural(n, 'plan', 'plans')}? ${active ? excluded ? `${plural(active, 'in-progress plan', 'in-progress plans')} left out; this cannot be undone.` : `${active} still in progress; this cannot be undone.` : 'This cannot be undone.'}`,
-  scope: (n: number, limited?: boolean, unchecked?: boolean, active = 0, excluded = false) => `${limited ? 'First ' : ''}${plural(n, 'selected plan', 'selected plans')}${limited ? '; more remain' : unchecked ? '; more plans weren’t checked' : ''}${active ? excluded ? `; ${plural(active, 'in-progress plan', 'in-progress plans')} left out` : `; ${active} still in progress; updates stop until restored` : ''}.`,
+  scope: (n: number, limited?: boolean, unchecked?: boolean, active = 0, excluded = false, missed = false) => `${limited ? 'First ' : ''}${plural(n, 'selected plan', 'selected plans')}${limited ? '; more remain' : unchecked ? '; more plans weren’t checked' : missed ? '; some plans may have been missed' : ''}${active ? excluded ? `; ${plural(active, 'in-progress plan', 'in-progress plans')} left out` : `; ${active} still in progress; updates stop until restored` : ''}.`,
 };
 const selectionRu: typeof selectionEn = {
   select: 'Выбрать', done: 'Готово', all: 'Выбрать все', clear: 'Снять выбор',
@@ -385,7 +402,7 @@ const selectionRu: typeof selectionEn = {
   count: (n, more) => !n && more ? 'Выбраны подходящие планы' : `Выбрано: ${formatCount(n, 'ru')}${more ? '+' : ''}`,
   confirm: (n, action) => `${action === 'archive' ? 'Архивировать' : 'Восстановить'} ${formatCount(n, 'ru')} ${russianPlans(n)}`,
   deleteHeading: (n, active, excluded) => `Удалить ${formatCount(n, 'ru')} ${russianPlans(n)}? ${active ? excluded ? `Пропущено активных планов: ${formatCount(active, 'ru')}; это нельзя отменить.` : `Ещё в работе: ${formatCount(active, 'ru')}; это нельзя отменить.` : 'Это нельзя отменить.'}`,
-  scope: (n, limited, unchecked, active = 0, excluded = false) => `Выбрано планов: ${formatCount(n, 'ru')}${limited ? '; есть ещё' : unchecked ? '; остальные ещё не проверены' : ''}${active ? excluded ? `; пропущено активных планов: ${formatCount(active, 'ru')}` : `; ещё в работе: ${formatCount(active, 'ru')}, обновления остановятся до восстановления` : ''}.`,
+  scope: (n, limited, unchecked, active = 0, excluded = false, missed = false) => `Выбрано планов: ${formatCount(n, 'ru')}${limited ? '; есть ещё' : unchecked ? '; остальные ещё не проверены' : missed ? '; некоторые планы могли быть пропущены' : ''}${active ? excluded ? `; пропущено активных планов: ${formatCount(active, 'ru')}` : `; ещё в работе: ${formatCount(active, 'ru')}, обновления остановятся до восстановления` : ''}.`,
 };
 const selectionZh: typeof selectionEn = {
   select: '选择', done: '完成', all: '全选', clear: '清除选择',
@@ -393,7 +410,7 @@ const selectionZh: typeof selectionEn = {
   count: (n, more) => !n && more ? '已选择匹配的计划' : `已选 ${formatCount(n, 'zh-CN')}${more ? '+' : ''} 个`,
   confirm: (n, action) => `${action === 'archive' ? '归档' : '恢复'} ${formatCount(n, 'zh-CN')} 个计划`,
   deleteHeading: (n, active, excluded) => `删除 ${formatCount(n, 'zh-CN')} 个计划？${active ? excluded ? `已跳过 ${formatCount(active, 'zh-CN')} 个进行中的计划；` : `${formatCount(active, 'zh-CN')} 个仍在进行中；` : ''}此操作无法撤销。`,
-  scope: (n, limited, unchecked, active = 0, excluded = false) => `已选 ${formatCount(n, 'zh-CN')} 个计划${limited ? '；还有更多' : unchecked ? '；更多计划尚未检查' : ''}${active ? excluded ? `；已跳过 ${formatCount(active, 'zh-CN')} 个进行中的计划` : `；${formatCount(active, 'zh-CN')} 个仍在进行中，恢复前将停止接受更新` : ''}。`,
+  scope: (n, limited, unchecked, active = 0, excluded = false, missed = false) => `已选 ${formatCount(n, 'zh-CN')} 个计划${limited ? '；还有更多' : unchecked ? '；更多计划尚未检查' : missed ? '；部分计划可能被遗漏' : ''}${active ? excluded ? `；已跳过 ${formatCount(active, 'zh-CN')} 个进行中的计划` : `；${formatCount(active, 'zh-CN')} 个仍在进行中，恢复前将停止接受更新` : ''}。`,
 };
 export function selectionCopy(locale = 'en') {
   const language = resolveLanguage('auto', locale);

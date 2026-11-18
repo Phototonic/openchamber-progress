@@ -717,6 +717,7 @@ test('a failed list read after cleanup support was lost still retires an open De
     const stale = f.vc;
     f.capability(false); f.failPlans(true); f.vc.retry();
     await until(() => !!f.vc.failure);
+    assert.notEqual(f.vc.health?.planCleanup, 1, 'the page learns of the loss, so Select mode can end');
     f.capability(true); f.failPlans(false); f.vc.retry();
     await until(() => !f.vc.failure && f.vc.health?.planCleanup === 1);
     stale.confirmTidyDelete(); f.vc.confirmTidyDelete(); await drain();
@@ -816,5 +817,30 @@ test('a held count finishing after focus left the frame does not take focus back
     f.ownsFocus(false); f.focusAt({ closest: (s: string) => s.includes('tidy-actions') ? {} : null });
     release(); await until(() => !!f.vc.cleanup.tidy?.confirmation); await drain();
     assert.equal(cancel.focused, opened, 'the frame does not call focus() without owning focus');
+    // Back in this frame, a later repaint must not run the request that was denied earlier.
+    f.ownsFocus(true); f.focusAt(null);
+    f.vc.invalidate(); await drain();
+    assert.equal(cancel.focused, opened, 'a denied request is dropped, not kept for later');
+  } finally { f.stop(); }
+});
+
+test('retrying a partial Undo returns the restored plans to the Select all rule', async () => {
+  const selection = new cleanup.PlanSelection();
+  const globals = { selection, captures: { retire() {} }, reporting: { retire() {} }, search: { select() {} } };
+  const f = frame('page', false, false, true, { forgetPlans: pageHook('forgetPlans', globals) });
+  try {
+    await until(() => !!f.vc?.read);
+    const plans = f.vc.read!.plans;
+    selection.reconcile('scope', plans, true); selection.mode = true; selection.selectAll();
+    f.vc.requestSelection('archive', { ...selection.snapshot() });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidy(); await until(() => !!f.vc.cleanup.tidy?.result);
+    f.refuse('two');
+    f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
+    assert.equal(f.vc.cleanup.tidy?.result?.remaining.length, 1, 'the Undo skipped one plan');
+    f.refuse('');
+    f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.succeeded[0]?.request.plan === 'two');
+    assert.equal(selection.has(plans[0].key), true);
+    assert.equal(selection.has(plans[1].key), true, 'restored by the retry: back under the rule');
   } finally { f.stop(); }
 });

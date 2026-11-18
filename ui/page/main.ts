@@ -314,10 +314,10 @@ startView<Ui>({
       active = current;
       // Only a search needs its chosen locations classifiable now; browse places a plan by its recorded directory.
       if (criteria && scopeAvailability(criteria, live) !== 'ok') throw new Error('The selected locations are unavailable.');
-      const page = named ? await named(cursor) : searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
+      return named ? await named(cursor) : searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
         { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity, continuation);
-      return { ...page, plans: page.plans.filter(p => scopeAdmits(filters, !!criteria, live, bound, p)) };
-    }, matching, criteria ? 64 : 50, includes, allowActive);
+      // The scan applies the scope itself, after it has dropped an overlap row's earlier target.
+    }, matching, criteria ? 64 : 50, includes, allowActive, p => scopeAdmits(filters, !!criteria, live, bound, p));
   },
   // The displayed (effective) filters bind a count and its run, not only the saved ones. They are kept
   // while a run is in flight or its result is shown: a live-discovery restart or the run's own
