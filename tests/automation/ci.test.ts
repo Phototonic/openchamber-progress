@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { backendTestCommands } from '../../scripts/ci-backend.ts';
+import { backendTestCommands, nativeOnlyTests } from '../../scripts/ci-backend.ts';
+import { portableLanes } from '../../scripts/test-plan.ts';
 import { outputs } from '../../scripts/build-all.ts';
 
 test('package scripts that consume runtime entries build before invoking their readers',()=>{
   const {scripts}=JSON.parse(readFileSync('package.json','utf8'));
-  for(const name of ['test:backend','package','verify:package','prepare:probe','setup','check'])
+  for(const name of ['test:backend','test:all','test:fast','package','verify:package','prepare:probe','setup','check'])
     assert.equal(scripts[name].split('&&')[0].trim(),'bun run build:all',`${name} must build before its readers`);
 });
 
@@ -55,7 +57,52 @@ test('portable backend groups isolate coordination ports without omitting or rep
     'setup-suggestions.test.ts','windows-service.test.ts',
   ]);
   const source=readFileSync('scripts/ci.ts','utf8');
-  assert.match(source,/for \(const args of backendTestCommands\([^\n]+\)\) run\('node',args\)/);
+  assert.match(source,/await runLanes\(portableLanes\(\{ fenced: true \}\)\)/);
+});
+
+test('portable lanes run every portable file once, keep the port-bound group serial and alone, and the fast loop drops only that group',()=>{
+  const names=(dir:string)=>readdirSync(dir).filter(f=>f.endsWith('.test.ts')).map(f=>`${dir}/${f}`).sort();
+  const native=new Set(nativeOnlyTests);
+  const backend=names('tests/backend').filter(f=>!native.has(f.split('/').at(-1)!));
+  const every=(lanes:ReturnType<typeof portableLanes>)=>lanes.flatMap(l=>l.steps).filter(s=>s.command==='node');
+  const files=(steps:{args:string[]}[])=>steps.flatMap(s=>s.args.filter(a=>a.endsWith('.test.ts'))).sort();
+  const full=portableLanes({fenced:true}),fast=portableLanes({fenced:false});
+  assert.deepEqual(files(every(full)),[...backend,...names('tests/browser'),...names('tests/automation')].sort());
+  assert.equal(new Set(files(every(full))).size,files(every(full)).length,'no file runs twice');
+  const serial=every(full).filter(s=>s.args.includes('--test-concurrency=1'));
+  assert.equal(serial.length,1);
+  assert.deepEqual(files(serial).map(f=>f.split('/').at(-1)),backendTestCommands(backend)[1].slice(3).map(f=>f.split('/').at(-1)).sort());
+  const alone=full.filter(l=>l.steps.includes(serial[0]));
+  assert.equal(alone.length,1);assert.equal(alone[0].steps.length,1,'the port-bound group shares its lane with nothing that could take a port');
+  // Every other test step is bounded by an explicit worker count rather than the host default.
+  for(const step of every(full).filter(s=>s!==serial[0]))assert.ok(step.args.some(a=>/^--test-concurrency=[1-9]\d*$/.test(a)),step.label);
+  assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files(serial).includes(f)));
+  for(const lanes of [full,fast]){
+    const labels=lanes.flatMap(l=>l.steps).map(s=>s.label);
+    assert.ok(labels.includes('root typecheck')&&labels.includes('UI typecheck'),'both typechecks stay in every run');
+  }
+});
+
+test('lane runner stops every lane at the first failure and reports it without interleaving',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'portable-lanes-'));
+  try {
+    const script=join(root,'lanes.ts');
+    writeFileSync(script,`import {runLanes} from ${JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href)};
+const node=(label:string,code:string)=>({label,command:process.execPath,args:['-e',code]});
+try{await runLanes([
+  {name:'slow',steps:[node('hangs',"setTimeout(()=>{},60000)"),node('never starts',"console.log('LATE-STEP')")]},
+  {name:'fails',steps:[node('breaks',"console.log('FAIL-OUTPUT');process.exit(3)")]},
+  {name:'ok',steps:[node('passes',"console.log('PASS-OUTPUT')"),node('skipped after failure',"setTimeout(()=>console.log('LATE-STEP'),5000)")]},
+]);}catch(error){console.log('REJECTED '+(error as Error).message);process.exit(1);}`);
+    const started=performance.now();
+    const r=spawnSync(process.execPath,['--experimental-strip-types',script],{encoding:'utf8',timeout:20_000});
+    assert.equal(r.status,1);
+    assert.ok(performance.now()-started<15_000,'the hanging lane is stopped, not waited for');
+    assert.match(r.stdout,/FAIL-OUTPUT/);assert.match(r.stdout,/Exited with code 3/);assert.match(r.stdout,/REJECTED Portable check failed/);
+    assert.doesNotMatch(r.stdout,/LATE-STEP/);
+    assert.match(r.stdout,/stopped\s+[\d.]+s\s+slow: hangs/);
+    assert.match(r.stdout,/failed\s+[\d.]+s\s+fails: breaks/);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('actual portable CLI refuses nonfresh artifacts before entry reads or checks, preserving archives',()=>{

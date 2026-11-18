@@ -4,7 +4,9 @@ import { readFileSync, readdirSync, mkdirSync, existsSync, copyFileSync, writeFi
 import { createHash } from 'node:crypto';
 import { eligibility, assetNames, validateReleaseNotes } from './release.ts';
 import { verifyCompanionEntry } from './companion-entry.ts';
-import { backendTestCommands } from './ci-backend.ts';
+import { nativeOnlyTests } from './ci-backend.ts';
+import { runLanes } from './test-lanes.ts';
+import { portableLanes } from './test-plan.ts';
 import { buildAll, outputHashes, compareOutputs } from './build-all.ts';
 import { revisionKind, trackedOutputs } from './revision-kind.ts';
 
@@ -14,7 +16,6 @@ if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) 
   process.exit(1);
 }
 
-const excluded = ['production-runtime.test.ts', 'plugin-failure-runtime.test.ts', 'progress-activation-runtime.test.ts', 'subagent-activity-runtime.test.ts', 'subagent-upgrade-runtime.test.ts'];
 function run(command:string, args:string[]) {
   if (spawnSync(command,args,{stdio:'inherit'}).status !== 0) throw new Error('Portable check failed');
 }
@@ -33,12 +34,11 @@ if (kind === 'source') buildAll();
 const before = outputHashes();
 verifyCompanionEntry(process.cwd());
 mkdirSync('/tmp/opencode',{recursive:true});
-console.log(`Native-only tests NOT RUN: ${excluded.join(', ')}`);
-run('bun',['run','typecheck']);
-run('./node_modules/.bin/tsc',['-p','ui/tsconfig.json','--noEmit']);
-const tests = (dir:string) => readdirSync(dir).filter(f=>f.endsWith('.test.ts')).sort().map(f=>`${dir}/${f}`);
-for (const args of backendTestCommands(tests('tests/backend').filter(f=>!excluded.includes(f.split('/').at(-1)!)))) run('node',args);
-run('node',['--experimental-strip-types','--test',...tests('tests/browser'),...tests('tests/automation')]);
+console.log(`Native-only tests NOT RUN: ${nativeOnlyTests.join(', ')}`);
+// Root and UI typechecks, the parallel backend group, and browser-model and
+// automation tests run beside the serial backend group that binds Setup ports.
+// Output is grouped per step and the first failure stops every lane.
+await runLanes(portableLanes({ fenced: true }));
 buildAll();
 compareOutputs(before);
 // The SDK's own readiness check: manifest schema, page scripts and service entry.

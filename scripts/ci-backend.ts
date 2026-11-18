@@ -16,6 +16,16 @@ const fenceTests = new Set([
   'windows-service.test.ts',
 ]);
 
+/** Backend files that need an independent OpenCode binary and Linux isolation
+ * tools. Portable CI and the local runners leave them out and say so. */
+export const nativeOnlyTests = [
+  'production-runtime.test.ts',
+  'plugin-failure-runtime.test.ts',
+  'progress-activation-runtime.test.ts',
+  'subagent-activity-runtime.test.ts',
+  'subagent-upgrade-runtime.test.ts',
+];
+
 export function backendTestCommands(files: string[]): string[][] {
   const fenced = (file: string) => fenceTests.has(file.split('/').at(-1)!);
   return [

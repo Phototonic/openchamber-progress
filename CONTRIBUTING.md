@@ -40,6 +40,20 @@ Released-writer delegation fixtures require the local `v1.3.0` tag. Run
 skip with a prerequisite diagnostic when the tag is unavailable. Full portable
 CI requires full history and tags, so these cases run there.
 
+Two scripts run the portable groups side by side after building every entry, and print each step's duration at the end:
+
+```sh
+# Edit-and-check loop: both typechecks, the parallel backend group, browser-model
+# and automation tests. It skips the serial Setup-port backend group (below),
+# which holds most of the full run's time, so it is not what CI runs.
+bun run test:fast
+
+# Everything portable CI tests, minus packaging and the rebuild comparison
+bun run test:all
+```
+
+Both leave out the five native-only backend tests (see [Portable CI](#portable-ci--fresh-disposable-checkout-only)) and say so. Run `bun run test:all` or the commands below before a pull request when you touched backend, setup or service code; `test:fast` can pass where the serial group would fail. They are not replacements for `node --experimental-strip-types scripts/ci.ts` in a fresh checkout.
+
 Run the checks relevant to your change:
 
 ```sh
@@ -88,6 +102,17 @@ concurrent writer. Keep new fenced HTTP/worker test files in the list in
 `--test-concurrency=1`, and do not overlap portable CI runs on the same machine.
 This isolates tests, not product requests; no port override or relaxed refusal
 is used.
+
+That serial group is the longest part of the run and mostly waits on deadlines
+and worker start-up, and no other group acquires Setup ports. `scripts/ci.ts`
+and `bun run test:all` therefore run it in one lane beside a second lane that
+holds both typechecks, the parallel backend group and the browser-model and
+automation tests (`scripts/test-plan.ts`, `scripts/test-lanes.ts`). The second
+lane is capped at the machine's cores minus two so the timing assertions in the
+serial group keep their headroom. Each step's output is printed whole under its
+own heading, the first failure stops both lanes, and the run ends with a
+per-step duration list. A file that takes a Setup port belongs in the serial
+group; never add one to the other lane.
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
