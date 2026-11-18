@@ -16,6 +16,7 @@ import { createManagedBindingDirectory, readManagedBinding, managedSourceRoots }
 import { SetupController } from '../../service/setup-controller.ts';
 import { setupSuggestions } from '../../service/suggestions.ts';
 import type { Actor } from '../../shared/progress.ts';
+import { icacls, makeOwnerOnly, readAcl } from '../fixtures/windows-acl.ts';
 import { setupLegacy } from '../../plugin/index.ts';
 
 const native = { skip: process.platform !== 'win32', timeout:120000 };
@@ -33,22 +34,6 @@ function fixture() {
   privateDirectory(configRoot);privateDirectory(dataRoot);
   return {root,targets:{configRoot,dataRoot,storeRoot,confirmed:true},clean(){fs.rmSync(root,{recursive:true,force:true});}};
 }
-/** Test-only fixtures: set and read an explicit, owner-only ACL with icacls. The
- * product never applies, queries or repairs an ACL; these helpers exist only to
- * prove that existing private ACLs keep working and are left unmodified. */
-const icaclsExe=()=>path.join(process.env.SystemRoot!,'System32','icacls.exe');
-function currentSid():string {
-  const r=spawnSync('whoami',['/user','/fo','csv','/nh'],{encoding:'utf8',windowsHide:true,timeout:20000});
-  const sid=r.status===0?/"(S-1-5-[0-9-]+)"\s*$/.exec(r.stdout.trim())?.[1]:undefined;
-  assert.ok(sid,'current account SID is available to the fixture');return sid;
-}
-function icacls(file:string,args:string[]):string {
-  const r=spawnSync(icaclsExe(),[file,...args],{encoding:'utf8',windowsHide:true,timeout:20000});
-  assert.equal(r.status,0,'icacls fixture command succeeds');return r.stdout;
-}
-const makeOwnerOnly=(file:string)=>icacls(file,['/inheritance:r','/grant:r',`*${currentSid()}:(OI)(CI)F`]);
-const readAcl=(file:string)=>icacls(file,[]);
-
 test('Windows creates Unicode directories with default permissions and starts no process',native,t=>{
   const f=fixture();try{
     const spawns=t.mock.method(childProcess,'spawnSync',(()=>{throw new Error('no permission check may start a process');}) as unknown as typeof childProcess.spawnSync);syncBuiltinESMExports();

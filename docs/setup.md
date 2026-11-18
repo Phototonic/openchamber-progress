@@ -535,8 +535,9 @@ Windows keeps the checks that need only filesystem calls: drive-qualified path
 syntax, canonical path, refusal of symbolic links and junctions in the path chain,
 refusal of hard-linked owned state files, content-ownership markers, hashes and
 schema validation. Directories are created with default inheritance, and an
-existing directory is accepted as it is. Existing roots that carry a private ACL
-from an earlier version keep working and are never modified. Linux and macOS keep
+existing directory is accepted as it is. A custom store folder outside the
+profile simply has whatever permissions it already carries. Existing roots that
+carry a private ACL from an earlier version keep working and are never modified. Linux and macOS keep
 their uid and mode checks.
 
 Managed service construction and health do no legacy payload/Store preflight.
@@ -556,7 +557,7 @@ machine.
 Workers retain their fence until exit; timeout is not rollback. The portable
 fixtures spy on every child-process entry point of a projected Windows path; they
 do not exercise native NTFS behaviour. See
-[the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)
+[the step protocol](../setup/managed-steps.md#request-budgets-and-stage-split)
 for deadline and settlement rules.
 
 Use one account and local NTFS storage. Owned hard-linked state files are

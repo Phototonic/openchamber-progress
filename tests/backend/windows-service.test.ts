@@ -12,6 +12,7 @@ import {Store} from '../../shared/store.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_MIGRATION_STEPS,MANAGED_FRESH_INSPECTION_STEPS,MANAGED_FRESH_STEPS,MANAGED_STEP_CODES,type ManagedStepRequest,type ManagedStepResponse,type ManagedFreshStepRequest,type ManagedFreshStepResponse} from '../../shared/managed-steps.ts';
 import {MANAGED_ACTION_CODES} from '../../shared/progress.ts';
 import {nativeService,nativeHarnessCode,HEALTH_MS,type Observation} from '../fixtures/windows-service-driver.ts';
+import {makeOwnerOnly} from '../fixtures/windows-acl.ts';
 
 /** Released emitted lifecycle AND Store, not a current-source reconstruction. */
 async function released(root:string){
@@ -211,7 +212,10 @@ test('Windows built released 1.1.1 step migration',{skip:fullJourneySkip||proces
     }
   }
   try{
-    privateDirectory(root);const home=path.join(root,'home ü space');privateDirectory(home);
+    privateDirectory(root);
+    // The released 1.1.1 installer below still checks ACLs itself: give its root the
+    // owner-only ACL that version created, which every folder under it inherits.
+    makeOwnerOnly(root);const home=path.join(root,'home ü space');privateDirectory(home);
     const env:NodeJS.ProcessEnv={HOME:home,USERPROFILE:home,TEMP:path.join(root,'temp'),TMP:path.join(root,'temp'),
       XDG_CONFIG_HOME:path.join(home,'.config'),XDG_DATA_HOME:path.join(home,'.local','share'),XDG_STATE_HOME:path.join(root,'state'),XDG_CACHE_HOME:path.join(root,'cache'),XDG_RUNTIME_DIR:path.join(root,'runtime')};
     for(const key of ['SystemRoot','SYSTEMROOT','WINDIR'])if(process.env[key])env[key]=process.env[key];
