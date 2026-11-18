@@ -84,12 +84,12 @@ Rail and board SHALL permit an explicit acknowledgement of the observed loss seq
 
 ### Requirement: Permanent coverage disclosure independent of attention
 
-An old or dismissed loss SHALL remain in `coverage.reasons` as `capture-loss`, keep coverage incomplete and remain in the rail/board disclosure. Their Partial badge SHALL remain visible and muted when the loss does not require attention. A section containing the loss note MUST NOT expose itself as complete merely because its attention cue was quieted.
+An old or dismissed loss SHALL remain in `coverage.reasons` as `capture-loss` and keep coverage incomplete. Affected counts SHALL keep their plus mark, and the loss with its detection date SHALL stay listed in Advanced details and named in the support summary. A section containing the loss MUST NOT expose itself as complete merely because its indicator was dismissed or its attention ended.
 
 #### Scenario: Dismissal does not repair counts
 - **WHEN** a recent loss is acknowledged
 - **THEN** retained counts and run/task facts do not change
-- **AND** the date, disclosure, muted Partial badge and incomplete-section marker remain
+- **AND** the date, the plus marks and the incomplete-section marker remain
 
 #### Scenario: Recovery completes after loss
 - **WHEN** history reconciliation finishes after a recorded gap
@@ -97,13 +97,13 @@ An old or dismissed loss SHALL remain in `coverage.reasons` as `capture-loss`, k
 
 ### Requirement: Surface-specific accessible presentation
 
-Rail and board SHALL use the prerequisite inline disclosure and change the Partial badge to warning tone only for active loss attention, with a textual accessible description. Work Status SHALL offer no dismissal control and SHALL show its short loss line only for active loss attention. The UI MUST retain existing section eligibility, other note priorities, keyboard access, disclosure continuity and identity-bound focus behaviour.
+Rail and board SHALL present a recording gap through the single incomplete-count indicator, in neutral tone. A gap needing attention SHALL bring a dismissed indicator back and SHALL be named in its expanded text; dismissing it then SHALL send the store-wide acknowledgement. Work Status SHALL offer no dismissal control and no separate loss line. The UI MUST retain section eligibility, keyboard access and identity-bound focus behaviour.
 
 #### Scenario: Recent, old and legacy gaps
 - **WHEN** an eligible section has a recent undismissed gap
-- **THEN** rail and board expose warning-tone Partial and the dated notice with Dismiss warning
+- **THEN** rail and board show the indicator even if it was dismissed on this device, its expanded text names the gap, and affected counts carry a plus mark
 - **AND WHEN** that gap ages out, is dismissed, or is a migrated unknown-date gap
-- **THEN** Partial is muted, the disclosure remains and Work Status has no loss line
+- **THEN** it no longer brings a dismissed indicator back, the plus marks remain and Work Status shows only the plus marks
 
 #### Scenario: A response arrives after navigation
 - **WHEN** a dismissal/read reply belongs to a retired store, binding, account, root or hidden/disposed visit

@@ -13,6 +13,7 @@ import { Store } from '../../shared/store.ts';
 import { DISPATCH_OBSERVATION, TRACKER_OBSERVATION } from '../../plugin/activation.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
 import { checkNativeCarrier } from './result-note-probe.ts';
+import { latestMessageTexts } from './latest-message-text.ts';
 
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const root = process.argv[3];
@@ -138,7 +139,7 @@ if (process.argv[2] !== '--driver') {
     // constructing the next request's immutable Code Mode inventory snapshot.
     await client.session.prompt({ sessionID: session.id, text: 'Synthetic catalog readiness preflight; no tool action.' });
     await client.session.wait({ sessionID: session.id }, { signal: AbortSignal.timeout(15000) });
-    let generation = 0;
+    let generation = 0, owed = 0;
     const prompt = async (id: string, name: string, input: any, cancel = false) => {
       const slowCount = records().filter(e => e.type === 'slow-entered').length;
       const offset = records().length;
@@ -157,13 +158,21 @@ if (process.argv[2] !== '--driver') {
           const expected = process.env.PROXY_CODEMODE !== '1' && qualified && ['subagent', 'linear_save_issue', 'linear_save_comment'].includes(event.tool);
           assert.equal(JSON.stringify(event.result.content).includes('Agent Progress note'), expected, `direct-only result carrier: ${id}`);
         }
-        const hints = outgoing.filter(e => JSON.stringify(e.system).includes(DISPATCH_OBSERVATION) || JSON.stringify(e.system).includes(TRACKER_OBSERVATION));
-        assert.equal(hints.length, qualified ? 1 : 0, `conditional actor hint once: ${id}`);
+        // The hint rides the latest message of one request; the system section never carries it.
+        const hinted = (e: any) => latestMessageTexts(e.prompt).some(t => t.includes(DISPATCH_OBSERVATION) || t.includes(TRACKER_OBSERVATION));
+        assert.ok(outgoing.every(e => !JSON.stringify(e.system).includes(DISPATCH_OBSERVATION) && !JSON.stringify(e.system).includes(TRACKER_OBSERVATION)), 'system section never carries a hint');
+        const hints = outgoing.filter(hinted);
+        // A direct tool's continuation carries the hint on its last result. A Code Mode wrapper
+        // result stays the script's exact value, so the hint waits for the next request whose
+        // latest message is a valid carrier, here the next case's user message, and is not dropped.
+        const codeMode = process.env.PROXY_CODEMODE === '1';
+        assert.equal(hints.length, codeMode ? owed : qualified ? 1 : 0, `conditional actor hint once: ${id}`);
+        owed = codeMode && qualified ? 1 : 0;
         for (const e of outgoing) {
           const text = JSON.stringify(e.system);
           assert.ok(!text.includes('Synthetic issue') && !text.includes('Synthetic comment') && !text.includes('Synthetic worker complete.'));
         }
-        for (const e of fresh.filter(e => e.type === 'outgoing' && e.sessionID !== session.id)) assert.ok(!JSON.stringify(e.system).includes(DISPATCH_OBSERVATION) && !JSON.stringify(e.system).includes(TRACKER_OBSERVATION), 'no child proxy relay');
+        for (const e of fresh.filter(e => e.type === 'outgoing' && e.sessionID !== session.id)) assert.ok(!hinted(e) && !JSON.stringify(e.system).includes(DISPATCH_OBSERVATION) && !JSON.stringify(e.system).includes(TRACKER_OBSERVATION), 'no child proxy relay');
       }
       console.log('completed-case', id);
     };

@@ -1,7 +1,7 @@
 import { lstatSync,realpathSync } from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { windowsPath, platformSecurityScope, isOwned, sameWindowsDirectory } from '../shared/platform.ts';
+import { windowsPath, isOwned, sameWindowsDirectory } from '../shared/platform.ts';
 import type { SetupSuggestions,Suggestion } from '../shared/progress.ts';
 
 /** Trusted service-host inputs only; never supplied by an HTTP caller. */
@@ -13,9 +13,6 @@ export interface HostPathContext {
 
 /** Read-only prefill. Observed folders still do not establish effective source identity. */
 export function setupSuggestions(context?:HostPathContext):SetupSuggestions|undefined {
-  return platformSecurityScope(()=>suggestions(context));
-}
-function suggestions(context?:HostPathContext):SetupSuggestions|undefined {
   const host=context??{platform:process.platform,env:{HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,XDG_DATA_HOME:process.env.XDG_DATA_HOME},uid:process.getuid?.()};
   if(host.platform!=='linux'&&host.platform!=='win32')return undefined;
   const nativeWindows=host.platform==='win32'&&process.platform==='win32';

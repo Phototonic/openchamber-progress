@@ -549,7 +549,12 @@ no protocol/schema version, persisted field, read behavior or permission change.
 ## Advisory activation does not change the protocol
 
 The companion can add one owned section to an eligible outgoing primary context
-and one conditional possible-plan-file hint. Neither is a report receipt, plan,
+and one conditional possible-plan-file hint. The section is the fixed activation
+guidance only: its text never changes within a session and is byte-identical on
+every request where it is present, so it does not defeat a provider's prompt
+cache. Everything that varies per request (the one-request hint, the sub-agent
+resume capsule and the delegation refusal note) is carried on messages instead and
+stays in place on later requests, as described below. Neither is a report receipt, plan,
 assignment, review/acceptance, capture, or completion event. Existing explicit
 `agent_progress_report` operations, source-optional inputs, transactional control,
 authorization and outputs remain unchanged. Hidden/restricted tools are never
@@ -574,8 +579,8 @@ checks are repeated after awaited lookups; recipient flags publish synchronously
 
 The same process-local bounded state may coalesce three advisory reasons: possible
 plan write, native dispatch and tracker mutation. At most one conditional hint is
-added to the recipient's owned context section, consumed on eligible delivery,
-not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
+added after the content of the latest message of the recipient's next eligible
+request that has a valid carrier, consumed on delivery, not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
@@ -587,6 +592,63 @@ directory or a root/worktree directory listed by the host for that same project.
 Only lexical path and host metadata are used: no file, folder or repository
 metadata is read. A missing, failing, malformed or timed-out worktree list
 declines cross-directory observation and relay.
+
+Context notes (the one-request hint, the resume capsule and the delegation
+refusal note, with their text and eligibility unchanged) are added after the content
+of a message, in a carrier valid for that message's role. On a user message a note
+is a text part after the content. On a tool message, the continuation after a tool
+call such as a plan-file write, a separate part is not valid, so it is appended to
+the output of the message's last tool result: the carrier the completed-result
+note below uses, with the same shape limits (a native-proven string or
+content-array result). The Code Mode wrapper (`execute`) result is the exact value
+its script returned and never carries a note. Any other role or shape has no valid
+carrier, and a due note waits for the next request that has one: the hint stays
+pending, an armed capsule stays armed, and the capsule and refusal are read again
+then, never dropped. Notes due together form one note, in the order hint, capsule,
+refusal or cleared line, joined by a blank line. The message and part are copied:
+the stored conversation never carries a note. The text is therefore delivered even
+to providers that drop plugin system sections.
+
+A delivered note stays where it was put. A provider writes its cache at the end of
+the latest message, which is where the note sits, and reads it only when a later
+request repeats that prefix byte for byte; with extended thinking the reply's
+thinking is bound to that prefix as well. So the companion remembers, per session,
+each note it delivered with its carrier (a tool carrier by its call identifier,
+position and a digest of its original output, because providers do not keep call
+identifiers unique across turns; a user carrier by the message identifier when it
+has one, else by its position and a digest of its original content) and adds the
+same text in the same place on every later request whose messages still hold that
+carrier. Each request's messages therefore begin with the previous request's
+messages byte for byte, and a later note on a carrier follows the earlier ones
+without rewriting them. The memory is process-local and bounded: 128 sessions,
+least recently used first, and per session 256 carriers and 128 KiB of note text,
+dropping carriers absent from the latest request first, then the oldest. An
+evicted carrier, a restart or a fork loses its note once, which changes the prefix
+once from that message on.
+
+A resume capsule or refusal note is delivered again only when its text differs from
+the last one delivered in the session, or when the carrier of that delivery is not
+in this request with its note (after compaction, a reverted message, an evicted
+carrier, a restart or a fork). A capsule lookup that times out adds nothing, and a
+note left out as unchanged counts as delivered. A delivered refusal stays in
+history after it stops applying, so one fixed line is delivered in the same way:
+`Agent Progress note (delegation): the earlier delegation refusal no longer
+applies; read the current plan before you declare or link.` It is delivered only
+after a successful, complete refusal read that finds no refusal while the last
+refusal delivered is still in the request with its note; a read that fails or is
+incomplete adds no cleared line, and an incomplete read with no refusal still
+delivers the existing omission text, which is not a refusal and does not open the
+cleared-line gate. It counts as the last refusal delivered, so the same refusal
+returning is delivered again, and it is delivered again when that refusal is still
+in the request with its note and the cleared line's carrier is not. A capsule that becomes empty gets no cleared line: the capsule
+already says to read current state first.
+
+Every path that removes the section (capture off, report tool unavailable, source
+unverified, caller lookup failed, an epoch change, disposal, a failure in the hook)
+also removes every added note from that request. The memory is cleared only when
+capture is off or unavailable, the source binding changes or the companion is disposed; a
+transient failure, or a request without the report tool, keeps it and the notes
+return with the section.
 
 Hints also travel in completed tool results, independently of forwarded system
 text. The latest verified eligible context must expose both the report tool and
@@ -601,7 +663,10 @@ parent on the parent's next qualifying call, including the returning dispatch.
 No plan-presence lookup suppresses notes on already-mirrored work.
 Code Mode inner calls still raise context hints, but receive no result note:
 they are absent from the direct tool inventory, and native proof shows their
-content note is lost on the way back to the script/model. Structured-only
+content note is lost on the way back to the script/model. Their hint cannot ride
+the wrapper's own result either, so it is delivered on the next request whose
+latest message is a valid carrier, usually the next user message, not on the
+continuation of that call. Structured-only
 results likewise stay unchanged. Neither carrier reports or grants authority.
 
 The dispatch hint conditionally asks coordinators of planned or multi-step work
@@ -640,7 +705,8 @@ than broaden history. Hints conditionally ask about unreported canonical state,
 never assert work start, review/owner approval, assignment or completion, and never
 map issue state to plan status. No receipt correlation or compliance promise exists.
 
-Recovery is an optional addition inside that same owned section, only after a
+Recovery is an optional note on the latest message, never part of the owned
+section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end
 must pair for the same session/source. Hook/start callback delivery order is not
@@ -654,7 +720,9 @@ precomputation or arbitrarily inverted durable streams. A start or hook alone is
 Accepted terminals retire open evidence; failure clears pending recovery.
 The first following primary context attempt consumes pending and incomplete
 evidence before awaits, retaining a creation-time fence against delayed backfill even if
-delivery safely declines. Ordinary turns and uncompacted resumes do no recovery
+delivery safely declines. The one exception is a request whose latest message has no
+valid carrier: it performs no lookup and leaves the pending completion armed for the
+next request that has one. Ordinary turns and uncompacted resumes do no recovery
 lookup and retain today's eligible generic guidance. Failed compactions retire
 pending recovery; title/generate and summarization requests receive no capsule.
 Observation never reads summary text or changes compaction inputs or `result`.
@@ -1152,21 +1220,35 @@ envelope carries no change token), so a count that crossed such a boundary is
 qualified as possibly missing plans, never presented as verified complete; an
 overlap anchor that changed is counted at its new version, or dropped when its
 new version no longer belongs to the view. A fully read count of that kind says
-plans may have been missed, rather than that more plans were not checked. Plans a user
+plans may have been missed, rather than that more plans were not checked. A complete loaded
+scope that was read in more than one list page (more than 50 plans) is qualified the
+same way, on the count line and on the delete step: the list read records that it
+crossed a page boundary and the count adds no request. A list read in one page is one
+answer from the service and stays exact, and so do rows explicitly chosen from it. A
+Try again recount names its plans; on a list read in several pages it stays exact only
+when it found every plan it names among the loaded rows, because otherwise it cannot
+show whether the plan left the view or was missed. Under Select all the selection
+bar's count is the number of selected plans the frame has loaded, with a plus only while
+matching plans are known not to be loaded, and the confirmation is what says a list read
+in several pages may have missed plans. Plans a user
 explicitly chose, and the remaining plans of a retry, are not searched for: they
 are validated with `/v1/search-state` point lookups (at most 50 keys and the
 service's 16 KiB encoded-query limit each, pinned to the expected store and
 binding). This applies to scans that use the named reader: a truncated or searched
 scope on a service that advertises `planTaskSearch`. A complete non-search list
 counts from the displayed metadata without a lookup, and an older service still
-counts a truncated browse scope with the list scan. In the named reader, where the
-view's scope depends on content the client cannot evaluate (a search, a session
-scope) a plan whose revision moved since the count began (the revision captured
-when the count was requested, not necessarily when the rows were chosen) is
+counts a truncated browse scope with the list scan. Only the point lookup
+compares a named plan with a baseline: the revision supplied to the count, which
+is the revision the chosen plan carried and, on Try again, the original target's
+revision (not the revision at which the count began). A complete list takes a
+named plan as its loaded row shows it, and the older service's list scan takes it
+as the scan's row shows it; neither compares it with a supplied revision. In the
+point lookup, where the view's scope depends on content the client cannot evaluate
+(a search, a session scope) a plan whose revision differs from the supplied one is
 skipped as changed; elsewhere it is re-read with one `/v1/plan` head read,
 verified against the expected store and binding, and a missing plan is dropped
 only after the pinned lookup confirms its absence. Every request carries the
-captured revision and the service enforces it. Each lookup and each head read is one request of the
+captured revision and the service enforces it, in every path. Each lookup and each head read is one request of the
 per-action budget; unfinished plans wait for Check more.
 The count distinguishes a target ceiling with a confirmed further match (**more
 remain**) from unchecked plans that may or may not match: a full set keeps scanning
@@ -1183,8 +1265,16 @@ Requests run sequentially; a refused/changed or unconfirmed plan is not retried
 automatically. Stop and a change of account, store/binding or board reading end
 the run after the in-flight request. One progress line shows completed/total
 counts; start and result are announced once, not per plan. One final
-invalidation/re-read reconciles the result, including uncertain failures. Only
-validated receipts count as completed; all other targets are reported as skipped.
+invalidation/re-read reconciles the result, including uncertain failures,
+unless an account, store or binding change was observed during the run: a run
+that ends after such a change shows no result and changes nothing on the board
+shown then. Only validated receipts count as completed. A plan the service
+refused (changed, closed, reused operation, not found, store busy) and a plan the run did not send
+(left out of the view before sending, or after Stop) are reported as skipped. A
+plan whose attempted request got no valid answer (a lost reply, a connection or
+host failure, an unreadable receipt, or an attempt that failed before the service
+could receive it) is reported separately as unconfirmed: it may have been
+applied. Undo covers validated receipts only.
 
 Undo restores exactly the successful archive receipts of that action through
 the restore route, each bound to the generation returned by its receipt and a
@@ -1192,8 +1282,8 @@ fresh operation ID. It never widens to other archived plans. Changed or refused
 restores are reported, not treated as success. Archive and Undo preserve lifecycle,
 counts, report history and copied documents. Delete offers no Undo.
 The result and Undo survive the action's reconciliation read and remain until
-the next action or refresh, not a timer. Other surfaces converge through their
-existing refresh cadence; no polling loop or new stored state is introduced.
+the next action or refresh after they were shown, not a timer. Other surfaces
+converge through their existing refresh cadence; no polling loop or new stored state is introduced.
 
 Authenticated, query-free **POST** `/v1/plan/archive`, `/v1/plan/restore`, and
 `/v1/plan/delete` accept only this JSON body (identifiers use the existing80-character
@@ -1276,8 +1366,8 @@ Other frames converge on their existing successful refresh, not a new bus/poll r
 No GET, service open or ordinary capture initializes the cleanup extension. After
 read-only eligibility checks, first explicit cleanup takes a verified private
 SQLite snapshot at `cleanup-backup-<random>.sqlite` in the verified private store
-folder (POSIX0700/file0600; on Windows the existing native path/owner/DACL policy
-and private inherited file ACL), then revalidates and atomically installs format1 metadata and persistent
+folder (POSIX0700/file0600; on Windows the native path and hard-link checks, with
+default inherited permissions), then revalidates and atomically installs format1 metadata and persistent
 guards with the action. A racing or failed action can leave recovery material;
 it cannot partially change the selected plan. Unknown format/missing or altered
 guards fail closed, never silently repair/reset. No arbitrary backup destination.
@@ -1327,7 +1417,9 @@ replay, `/v1/plan?delegationIntent=1` and coordinator guidance all show it as
 `retired`/`closed` (a refusal to redeclare or link), never as waiting or invalid;
 a fresh declaration works. Only the explicit restore record explains a missing
 intent: a plan never archived whose pending receipt lost its intent is not reported
-as closed; the view is unavailable and guidance incomplete. A new unlinked dispatch ignores archived plans when it
+as closed; the view is unavailable and guidance incomplete. A pending or reserved
+receipt whose state disagrees with its dispatch, or that names no task, is
+unreadable evidence: guidance is incomplete and reports no refusal for it. A new unlinked dispatch ignores archived plans when it
 looks for its one visible active plan.
 
 Older writers may return generic storage errors; their old readers can show
@@ -1549,7 +1641,7 @@ an error. Config roots use the corresponding XDG config/HOME rule. State roots,
 never select managed authority. `OPENCODE_DB` and `OPENCODE_CONFIG_DIR` are
 unsupported effective scopes; no search, fallback, automatic adoption or repair.
 The owned 0700 product directory and exact 0600 `.ownership.json` marker, private
-descriptor, canonical non-symlink roots, owner, Windows ACL/object checks,
+descriptor, canonical non-symlink roots, owner (POSIX), Windows object checks,
 `readBinding`, Store schema and `verifyStore` all remain required.
 
 Absent discovery is `unconfigured`; present unsafe/invalid/unsupported state is
@@ -1572,7 +1664,7 @@ and settles sequence 1 with lastCompleted prepare. Advance performs one advertis
 step. Pause/abandon/resume retain intent and never imply undo or capture changes.
 Identical last-request replay reconciles durable evidence; changed/stale input
 refuses. Error overrides disposition, including replayed failure. All requests
-retain the six-launch, 17-second-work/18-second-response budgets and writer fence.
+retain the 17-second-work/18-second-response deadlines and writer fence, and start no process.
 
 Fresh review discloses `planKind:fresh`, store/source create/retain/reuse modes,
 capture policy, package version, canonical folders, identities and frozen plan.
@@ -1610,7 +1702,7 @@ budgets and recovery boundaries.
 ### Compatibility controls
 
 On Windows old `managed-inspect` and `managed-configure` always return exactly
-409 `{"error":"managed-action-required"}` before body parsing, security queries,
+409 `{"error":"managed-action-required"}` before body parsing,
 worker dispatch or writes. Old `managed-migrate` refuses that way on every OS.
 Linux/macOS retain old fresh inspect/configure only without legacy discovery or
 any journal, under their nonce-bound review and writer fence. A new UI without
@@ -1703,10 +1795,13 @@ against an explicitly injected legacy fixture refuse `managed-service-required`.
 Existing schema/binding/busy/corrupt/storage errors retain their 503 semantics;
 existing bounded bodies, auth, method and query checks remain unchanged.
 Migration inspection preserves schema/busy/corrupt/storage failures rather than
-converting them into `managed-migration-conflict`. Platform security query failure
-retains `windows-security-unavailable` in status diagnostics and the existing
-503 `storage` mutation response. Retry requires resolving the underlying failure;
-it does not authorize cleanup or takeover.
+converting them into `managed-migration-conflict`. Windows starts no process for
+permission checks, so `windows-security-unavailable`, `private-permissions` and
+`unsafe-parent` are no longer produced; they stay in the fixed diagnostic
+vocabulary so earlier journals and clients remain readable. A platform failure
+retains its fixed code in status diagnostics and the existing 503 `storage`
+mutation response. Retry requires resolving the underlying failure; it does not
+authorize cleanup or takeover.
 
 Managed capture enable requires the valid verified managed binding and refuses a
 legacy conflict, not executable ownership in a global package. The existing
@@ -1921,7 +2016,7 @@ prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to workin
 to load the skill when writing, receiving or coordinating plans and before
 dispatching sub-agents. The description is at most 4,096 characters, with the
 checklist and executable prerequisite start example inside the first 2,048.
-Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that once every prerequisite it was blocked on is done again the task blocked this way is set back to working or pending, including before a handoff, because an explicit blocked task never becomes Ready. The following conditional rule still applies:
+Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that the block is cleared against the plan's current prerequisites: before a handoff, and when a prerequisite finishes, the agent reads the current plan, and once every prerequisite the task still lists is done the task blocked this way is set back to working or pending, because an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds the task, and a skipped prerequisite that is still listed counts as unfinished. This guidance is advisory; the store is unchanged and a structural revision keeps an explicit blocked status. The following conditional rule still applies:
 tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
@@ -1930,8 +2025,10 @@ structure, not implementation completion or approval. Review and owner approval
 are separate; reflect only existing canonical gate/work items, never invent review
 tasks. Dispatch is not work start. No file or automatic per-turn report is required.
 No custom instructions or provider-specific branch is needed. System-dropping
-providers retain tool definitions and result notes; providers forwarding system
-text retain the owned section too. Clients can still omit/truncate descriptions
+providers retain tool definitions, result notes and the hint, capsule and
+refusal note carried on messages; providers forwarding system text retain the
+owned section too, which stays identical across requests so it does not defeat a
+provider's prompt cache. Clients can still omit/truncate descriptions
 below the supported budget; delivery does not
 guarantee reporting or model compliance.
 

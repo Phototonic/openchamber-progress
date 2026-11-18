@@ -6,14 +6,14 @@ import { Store, canonical, digest } from '../shared/store.ts';
 import { VERSION, type CompanionUpdateRead } from '../shared/progress.ts';
 import { type Binding, readBinding, verifyStore } from '../shared/binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
-import { windows, windowsPath, windowsPaths, platformSecurityScope, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, PlatformError, sameWindowsObject, sameWindowsDirectory, requirePlatformWriteBoundary } from '../shared/platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, PlatformError, sameWindowsObject, sameWindowsDirectory, requirePlatformWriteBoundary } from '../shared/platform.ts';
 import { MANAGED_STEP_LIMITS, type ManagedCaptureObservation, type ManagedStepRef } from '../shared/managed-steps.ts';
 import type {ManagedLegacyEvidence,ManagedPathClaim,ManagedStepJournal} from './managed-step-journal.ts';
 
 export interface Targets { configRoot: string; dataRoot: string; storeRoot: string; confirmed: boolean }
 /** Trim directory suffixes only; do not resolve traversal or conceal symlinks. */
 export function normalizeTargets(targets:Targets):Targets {
-  if(windows)try{return platformSecurityScope(()=>{const [configRoot,dataRoot,storeRoot]=windowsPaths([targets.configRoot,targets.dataRoot,targets.storeRoot,path.join(targets.configRoot,'plugins','agent-progress'),path.join(targets.storeRoot,'payloads')],true);return {...targets,configRoot:configRoot!,dataRoot:dataRoot!,storeRoot:storeRoot!};});}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
+  if(windows)try{const [configRoot,dataRoot,storeRoot]=windowsPaths([targets.configRoot,targets.dataRoot,targets.storeRoot,path.join(targets.configRoot,'plugins','agent-progress'),path.join(targets.storeRoot,'payloads')],true);return {...targets,configRoot:configRoot!,dataRoot:dataRoot!,storeRoot:storeRoot!};}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
   const trim=(value:string)=>{const root=path.parse(value).root;while(value.length>root.length&&value.endsWith(path.sep))value=value.slice(0,-1);return value;};
   return {...targets,configRoot:trim(targets.configRoot),dataRoot:trim(targets.dataRoot),storeRoot:trim(targets.storeRoot)};
 }
@@ -94,9 +94,6 @@ function verifyFiles(root:string, expected:Record<string,string>, extras:string[
   for(const [name,hash]of Object.entries(expected)){const file=path.join(root,name);need(existsSync(file),'modified-owned-files');if(!windows)safe(file);const st=lstatSync(file);need(st.isFile()&&(windows||st.uid===process.getuid?.()&&(st.mode&0o777)===0o600)&&digest(readFileSync(file))===hash,'modified-owned-files');}
 }
 export function inspect(targets:Targets) {
-  return platformSecurityScope(()=>inspectInner(targets));
-}
-function inspectInner(targets:Targets) {
   targets=normalizeTargets(targets);
   safe(targets.configRoot);safe(targets.dataRoot);safe(targets.storeRoot,true);
   for(const root of [targets.configRoot,targets.dataRoot])need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');
@@ -136,16 +133,14 @@ function removableSelectors(o:ReturnType<typeof owned>) {
 }
 /** Migration preflight repeats every removal check BEFORE its disable-first path. */
 export function migrationBinding(targets:Targets) {
-  return platformSecurityScope(()=>{
-    const o=owned(targets);removableSelectors(o);
-    need(o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
-    const store=new Store(o.binding.database,{readOnly:true});
-    try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
-    const active=path.join(targets.storeRoot,'payloads',o.manifest.active);
-    return {binding:o.binding,
-      fingerprint:activationFingerprint(readBinding(path.join(active,'progress-binding.json')),readFileSync(path.join(active,'index.js')),readFileSync(path.join(active,'SKILL.md'))),
-      ownership:digest(readFileSync(path.join(o.root,'.ownership.json')))};
-  });
+  const o=owned(targets);removableSelectors(o);
+  need(o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
+  const store=new Store(o.binding.database,{readOnly:true});
+  try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
+  const active=path.join(targets.storeRoot,'payloads',o.manifest.active);
+  return {binding:o.binding,
+    fingerprint:activationFingerprint(readBinding(path.join(active,'progress-binding.json')),readFileSync(path.join(active,'index.js')),readFileSync(path.join(active,'SKILL.md'))),
+    ownership:digest(readFileSync(path.join(o.root,'.ownership.json')))};
 }
 
 function migrationObject(file:string) {
@@ -174,40 +169,36 @@ function migrationOwnedPaths(targets:Targets,m:Manifest,selectors:string[]) {
 /** Full read-only discovery owner for a known target. Inspection may stage its
  * path discovery separately; callers must charge all queries to that request. */
 export function migrationEvidence(targets:Targets):{binding:Binding;legacy:Extract<ManagedLegacyEvidence,{kind:'manifest'}>;plan:ManagedStepRef[]} {
-  return platformSecurityScope(()=>{
-    const o=owned(targets),selectors=removableSelectors(o).sort(),ownership=readFileSync(path.join(o.root,'.ownership.json'),'utf8');
-    const m=migrationOwnership(ownership),paths=migrationOwnedPaths(targets,m,selectors);
-    if(paths.length>MANAGED_STEP_LIMITS.claimPaths||Buffer.byteLength(ownership)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-    need(canonical(m)===canonical(o.manifest)&&o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
-    const store=new Store(o.binding.database,{readOnly:true});
-    try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
-    return {binding:o.binding,legacy:{kind:'manifest',ownership,ownershipDigest:digest(ownership),claims:paths.map(migrationClaim)},
-      plan:migrationRemovalPlan(selectors.length)};
-  });
+  const o=owned(targets),selectors=removableSelectors(o).sort(),ownership=readFileSync(path.join(o.root,'.ownership.json'),'utf8');
+  const m=migrationOwnership(ownership),paths=migrationOwnedPaths(targets,m,selectors);
+  if(paths.length>MANAGED_STEP_LIMITS.claimPaths||Buffer.byteLength(ownership)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  need(canonical(m)===canonical(o.manifest)&&o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
+  const store=new Store(o.binding.database,{readOnly:true});
+  try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
+  return {binding:o.binding,legacy:{kind:'manifest',ownership,ownershipDigest:digest(ownership),claims:paths.map(migrationClaim)},
+    plan:migrationRemovalPlan(selectors.length)};
 }
 /** Read-only path discovery, not ownership or removal authority. Read the fixed
  * descriptor/manifest first; never obtain arbitrary paths from caller claims.
  * A later request must recheck these bytes before following the discovered set. */
 export function discoverMigrationPaths(targets:Pick<Targets,'configRoot'|'dataRoot'>) {
-  return platformSecurityScope(()=>{
-    const root=path.join(targets.configRoot,'plugins','agent-progress');
-    const manifestFile=path.join(root,'.ownership.json'),descriptor=path.join(root,'progress-binding.json');
-    const fixed=[targets.configRoot,targets.dataRoot,root,manifestFile,descriptor];
-    if(windows)windowsPaths(fixed);
-    for(const file of [manifestFile,descriptor]){
-      safe(file);const s=lstatSync(file);
-      need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&s.size<=MANAGED_STEP_LIMITS.journalBytes&&privatePaths([root,file]),'ownership-invalid');
-    }
-    const before=migrationSnapshot(manifestFile),ownership=readFileSync(manifestFile,'utf8'),manifest=migrationOwnership(ownership);
-    need(before===migrationSnapshot(manifestFile),'installation-changed');
-    const binding=readBinding(descriptor);
-    need(binding.source.verified&&binding.installId===manifest.installId&&binding.source.configRoot===targets.configRoot&&
-      binding.source.dataRoot===targets.dataRoot,'ownership-invalid');
-    const selectors=windows?readdirSync(root).filter(n=>/^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)).map(n=>path.join(root,n)).sort():[];
-    const paths=migrationOwnedPaths({...targets,storeRoot:path.dirname(binding.database),confirmed:true},manifest,selectors);
-    if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
-    return {binding,ownership,paths};
-  });
+  const root=path.join(targets.configRoot,'plugins','agent-progress');
+  const manifestFile=path.join(root,'.ownership.json'),descriptor=path.join(root,'progress-binding.json');
+  const fixed=[targets.configRoot,targets.dataRoot,root,manifestFile,descriptor];
+  if(windows)windowsPaths(fixed);
+  for(const file of [manifestFile,descriptor]){
+    safe(file);const s=lstatSync(file);
+    need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&s.size<=MANAGED_STEP_LIMITS.journalBytes&&privatePaths([root,file]),'ownership-invalid');
+  }
+  const before=migrationSnapshot(manifestFile),ownership=readFileSync(manifestFile,'utf8'),manifest=migrationOwnership(ownership);
+  need(before===migrationSnapshot(manifestFile),'installation-changed');
+  const binding=readBinding(descriptor);
+  need(binding.source.verified&&binding.installId===manifest.installId&&binding.source.configRoot===targets.configRoot&&
+    binding.source.dataRoot===targets.dataRoot,'ownership-invalid');
+  const selectors=windows?readdirSync(root).filter(n=>/^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)).map(n=>path.join(root,n)).sort():[];
+  const paths=migrationOwnedPaths({...targets,storeRoot:path.dirname(binding.database),confirmed:true},manifest,selectors);
+  if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+  return {binding,ownership,paths};
 }
 function migrationRemovalPlan(selectors:number):ManagedStepRef[] {
   return [{name:'prepare',batch:0},{name:'expectation',batch:0},{name:'disable',batch:0},
@@ -238,56 +229,54 @@ function removalLayout(journal:ManagedStepJournal) {
 }
 /** Full fresh remaining-set validation. Missing files are recognized only from
  * this operation's ordered completion or its exact before/after removal intent.
- * The journal itself grants no ACL/object/Store authority. */
+ * The journal itself grants no path/object/Store authority. */
 export function validateMigrationRemoval(journal:ManagedStepJournal) {
-  return platformSecurityScope(()=>{
-    const layout=removalLayout(journal),{targets,root,manifest,selectors,claims,removed,completed}=layout,m=journal.migration;
-    const database=journal.database,historyFile=path.join(targets.storeRoot,'installation-history.jsonl');
-    const extra=[database,...['-journal','-wal','-shm'].map(s=>database+s),historyFile];
-    // All paths come from the structurally checked frozen manifest/claims or
-    // fixed Store names. Include ancestors in one new batch; no cached verdict
-    // survives the caller's next mutation boundary.
-    if(windows)windowsPaths([...layout.paths,...extra],true);
-    const rootRemoved=completed>=m.plan.findIndex(s=>s.name==='record-removal');
-    const rootMayBeMissing=rootRemoved||m.step?.name==='record-removal'&&layout.intentFor(root);
-    for(const claim of claims.values()){
-      const s=lstatSync(claim.path,{throwIfNoEntry:false});
-      const missingAllowed=removed.has(claim.path)||claim.path===layout.file(m.step)&&layout.intentFor(claim.path)||claim.path===root&&rootMayBeMissing;
-      if(!s){need(missingAllowed,'modified-owned-files');continue;}
-      need(!removed.has(claim.path)&&!(claim.path===root&&rootRemoved),'installation-changed');
-      safe(claim.path);need(canonical(migrationObject(claim.path))===canonical(claim.object),'installation-changed');
-      const publicRoot=claim.path===targets.configRoot||claim.path===targets.dataRoot;
-      need(!s.isSymbolicLink()&&(claim.kind==='directory'?s.isDirectory():claim.kind==='file'&&s.isFile()&&s.nlink===1)&&
-        (publicRoot?isOwned(claim.path):privatePaths([claim.path])),'ownership-invalid');
-      if(claim.kind==='file'){
-        const before=migrationSnapshot(claim.path);need(digest(readFileSync(claim.path))===claim.digest&&before===migrationSnapshot(claim.path),'modified-owned-files');
-      }
+  const layout=removalLayout(journal),{targets,root,manifest,selectors,claims,removed,completed}=layout,m=journal.migration;
+  const database=journal.database,historyFile=path.join(targets.storeRoot,'installation-history.jsonl');
+  const extra=[database,...['-journal','-wal','-shm'].map(s=>database+s),historyFile];
+  // All paths come from the structurally checked frozen manifest/claims or
+  // fixed Store names. Include ancestors in one new batch; no cached verdict
+  // survives the caller's next mutation boundary.
+  if(windows)windowsPaths([...layout.paths,...extra],true);
+  const rootRemoved=completed>=m.plan.findIndex(s=>s.name==='record-removal');
+  const rootMayBeMissing=rootRemoved||m.step?.name==='record-removal'&&layout.intentFor(root);
+  for(const claim of claims.values()){
+    const s=lstatSync(claim.path,{throwIfNoEntry:false});
+    const missingAllowed=removed.has(claim.path)||claim.path===layout.file(m.step)&&layout.intentFor(claim.path)||claim.path===root&&rootMayBeMissing;
+    if(!s){need(missingAllowed,'modified-owned-files');continue;}
+    need(!removed.has(claim.path)&&!(claim.path===root&&rootRemoved),'installation-changed');
+    safe(claim.path);need(canonical(migrationObject(claim.path))===canonical(claim.object),'installation-changed');
+    const publicRoot=claim.path===targets.configRoot||claim.path===targets.dataRoot;
+    need(!s.isSymbolicLink()&&(claim.kind==='directory'?s.isDirectory():claim.kind==='file'&&s.isFile()&&s.nlink===1)&&
+      (publicRoot?isOwned(claim.path):privatePaths([claim.path])),'ownership-invalid');
+    if(claim.kind==='file'){
+      const before=migrationSnapshot(claim.path);need(digest(readFileSync(claim.path))===claim.digest&&before===migrationSnapshot(claim.path),'modified-owned-files');
     }
-    // Saved claims cannot substitute arbitrary hashes for the original owner
-    // manifest, even if the current bytes happen to match those altered claims.
-    for(const [name,hash]of Object.entries(manifest.files))need(claims.get(path.join(root,name))?.digest===hash,'ownership-invalid');
-    need(claims.get(path.join(root,'.ownership.json'))?.digest===m.legacy.ownershipDigest,'ownership-invalid');
-    for(const [id,release]of Object.entries(manifest.releases)){
-      const releaseRoot=path.join(targets.storeRoot,'payloads',id);
-      need(canonical(readdirSync(releaseRoot).sort())===canonical(Object.keys(release.files).sort()),'foreign-files');
-      for(const [name,hash]of Object.entries(release.files))need(claims.get(path.join(releaseRoot,name))?.digest===hash,'ownership-invalid');
-    }
-    if(lstatSync(root,{throwIfNoEntry:false})){
-      const allowed=new Set([...layout.discovery,...selectors].filter(p=>!removed.has(p)&&lstatSync(p,{throwIfNoEntry:false})).map(p=>path.basename(p)));
-      need(readdirSync(root).every(name=>allowed.has(name)),'foreign-files');
-    }
-    const binding=readBinding(path.join(targets.storeRoot,'payloads',manifest.active,'progress-binding.json'));
-    need(binding.installId===m.legacyInstallId&&binding.database===database&&binding.storeId===journal.storeId&&canonical(binding.source)===canonical(journal.source),'ownership-invalid');
-    removableSelectors({root,manifest,binding,staged:selectors.filter(p=>lstatSync(p,{throwIfNoEntry:false})).map(p=>path.basename(p))});
-    for(const p of extra){
-      const s=lstatSync(p,{throwIfNoEntry:false});if(!s)continue;
-      safe(p);need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&privatePaths([p]),'store-permissions');
-    }
-    const store=new Store(database,{readOnly:true});let enabled:boolean;
-    try{verifyStore(store,binding);store.subagentRunStorage();enabled=store.list({limit:1}).captureEnabled;}finally{store.close();}
-    const capture:ManagedCaptureObservation={state:enabled?'on':'off',observedAt:new Date().toISOString()};
-    return {...layout,capture};
-  });
+  }
+  // Saved claims cannot substitute arbitrary hashes for the original owner
+  // manifest, even if the current bytes happen to match those altered claims.
+  for(const [name,hash]of Object.entries(manifest.files))need(claims.get(path.join(root,name))?.digest===hash,'ownership-invalid');
+  need(claims.get(path.join(root,'.ownership.json'))?.digest===m.legacy.ownershipDigest,'ownership-invalid');
+  for(const [id,release]of Object.entries(manifest.releases)){
+    const releaseRoot=path.join(targets.storeRoot,'payloads',id);
+    need(canonical(readdirSync(releaseRoot).sort())===canonical(Object.keys(release.files).sort()),'foreign-files');
+    for(const [name,hash]of Object.entries(release.files))need(claims.get(path.join(releaseRoot,name))?.digest===hash,'ownership-invalid');
+  }
+  if(lstatSync(root,{throwIfNoEntry:false})){
+    const allowed=new Set([...layout.discovery,...selectors].filter(p=>!removed.has(p)&&lstatSync(p,{throwIfNoEntry:false})).map(p=>path.basename(p)));
+    need(readdirSync(root).every(name=>allowed.has(name)),'foreign-files');
+  }
+  const binding=readBinding(path.join(targets.storeRoot,'payloads',manifest.active,'progress-binding.json'));
+  need(binding.installId===m.legacyInstallId&&binding.database===database&&binding.storeId===journal.storeId&&canonical(binding.source)===canonical(journal.source),'ownership-invalid');
+  removableSelectors({root,manifest,binding,staged:selectors.filter(p=>lstatSync(p,{throwIfNoEntry:false})).map(p=>path.basename(p))});
+  for(const p of extra){
+    const s=lstatSync(p,{throwIfNoEntry:false});if(!s)continue;
+    safe(p);need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&privatePaths([p]),'store-permissions');
+  }
+  const store=new Store(database,{readOnly:true});let enabled:boolean;
+  try{verifyStore(store,binding);store.subagentRunStorage();enabled=store.list({limit:1}).captureEnabled;}finally{store.close();}
+  const capture:ManagedCaptureObservation={state:enabled?'on':'off',observedAt:new Date().toISOString()};
+  return {...layout,capture};
 }
 /** One lifecycle-owned file effect only. Callers persist its exact intent first
  * under the shared writer fence. Missing current files reconcile; they never
@@ -295,7 +284,7 @@ export function validateMigrationRemoval(journal:ManagedStepJournal) {
 export function removeMigrationFile(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;capture:ManagedCaptureObservation} {
   requirePlatformWriteBoundary();
   const m=journal.migration;need(m.state==='running'&&m.intent!==null&&['remove-selector','remove-discovery'].includes(m.step?.name??''),'managed-step-conflict');
-  const before=platformSecurityScope(()=>{validateJournal?.();return validateMigrationRemoval(journal);}),file=before.file(m.step);
+  const before=(()=>{validateJournal?.();return validateMigrationRemoval(journal);})(),file=before.file(m.step);
   need(file&&before.intentFor(file)&&before.completed>=2&&before.capture.state==='off','managed-step-conflict');
   if(!lstatSync(file,{throwIfNoEntry:false}))return {removed:false,capture:before.capture};
   requirePlatformWriteBoundary();unlinkSync(file);syncDirectory(path.dirname(file));
@@ -328,16 +317,14 @@ function removalEvent(journal:ManagedStepJournal,capture:ManagedCaptureObservati
 /** Read-only construction of both subeffects' claims. The engine freezes these
  * in the durable intent before directory removal or history append. */
 export function migrationRemovalRecordClaims(journal:ManagedStepJournal) {
-  return platformSecurityScope(()=>{
-    const layout=validateMigrationRemoval(journal),m=journal.migration;
-    need(m.step?.name==='record-removal'&&m.intent===null&&layout.capture.state==='off','managed-step-conflict');
-    need(readdirSync(layout.root).length===0,'foreign-files');
-    const history=removalHistory(journal),event=removalEvent(journal,layout.capture);
-    if(history.bytes.length+Buffer.byteLength(event)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-    return {before:[layout.claims.get(layout.root)!,history.claim],
-      after:[{path:layout.root,kind:'absent' as const,object:null,digest:null},
-        {...history.claim,digest:digest(Buffer.concat([history.bytes,Buffer.from(event)]))}],capture:layout.capture};
-  });
+  const layout=validateMigrationRemoval(journal),m=journal.migration;
+  need(m.step?.name==='record-removal'&&m.intent===null&&layout.capture.state==='off','managed-step-conflict');
+  need(readdirSync(layout.root).length===0,'foreign-files');
+  const history=removalHistory(journal),event=removalEvent(journal,layout.capture);
+  if(history.bytes.length+Buffer.byteLength(event)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  return {before:[layout.claims.get(layout.root)!,history.claim],
+    after:[{path:layout.root,kind:'absent' as const,object:null,digest:null},
+      {...history.claim,digest:digest(Buffer.concat([history.bytes,Buffer.from(event)]))}],capture:layout.capture};
 }
 function validateRemovalRecord(journal:ManagedStepJournal) {
   const m=journal.migration,intent=m.intent;
@@ -374,13 +361,13 @@ function validateRemovalRecord(journal:ManagedStepJournal) {
  * effect batch. It must be read-only and must prebatch any additional paths. */
 export function recordMigrationRemoval(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;recorded:boolean;capture:ManagedCaptureObservation} {
   requirePlatformWriteBoundary();
-  let current=platformSecurityScope(()=>{validateJournal?.();return validateRemovalRecord(journal);});
+  let current=(()=>{validateJournal?.();return validateRemovalRecord(journal);})();
   let removed=false;
   if(lstatSync(current.layout.root,{throwIfNoEntry:false})){
     requirePlatformWriteBoundary();rmdirSync(current.layout.root);syncDirectory(path.dirname(current.layout.root));removed=true;
-    // rmdir invalidates the actual security scope. Recheck the retained payloads,
+    // rmdir changes the filesystem. Recheck the retained payloads,
     // roots, Store, capture and history before admitting the second subeffect.
-    current=platformSecurityScope(()=>{validateJournal?.();return validateRemovalRecord(journal);});
+    current=(()=>{validateJournal?.();return validateRemovalRecord(journal);})();
   }
   if(!current.recorded){
     requirePlatformWriteBoundary();
@@ -393,22 +380,20 @@ export function recordMigrationRemoval(journal:ManagedStepJournal,validateJourna
 /** Read-only completion proof, also required inside the journal checkpoint's
  * fresh validation batch. A missing directory without the event is incomplete. */
 export function migrationRemovalRecorded(journal:ManagedStepJournal):boolean {
-  return platformSecurityScope(()=>validateRemovalRecord(journal).recorded);
+  return validateRemovalRecord(journal).recorded;
 }
 /** After the record-removal checkpoint the unresolved intent is gone. Later
  * steps still require this operation's lifecycle event in freshly owned history,
  * in addition to the full remaining-set and absent-directory verification. */
 export function migrationRemovalComplete(journal:ManagedStepJournal):boolean {
-  return platformSecurityScope(()=>{
-    const layout=validateMigrationRemoval(journal),m=journal.migration;
-    need(layout.completed>=m.plan.findIndex(s=>s.name==='record-removal'),'managed-step-conflict');
-    const events=removalHistory(journal).text.split('\n').flatMap(line=>{
-      try{const event=JSON.parse(line);return event?.action==='remove-capture'&&event.installId===m.legacyInstallId&&event.operationId===m.operationId?[event]:[];}
-      catch{return [];}
-    });
-    return events.length===1&&typeof events[0].at==='string'&&Number.isFinite(Date.parse(events[0].at))&&
-      new Date(events[0].at).toISOString()===events[0].at;
+  const layout=validateMigrationRemoval(journal),m=journal.migration;
+  need(layout.completed>=m.plan.findIndex(s=>s.name==='record-removal'),'managed-step-conflict');
+  const events=removalHistory(journal).text.split('\n').flatMap(line=>{
+    try{const event=JSON.parse(line);return event?.action==='remove-capture'&&event.installId===m.legacyInstallId&&event.operationId===m.operationId?[event]:[];}
+    catch{return [];}
   });
+  return events.length===1&&typeof events[0].at==='string'&&Number.isFinite(Date.parse(events[0].at))&&
+    new Date(events[0].at).toISOString()===events[0].at;
 }
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}
 /** Retained sources are candidates, not currently selected target assertions. */
@@ -423,7 +408,7 @@ function matchesRetainedSource(source:Binding['source'],targets:Targets) {
 }
 export type Action='inspect'|'dry-run'|'install'|'update'|'disable'|'enable'|'remove-capture';
 export function lifecycle(action:Action,targets:Targets,payload?:Payload, testBoundary?:(name:'release-staged'|'before-activation'|'after-activation')=>void) {
-  try{return platformSecurityScope(()=>lifecycleInner(action,targets,payload,testBoundary));}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
+  try{return lifecycleInner(action,targets,payload,testBoundary);}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
 }
 function lifecycleInner(action:Action,targets:Targets,payload?:Payload, testBoundary?:(name:'release-staged'|'before-activation'|'after-activation')=>void) {
   const info=inspect(targets);

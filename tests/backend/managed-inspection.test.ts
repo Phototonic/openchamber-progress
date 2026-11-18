@@ -221,7 +221,7 @@ test('oversized discovered sets and history refuse without a truncated review',(
   }
 });
 
-test('each inspection stage and review revalidation charge at most six security launches',{skip:process.platform==='win32'},async t=>{
+test('each inspection stage and review revalidation start no process on the Windows path',{skip:process.platform==='win32'},async t=>{
   const original=process.env.SystemRoot;
   try{for(const kind of ['manifest','upgrade','receipt','fresh','fresh-retained'] as const){
     const fresh=kind==='fresh'||kind==='fresh-retained',f=fresh?freshFixture():fixture(kind);try{
@@ -236,26 +236,21 @@ test('each inspection stage and review revalidation charge at most six security 
       const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
       assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);fs.writeFileSync(platformFile,text);
       let spawns=0;
-      const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
-        spawns++;const input=JSON.parse(String(options.input));assert.deepEqual(input.create,[]);
-        return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
-      }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+      const mock=t.mock.method(cp,'spawnSync',(()=>{spawns++;throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
       try{
         const platform=await import(pathToFileURL(platformFile).href) as typeof import('../../shared/platform.ts');
         const inspection=await import(pathToFileURL(path.join(source,'setup/managed-inspection.ts')).href) as typeof import('../../setup/managed-inspection.ts');
-        const counts:number[]=[];
         const run=<T>(call:()=>T)=>{
-          spawns=0;const budget=new platform.PlatformRequestBudget();
+          const budget=new platform.PlatformRequestBudget();
           const result=platform.withPlatformRequestBudget(budget,call);
-          assert.equal(budget.securitySpawns,spawns);assert.ok(spawns<=6);counts.push(spawns);return result;
+          assert.equal(spawns,0);return result;
         };
         const session=fresh?inspectFresh(f,freshRoot,(...args)=>run(()=>inspection.inspectManagedFreshStep(...args))):
           inspectAll(f,(...args)=>run(()=>inspection.inspectManagedStep(...args)));
-        spawns=0;const budget=new platform.PlatformRequestBudget();
+        const budget=new platform.PlatformRequestBudget();
         platform.withPlatformRequestBudget(budget,()=>fresh?inspection.validateManagedFreshInspectionReview(f.env,payload,session as ManagedFreshInspectionSession):
           inspection.validateManagedInspectionReview(f.env,payload,session as ManagedInspectionSession));
-        assert.equal(budget.securitySpawns,spawns);assert.ok(spawns<=6);
-        t.diagnostic(JSON.stringify({kind,stages:counts,reviewAdmission:spawns}));
+        assert.equal(spawns,0);
       }finally{mock.mock.restore();syncBuiltinESMExports();}
     }finally{f.cleanup();}
   }}finally{if(original===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=original;}

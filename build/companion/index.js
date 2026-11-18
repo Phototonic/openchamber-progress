@@ -24234,18 +24234,15 @@ import path2 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // shared/platform.ts
-import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
 var windows = process.platform === "win32";
 
 class PlatformError2 extends Error {
   code;
-  reason;
-  constructor(code, reason) {
+  constructor(code) {
     super(code);
     this.code = code;
-    this.reason = reason;
   }
 }
 function writerTarget(kind, value3) {
@@ -24262,36 +24259,11 @@ function writerTarget(kind, value3) {
   return `${kind}:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
 }
 var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
-var cache2 = new Map;
-var reparseCache = new Map;
-var scope3 = 0;
+var STEP_HEADROOM_MS = 2500;
 var requestBudget;
 var writerTargets;
-function platformSecurityScope(run3) {
-  const finish = beginPlatformSecurityScope();
-  try {
-    return run3();
-  } finally {
-    finish();
-  }
-}
-function beginPlatformSecurityScope() {
-  if (!scope3) {
-    cache2.clear();
-    reparseCache.clear();
-  }
-  scope3++;
-  return () => {
-    if (!--scope3) {
-      cache2.clear();
-      reparseCache.clear();
-    }
-  };
-}
-function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
-  if (scope3)
-    throw new PlatformError2("managed-step-conflict");
-  requestBudget?.require(spawns, headroomMs);
+function requirePlatformWriteBoundary(headroomMs = 0) {
+  requestBudget?.require(headroomMs);
 }
 function requirePlatformStoreFence(database) {
   requestBudget?.require();
@@ -24299,228 +24271,14 @@ function requirePlatformStoreFence(database) {
   if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
     throw new PlatformError2("managed-step-conflict");
 }
-var windowsPowerShellBootstrap = String.raw`
-$env:PSModulePath = $PSHOME + '\Modules'
-$PSModuleAutoLoadingPreference = 'None'
-Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
-`;
-var windowsDaclValidationScript = String.raw`
-function Test-OrdinaryDacl($binary) {
-  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
-  if ($null -eq $raw.DiscretionaryAcl) { return $false }
-  foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed, [Security.AccessControl.AceQualifier]::AccessDenied) -or ([int]$ace.AceFlags -band 224)) { return $false }
-  }
-  return $true
-}
-function Test-TrustedAncestorOwner($owner, $currentUser) {
-  # Owners can rewrite a DACL even without an explicit write ACE. The service
-  # SID below is Windows Modules Installer (TrustedInstaller), ancestor-only.
-  return $owner -in @($currentUser, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-}
-`;
-var securityScript = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-${windowsPowerShellBootstrap}
-${windowsDaclValidationScript}
-$writerMutex = $null
-$writerOwned = $false
-$failureCode = 'windows-security-unavailable'
-try {
-  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  if ($request.fence) {
-    $failureCode = 'managed-step-unsettled'
-    # The main service holds the TCP writer slot until its Node worker exits.
-    # This account-scoped mutex additionally fences a security child that might
-    # outlive that service. Obtain it BEFORE checking the current slot nonce.
-    # Every new writer's first fresh query crosses this barrier before effects.
-    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
-    try { $writerOwned = $writerMutex.WaitOne(15000) }
-    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
-      $client.Connect('127.0.0.1', [int]$request.fence.port)
-      $stream = $client.GetStream()
-      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
-      $stream.Write($bytes, 0, $bytes.Length)
-      $reply = [byte[]]::new(3); $offset = 0
-      while ($offset -lt 3) {
-        $count = $stream.Read($reply, $offset, 3 - $offset)
-        if ($count -le 0) { throw 'writer-unsettled' }
-        $offset += $count
-      }
-      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
-    } finally { $client.Dispose() }
-    $failureCode = 'windows-security-unavailable'
-  }
-  $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
-  if ($request.create) {
-    foreach ($target in $request.create) {
-      if ($request.exclusive -and [IO.Directory]::Exists($target)) { throw 'creation-conflict' }
-      if (-not [IO.Directory]::Exists($target)) {
-        $security = [Security.AccessControl.DirectorySecurity]::new()
-        $security.SetOwner($user)
-        $security.SetAccessRuleProtection($true, $false)
-        foreach ($value in $allowed) {
-          $sid = [Security.Principal.SecurityIdentifier]::new($value)
-          $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-          $security.AddAccessRule($rule)
-        }
-        [void][IO.Directory]::CreateDirectory($target, $security)
-      }
-    }
-  }
-  $results = @()
-  foreach ($target in $request.paths) {
-    $owned = $false; $private = $false; $reparse = $true; $unsafeParent = $true
-    try {
-      $attributes = [IO.File]::GetAttributes($target)
-      $reparse = [bool]($attributes -band [IO.FileAttributes]::ReparsePoint)
-      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($target) }
-      else { $acl = [IO.File]::GetAccessControl($target) }
-      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-      $owned = $owner -eq $user.Value
-      $ordinary = Test-OrdinaryDacl ($acl.GetSecurityDescriptorBinaryForm())
-      $private = $ordinary -and $owned -and $acl.AreAccessRulesCanonical -and -not $reparse
-      $unsafeParent = -not $ordinary -or -not (Test-TrustedAncestorOwner $owner $user.Value)
-      $granted = $false
-      $full = [Security.AccessControl.FileSystemRights]::FullControl
-      $replace = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000
-      if ($ordinary) { foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin $allowed) { $private = $false }
-        if (($attributes -band [IO.FileAttributes]::Directory) -and $rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $replace)) { $unsafeParent = $true }
-        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq $user.Value -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $full) -eq $full) { $granted = $true }
-      } }
-      $private = $private -and $granted
-    } catch { $private = $false; $unsafeParent = $true }
-    $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
-  }
-  [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
-finally {
-  if ($writerOwned) { $writerMutex.ReleaseMutex() }
-  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
-}
-`;
-function snapshot2(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(":");
-}
-function objectIdentity(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.birthtimeNs].join(":");
-}
-function reparsePaths(paths, parents) {
-  const fresh = new Map;
-  const pending = paths.filter((p) => !scope3 || reparseCache.get(p)?.identity !== objectIdentity(p));
-  const before = pending.map(objectIdentity), stats = pending.map(snapshot2), results2 = pending.length ? windowsSecurityQuery(pending) : [];
-  pending.forEach((p, i) => {
-    const after = objectIdentity(p);
-    if (after !== before[i])
-      throw new PlatformError2("path-unverified");
-    const result3 = { identity: after, reparse: results2[i].reparse, unsafeParent: results2[i].unsafeParent };
-    fresh.set(p, result3);
-    if (reparseCache.size < 1024 || reparseCache.has(p))
-      reparseCache.set(p, result3);
-    if (snapshot2(p) === stats[i] && (cache2.size < 1024 || cache2.has(p)))
-      cache2.set(p, { snapshot: stats[i], result: results2[i] });
-  });
-  if (paths.some((p) => parents.has(p) && (fresh.get(p) ?? reparseCache.get(p)).unsafeParent))
-    throw new PlatformError2("unsafe-parent");
-  return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
-}
-var securityQueryAttempted = false;
-function windowsSecurityQuery(paths, create2 = [], spawn = spawnSync, exclusive = false) {
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
-    throw new PlatformError2("windows-security-unavailable");
-  const env = {};
-  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA"]) {
-    if (process.env[key])
-      env[key] = process.env[key];
-  }
-  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create: create2, ...exclusive ? { exclusive: true } : {}, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
-  const firstQuery = !securityQueryAttempted;
-  const run3 = () => {
-    const timeout3 = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
-    try {
-      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: timeout3, maxBuffer: 1024 * 1024 });
-    } finally {
-      securityQueryAttempted = true;
-    }
-  };
-  let child;
-  child = run3();
-  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run3();
-  requestBudget?.require();
-  if (requestBudget && child.error?.code === "ETIMEDOUT")
-    throw new PlatformError2("managed-step-deadline", "timeout");
-  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
-    let failure;
-    try {
-      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-    } catch {}
-    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
-      throw new PlatformError2("managed-step-unsettled", "exit");
-  }
-  if (child.error || child.status !== 0)
-    throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
-  let results2;
-  try {
-    results2 = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-  } catch {
-    throw new PlatformError2("windows-security-unavailable");
-  }
-  if (!Array.isArray(results2) || results2.length !== paths.length || results2.some((r) => !r || ["owned", "private", "reparse", "unsafeParent"].some((k) => typeof r[k] !== "boolean")))
-    throw new PlatformError2("windows-security-unavailable");
-  return results2;
-}
-function windowsSecurity(paths) {
-  const pending = new Map;
-  const fresh = new Map;
-  for (const file of paths) {
-    const stat = snapshot2(file);
-    if (!scope3 || cache2.get(file)?.snapshot !== stat)
-      pending.set(file, stat);
-  }
-  const files = [...pending.keys()];
-  if (files.length) {
-    const results2 = windowsSecurityQuery(files);
-    files.forEach((file, i) => {
-      const after = snapshot2(file), before = pending.get(file);
-      if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
-        throw new PlatformError2("path-unverified");
-      fresh.set(file, results2[i]);
-      if (reparseCache.size < 1024 || reparseCache.has(file))
-        reparseCache.set(file, { identity: objectIdentity(file), reparse: results2[i].reparse, unsafeParent: results2[i].unsafeParent });
-      if (after === before) {
-        if (cache2.size < 1024 || cache2.has(file))
-          cache2.set(file, { snapshot: before, result: results2[i] });
-      } else
-        cache2.delete(file);
-    });
-  }
-  return paths.map((file) => fresh.get(file) ?? cache2.get(file).result);
-}
 function windowsPath(value3, allowMissing = false) {
   return windowsPaths([value3], allowMissing)[0];
 }
 function windowsPaths(values2, allowMissing = false) {
-  return platformSecurityScope(() => windowsPathsInner(values2, allowMissing));
+  return windowsPathsInner(values2, allowMissing);
 }
-function windowsDocumentPath(value3, allowMissing = false) {
-  return platformSecurityScope(() => windowsPathsInner([value3], allowMissing, false)[0]);
-}
-function windowsPathsInner(values2, allowMissing = false, privateState = true) {
-  const ancestors = new Set, parents = new Set;
-  const resolved = values2.map((value3) => {
+function windowsPathsInner(values2, allowMissing = false) {
+  return values2.map((value3) => {
     if (value3.includes("\x00") || value3.length > 4096 || !/^[a-z]:[\\/]/i.test(value3))
       throw new PlatformError2("path-unverified");
     const normalized = value3.replaceAll("/", "\\");
@@ -24542,42 +24300,34 @@ function windowsPathsInner(values2, allowMissing = false, privateState = true) {
       current = parent;
     }
     for (let p = current;; p = path.dirname(p)) {
-      const stat = lstatSync(p);
-      if (stat.isSymbolicLink())
+      if (lstatSync(p).isSymbolicLink())
         throw new PlatformError2("symlink-escape");
-      ancestors.add(p);
-      if (path.dirname(p) === p)
-        break;
-    }
-    for (let p = tail.length ? current : path.dirname(current);; p = path.dirname(p)) {
-      parents.add(p);
       if (path.dirname(p) === p)
         break;
     }
     return path.join(realpathSync.native(current), ...tail);
   });
-  if (reparsePaths([...ancestors], privateState ? parents : new Set))
-    throw new PlatformError2("symlink-escape");
-  return resolved;
 }
 function isOwned(file) {
-  return windows ? windowsSecurity([file])[0].owned : lstatSync(file).uid === process.getuid?.();
+  if (windows) {
+    lstatSync(file);
+    return true;
+  }
+  return lstatSync(file).uid === process.getuid?.();
 }
 function sameWindowsDirectory(left, right) {
   return sameWindowsObject(left, right, true);
 }
 function sameWindowsObject(left, right, directory = false) {
-  return platformSecurityScope(() => {
-    const [a, b] = windowsPaths([left, right]);
-    const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
-    return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
-  });
+  const [a, b] = windowsPaths([left, right]);
+  const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
+  return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
 }
 function privatePaths(files) {
   return windows ? files.every((file) => {
     const s = lstatSync(file);
-    return !s.isFile() || s.nlink === 1;
-  }) && windowsSecurity(files).every((s) => s.private) : files.every((file) => {
+    return !s.isSymbolicLink() && (!s.isFile() || s.nlink === 1);
+  }) : files.every((file) => {
     const s = lstatSync(file);
     return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
   });
@@ -24778,9 +24528,6 @@ function validRequest(value3, hint) {
 
 // shared/binding.ts
 function readBinding(file) {
-  return platformSecurityScope(() => readBindingInner(file));
-}
-function readBindingInner(file) {
   const p = file instanceof URL ? file : path2.resolve(file);
   const stat = lstatSync2(p);
   requireProgress(!stat.isSymbolicLink() && stat.isFile() && (windows ? sameWindowsObject(windowsPath(file instanceof URL ? fileURLToPath(file) : file), realpathSync2.native(p)) && privatePaths([realpathSync2.native(p)]) : stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
@@ -24833,42 +24580,35 @@ function managedPath(value3, missing2 = false) {
   return value3;
 }
 function managedSourceRoots(env = process.env) {
-  return platformSecurityScope(() => {
-    need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
-    if (windows) {
-      const home2 = env.HOME ?? homedir();
-      const config = env.XDG_CONFIG_HOME ?? path3.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path3.join(home2, ".local/share");
-      const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
-      const roots = windowsPaths([...inputs, path3.join(config, "opencode"), path3.join(data, "opencode")], true);
-      return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
-    }
-    const home = () => managedPath(env.HOME ?? homedir(), true);
-    const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path3.join(home(), fallback), true);
-    return {
-      configRoot: managedPath(path3.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
-      dataRoot: managedPath(path3.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
-    };
-  });
+  need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+  if (windows) {
+    const home2 = env.HOME ?? homedir();
+    const config = env.XDG_CONFIG_HOME ?? path3.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path3.join(home2, ".local/share");
+    const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
+    const roots = windowsPaths([...inputs, path3.join(config, "opencode"), path3.join(data, "opencode")], true);
+    return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
+  }
+  const home = () => managedPath(env.HOME ?? homedir(), true);
+  const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path3.join(home(), fallback), true);
+  return {
+    configRoot: managedPath(path3.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
+    dataRoot: managedPath(path3.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
+  };
 }
 function managedBindingFile(env = process.env) {
-  return platformSecurityScope(() => {
-    const { dataRoot } = managedSourceRoots(env);
-    const proposed = path3.join(dataRoot, "agent-progress-managed");
-    const root = windows ? windowsPaths([proposed, path3.join(proposed, ".ownership.json"), path3.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
-    const stat = lstatSync3(root, { throwIfNoEntry: false });
-    if (stat) {
-      need(stat.isDirectory() && privatePaths([root]));
-      const marker = path3.join(root, ".ownership.json");
-      const m = lstatSync3(marker, { throwIfNoEntry: false });
-      need(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync2(marker, "utf8") === markerText);
-    }
-    return path3.join(root, "progress-binding.json");
-  });
+  const { dataRoot } = managedSourceRoots(env);
+  const proposed = path3.join(dataRoot, "agent-progress-managed");
+  const root = windows ? windowsPaths([proposed, path3.join(proposed, ".ownership.json"), path3.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
+  const stat = lstatSync3(root, { throwIfNoEntry: false });
+  if (stat) {
+    need(stat.isDirectory() && privatePaths([root]));
+    const marker = path3.join(root, ".ownership.json");
+    const m = lstatSync3(marker, { throwIfNoEntry: false });
+    need(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync2(marker, "utf8") === markerText);
+  }
+  return path3.join(root, "progress-binding.json");
 }
 function readManagedBinding(env = process.env) {
-  return platformSecurityScope(() => readManagedBindingInner(env));
-}
-function readManagedBindingInner(env) {
   const file = managedBindingFile(env);
   if (!lstatSync3(file, { throwIfNoEntry: false }))
     return;
@@ -24888,7 +24628,7 @@ function readManagedBindingInner(env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.1";
+var RELEASE = "1.5.2";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -25030,9 +24770,6 @@ function preflight(db, action, r, installed) {
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
-  return platformSecurityScope(() => backupPrivate(db, file));
-}
-function backupPrivate(db, file) {
   const parent = path4.dirname(file);
   const owned = lstatSync4(parent);
   requireProgress(owned.isDirectory() && !owned.isSymbolicLink() && privatePaths([parent]), "binding");
@@ -25572,6 +25309,10 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
     const cleanup = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
     if (["archived", "deleted"].includes(cleanup))
       continue;
+    if (["pending", "reserved"].includes(d.state) && (d.state === "reserved" !== (a.dispatch !== null) || !a.taskIds.length)) {
+      result3.complete = false;
+      continue;
+    }
     const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
     if (orphaned && cleanup !== "visible") {
       result3.complete = false;
@@ -26219,12 +25960,12 @@ function readRuns(db, binding, r, now3 = Date.now()) {
     out.coverage.reasons.push(job && ["partial", "failed"].includes(String(job.state)) ? "partial-history" : "history-not-reconciled");
   if (f?.loss === 1)
     out.coverage.reasons.push("capture-loss");
-  const scope4 = scopedParents(db, r.source, r.root);
-  if (!scope4.complete)
+  const scope3 = scopedParents(db, r.source, r.root);
+  if (!scope3.complete)
     out.coverage.reasons.push("traversal-limit");
-  const placeholders = scope4.ids.map(() => "?").join(",");
+  const placeholders = scope3.ids.map(() => "?").join(",");
   const where = `source=? AND parent IN (${placeholders})`;
-  const args2 = [r.source, ...scope4.ids];
+  const args2 = [r.source, ...scope3.ids];
   const counts = db.prepare(`SELECT count(DISTINCT child) AS children,sum(message IS NOT NULL) AS runs,sum(message IS NULL) AS history,
     sum(json_extract(payload,'$.ran.state')='running') AS running,sum(json_extract(payload,'$.ran.state')='succeeded') AS succeeded,
     sum(json_extract(payload,'$.ran.state')='failed') AS failed,sum(json_extract(payload,'$.ran.state')='interrupted') AS interrupted,sum(json_extract(payload,'$.ran.state')='unknown') AS unknown FROM runs_rows WHERE ${where}`).get(...args2);
@@ -26256,14 +25997,14 @@ function readRuns(db, binding, r, now3 = Date.now()) {
     FROM ranked AS runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args2, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
   out.data = rows.slice(0, RUN_LIMITS.page).map((v) => ({ ...row(v.payload), latestForChild: v.latest === 1 }));
   if (r.plan) {
-    const snapshot3 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
+    const snapshot2 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
       AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
       json_object('revision',json_extract(snapshot,'$.revision'),'links',json_extract(snapshot,'$.links'),
         'items',json((SELECT json_group_array(json_object('id',json_extract(i.value,'$.id'),'kind',json_extract(i.value,'$.kind'),
           'status',json_extract(i.value,'$.status'),'assigneeSessionId',json_extract(i.value,'$.assigneeSessionId')))
           FROM json_each(snapshot,'$.items') i))) END AS snapshot FROM plans WHERE source=? AND id=?`).get(r.source, r.plan);
-    requireProgress(typeof snapshot3?.snapshot === "string", "corrupt");
-    const p = JSON.parse(snapshot3.snapshot);
+    requireProgress(typeof snapshot2?.snapshot === "string", "corrupt");
+    const p = JSON.parse(snapshot2.snapshot);
     requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");
     for (const run3 of out.data) {
       const linked = p.links.find((l) => l.sessionId === run3.childSessionId);
@@ -26526,32 +26267,32 @@ function compareTasks(before, after) {
   return changes;
 }
 function endpointCounts(before, after) {
-  const scope4 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const scope3 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
   const a = tasks(before), b = tasks(after);
   for (const id2 of new Set([...a.keys(), ...b.keys()])) {
     const old = a.get(id2), next = b.get(id2);
     if (!old) {
       if (next.status !== "skipped")
-        scope4.addedCounted++;
+        scope3.addedCounted++;
       if (next.status === "done")
-        scope4.addedDone++;
+        scope3.addedDone++;
     } else if (!next) {
       if (old.status !== "skipped")
-        scope4.removedCounted++;
+        scope3.removedCounted++;
       if (old.status === "done")
-        scope4.removedDone++;
+        scope3.removedDone++;
     } else {
       if (old.status !== "skipped" && next.status === "skipped")
-        scope4.skipped++;
+        scope3.skipped++;
       if (old.status === "skipped" && next.status !== "skipped")
-        scope4.unskipped++;
+        scope3.unskipped++;
       if (old.status !== "done" && next.status === "done")
-        scope4.completed++;
+        scope3.completed++;
       if (old.status === "done" && next.status !== "done")
-        scope4.reopened++;
+        scope3.reopened++;
     }
   }
-  return { before: countItems(before.items), after: countItems(after.items), scope: scope4 };
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope3 };
 }
 function aggregatePair(result3, before, after, target) {
   for (const { id: id2, reference } of compareTasks(before, after)) {
@@ -26679,8 +26420,8 @@ function disjointLink(previous, next, c, assigned) {
   const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
   const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
   requireProgress(canonical(oldFacts) === canonical(newFacts), "conflict");
-  const scope4 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
-  requireProgress(scope4.size > 0 && assigned.every((id2) => !scope4.has(id2)), "conflict");
+  const scope3 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
+  requireProgress(scope3.size > 0 && assigned.every((id2) => !scope3.has(id2)), "conflict");
   requireProgress(canonical(next.links) === canonical([...previous.links.filter((l) => l.sessionId !== child), ...newLink ? [newLink] : []]), "conflict");
   const bound = next.items.filter((i) => i.assignmentBinding?.boundRevision === next.revision);
   if (bound.length) {
@@ -26697,7 +26438,7 @@ function disjointLink(previous, next, c, assigned) {
     const a = previous.items[index2], b = next.items[index2];
     taskFacts(a, previous);
     const expected = structuredClone(a);
-    if (scope4.has(a.id)) {
+    if (scope3.has(a.id)) {
       if (newLink?.itemIds.includes(a.id))
         expected.assigneeSessionId = child;
       else
@@ -26744,11 +26485,11 @@ function delegationRevision(db, binding, intent) {
   if (revision === r.rev)
     return revision;
   requireProgress(revision > r.rev && revision - r.rev < DELEGATION_PROOF_LIMITS.snapshots, "conflict");
-  const snapshot3 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
+  const snapshot2 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
   const contribution = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END AS payload FROM contributions WHERE source=? AND plan=? AND revision=?");
   let previous;
   for (let rev = r.rev;rev <= revision; rev++) {
-    const next = plan(admit(snapshot3.get(DELEGATION_PROOF_LIMITS.bytes - bytes2, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
+    const next = plan(admit(snapshot2.get(DELEGATION_PROOF_LIMITS.bytes - bytes2, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
     requireProgress(next.structuralRevision === current.structuralRevision, "conflict");
     if (previous) {
       const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes2, source, r.plan, rev)?.payload);
@@ -27410,7 +27151,6 @@ class Store {
   constructor(file, options2 = {}, fresh) {
     this.file = file;
     this.readOnly = options2.readOnly ?? false;
-    const finish = fresh ? () => {} : beginPlatformSecurityScope();
     try {
       if (fresh) {
         requirePlatformWriteBoundary();
@@ -27473,8 +27213,6 @@ class Store {
       if (e instanceof PlatformError2)
         throw e;
       throw storageError(e);
-    } finally {
-      finish();
     }
   }
   static createFresh(file, options2) {
@@ -27482,7 +27220,7 @@ class Store {
     requirePlatformStoreFence(file);
     requireProgress(identifier2(options2.storeId) && typeof options2.validate === "function", "binding");
     const parent = path5.dirname(file), sidecars = ["-journal", "-wal", "-shm"].map((s) => file + s);
-    const directory = platformSecurityScope(() => {
+    const directory = (() => {
       options2.validate();
       requireProgress(path5.isAbsolute(file) && path5.resolve(file) === file && path5.basename(file) === "progress.sqlite", "binding");
       if (windows)
@@ -27493,17 +27231,17 @@ class Store {
       requireProgress(stat.isDirectory() && !stat.isSymbolicLink() && privatePaths([parent]), "binding");
       requireProgress(![file, ...sidecars].some((p) => lstatSync5(p, { throwIfNoEntry: false })), "binding");
       return storeObject(stat);
-    });
-    requirePlatformWriteBoundary(3, 8500);
+    })();
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
     const fd = openSync3(file, "wx", 384);
     try {
       const reserved = storeObject(fstatSync(fd, { bigint: true }));
-      platformSecurityScope(() => {
+      {
         if (windows)
           windowsPaths([parent, file, ...sidecars], true);
         const stat = lstatSync5(file, { bigint: true });
         requireProgress(storeObject(lstatSync5(parent, { bigint: true })) === directory && storeObject(stat) === reserved && stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === 0n && privatePaths([parent, file]) && !sidecars.some((p) => lstatSync5(p, { throwIfNoEntry: false })), "binding");
-      });
+      }
       requirePlatformWriteBoundary();
       const store = new Store(file, {}, { token: freshStoreToken, storeId: options2.storeId, object: reserved });
       try {
@@ -27753,7 +27491,7 @@ class Store {
       let source = "", id2 = "";
       const installed = cleanupInstalled(this.db);
       const next = this.db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1");
-      const snapshot3 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
+      const snapshot2 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
       let exhausted = false;
       while (r.work.planSlots < 512 && checkpoint()) {
         const row2 = next.get(source, id2);
@@ -27777,7 +27515,7 @@ class Store {
           r.limited = true;
           break;
         }
-        const text = snapshot3.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id2)?.snapshot;
+        const text = snapshot2.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id2)?.snapshot;
         requireProgress(typeof text === "string", "corrupt");
         r.work.inputBytes += bytes2;
         let p;
@@ -28367,9 +28105,9 @@ class Store {
         else if (item.blocker)
           item.blocker.validAtRevision = p.revision;
       }
-      const snapshot3 = JSON.stringify(p);
-      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot3);
-      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot3, JSON.stringify(actor));
+      const snapshot2 = JSON.stringify(p);
+      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot2, JSON.stringify(actor));
       this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
       if (child)
         this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, child.sessionId, JSON.stringify(child));
@@ -28514,12 +28252,12 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
   try {
     await authorize(requested);
     const raw = path6.isAbsolute(reference) ? reference : directory + "\\" + reference;
-    const canonicalPath = platformSecurityScope(() => windowsDocumentPath(raw, true));
+    const canonicalPath = windowsPath(raw, true);
     await authorize(canonicalPath);
     if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
       return result3("moved", canonicalPath);
     const bound = lstatSync6(canonicalPath, { bigint: true });
-    if (platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+    if (windowsPath(raw) !== canonicalPath)
       return result3("changed-during-read");
     if (!bound.isFile() || bound.isSymbolicLink())
       return result3("non-text", canonicalPath);
@@ -28529,7 +28267,7 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     fd = openSync4(canonicalPath, constants.O_RDONLY);
     const before = fstatSync2(fd, { bigint: true });
     const current = lstatSync6(canonicalPath, { bigint: true });
-    if (!before.isFile() || before.ino === 0n || !unchanged(bound, before) || !unchanged(before, current) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+    if (!before.isFile() || before.ino === 0n || !unchanged(bound, before) || !unchanged(before, current) || windowsPath(raw) !== canonicalPath)
       return result3("changed-during-read");
     for (const [p, stat] of parents)
       if (!sameFile(stat, lstatSync6(p, { bigint: true })))
@@ -28545,7 +28283,7 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
     const after = fstatSync2(fd, { bigint: true }), still = lstatSync6(canonicalPath, { bigint: true });
-    if (!still.isFile() || still.isSymbolicLink() || !unchanged(before, after) || !unchanged(after, still) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+    if (!still.isFile() || still.isSymbolicLink() || !unchanged(before, after) || !unchanged(after, still) || windowsPath(raw) !== canonicalPath)
       return result3("changed-during-read");
     for (const [p, stat] of parents)
       if (!sameFile(stat, lstatSync6(p, { bigint: true })))
@@ -28577,6 +28315,7 @@ function activationFingerprint(binding, plugin, guidance) {
 
 // plugin/activation.ts
 import path7 from "node:path";
+import { createHash as createHash6 } from "node:crypto";
 
 // plugin/subagent-runs.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -28948,19 +28687,78 @@ var NOTE_TOOLS = ["write", "edit", "subagent", "linear_save_issue", "linear_save
 function noteText(reasons) {
   return reasons & PLAN ? "Agent Progress note (agent_progress_report): If this canonical plan is ready and not mirrored, start its real tasks and prerequisites with op=start; otherwise mirror only meaningful unreported state you own. This observation is not readiness, approval or a report." : reasons & DISPATCH ? "Agent Progress note (agent_progress_report): If you coordinate planned work without a mirror, start one with op=start; declare op=delegate before the next dispatch, or op=link for verified returned children. Already-current state needs no report; dispatch is not work start or assignment." : "Agent Progress note (agent_progress_report): If this is tracked plan work with meaningful unreported canonical state, mirror only work you own or are authorized to coordinate. A tracker update is not a progress report or evidence of work start, approval or completion.";
 }
-function notedResult(result3, text) {
-  const content = result3.content;
+function appended(content, text) {
   if (typeof content === "string")
-    return { ...result3, content: `${content}
+    return `${content}
 
-${text}` };
+${text}`;
   if (Array.isArray(content) && content.every((part) => record2(part) && (part.type === "text" && typeof part.text === "string" || part.type === "file" && typeof part.uri === "string" && typeof part.mime === "string"))) {
-    return { ...result3, content: [...content, { type: "text", text }] };
+    return [...content, { type: "text", text }];
   }
+}
+function notedResult(result3, text) {
+  const content = appended(result3.content, text);
+  if (content !== undefined)
+    return { ...result3, content };
 }
 function hintText(reasons) {
   return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
 }
+var CODE_MODE_TOOL = "execute";
+var restored = Symbol("agent-progress-note");
+function digest2(value3) {
+  const text = JSON.stringify(value3, function(name2, current) {
+    const original = this?.[name2];
+    if (original instanceof ArrayBuffer)
+      return { bytes: createHash6("sha256").update(new Uint8Array(original)).digest("hex") };
+    if (ArrayBuffer.isView(original))
+      return { bytes: createHash6("sha256").update(new Uint8Array(original.buffer, original.byteOffset, original.byteLength)).digest("hex") };
+    return current;
+  });
+  return createHash6("sha256").update(text ?? "").digest("hex").slice(0, 32);
+}
+function carrierAt(messages, index2, positional = false, keyed = true) {
+  if (!Array.isArray(messages))
+    return;
+  const message = messages[index2];
+  if (!record2(message) || !Array.isArray(message.content))
+    return;
+  const copy3 = (content) => {
+    const value3 = Object.assign(Object.create(Object.getPrototypeOf(message)), message, { content });
+    Object.defineProperty(value3, restored, { value: message });
+    return value3;
+  };
+  try {
+    if (message.role === "user") {
+      const id2 = !positional && boundedID(message.id) ? message.id : undefined;
+      return { index: index2, id: id2, key: !keyed ? "" : id2 !== undefined ? `user:${id2}` : `user:${index2}:${digest2(message.content)}`, apply: (text) => copy3([...message.content, { type: "text", text }]) };
+    }
+    if (message.role !== "tool")
+      return;
+    const at = message.content.findLastIndex((part2) => record2(part2) && part2.type === "tool-result");
+    const part = message.content[at], output = part?.result;
+    if (part?.name === CODE_MODE_TOOL || typeof part?.id !== "string" || !record2(output) || !(output.type === "text" ? typeof output.value === "string" : output.type === "content" && Array.isArray(output.value)))
+      return;
+    if (appended(output.value, "") === undefined)
+      return;
+    return { index: index2, key: keyed ? `tool:${index2}:${part.id}:${digest2(output)}` : "", apply: (text) => copy3(message.content.map((entry2, i) => i === at ? { ...part, result: { ...output, value: appended(output.value, text) } } : entry2)) };
+  } catch {}
+}
+function restoreNotes(messages) {
+  if (!Array.isArray(messages))
+    return;
+  for (let i = 0;i < messages.length; i++)
+    if (record2(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored))
+      messages[i] = messages[i][restored];
+}
+var CLEARED_REFUSAL = "Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.";
+var NOTE_SEPARATOR = `
+
+`;
+var MAX_NOTE_SESSIONS = 128;
+var MAX_NOTE_CARRIERS = 256;
+var MAX_NOTE_BYTES = 128 * 1024;
+var REFUSAL_HEADER = "## Delegation not applied";
 var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
 var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
 var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
@@ -29099,16 +28897,11 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
   const recent = new Set;
   const eligibility = new Map;
   const noted = new Set;
+  const memories = new Map;
   const owned = Symbol("agent-progress-section");
-  function section(hint, capsule = "", refusal = "") {
-    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
-
-${hintText(hint)}` : "") + (capsule ? `
-
-${capsule}` : "") + (refusal ? `
-
-${refusal}` : "") };
-    Object.defineProperty(part, owned, { value: { hint } });
+  function section() {
+    const part = { type: "text", text: ACTIVATION_GUIDANCE };
+    Object.defineProperty(part, owned, { value: true });
     return part;
   }
   const registrations = [];
@@ -29136,6 +28929,7 @@ ${refusal}` : "") };
       pending.clear();
       eligibility.clear();
       noted.clear();
+      memories.clear();
       disableEpoch++;
     }
     try {
@@ -29145,6 +28939,7 @@ ${refusal}` : "") };
     pending.clear();
     eligibility.clear();
     noted.clear();
+    memories.clear();
     retireRecovery();
     disableEpoch++;
     return false;
@@ -29199,6 +28994,7 @@ ${refusal}` : "") };
     recent.clear();
     eligibility.clear();
     noted.clear();
+    memories.clear();
     retireRecovery();
     replay.clear();
     await stopRecovery?.();
@@ -29258,12 +29054,13 @@ ${refusal}` : "") };
         for (let i = event.system.length - 1;i >= 0; i--)
           if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
             event.system.splice(i, 1);
+        restoreNotes(event.messages);
       };
       try {
+        restoreNotes(event.messages);
         for (let i = 0;i < event.system.length; i++)
-          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
-            event.system[i] = section(event.system[i][owned].hint);
-          }
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
+            event.system[i] = section();
         if (disposed) {
           removeOwned();
           return;
@@ -29300,8 +29097,15 @@ ${refusal}` : "") };
           return;
         }
         let capsule = "";
+        const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1, false, false) !== undefined;
+        const rearm = () => {
+          if (armed && compactions.get(sessionKey) === attempt)
+            attempt.pending = true;
+        };
+        if (!carried)
+          rearm();
         const assignedOnly = !armed && !!caller.parentID;
-        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
+        if (carried && (armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
           const controller = new AbortController;
           held = controller;
           const now3 = recovery.now ?? (() => performance.now());
@@ -29345,12 +29149,17 @@ ${refusal}` : "") };
           removeOwned();
           return;
         }
-        let refusal = "";
+        let refusal = "", refusalRead = "failed";
         try {
-          const selection = recovery?.refusals?.(event.sessionID);
-          if (selection?.sourceId === source.id && selection.sessionId === event.sessionID)
+          const selection = carried ? recovery?.refusals?.(event.sessionID) : undefined;
+          if (selection?.sourceId === source.id && selection.sessionId === event.sessionID) {
             refusal = delegationRefusalText(selection);
-        } catch {}
+            refusalRead = refusal ? "read" : "cleared";
+          }
+        } catch {
+          refusal = "";
+          refusalRead = "failed";
+        }
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
           removeOwned();
           return;
@@ -29361,17 +29170,98 @@ ${refusal}` : "") };
               effective.add(tool);
           }
         const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
-        if (existing !== -1) {
-          event.system[existing] = section(event.system[existing][owned].hint, capsule, refusal);
-          return;
-        }
-        const hint = (pending.get(sessionKey) ?? 0) & 7;
-        event.system.push(section(hint, capsule, refusal));
-        const remaining = (pending.get(sessionKey) ?? 0) & ~7;
-        if (remaining)
-          pending.set(sessionKey, remaining);
+        if (existing !== -1)
+          event.system[existing] = section();
         else
-          pending.delete(sessionKey);
+          event.system.push(section());
+        const hint = (pending.get(sessionKey) ?? 0) & 7;
+        const messages = event.messages;
+        restoreNotes(messages);
+        const current = memories.get(sessionKey);
+        const notes = new Map(current?.notes);
+        let { capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared } = current ?? {};
+        const ids = new Map;
+        if (Array.isArray(messages))
+          messages.forEach((message, i) => {
+            if (record2(message) && message.role === "user" && boundedID(message.id) && !ids.has(message.id))
+              ids.set(message.id, i);
+          });
+        const placed = new Map;
+        for (const note of notes.values()) {
+          const at = note.id === undefined ? note.index : record2(messages?.[note.index]) && messages[note.index].id === note.id ? note.index : ids.get(note.id) ?? -1;
+          const found = carrierAt(messages, at);
+          if (found?.key === note.key)
+            placed.set(note.key, found);
+        }
+        let latest2 = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
+        if (latest2?.id !== undefined && placed.has(latest2.key) && placed.get(latest2.key).index !== latest2.index)
+          latest2 = carrierAt(messages, messages.length - 1, true);
+        let consumed = false, recorded = false;
+        if (!latest2)
+          rearm();
+        else {
+          const due = [];
+          if (hint)
+            due.push(hintText(hint));
+          const standing = (last, text2) => !last || last.text !== text2 || !placed.has(last.key);
+          const capsuleDue = !!capsule && standing(lastCapsule, capsule);
+          if (capsuleDue)
+            due.push(capsule);
+          let refusalDue;
+          if (refusalRead === "read" && standing(lastRefusal, refusal))
+            refusalDue = refusal;
+          else if (refusalRead === "cleared" && lastReal && placed.has(lastReal.key) && !(lastCleared && placed.has(lastCleared.key)))
+            refusalDue = CLEARED_REFUSAL;
+          if (refusalDue !== undefined)
+            due.push(refusalDue);
+          const before = notes.get(latest2.key);
+          const text = [...before ? [before.text] : [], ...due.length ? [due.join(NOTE_SEPARATOR)] : []].join(NOTE_SEPARATOR);
+          if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
+            if (due.length) {
+              notes.delete(latest2.key);
+              notes.set(latest2.key, { key: latest2.key, id: latest2.id, index: latest2.index, text });
+              placed.set(latest2.key, latest2);
+              if (capsuleDue)
+                lastCapsule = { text: capsule, key: latest2.key };
+              if (refusalDue !== undefined) {
+                lastRefusal = { text: refusalDue, key: latest2.key };
+                if (refusalDue === CLEARED_REFUSAL)
+                  lastCleared = lastRefusal;
+                else if (refusalDue.startsWith(REFUSAL_HEADER)) {
+                  lastReal = lastRefusal;
+                  lastCleared = undefined;
+                }
+              }
+              recorded = true;
+            }
+            consumed = true;
+          } else
+            rearm();
+        }
+        let bytes2 = 0;
+        for (const note of notes.values())
+          bytes2 += Buffer.byteLength(note.text);
+        while (notes.size > MAX_NOTE_CARRIERS || bytes2 > MAX_NOTE_BYTES) {
+          const victim = [...notes.values()].find((note) => !placed.has(note.key)) ?? notes.values().next().value;
+          notes.delete(victim.key);
+          placed.delete(victim.key);
+          bytes2 -= Buffer.byteLength(victim.text);
+        }
+        for (const [noteKey, carrier] of placed)
+          messages[carrier.index] = carrier.apply(notes.get(noteKey).text);
+        if (current || recorded) {
+          memories.delete(sessionKey);
+          memories.set(sessionKey, { notes, capsule: lastCapsule, refusal: lastRefusal, real: lastReal, cleared: lastCleared });
+          if (memories.size > MAX_NOTE_SESSIONS)
+            memories.delete(memories.keys().next().value);
+        }
+        if (consumed) {
+          const remaining = (pending.get(sessionKey) ?? 0) & ~7;
+          if (remaining)
+            pending.set(sessionKey, remaining);
+          else
+            pending.delete(sessionKey);
+        }
       } catch {
         pending.delete(key(event.sessionID));
         eligibility.delete(key(event.sessionID));
@@ -29770,14 +29660,14 @@ Valid start (replace synthetic values with the real plan; task-2 requires task-1
 Load the agent-progress skill when writing, receiving or coordinating plans and before dispatching sub-agents: it has delegation, staging, handoff and blocker rules.
 Tracker updates are not Agent Progress reports. Mirror actionable structure at PLAN_READY handoff; review approval and owner approval are separate, existing canonical gates only. A write is not readiness, dispatch is not work start, and worker completion is not accepted handoff. Repeated guidance or already-current state needs no report. Never invent review tasks, infer progress or report automatically per turn.
 Read uses only op=read, one concrete plan ID and optional 0-based page; no oid/rev. Read current revision before updating and after compaction/conflict. Batch changes. Report only real same-plan prerequisites; omit dependencies when none are known, and retain still-needed links in full structural replacements. Source is optional; never manufacture a file; document capture still needs read permission.
-For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Finish successfully only when all actionable work is resolved.`;
+For parallel sub-agents, dispatch first then op=link each verified returned child, or op=delegate one at a time and wait for binding. A declaration is not assignment. Children report only explicitly assigned tasks after verified binding, on naturally occurring eligible contexts; restricted tools stay restricted. Needs-input keeps actual work pending/blocked. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. Before a handoff, and when a prerequisite finishes, read the current plan: once every prerequisite the task still lists is done, set the task you blocked this way back to working or pending, since an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds it; a still-listed skipped prerequisite counts as unfinished. Finish successfully only when all actionable work is resolved.`;
 var GUIDANCE = `${REPORT_CHECKLIST}
 Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
-Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
+Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. Before a handoff, and when a prerequisite finishes, read the current plan: once every prerequisite the task still lists is done, set the task you blocked this way back to working or pending, since an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds it; a still-listed skipped prerequisite counts as unfinished. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {

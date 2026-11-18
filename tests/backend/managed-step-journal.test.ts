@@ -6,7 +6,6 @@ import {syncBuiltinESMExports} from 'node:module';
 import {managedStepFixtures} from '../fixtures/managed-steps.ts';
 import {createFixtureBinding} from '../fixtures/managed.ts';
 import {canonical,digest,Store} from '../../shared/store.ts';
-import {platformSecurityScope} from '../../shared/platform.ts';
 import {publishPrivateJson} from '../../shared/managed-binding.ts';
 import {parseManagedStepJournal,managedTargetDigest,managedRequestDigest,managedJournalProgress,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
 import {readManagedStepJournal,writeManagedStepJournal,publishManagedStepIntent,validatePublishedManagedIntent,validateManagedJournalChange,migrationFile,readMigration} from '../../setup/managed-migration.ts';
@@ -171,7 +170,6 @@ test('private journal publication is no-clobber, compare-before-replace and read
     assert.deepEqual(readManagedStepJournal(f.env),next);
     assert.throws(()=>writeManagedStepJournal(f.env,control(f.journal,'paused'),f.journal),{code:'managed-step-conflict'});
     assert.throws(()=>readMigration(f.env),{code:'managed-migration-conflict'},'older reader fails closed');
-    assert.throws(()=>platformSecurityScope(()=>writeManagedStepJournal(f.env,control(next,'paused'),next)),{code:'managed-step-conflict'},'nested scopes do not clear outer authority');
   }finally{f.cleanup();}
 });
 

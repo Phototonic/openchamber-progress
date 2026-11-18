@@ -1,14 +1,11 @@
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { windows, windowsPath, windowsPaths, privatePaths, platformSecurityScope, sameWindowsDirectory, sameWindowsObject, isOwned } from './platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, sameWindowsDirectory, sameWindowsObject, isOwned } from './platform.ts';
 import { VERSION, requireProgress as need, type Source } from './progress.ts';
 import type { Store } from './store.ts';
 export interface Binding { protocolVersion: 2; schemaVersion: 2; installId: string; version: string; database: string; storeId: string; source: Source }
 export function readBinding(file: string | URL): Binding {
-  return platformSecurityScope(()=>readBindingInner(file));
-}
-function readBindingInner(file: string | URL): Binding {
   const p = file instanceof URL ? file : path.resolve(file);
   const stat = lstatSync(p); need(!stat.isSymbolicLink() && stat.isFile() && (windows?sameWindowsObject(windowsPath(file instanceof URL?fileURLToPath(file):file),realpathSync.native(p))&&privatePaths([realpathSync.native(p)]):stat.uid===process.getuid?.() && (stat.mode & 0o777) === 0o600), 'binding');
   const b = JSON.parse(readFileSync(p,'utf8')) as Binding;

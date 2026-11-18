@@ -573,3 +573,240 @@ test('remembered scopes cannot restore obsolete capture state or pretend their l
     } finally { a.stop(); }
   });
 });
+
+// Result pages, freshness replies and the selection: the production SearchController over the real service.
+type Departures = ReadonlyMap<string, number | null>;
+/** The plans numbered in `matching` carry the search word in their title; `total` plans are seeded. */
+function seedWord(b: Backend, matching: Iterable<number>, total: number) {
+  const hits = new Set(matching);
+  for (let n = 0; n < total; n++) b.f.seedPlan(libraryId(n), hits.has(n) ? `Zq plan ${n}` : 'Ordinary report', [{ id: 'T', title: 'Ordinary task', kind: 'task', status: 'pending' }]);
+}
+function resultPages(svc: SearchProxy, b: Backend, onGone?: (departures: Departures) => void) {
+  const gone: Departures[] = [];
+  let changes = 0;
+  const c = new SearchController({
+    service: (current) => ({ serviceRequest: (q) => (current() ? svc.serviceRequest(q) : Promise.reject(new Error('Retired read'))) }),
+    changed: () => { changes++; }, visible: () => true,
+    gone: (departures: Departures) => { gone.push(new Map(departures)); onGone?.(departures); },
+  } as ConstructorParameters<typeof SearchController>[0]);
+  const identity = { storeId: b.f.storeId, binding: { sourceId: b.f.alpha.id, verified: true } };
+  const idle = () => until(() => !!c.view() && !c.view()!.busy, 'search action finished');
+  let n = 0;
+  return {
+    c, gone, plain: { serviceRequest: svc.serviceRequest }, get changes() { return changes; },
+    async run(q: string) { c.submit(`pages-${++n}`, criteria({ q }), identity, EMPTY_LIVE); await idle(); return c.view()!; },
+    async more() { c.more(); await idle(); return c.view()!; },
+    /** A reused page is shown again: nothing has checked it since. */
+    revisit() { c.showPage(-1); c.showPage(1); return c.view()!; },
+  };
+}
+const planKeysOf = (c: SearchController) => [...new Map(c.view()!.page.hits.map(h => [h.plan.key, h.plan])).values()];
+
+test('a freshness reply for one page is never credited to the page that took its place', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 120 }, (_, n) => n), 120);
+    const p = resultPages(svc, b);
+    await p.run('Zq'); let v = await p.more();
+    assert.equal(v.page.number, 2); v = p.revisit();
+    assert.equal(v.page.checked, false);
+    const release = svc.hold('/v1/search-state');
+    const reading = p.c.revalidate(p.plain);
+    await until(() => svc.count('/v1/search-state') === 1, 'the reply for page 2 is held');
+    v = await p.more();
+    assert.equal(v.page.number, 3, 'Load more dropped page 1 and page 3 took its position');
+    release(); await reading; await settle();
+    assert.equal(p.c.view()!.page.checked, false, 'the reply was asked about page 2, not page 3');
+    await p.c.revalidate(p.plain);
+    assert.equal(p.c.view()!.page.checked, true, 'a reply that covered its own plans checks it');
+  });
+});
+
+test('a reply certifies a page only when it covered every plan the page shows; hits read after a page was checked leave it checked', async () => {
+  await withBackend(false, async (b, svc) => {
+    // Page 1 is full; page 2 gets one hit, and the next match lies beyond what one action can reach (640 plan slots).
+    seedWord(b, [...Array.from({ length: 50 }, (_, n) => n), 100, 750], 760);
+    {
+      const p = resultPages(svc, b);
+      await p.run('Zq'); let v = await p.more();
+      assert.deepEqual(v.page.hits.map(h => h.plan.id), [libraryId(100)], 'the page is part filled and the search paused');
+      p.revisit();
+      const base = svc.count('/v1/search-state');
+      const release = svc.hold('/v1/search-state');
+      const reading = p.c.revalidate(p.plain);
+      await until(() => svc.count('/v1/search-state') === base + 1, 'the reply for the shown plans is held');
+      v = await p.more();
+      assert.deepEqual(v.page.hits.map(h => h.plan.id), [libraryId(100), libraryId(750)], 'the running search appended a plan the reply cannot have covered');
+      release(); await reading;
+      assert.equal(p.c.view()!.page.checked, false, 'the reply did not cover the appended plan');
+      await p.c.revalidate(p.plain);
+      assert.equal(p.c.view()!.page.checked, true, 'the next reply covers both');
+    }
+    {
+      const p = resultPages(svc, b);
+      let v = await p.run('Zq');
+      assert.equal(v.page.checked, true, 'a new search starts checked, filled only by reads of that search');
+      v = await p.more(); p.revisit();
+      await p.c.revalidate(p.plain);
+      assert.equal(p.c.view()!.page.checked, true);
+      v = await p.more();
+      assert.deepEqual(v.page.hits.map(h => h.plan.id), [libraryId(100), libraryId(750)]);
+      assert.equal(v.page.checked, true, 'read from the service just now');
+    }
+  });
+});
+
+test('a page opened by Load more starts unchecked and stays so until a reply covers it, also after a failed read', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 80 }, (_, n) => n), 120);
+    const p = resultPages(svc, b);
+    let v = await p.run('Zq');
+    assert.equal(v.page.checked, true);
+    v = await p.more();
+    assert.equal(v.page.number, 2);
+    assert.equal(v.page.checked, false, 'a new page is not covered by the replies for the page before it');
+    const failing = { serviceRequest: async () => ({ status: 503, body: '{"error":"busy"}' }) };
+    assert.equal((await p.c.revalidate(failing)).state, 'failed');
+    assert.equal(p.c.view()!.page.checked, false, 'a failed read leaves it unchecked');
+    await p.c.revalidate(p.plain);
+    assert.equal(p.c.view()!.page.checked, true);
+  });
+});
+test('a Load more page that ends with no hit has nothing to check: no note and no freshness read', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 50 }, (_, n) => n), 120);
+    const p = resultPages(svc, b);
+    await p.run('Zq');
+    const reads = svc.count('/v1/search-state');
+    const v = await p.more();
+    assert.equal(v.page.hits.length, 0);
+    assert.equal(v.exhausted, true);
+    assert.equal(v.page.checked, true, 'an empty page reports no need to check');
+    assert.deepEqual(p.c.freshKeys(), []);
+    assert.deepEqual(await p.c.revalidate(p.plain), { state: 'retired' });
+    assert.equal(svc.count('/v1/search-state'), reads, 'no read was sent for it');
+  });
+});
+
+test('a cleanup in this frame retires a freshness reply held across it; one made in another frame does not', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 80 }, (_, n) => n), 120);
+    const p = resultPages(svc, b);
+    await p.run('Zq'); await p.more(); p.revisit();
+    const release = svc.hold('/v1/search-state');
+    const reading = p.c.revalidate(p.plain);
+    await until(() => svc.count('/v1/search-state') === 1, 'the reply is held');
+    p.c.retire();
+    release();
+    assert.deepEqual(await reading, { state: 'retired' });
+    assert.equal(p.c.view()!.page.checked, false, 'a reply from before the cleanup marks nothing checked');
+    // The selection keeps a plan the cleanup took out: the unchecked page is no evidence that it returned.
+    const plans = planKeysOf(p.c);
+    const selection = new cleanup.PlanSelection();
+    selection.reconcile('scope', plans, true, false); selection.selectAll();
+    selection.forget(new Map<string, number | null>([[plans[0].key, 1]]));
+    selection.reconcile('scope', plans, true, p.c.view()!.page.checked);
+    assert.equal(selection.has(plans[0].key), false, 'the departure is not cleared by the retired reply');
+  });
+});
+test('a plan archived from another frame still leaves the results and the selection through a reply held meanwhile', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 5 }, (_, n) => n), 10);
+    const p = resultPages(svc, b);
+    await p.run('Zq');
+    // The service answers when the read arrives; the reply is held on its way back to the frame.
+    await b.act('archive', libraryId(2));
+    const release = svc.hold('/v1/search-state');
+    const reading = p.c.revalidate(p.plain);
+    await until(() => svc.count('/v1/search-state') === 1, 'the reply is held');
+    release(); await reading;
+    assert.deepEqual(p.c.view()!.page.hits.map(h => h.plan.id), [0, 1, 3, 4].map(libraryId));
+    assert.equal(p.c.view()!.removed, 1);
+  });
+});
+
+test('a plan a freshness reply shows gone leaves the selection whichever page is shown, with the generation that showed it gone', async () => {
+  await withBackend(false, async (b, svc) => {
+    // One plan with 60 matching tasks: its hits span two result pages.
+    const tasks = Array.from({ length: 60 }, (_, n) => ({ id: `T${n}`, title: `Zq task ${n}`, kind: 'task' as const, status: 'pending' as const }));
+    b.f.seedPlan('P-span', 'Spanning plan', tasks);
+    // Finished in two writes (a request changes at most 50 tasks), so cleanup can act on it.
+    for (let n = 0; n < tasks.length; n += 50) b.f.apply('P-span', { op: 'change', changes: tasks.slice(n, n + 50).map(t => ({ id: t.id, status: 'done' })) });
+    b.f.apply('P-span', { op: 'finish', outcome: 'finished' });
+    const p = resultPages(svc, b);
+    await p.run('Zq'); await p.more();
+    assert.equal(p.c.view()!.page.number, 2);
+    const span = planKeysOf(p.c)[0];
+    const selection = new cleanup.PlanSelection();
+    selection.reconcile('scope', [span as never], true); selection.mode = true; selection.toggle(span as never);
+    assert.equal(selection.count, 1);
+    // Another frame archives the plan; the reply for page 2 shows it, and arrives after the person went back to page 1.
+    await b.act('archive', 'P-span');
+    const release = svc.hold('/v1/search-state');
+    const reading = p.c.revalidate(p.plain);
+    await until(() => svc.count('/v1/search-state') === 1, 'the reply for page 2 is held');
+    p.c.showPage(-1);
+    assert.equal(p.c.view()!.page.number, 1);
+    const generation = b.f.store.detail(b.f.alpha.id, 'P-span').plan.cleanup?.revision;
+    assert.ok(generation && generation > 0);
+    release(); await reading;
+    assert.deepEqual(p.gone.map(g => [...g]), [[[span.key, generation]]], 'the host is told, with the generation of the row that showed the plan archived');
+    for (const g of p.gone) selection.forget(g);
+    assert.equal(selection.count, 0, 'the selected count dropped though page 1 was the page shown');
+  });
+});
+test('a plan a reply shows deleted leaves the selection with no generation to compare', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, [0, 1], 4);
+    const p = resultPages(svc, b);
+    await p.run('Zq');
+    const gone = planKeysOf(p.c)[0];
+    await b.act('delete', libraryId(0));
+    await p.c.revalidate(p.plain);
+    assert.deepEqual(p.gone.map(g => [...g]), [[[gone.key, null]]]);
+  });
+});
+test('a plan archived elsewhere and restored elsewhere is counted again by the next action', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, [0, 1], 4);
+    const p = resultPages(svc, b);
+    await p.run('Zq');
+    const plans = planKeysOf(p.c);
+    const selection = new cleanup.PlanSelection();
+    selection.reconcile('scope', plans as never, true); selection.selectAll();
+    await b.act('archive', libraryId(0));
+    await p.c.revalidate(p.plain);
+    const generation = b.f.store.detail(b.f.alpha.id, libraryId(0)).plan.cleanup!.revision;
+    for (const g of p.gone) selection.forget(g);
+    assert.equal(selection.has(plans[0].key), false, 'the selection forgot it');
+    const view = (revision: number) => ({ ...plans[0], cleanup: { state: 'visible' as const, revision } }) as never;
+    assert.equal(selection.snapshot().includes(view(generation)), false, 'still at the generation that showed it gone');
+    await b.act('restore', libraryId(0));
+    const restored = b.f.store.detail(b.f.alpha.id, libraryId(0)).plan.cleanup!.revision;
+    assert.ok(restored > generation);
+    assert.equal(selection.snapshot().includes(view(restored)), true, 'restored elsewhere: counted again at its current generation');
+  });
+});
+
+test('a selection that throws while following gone plans cannot leave the search half updated or break the poll', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, Array.from({ length: 5 }, (_, n) => n), 10);
+    const p = resultPages(svc, b, () => { throw new Error('selection bug'); });
+    await p.run('Zq');
+    await b.act('archive', libraryId(2));
+    const reported: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { reported.push(args); };
+    const changes = p.changes;
+    let result: Awaited<ReturnType<typeof p.c.revalidate>>;
+    try { result = await p.c.revalidate(p.plain); } finally { console.error = original; }
+    assert.equal(result.state, 'fresh', 'the poll still completes');
+    const v = p.c.view()!;
+    assert.deepEqual(v.page.hits.map(h => h.plan.id), [0, 1, 3, 4].map(libraryId));
+    assert.equal(v.removed, 1);
+    assert.equal(v.stop, 'changed', 'the traversal is retired as for any plan shown gone');
+    assert.equal(v.countsCurrent, false);
+    assert.equal(v.status.message?.kind, 'removed');
+    assert.ok(p.changes > changes, 'the frame is told to repaint');
+    assert.equal(reported.length, 1, 'the failure is reported, not swallowed silently');
+  });
+});

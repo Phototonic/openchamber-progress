@@ -249,6 +249,27 @@ try {
   await evaluate(`qa.release('tidy-stop');true`);
   await wait('page', `!!d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('skipped')`);
   check('stop-after-inflight-only', await posts() === stopPosts + 1);
+  // Focus was on Stop when the run ended and nothing else took it: it returns to Tidy once the board is read again.
+  await wait('page', `!!d.querySelector('[data-testid="tidy-open"] button') && !!d.activeElement?.closest('[data-testid="tidy-open"]')`);
+  check('stop-focus-returns-to-tidy', true);
+  // The person moves on while the board is read again: focus must stay put when Tidy comes back.
+  // (The search box is not painted while the board is read again, so only Undo can take focus then.)
+  for (const [name, target] of [['undo', '[data-testid="tidy-undo"] button']] as const) {
+    await open('page');
+    await evaluate(`qa.holds.push({tag:'stop-${name}',kind:'service',surface:'page',path:'/v1/plan/archive'});true`);
+    await click('page', '[data-testid="tidy-confirm-archive"] button');
+    await wait('page', `qa.held.some(h=>h.tag==='stop-${name}') && !!d.querySelector('[data-testid="tidy-stop"] button')`);
+    await click('page', '[data-testid="tidy-stop"] button');
+    await evaluate(`qa.holds.push({tag:'read-${name}',kind:'service',surface:'page',path:'/v1/plans'});qa.release('stop-${name}');true`);
+    await wait('page', `!!d.querySelector('[data-testid="tidy-undo"] button') && qa.held.some(h=>h.tag==='read-${name}') && !d.querySelector('[data-testid="tidy-open"]')`);
+    await guest('page', `const n=d.querySelector(${js(target)});if(!n)throw Error('Missing '+${js(name)}+': '+d.body.innerText.slice(0,300));n.focus();return true`);
+    await evaluate(`qa.release('read-${name}');true`);
+    await wait('page', `!!d.querySelector('[data-testid="tidy-open"] button')`);
+    await evaluate(`new Promise(r=>setTimeout(r,500))`);
+    check(`stop-then-${name}-keeps-focus`, await guest('page', `return !!d.activeElement?.closest(${js(target)}) && !d.activeElement.closest('[data-testid="tidy-open"]')`));
+    await click('page', '[data-testid="tidy-undo"] button');
+    await wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('restored')`);
+  }
   // Archived Tidy has Delete only; no eligible targets leaves just the empty line and Cancel.
   await wait('page', `!!d.querySelector('[data-testid="board-filters-trigger"]')`);
   await click('page', '[data-testid="board-filters-trigger"]');

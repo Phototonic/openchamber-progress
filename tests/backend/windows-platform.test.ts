@@ -6,7 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import childProcess, { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { privateDirectory, privatePaths, isOwned, windowsPath, platformSecurityScope, windowsSecurity, windowsSecurityQuery, sameWindowsDirectory, windowsDaclValidationScript, windowsPowerShellBootstrap } from '../../shared/platform.ts';
+import { privateDirectory, privatePaths, isOwned, windowsPath, sameWindowsDirectory } from '../../shared/platform.ts';
 import { lifecycle, inspect, normalizeTargets, type Payload } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
@@ -16,16 +16,14 @@ import { createManagedBindingDirectory, readManagedBinding, managedSourceRoots }
 import { SetupController } from '../../service/setup-controller.ts';
 import { setupSuggestions } from '../../service/suggestions.ts';
 import type { Actor } from '../../shared/progress.ts';
+import { icacls, makeOwnerOnly, readAcl } from '../fixtures/windows-acl.ts';
 import { setupLegacy } from '../../plugin/index.ts';
 
 const native = { skip: process.platform !== 'win32', timeout:120000 };
-// OS/profile temp ancestors may permit unrelated accounts to replace children.
-// Use a new private root; never repair ACLs on an existing shared temp folder.
+// Use a new root under the drive root so tests never touch an existing shared
+// temp folder. Directories get the default inherited permissions of the profile.
 const fixtureParent = process.platform==='win32' ? path.join(path.parse(os.tmpdir()).root,`agent-progress-tests-${randomUUID()}`) : os.tmpdir();
 if(process.platform==='win32') {
-  const started = performance.now();
-  try { windowsSecurityQuery([path.parse(fixtureParent).root]); }
-  finally { console.log(`Windows first security query: ${Math.round(performance.now()-started)} ms (includes cold PowerShell launch, query and any timeout retry)`); }
   privateDirectory(fixtureParent);
   after(()=>fs.rmSync(fixtureParent,{recursive:true,force:true}));
 }
@@ -36,130 +34,18 @@ function fixture() {
   privateDirectory(configRoot);privateDirectory(dataRoot);
   return {root,targets:{configRoot,dataRoot,storeRoot,confirmed:true},clean(){fs.rmSync(root,{recursive:true,force:true});}};
 }
-/** Synthetic ACL fixtures only; no profile or external resource access. */
-function changeAcl(file:string,kind:'public'|'readonly'|'deny'|'foreign'|'modify-parent'|'create-child'|'callback') {
-  const script=String.raw`
-$ErrorActionPreference='Stop'
-[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-try {
-  $r=[Console]::In.ReadToEnd()|ConvertFrom-Json
-  $u=[Security.Principal.WindowsIdentity]::GetCurrent().User
-  if([IO.Directory]::Exists($r.file)){$a=[IO.Directory]::GetAccessControl($r.file)}else{$a=[IO.File]::GetAccessControl($r.file)}
-  if($r.kind -eq 'callback'){
-    $raw=[Security.AccessControl.RawSecurityDescriptor]::new($a.GetSecurityDescriptorBinaryForm(),0)
-    $ace=[Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,2032127,$u,$true,$null)
-    $raw.DiscretionaryAcl.InsertAce(0,$ace)
-    $binary=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($binary,0);$a.SetSecurityDescriptorBinaryForm($binary)
-  }
-  elseif($r.kind -eq 'foreign'){$a.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))}
-  else {
-    if($r.kind -eq 'public'){$sid=[Security.Principal.SecurityIdentifier]::new('S-1-1-0');$rights='ReadAndExecute';$type='Allow'}
-    elseif($r.kind -eq 'modify-parent'){$sid=[Security.Principal.SecurityIdentifier]::new('S-1-1-0');$rights='Modify';$type='Allow'}
-    elseif($r.kind -eq 'create-child'){$sid=[Security.Principal.SecurityIdentifier]::new('S-1-1-0');$rights='ReadAndExecute,CreateDirectories,CreateFiles';$type='Allow'}
-    elseif($r.kind -eq 'deny'){$sid=$u;$rights='Write';$type='Deny'}
-    else {$sid=$u;$rights='ReadAndExecute';$type='Allow';foreach($rule in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.IdentityReference.Value -eq $u.Value){[void]$a.RemoveAccessRuleSpecific($rule)}}}
-    $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid,$rights,'None','None',$type)
-    $a.AddAccessRule($rule)
-  }
-  if([IO.Directory]::Exists($r.file)){[IO.Directory]::SetAccessControl($r.file,$a)}else{[IO.File]::SetAccessControl($r.file,$a)}
-  if($r.kind -eq 'callback'){
-    if([IO.Directory]::Exists($r.file)){$actual=[IO.Directory]::GetAccessControl($r.file)}else{$actual=[IO.File]::GetAccessControl($r.file)}
-    $check=[Security.AccessControl.RawSecurityDescriptor]::new($actual.GetSecurityDescriptorBinaryForm(),0)
-    if(-not $actual.AreAccessRulesCanonical -or -not @($check.DiscretionaryAcl | Where-Object {$_ -is [Security.AccessControl.CommonAce] -and $_.IsCallback}).Count){exit 1}
-  }
-  [Console]::Out.Write('ok')
-}catch{exit 1}
-`;
-  const r=spawnSync(path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{input:JSON.stringify({file,kind}),encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536});
-  return r.status===0&&r.stdout==='ok';
-}
-
-test('Windows atomically private Unicode directories, inherited files, ACL refusals and cache invalidation',native,t=>{
+test('Windows creates Unicode directories with default permissions and starts no process',native,t=>{
   const f=fixture();try{
-    privateDirectory(f.targets.storeRoot);const inherited=path.join(f.targets.storeRoot,'private 文書.txt');fs.writeFileSync(inherited,'synthetic');
-    assert.equal(platformSecurityScope(()=>privatePaths([f.targets.storeRoot,inherited])),true);
-    const realSpawn=childProcess.spawnSync;let observedModulePath:string|undefined;
-    const spy=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{observedModulePath=(args[2] as {env?:NodeJS.ProcessEnv})?.env?.PSModulePath;return(realSpawn as any)(...args);})as typeof childProcess.spawnSync);syncBuiltinESMExports();
-    try{assert.equal(privatePaths([inherited]),true);assert.equal(observedModulePath,path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','Modules'));}finally{spy.mock.restore();syncBuiltinESMExports();}
-    assert.equal(isOwned(f.targets.storeRoot),true);
-    platformSecurityScope(()=>{
-      assert.equal(privatePaths([inherited]),true);assert.equal(changeAcl(inherited,'public'),true);
-      assert.equal(privatePaths([inherited]),false,'an ACL mutation cannot reuse a cached private pass');
-    });
-    const before=fs.readFileSync(inherited);assert.equal(changeAcl(f.targets.storeRoot,'public'),true);assert.throws(()=>privateDirectory(f.targets.storeRoot),/private-permissions/);assert.deepEqual(fs.readFileSync(inherited),before);
-    for(const kind of ['readonly','deny'] as const){const dir=path.join(f.root,kind);privateDirectory(dir);assert.equal(changeAcl(dir,kind),true);assert.equal(privatePaths([dir]),false,`${kind} ACL must refuse`);}
-    const saved=process.env.SystemRoot;try{process.env.SystemRoot=path.join(f.root,'absent-system');assert.throws(()=>platformSecurityScope(()=>windowsSecurity([f.targets.configRoot])),/windows-security-unavailable/);}finally{process.env.SystemRoot=saved;}
+    const spawns=t.mock.method(childProcess,'spawnSync',(()=>{throw new Error('no permission check may start a process');}) as unknown as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    try{
+      privateDirectory(f.targets.storeRoot);const inherited=path.join(f.targets.storeRoot,'private 文書.txt');fs.writeFileSync(inherited,'synthetic');
+      assert.equal(privatePaths([f.targets.storeRoot,inherited]),true);assert.equal(isOwned(f.targets.storeRoot),true);
+      assert.equal(windowsPath(inherited),inherited);
+      // An existing directory is accepted as it is; a file is not a directory target.
+      privateDirectory(f.targets.storeRoot);assert.throws(()=>privateDirectory(inherited),/path-unverified/);
+      assert.equal(spawns.mock.callCount(),0);
+    }finally{spawns.mock.restore();syncBuiltinESMExports();}
   }finally{f.clean();}
-});
-
-test('Windows unsupported callback ACEs preserve owner observation but refuse private and ancestor ACL policy',native,async t=>{
-  const f=fixture();try{
-    const parent=path.join(f.root,'callback-parent');privateDirectory(parent);const child=path.join(parent,'private-child');privateDirectory(child);const file=path.join(child,'callback-file.txt');fs.writeFileSync(file,'synthetic');
-    if(!changeAcl(file,'callback')){t.skip('Windows/.NET refused a canonical callback ACE fixture.');return;}
-    assert.equal(isOwned(file),true,'unsupported DACL forms do not change the observed owner');assert.equal(privatePaths([file]),false,'GetAccessRules omission cannot produce a private pass');
-    await t.test('unsupported ancestor',childTest=>{
-      if(!changeAcl(parent,'callback')){childTest.skip('Windows/.NET refused a canonical callback ACE on a directory.');return;}
-      assert.equal(isOwned(parent),true);assert.throws(()=>windowsPath(child),/unsafe-parent/);
-    });
-  }finally{f.clean();}
-});
-
-test('Windows PowerShell uses only the explicit built-in JSON module after startup expansion',native,()=>{
-  const script=String.raw`
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-${windowsPowerShellBootstrap}
-$module=(Get-Command ConvertFrom-Json).Module.Path
-[Console]::Out.Write((ConvertTo-Json -Compress -InputObject @{path=($env:PSModulePath -eq $PSHOME+'\Modules');builtin=$module.StartsWith($PSHOME+'\Modules\Microsoft.PowerShell.Utility\',[StringComparison]::OrdinalIgnoreCase);autoload=($PSModuleAutoLoadingPreference -eq 'None')}))
-`;
-  const result=spawnSync(path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{env:{SystemRoot:process.env.SystemRoot,PSModulePath:path.join(fixtureParent,'caller-modules')},encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536});
-  assert.equal(result.status,0);assert.deepEqual(JSON.parse(result.stdout),{path:true,builtin:true,autoload:true});
-});
-
-test('Windows raw descriptor policy rejects null, callback, object and audit ACE forms using public .NET descriptors',native,()=>{
-  const script=String.raw`
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-${windowsDaclValidationScript}
-$user=[Security.Principal.WindowsIdentity]::GetCurrent().User
-function Check-Dacl($dacl) {
-  $raw=[Security.AccessControl.RawSecurityDescriptor]::new([Security.AccessControl.ControlFlags]::DiscretionaryAclPresent,$user,$user,$null,$dacl)
-  $bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0)
-  return Test-OrdinaryDacl $bytes
-}
-$ordinary=[Security.AccessControl.RawAcl]::new(2,1)
-$ordinary.InsertAce(0,[Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,2032127,$user,$false,$null))
-$callback=[Security.AccessControl.RawAcl]::new(2,1)
-$callback.InsertAce(0,[Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,2032127,$user,$true,$null))
-$object=[Security.AccessControl.RawAcl]::new(4,1)
-$object.InsertAce(0,[Security.AccessControl.ObjectAce]::new([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,2032127,$user,[Security.AccessControl.ObjectAceFlags]::None,[Guid]::Empty,[Guid]::Empty,$false,$null))
-$audit=[Security.AccessControl.RawAcl]::new(2,1)
-$audit.InsertAce(0,[Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::SuccessfulAccess,[Security.AccessControl.AceQualifier]::SystemAudit,2032127,$user,$false,$null))
-[Console]::Out.Write((ConvertTo-Json -Compress -InputObject @{ordinary=(Check-Dacl $ordinary);nullDacl=(Check-Dacl $null);callback=(Check-Dacl $callback);object=(Check-Dacl $object);audit=(Check-Dacl $audit)}))
-`;
-  const result=spawnSync(path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536});
-  assert.equal(result.status,0,'public .NET descriptor fixtures must execute');assert.deepEqual(JSON.parse(result.stdout),{ordinary:true,nullDacl:false,callback:false,object:false,audit:false});
-});
-
-test('Windows ancestor owner policy rejects implicit foreign DACL control',native,()=>{
-  const script=String.raw`
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-${windowsDaclValidationScript}
-$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$results=@()
-foreach($owner in @($user,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464','S-1-5-21-123-456-789-1001')) {
-  # A harmless read-only DACL cannot remove the owner's implicit WRITE_DAC.
-  $acl=[Security.AccessControl.DirectorySecurity]::new()
-  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new($owner))
-  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($user),'ReadAndExecute','Allow'))
-  $results += Test-TrustedAncestorOwner ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) $user
-}
-[Console]::Out.Write((ConvertTo-Json -Compress -InputObject $results))
-`;
-  const result=spawnSync(path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536});
-  assert.equal(result.status,0,'public .NET owner fixtures must execute');assert.deepEqual(JSON.parse(result.stdout),[true,true,true,true,false]);
 });
 
 test('Windows hard-linked owned files refuse before database, metadata or history mutation',native,async()=>{
@@ -197,15 +83,28 @@ test('Windows hard-linked owned files refuse before database, metadata or histor
   }finally{f.clean();}
 });
 
-test('Windows existing permissive/foreign roots are read-only refusals; current owner is required',native,async t=>{
+test('Windows roots with an existing owner-only ACL keep working and their ACLs are never touched',native,t=>{
   const f=fixture();try{
-    fs.mkdirSync(f.targets.storeRoot);assert.equal(changeAcl(f.targets.storeRoot,'public'),true);const sentinel=path.join(f.targets.storeRoot,'foreign.txt');fs.writeFileSync(sentinel,'preserve');
-    assert.throws(()=>inspect(f.targets),/store-permissions/);assert.equal(fs.readFileSync(sentinel,'utf8'),'preserve');assert.equal(privatePaths([f.targets.storeRoot]),false);
-    await t.test('foreign owner',child=>{
-      const dir=path.join(f.root,'foreign-owner');privateDirectory(dir);
-      if(!changeAcl(dir,'foreign')){child.skip('Account cannot assign a foreign owner; real foreign-owner fixture unavailable.');return;}
-      assert.equal(isOwned(dir),false);assert.equal(privatePaths([dir]),false);assert.throws(()=>inspect({...f.targets,configRoot:dir}),/path-unverified/);
-    });
+    makeOwnerOnly(f.targets.configRoot);makeOwnerOnly(f.targets.dataRoot);
+    const before=[readAcl(f.targets.configRoot),readAcl(f.targets.dataRoot)];
+    const spawns=t.mock.method(childProcess,'spawnSync',(()=>{throw new Error('no permission check may start a process');}) as unknown as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    try{
+      lifecycle('install',f.targets,payload);
+      assert.equal(lifecycle('inspect',f.targets).installed,true);
+      const binding=readBinding(path.join(f.targets.configRoot,'plugins','agent-progress','progress-binding.json'));
+      const store=new Store(binding.database);try{assert.equal(store.list().captureEnabled,true);}finally{store.close();}
+      lifecycle('update',f.targets,{...payload,version:'0.3.0'});lifecycle('disable',f.targets);lifecycle('enable',f.targets);
+      assert.equal(spawns.mock.callCount(),0);
+    }finally{spawns.mock.restore();syncBuiltinESMExports();}
+    assert.deepEqual([readAcl(f.targets.configRoot),readAcl(f.targets.dataRoot)],before,'existing ACLs are not applied, repaired or replaced');
+  }finally{f.clean();}
+});
+
+test('Windows state under an ordinary or widely readable folder is accepted without any ACL check',native,()=>{
+  const f=fixture();try{
+    fs.mkdirSync(f.targets.storeRoot);icacls(f.targets.storeRoot,['/grant','*S-1-1-0:(OI)(CI)R']);const acl=readAcl(f.targets.storeRoot);
+    assert.doesNotThrow(()=>inspect(f.targets));assert.equal(readAcl(f.targets.storeRoot),acl,'an existing ACL is left as found');
+    assert.equal(isOwned(f.targets.configRoot),true);
   }finally{f.clean();}
 });
 
@@ -222,18 +121,6 @@ test('Windows canonical drive roots, separator/case spellings, aliases and junct
   }finally{f.clean();}
 });
 
-test('Windows ancestor replacement rights refuse private state while ordinary authorized source reads remain usable',native,async()=>{
-  const f=fixture();try{
-    const shared=path.join(f.root,'shared-parent');fs.mkdirSync(shared);assert.equal(changeAcl(shared,'create-child'),true);
-    const child=path.join(shared,'private-child');privateDirectory(child);fs.writeFileSync(path.join(child,'synthetic.txt'),'preserve');assert.equal(privatePaths([child]),true);
-    assert.equal(windowsPath(child),child,'shared read/create-child permissions do not permit replacing a private child');
-    assert.equal(changeAcl(shared,'modify-parent'),true);assert.equal(privatePaths([child]),true,'the child DACL alone cannot establish a safe ancestor chain');
-    const source=path.join(shared,'ordinary-source.md');fs.writeFileSync(source,'# Authorized ordinary source\n');assert.equal((await captureDocument(source,f.root,async()=>{})).state,'captured','explicitly authorized ordinary documents do not need a private ancestor ACL');
-    assert.throws(()=>windowsPath(child),/unsafe-parent/);assert.throws(()=>privateDirectory(path.join(shared,'new-private-child')),/unsafe-parent/);assert.equal(fs.existsSync(path.join(shared,'new-private-child')),false);
-    assert.throws(()=>inspect({...f.targets,storeRoot:child}),/unsafe-parent/);assert.equal(fs.readFileSync(path.join(child,'synthetic.txt'),'utf8'),'preserve');
-  }finally{f.clean();}
-});
-
 test('Windows lifecycle installs/updates atomically, retains history, recovers interruptions and controls loaded stores',native,()=>{
   const f=fixture();let store:Store|undefined;
   try{
@@ -243,8 +130,7 @@ test('Windows lifecycle installs/updates atomically, retains history, recovers i
     store=new Store(binding.database);const actor:Actor={sourceId:binding.source.id,sessionId:'synthetic',agent:'build',directory:f.root,parentId:null,ancestry:[],verifiedSource:true};
     store.db.exec('BEGIN IMMEDIATE; UPDATE meta SET enabled=0');
     try{assert.equal(fs.existsSync(binding.database+'-journal'),true);assert.equal(privatePaths([binding.database,binding.database+'-journal']),true);}finally{store.db.exec('ROLLBACK');}
-    const side=binding.database+'-wal';fs.writeFileSync(side,'synthetic foreign side file');assert.equal(changeAcl(side,'public'),true);try{assert.throws(()=>new Store(binding.database),/binding/);}finally{fs.rmSync(side);}
-    const request={op:'start',plan:'synthetic',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Task',kind:'task'}]};
+        const request={op:'start',plan:'synthetic',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Task',kind:'task'}]};
     assert.deepEqual(store.apply(request,actor),store.apply(request,actor));store.apply({op:'change',plan:'synthetic',oid:'change',rev:1,changes:[{id:'a',status:'working'}]},actor);
     lifecycle('disable',f.targets);assert.throws(()=>store!.apply({op:'change',plan:'synthetic',oid:'denied',rev:2,changes:[{id:'a',status:'done'}]},actor),/disabled/);lifecycle('enable',f.targets);
     const manifest=path.join(f.targets.configRoot,'plugins','agent-progress','.ownership.json');const before=fs.readFileSync(manifest);
@@ -295,11 +181,10 @@ test('Windows managed discovery is read-only and state-independent; confirmed se
     const env={HOME:f.root,XDG_DATA_HOME:path.join(f.root,'shared-data'),XDG_CONFIG_HOME:path.join(f.root,'shared-config')};
     const configRoot=path.join(env.XDG_CONFIG_HOME,'opencode'),dataRoot=path.join(env.XDG_DATA_HOME,'opencode');
     privateDirectory(configRoot,true);privateDirectory(dataRoot,true);
-    const realSpawn=childProcess.spawnSync;let queries=0;
-    const batch=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{queries++;return(realSpawn as any)(...args);})as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    const batch=t.mock.method(childProcess,'spawnSync',(()=>{throw new Error('no permission check may start a process');}) as unknown as typeof childProcess.spawnSync);syncBuiltinESMExports();
     try{
-      assert.deepEqual(managedSourceRoots(env),{configRoot,dataRoot});assert.equal(queries,1,'known config/data paths and ancestors share a single security query');
-      managedSourceRoots(env);assert.equal(queries,2,'a second operation does not inherit an ACL cache');
+      assert.deepEqual(managedSourceRoots(env),{configRoot,dataRoot});managedSourceRoots(env);
+      assert.equal(batch.mock.callCount(),0,'discovery starts no process');
     }finally{batch.mock.restore();syncBuiltinESMExports();}
     const selector=serviceBindingFile(env);
     assert.equal(fs.existsSync(path.dirname(selector)),false);assert.equal(readManagedBinding(env),undefined);
@@ -310,7 +195,7 @@ test('Windows managed discovery is read-only and state-independent; confirmed se
     const status=controller.run('managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected});assert.equal(status.configured,true);
     assert.equal(privatePaths([path.dirname(selector),path.join(path.dirname(selector),'.ownership.json')]),true);
     assert.equal(privatePaths([selector]),true);assert.equal(readManagedBinding(env)!.source.configRoot,configRoot);
-    const systemRoot=process.env.SystemRoot;try{process.env.SystemRoot=path.join(f.root,'absent-system');assert.ok(controller.status().diagnostics.includes('windows-security-unavailable'));assert.throws(()=>serviceBindingFile(env),/windows-security-unavailable/);}finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;}
+    {const systemRoot=process.env.SystemRoot;try{process.env.SystemRoot=path.join(f.root,'absent-system');assert.equal(controller.status().configured,true);assert.equal(serviceBindingFile(env),selector);}finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;}}
     controller.close();controller=new SetupController({env},()=>({...payload,version:'0.3.0'}));assert.equal(controller.status().version,'0.3.0');
     const hints=setupSuggestions({platform:'win32',env:{HOME:f.root,XDG_CONFIG_HOME:path.dirname(f.targets.configRoot),XDG_DATA_HOME:path.dirname(f.targets.dataRoot)},uid:undefined});assert.ok(hints);assert.ok(hints.configRoot?.value.endsWith('opencode'));
     const hostHome=t.mock.method(os,'homedir',()=>f.root);syncBuiltinESMExports();
@@ -364,7 +249,7 @@ test('Windows directory filters match separator and drive spellings without file
   }finally{store?.close();f.clean();}
 });
 
-test('Windows cleanup snapshots inherit verified private ACLs; archive/restore/delete preserve source and directory matching',native,async()=>{
+test('Windows cleanup snapshots inherit the parent permissions; archive/restore/delete preserve source and directory matching',native,async()=>{
   const f=fixture();let store:Store|undefined;
   try{
     privateDirectory(f.targets.storeRoot);store=new Store(path.join(f.targets.storeRoot,'progress.sqlite'),{create:true});
@@ -400,8 +285,8 @@ test('Windows cleanup snapshots inherit verified private ACLs; archive/restore/d
   }finally{store?.close();f.clean();}
 });
 
-test('Windows first cleanup refuses changed public ACLs and hard-linked state without snapshot or mutation',native,()=>{
-  for(const kind of ['parent-public','database-public','database-hardlink'] as const){
+test('Windows first cleanup refuses hard-linked state without snapshot or mutation',native,()=>{
+  for(const kind of ['database-hardlink'] as const){
     const f=fixture();let store:Store|undefined;
     try{
       privateDirectory(f.targets.storeRoot);const database=path.join(f.targets.storeRoot,'progress.sqlite');store=new Store(database,{create:true});
@@ -412,7 +297,6 @@ test('Windows first cleanup refuses changed public ACLs and hard-linked state wi
       const request={storeId:store.list().storeId,source:source.id,plan:'P-done',rev:2,cleanupRev:0,oid:'archive'};
       const before=store.db.prepare('SELECT * FROM plans').all();
       if(kind==='database-hardlink')fs.linkSync(database,path.join(f.root,'database-alias.sqlite'));
-      else assert.equal(changeAcl(kind==='parent-public'?f.targets.storeRoot:database,'public'),true);
       assert.throws(()=>store!.cleanup('archive',request),e=>['binding','storage'].includes((e as {code:string}).code));
       assert.deepEqual(store.db.prepare('SELECT * FROM plans').all(),before);
       assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE name='cleanup_state'").get(),undefined);
@@ -421,7 +305,7 @@ test('Windows first cleanup refuses changed public ACLs and hard-linked state wi
   }
 });
 
-test('Windows retained-source lookup skips unavailable history but keeps selected targets and security failures strict',native,t=>{
+test('Windows retained-source lookup skips unavailable history but keeps selected targets strict',native,()=>{
   const f=fixture();let store:Store|undefined;
   try{
     const historicalRoot=path.join(f.root,'historical-a'),retiredRoot=path.join(f.root,'retired-a');
@@ -442,18 +326,11 @@ test('Windows retained-source lookup skips unavailable history but keeps selecte
     store=new Store(database);store.apply({op:'start',plan:'history-b',oid:'start-b',rev:0,title:'Synthetic B',items:[{id:'b',title:'Task',kind:'task'}]},actor(second.source.id,'session-b'));store.apply({op:'change',plan:'history-b',oid:'change-b',rev:1,changes:[{id:'b',status:'working'}]},actor(second.source.id,'session-b'));
     assert.equal(store.list().sources[0]!.id,historical.id,'unavailable A must precede B during lookup');store.close();store=undefined;
     lifecycle('remove-capture',b);lifecycle('install',b,payload);assert.equal(readBinding(bindingFile).source.id,second.source.id,'B reuses its namespace after the missing earlier source');
-    lifecycle('remove-capture',b);fs.renameSync(retiredRoot,historicalRoot);assert.equal(changeAcl(historicalRoot,'modify-parent'),true);
-    const realSpawn=childProcess.spawnSync;let historicalSecurityProbe=false;
-    const blocked=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{
-      const input=(args[2] as {input?:unknown})?.input;
-      if(typeof input==='string'&&(JSON.parse(input) as {paths?:string[]}).paths?.includes(a.configRoot)){historicalSecurityProbe=true;return{pid:0,output:[],stdout:'',stderr:'',status:1,signal:null};}
-      return(realSpawn as any)(...args);
-    })as typeof childProcess.spawnSync);syncBuiltinESMExports();
-    try{assert.throws(()=>lifecycle('install',b,payload),/windows-security-unavailable/);assert.equal(historicalSecurityProbe,true);assert.equal(fs.existsSync(bindingFile),false);}finally{blocked.mock.restore();syncBuiltinESMExports();}
-    lifecycle('install',b,payload);assert.equal(readBinding(bindingFile).source.id,second.source.id,'unsafe historical A is also a nonmatch');
+    lifecycle('remove-capture',b);fs.renameSync(retiredRoot,historicalRoot);
+    lifecycle('install',b,payload);assert.equal(readBinding(bindingFile).source.id,second.source.id,'a restored historical A is still a nonmatch for B');
     const historyFile=path.join(f.targets.storeRoot,'installation-history.jsonl'),historyBefore=fs.readFileSync(historyFile),bindingBefore=fs.readFileSync(bindingFile);
     assert.throws(()=>lifecycle('install',{...b,configRoot:path.join(f.root,'missing-selected')},payload),/path-unverified/);
-    assert.throws(()=>lifecycle('install',a,payload),/unsafe-parent/);assert.deepEqual(fs.readFileSync(historyFile),historyBefore);assert.deepEqual(fs.readFileSync(bindingFile),bindingBefore);
+    assert.deepEqual(fs.readFileSync(historyFile),historyBefore);assert.deepEqual(fs.readFileSync(bindingFile),bindingBefore);
     store=new Store(database);assert.equal(store.list().sources.length,2);assert.equal(store.get(second.source.id,'history-b')!.revision,2);assert.equal(store.history(second.source.id,'history-b').data.length,2);assert.equal(store.history(historical.id,'history-a').data.length,1);
   }finally{store?.close();f.clean();}
 });

@@ -191,6 +191,12 @@ export interface StoreRead {
   plans: PlanView[];
   /** More pages exist than this frame loaded. */
   truncated: boolean;
+  /**
+   * A second page was available when the list was read (also when the read stopped at its page bound).
+   * Offsets between pages are not a snapshot, so a count taken from such a list cannot show that no plan
+   * crossed a page boundary. Absent: one page, or not recorded.
+   */
+  multiPage?: boolean;
 }
 
 export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planCleanupActive?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }

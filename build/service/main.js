@@ -536,7 +536,6 @@ import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2
 import path2 from "node:path";
 
 // shared/platform.ts
-import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -544,7 +543,6 @@ import { createHash } from "node:crypto";
 // shared/managed-steps.ts
 var MANAGED_STEP_ROUTE = "/v1/setup/managed-step";
 var MANAGED_STEP_LIMITS = {
-  securitySpawns: 6,
   workMs: 17000,
   responseMs: 18000,
   hostMs: 20000,
@@ -686,11 +684,9 @@ var windows = process.platform === "win32";
 
 class PlatformError extends Error {
   code;
-  reason;
-  constructor(code, reason) {
+  constructor(code) {
     super(code);
     this.code = code;
-    this.reason = reason;
   }
 }
 function platformErrorCode(error) {
@@ -717,41 +713,24 @@ function writerTargetPort(target) {
     offset = (offset + 1) % 4000;
   return 25000 + offset;
 }
-var cache = new Map;
-var reparseCache = new Map;
-var scope = 0;
+var STEP_HEADROOM_MS = 2500;
 
 class PlatformRequestBudget {
-  counter;
   startedAt;
   deadline;
   writerFence;
-  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4), writerFence) {
-    if (counter.byteLength !== 4)
-      throw new PlatformError("managed-step-budget");
-    this.counter = new Int32Array(counter);
+  securitySpawns = 0;
+  constructor(startedAt = process.hrtime.bigint(), writerFence) {
     this.startedAt = startedAt;
     this.deadline = startedAt + BigInt(MANAGED_STEP_LIMITS.workMs) * 1000000n;
     this.writerFence = writerFence;
   }
-  get securitySpawns() {
-    return Atomics.load(this.counter, 0);
-  }
   get elapsedMs() {
     return Math.max(0, Number(process.hrtime.bigint() - this.startedAt) / 1e6);
   }
-  require(spawns = 0, headroomMs = 0) {
-    if (!Number.isSafeInteger(spawns) || spawns < 0 || !Number.isFinite(headroomMs) || headroomMs < 0 || this.securitySpawns < 0 || this.securitySpawns + spawns > MANAGED_STEP_LIMITS.securitySpawns)
-      throw new PlatformError("managed-step-budget");
+  require(headroomMs = 0) {
     if (Number(this.deadline - process.hrtime.bigint()) / 1e6 <= headroomMs)
       throw new PlatformError("managed-step-deadline");
-  }
-  launch() {
-    this.require(1, 1000);
-    const before = this.securitySpawns;
-    if (before >= MANAGED_STEP_LIMITS.securitySpawns || Atomics.compareExchange(this.counter, 0, before, before + 1) !== before)
-      throw new PlatformError("managed-step-budget");
-    return Math.max(1, Math.floor(Number(this.deadline - process.hrtime.bigint()) / 1e6 - 1000));
   }
 }
 var requestBudget;
@@ -770,12 +749,10 @@ function withPlatformWriterTargets(targets, run) {
   }
 }
 function withPlatformRequestBudget(budget, run) {
-  if (requestBudget || scope)
+  if (requestBudget)
     throw new PlatformError("managed-step-conflict");
   budget.require();
   requestBudget = budget;
-  cache.clear();
-  reparseCache.clear();
   try {
     const result = run();
     if (result !== null && (typeof result === "object" || typeof result === "function") && typeof result.then === "function")
@@ -783,35 +760,10 @@ function withPlatformRequestBudget(budget, run) {
     return result;
   } finally {
     requestBudget = undefined;
-    cache.clear();
-    reparseCache.clear();
   }
 }
-function platformSecurityScope(run) {
-  const finish = beginPlatformSecurityScope();
-  try {
-    return run();
-  } finally {
-    finish();
-  }
-}
-function beginPlatformSecurityScope() {
-  if (!scope) {
-    cache.clear();
-    reparseCache.clear();
-  }
-  scope++;
-  return () => {
-    if (!--scope) {
-      cache.clear();
-      reparseCache.clear();
-    }
-  };
-}
-function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
-  if (scope)
-    throw new PlatformError("managed-step-conflict");
-  requestBudget?.require(spawns, headroomMs);
+function requirePlatformWriteBoundary(headroomMs = 0) {
+  requestBudget?.require(headroomMs);
 }
 function requirePlatformStoreFence(database) {
   requestBudget?.require();
@@ -819,225 +771,14 @@ function requirePlatformStoreFence(database) {
   if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
     throw new PlatformError("managed-step-conflict");
 }
-var windowsPowerShellBootstrap = String.raw`
-$env:PSModulePath = $PSHOME + '\Modules'
-$PSModuleAutoLoadingPreference = 'None'
-Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
-`;
-var windowsDaclValidationScript = String.raw`
-function Test-OrdinaryDacl($binary) {
-  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
-  if ($null -eq $raw.DiscretionaryAcl) { return $false }
-  foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed, [Security.AccessControl.AceQualifier]::AccessDenied) -or ([int]$ace.AceFlags -band 224)) { return $false }
-  }
-  return $true
-}
-function Test-TrustedAncestorOwner($owner, $currentUser) {
-  # Owners can rewrite a DACL even without an explicit write ACE. The service
-  # SID below is Windows Modules Installer (TrustedInstaller), ancestor-only.
-  return $owner -in @($currentUser, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-}
-`;
-var securityScript = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-${windowsPowerShellBootstrap}
-${windowsDaclValidationScript}
-$writerMutex = $null
-$writerOwned = $false
-$failureCode = 'windows-security-unavailable'
-try {
-  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  if ($request.fence) {
-    $failureCode = 'managed-step-unsettled'
-    # The main service holds the TCP writer slot until its Node worker exits.
-    # This account-scoped mutex additionally fences a security child that might
-    # outlive that service. Obtain it BEFORE checking the current slot nonce.
-    # Every new writer's first fresh query crosses this barrier before effects.
-    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
-    try { $writerOwned = $writerMutex.WaitOne(15000) }
-    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
-      $client.Connect('127.0.0.1', [int]$request.fence.port)
-      $stream = $client.GetStream()
-      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
-      $stream.Write($bytes, 0, $bytes.Length)
-      $reply = [byte[]]::new(3); $offset = 0
-      while ($offset -lt 3) {
-        $count = $stream.Read($reply, $offset, 3 - $offset)
-        if ($count -le 0) { throw 'writer-unsettled' }
-        $offset += $count
-      }
-      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
-    } finally { $client.Dispose() }
-    $failureCode = 'windows-security-unavailable'
-  }
-  $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
-  if ($request.create) {
-    foreach ($target in $request.create) {
-      if ($request.exclusive -and [IO.Directory]::Exists($target)) { throw 'creation-conflict' }
-      if (-not [IO.Directory]::Exists($target)) {
-        $security = [Security.AccessControl.DirectorySecurity]::new()
-        $security.SetOwner($user)
-        $security.SetAccessRuleProtection($true, $false)
-        foreach ($value in $allowed) {
-          $sid = [Security.Principal.SecurityIdentifier]::new($value)
-          $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-          $security.AddAccessRule($rule)
-        }
-        [void][IO.Directory]::CreateDirectory($target, $security)
-      }
-    }
-  }
-  $results = @()
-  foreach ($target in $request.paths) {
-    $owned = $false; $private = $false; $reparse = $true; $unsafeParent = $true
-    try {
-      $attributes = [IO.File]::GetAttributes($target)
-      $reparse = [bool]($attributes -band [IO.FileAttributes]::ReparsePoint)
-      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($target) }
-      else { $acl = [IO.File]::GetAccessControl($target) }
-      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-      $owned = $owner -eq $user.Value
-      $ordinary = Test-OrdinaryDacl ($acl.GetSecurityDescriptorBinaryForm())
-      $private = $ordinary -and $owned -and $acl.AreAccessRulesCanonical -and -not $reparse
-      $unsafeParent = -not $ordinary -or -not (Test-TrustedAncestorOwner $owner $user.Value)
-      $granted = $false
-      $full = [Security.AccessControl.FileSystemRights]::FullControl
-      $replace = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000
-      if ($ordinary) { foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin $allowed) { $private = $false }
-        if (($attributes -band [IO.FileAttributes]::Directory) -and $rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $replace)) { $unsafeParent = $true }
-        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq $user.Value -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $full) -eq $full) { $granted = $true }
-      } }
-      $private = $private -and $granted
-    } catch { $private = $false; $unsafeParent = $true }
-    $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
-  }
-  [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
-finally {
-  if ($writerOwned) { $writerMutex.ReleaseMutex() }
-  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
-}
-`;
-function snapshot(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(":");
-}
-function objectIdentity(file) {
-  const s = lstatSync(file, { bigint: true });
-  return [s.dev, s.ino, s.mode, s.birthtimeNs].join(":");
-}
-function reparsePaths(paths, parents) {
-  const fresh = new Map;
-  const pending = paths.filter((p) => !scope || reparseCache.get(p)?.identity !== objectIdentity(p));
-  const before = pending.map(objectIdentity), stats = pending.map(snapshot), results = pending.length ? windowsSecurityQuery(pending) : [];
-  pending.forEach((p, i) => {
-    const after = objectIdentity(p);
-    if (after !== before[i])
-      throw new PlatformError("path-unverified");
-    const result = { identity: after, reparse: results[i].reparse, unsafeParent: results[i].unsafeParent };
-    fresh.set(p, result);
-    if (reparseCache.size < 1024 || reparseCache.has(p))
-      reparseCache.set(p, result);
-    if (snapshot(p) === stats[i] && (cache.size < 1024 || cache.has(p)))
-      cache.set(p, { snapshot: stats[i], result: results[i] });
-  });
-  if (paths.some((p) => parents.has(p) && (fresh.get(p) ?? reparseCache.get(p)).unsafeParent))
-    throw new PlatformError("unsafe-parent");
-  return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
-}
-var securityQueryAttempted = false;
-function windowsSecurityQuery(paths, create = [], spawn = spawnSync, exclusive = false) {
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
-    throw new PlatformError("windows-security-unavailable");
-  const env = {};
-  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA"]) {
-    if (process.env[key])
-      env[key] = process.env[key];
-  }
-  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create, ...exclusive ? { exclusive: true } : {}, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
-  const firstQuery = !securityQueryAttempted;
-  const run = () => {
-    const timeout = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
-    try {
-      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout, maxBuffer: 1024 * 1024 });
-    } finally {
-      securityQueryAttempted = true;
-    }
-  };
-  let child;
-  child = run();
-  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run();
-  requestBudget?.require();
-  if (requestBudget && child.error?.code === "ETIMEDOUT")
-    throw new PlatformError("managed-step-deadline", "timeout");
-  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
-    let failure;
-    try {
-      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-    } catch {}
-    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
-      throw new PlatformError("managed-step-unsettled", "exit");
-  }
-  if (child.error || child.status !== 0)
-    throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
-  let results;
-  try {
-    results = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
-  } catch {
-    throw new PlatformError("windows-security-unavailable");
-  }
-  if (!Array.isArray(results) || results.length !== paths.length || results.some((r) => !r || ["owned", "private", "reparse", "unsafeParent"].some((k) => typeof r[k] !== "boolean")))
-    throw new PlatformError("windows-security-unavailable");
-  return results;
-}
-function windowsSecurity(paths) {
-  const pending = new Map;
-  const fresh = new Map;
-  for (const file of paths) {
-    const stat = snapshot(file);
-    if (!scope || cache.get(file)?.snapshot !== stat)
-      pending.set(file, stat);
-  }
-  const files = [...pending.keys()];
-  if (files.length) {
-    const results = windowsSecurityQuery(files);
-    files.forEach((file, i) => {
-      const after = snapshot(file), before = pending.get(file);
-      if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
-        throw new PlatformError("path-unverified");
-      fresh.set(file, results[i]);
-      if (reparseCache.size < 1024 || reparseCache.has(file))
-        reparseCache.set(file, { identity: objectIdentity(file), reparse: results[i].reparse, unsafeParent: results[i].unsafeParent });
-      if (after === before) {
-        if (cache.size < 1024 || cache.has(file))
-          cache.set(file, { snapshot: before, result: results[i] });
-      } else
-        cache.delete(file);
-    });
-  }
-  return paths.map((file) => fresh.get(file) ?? cache.get(file).result);
-}
 function windowsPath(value, allowMissing = false) {
   return windowsPaths([value], allowMissing)[0];
 }
 function windowsPaths(values, allowMissing = false) {
-  return platformSecurityScope(() => windowsPathsInner(values, allowMissing));
+  return windowsPathsInner(values, allowMissing);
 }
-function windowsPathsInner(values, allowMissing = false, privateState = true) {
-  const ancestors = new Set, parents = new Set;
-  const resolved = values.map((value) => {
+function windowsPathsInner(values, allowMissing = false) {
+  return values.map((value) => {
     if (value.includes("\x00") || value.length > 4096 || !/^[a-z]:[\\/]/i.test(value))
       throw new PlatformError("path-unverified");
     const normalized = value.replaceAll("/", "\\");
@@ -1059,42 +800,34 @@ function windowsPathsInner(values, allowMissing = false, privateState = true) {
       current = parent;
     }
     for (let p = current;; p = path.dirname(p)) {
-      const stat = lstatSync(p);
-      if (stat.isSymbolicLink())
+      if (lstatSync(p).isSymbolicLink())
         throw new PlatformError("symlink-escape");
-      ancestors.add(p);
-      if (path.dirname(p) === p)
-        break;
-    }
-    for (let p = tail.length ? current : path.dirname(current);; p = path.dirname(p)) {
-      parents.add(p);
       if (path.dirname(p) === p)
         break;
     }
     return path.join(realpathSync.native(current), ...tail);
   });
-  if (reparsePaths([...ancestors], privateState ? parents : new Set))
-    throw new PlatformError("symlink-escape");
-  return resolved;
 }
 function isOwned(file) {
-  return windows ? windowsSecurity([file])[0].owned : lstatSync(file).uid === process.getuid?.();
+  if (windows) {
+    lstatSync(file);
+    return true;
+  }
+  return lstatSync(file).uid === process.getuid?.();
 }
 function sameWindowsDirectory(left, right) {
   return sameWindowsObject(left, right, true);
 }
 function sameWindowsObject(left, right, directory = false) {
-  return platformSecurityScope(() => {
-    const [a, b] = windowsPaths([left, right]);
-    const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
-    return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
-  });
+  const [a, b] = windowsPaths([left, right]);
+  const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
+  return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
 }
 function privatePaths(files) {
   return windows ? files.every((file) => {
     const s = lstatSync(file);
-    return !s.isFile() || s.nlink === 1;
-  }) && windowsSecurity(files).every((s) => s.private) : files.every((file) => {
+    return !s.isSymbolicLink() && (!s.isFile() || s.nlink === 1);
+  }) : files.every((file) => {
     const s = lstatSync(file);
     return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
   });
@@ -1104,45 +837,44 @@ function privateDirectory(file, recursive = false, creation) {
     requirePlatformWriteBoundary();
     if (recursive || creation.exclusive !== true || typeof creation.validate !== "function")
       throw new PlatformError("managed-step-conflict");
-    const target = platformSecurityScope(() => {
-      creation.validate();
-      const target2 = windows ? windowsPath(file, true) : file, parent = path.dirname(target2);
-      if (!path.isAbsolute(target2) || path.resolve(target2) !== target2 || !lstatSync(parent).isDirectory() || !windows && realpathSync(parent) !== parent || lstatSync(target2, { throwIfNoEntry: false }))
+    creation.validate();
+    const target2 = windows ? windowsPath(file, true) : file, parent = path.dirname(target2);
+    if (!path.isAbsolute(target2) || path.resolve(target2) !== target2 || !lstatSync(parent).isDirectory() || !windows && realpathSync(parent) !== parent || lstatSync(target2, { throwIfNoEntry: false }))
+      throw new PlatformError("path-unverified");
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
+    try {
+      if (windows)
+        mkdirSync(target2);
+      else
+        mkdirSync(target2, { mode: 448 });
+    } catch (error) {
+      if (windows && error.code === "EEXIST")
         throw new PlatformError("path-unverified");
-      return target2;
-    });
-    requirePlatformWriteBoundary(3, 8500);
-    if (windows) {
-      const [result] = windowsSecurityQuery([target], [target], undefined, true);
-      if (!result?.owned || !result.private || result.reparse || result.unsafeParent)
-        throw new PlatformError("private-permissions");
-    } else
-      mkdirSync(target, { mode: 448 });
-    syncDirectory(path.dirname(target));
+      throw error;
+    }
+    syncDirectory(path.dirname(target2));
     return;
   }
   if (!windows) {
     mkdirSync(file, { recursive, mode: 448 });
     return;
   }
-  platformSecurityScope(() => {
-    const target = windowsPath(file, true);
-    const missing = [];
-    let parent = target;
-    while (!existsSync(parent)) {
-      missing.unshift(parent);
-      parent = path.dirname(parent);
+  const target = windowsPath(file, true);
+  let missing = 0;
+  for (let parent = target;!existsSync(parent); parent = path.dirname(parent))
+    missing++;
+  if (!recursive && missing > 1)
+    throw new PlatformError("path-unverified");
+  if (missing) {
+    try {
+      mkdirSync(target, { recursive });
+    } catch (error) {
+      if (["EEXIST", "ENOTDIR"].includes(error.code ?? ""))
+        throw new PlatformError("path-unverified");
+      throw error;
     }
-    if (!recursive && missing.length > 1)
-      throw new PlatformError("path-unverified");
-    if (missing.length) {
-      const results = windowsSecurityQuery(missing, missing);
-      if (results.some((r) => !r.private))
-        throw new PlatformError("private-permissions");
-      missing.forEach((p) => cache.delete(p));
-    } else if (!lstatSync(target).isDirectory() || !privatePaths([target]))
-      throw new PlatformError("private-permissions");
-  });
+  } else if (!lstatSync(target).isDirectory())
+    throw new PlatformError("path-unverified");
 }
 function syncFile(file) {
   const fd = openSync(file, windows ? "r+" : "r");
@@ -1230,9 +962,6 @@ function preflight(db, action, r, installed) {
   requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
 }
 function backup(db, file) {
-  return platformSecurityScope(() => backupPrivate(db, file));
-}
-function backupPrivate(db, file) {
   const parent = path2.dirname(file);
   const owned = lstatSync2(parent);
   requireProgress(owned.isDirectory() && !owned.isSymbolicLink() && privatePaths([parent]), "binding");
@@ -2704,6 +2433,10 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
     const cleanup2 = cleanupInstalled(db) ? String(cleanupState(db, sourceId, r.plan)?.state ?? "") : "";
     if (["archived", "deleted"].includes(cleanup2))
       continue;
+    if (["pending", "reserved"].includes(d.state) && (d.state === "reserved" !== (a.dispatch !== null) || !a.taskIds.length)) {
+      result.complete = false;
+      continue;
+    }
     const orphaned = ["pending", "reserved"].includes(d.state) && !db.prepare("SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?").get(sourceId, sessionId, r.plan, row2.oid);
     if (orphaned && cleanup2 !== "visible") {
       result.complete = false;
@@ -3351,12 +3084,12 @@ function readRuns(db, binding, r, now = Date.now()) {
     out.coverage.reasons.push(job && ["partial", "failed"].includes(String(job.state)) ? "partial-history" : "history-not-reconciled");
   if (f?.loss === 1)
     out.coverage.reasons.push("capture-loss");
-  const scope2 = scopedParents(db, r.source, r.root);
-  if (!scope2.complete)
+  const scope = scopedParents(db, r.source, r.root);
+  if (!scope.complete)
     out.coverage.reasons.push("traversal-limit");
-  const placeholders = scope2.ids.map(() => "?").join(",");
+  const placeholders = scope.ids.map(() => "?").join(",");
   const where = `source=? AND parent IN (${placeholders})`;
-  const args = [r.source, ...scope2.ids];
+  const args = [r.source, ...scope.ids];
   const counts = db.prepare(`SELECT count(DISTINCT child) AS children,sum(message IS NOT NULL) AS runs,sum(message IS NULL) AS history,
     sum(json_extract(payload,'$.ran.state')='running') AS running,sum(json_extract(payload,'$.ran.state')='succeeded') AS succeeded,
     sum(json_extract(payload,'$.ran.state')='failed') AS failed,sum(json_extract(payload,'$.ran.state')='interrupted') AS interrupted,sum(json_extract(payload,'$.ran.state')='unknown') AS unknown FROM runs_rows WHERE ${where}`).get(...args);
@@ -3388,14 +3121,14 @@ function readRuns(db, binding, r, now = Date.now()) {
     FROM ranked AS runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
   out.data = rows.slice(0, RUN_LIMITS.page).map((v) => ({ ...row(v.payload), latestForChild: v.latest === 1 }));
   if (r.plan) {
-    const snapshot2 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
+    const snapshot = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
       AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
       json_object('revision',json_extract(snapshot,'$.revision'),'links',json_extract(snapshot,'$.links'),
         'items',json((SELECT json_group_array(json_object('id',json_extract(i.value,'$.id'),'kind',json_extract(i.value,'$.kind'),
           'status',json_extract(i.value,'$.status'),'assigneeSessionId',json_extract(i.value,'$.assigneeSessionId')))
           FROM json_each(snapshot,'$.items') i))) END AS snapshot FROM plans WHERE source=? AND id=?`).get(r.source, r.plan);
-    requireProgress(typeof snapshot2?.snapshot === "string", "corrupt");
-    const p = JSON.parse(snapshot2.snapshot);
+    requireProgress(typeof snapshot?.snapshot === "string", "corrupt");
+    const p = JSON.parse(snapshot.snapshot);
     requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");
     for (const run of out.data) {
       const linked = p.links.find((l) => l.sessionId === run.childSessionId);
@@ -3850,7 +3583,7 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // service/server.ts
-import { timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -3930,8 +3663,8 @@ function disjointLink(previous, next, c, assigned) {
   const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
   const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
   requireProgress(canonical(oldFacts) === canonical(newFacts), "conflict");
-  const scope2 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
-  requireProgress(scope2.size > 0 && assigned.every((id) => !scope2.has(id)), "conflict");
+  const scope = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
+  requireProgress(scope.size > 0 && assigned.every((id) => !scope.has(id)), "conflict");
   requireProgress(canonical(next.links) === canonical([...previous.links.filter((l) => l.sessionId !== child), ...newLink ? [newLink] : []]), "conflict");
   const bound = next.items.filter((i) => i.assignmentBinding?.boundRevision === next.revision);
   if (bound.length) {
@@ -3948,7 +3681,7 @@ function disjointLink(previous, next, c, assigned) {
     const a = previous.items[index], b = next.items[index];
     taskFacts(a, previous);
     const expected = structuredClone(a);
-    if (scope2.has(a.id)) {
+    if (scope.has(a.id)) {
       if (newLink?.itemIds.includes(a.id))
         expected.assigneeSessionId = child;
       else
@@ -3995,11 +3728,11 @@ function delegationRevision(db, binding, intent) {
   if (revision === r.rev)
     return revision;
   requireProgress(revision > r.rev && revision - r.rev < DELEGATION_PROOF_LIMITS.snapshots, "conflict");
-  const snapshot2 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
+  const snapshot = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
   const contribution = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END AS payload FROM contributions WHERE source=? AND plan=? AND revision=?");
   let previous;
   for (let rev = r.rev;rev <= revision; rev++) {
-    const next = plan(admit(snapshot2.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
+    const next = plan(admit(snapshot.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
     requireProgress(next.structuralRevision === current.structuralRevision, "conflict");
     if (previous) {
       const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.payload);
@@ -4182,7 +3915,6 @@ class Store {
   constructor(file, options = {}, fresh) {
     this.file = file;
     this.readOnly = options.readOnly ?? false;
-    const finish = fresh ? () => {} : beginPlatformSecurityScope();
     try {
       if (fresh) {
         requirePlatformWriteBoundary();
@@ -4245,8 +3977,6 @@ class Store {
       if (e instanceof PlatformError)
         throw e;
       throw storageError(e);
-    } finally {
-      finish();
     }
   }
   static createFresh(file, options) {
@@ -4254,7 +3984,7 @@ class Store {
     requirePlatformStoreFence(file);
     requireProgress(identifier(options.storeId) && typeof options.validate === "function", "binding");
     const parent = path3.dirname(file), sidecars = ["-journal", "-wal", "-shm"].map((s) => file + s);
-    const directory = platformSecurityScope(() => {
+    const directory = (() => {
       options.validate();
       requireProgress(path3.isAbsolute(file) && path3.resolve(file) === file && path3.basename(file) === "progress.sqlite", "binding");
       if (windows)
@@ -4265,17 +3995,17 @@ class Store {
       requireProgress(stat.isDirectory() && !stat.isSymbolicLink() && privatePaths([parent]), "binding");
       requireProgress(![file, ...sidecars].some((p) => lstatSync3(p, { throwIfNoEntry: false })), "binding");
       return storeObject(stat);
-    });
-    requirePlatformWriteBoundary(3, 8500);
+    })();
+    requirePlatformWriteBoundary(STEP_HEADROOM_MS);
     const fd = openSync3(file, "wx", 384);
     try {
       const reserved = storeObject(fstatSync(fd, { bigint: true }));
-      platformSecurityScope(() => {
+      {
         if (windows)
           windowsPaths([parent, file, ...sidecars], true);
         const stat = lstatSync3(file, { bigint: true });
         requireProgress(storeObject(lstatSync3(parent, { bigint: true })) === directory && storeObject(stat) === reserved && stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === 0n && privatePaths([parent, file]) && !sidecars.some((p) => lstatSync3(p, { throwIfNoEntry: false })), "binding");
-      });
+      }
       requirePlatformWriteBoundary();
       const store = new Store(file, {}, { token: freshStoreToken, storeId: options.storeId, object: reserved });
       try {
@@ -4525,7 +4255,7 @@ class Store {
       let source = "", id = "";
       const installed = cleanupInstalled(this.db);
       const next = this.db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1");
-      const snapshot2 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
+      const snapshot = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
       let exhausted = false;
       while (r.work.planSlots < 512 && checkpoint()) {
         const row2 = next.get(source, id);
@@ -4549,7 +4279,7 @@ class Store {
           r.limited = true;
           break;
         }
-        const text = snapshot2.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id)?.snapshot;
+        const text = snapshot.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id)?.snapshot;
         requireProgress(typeof text === "string", "corrupt");
         r.work.inputBytes += bytes;
         let p;
@@ -5139,9 +4869,9 @@ class Store {
         else if (item.blocker)
           item.blocker.validAtRevision = p.revision;
       }
-      const snapshot2 = JSON.stringify(p);
-      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);
-      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot2, JSON.stringify(actor));
+      const snapshot = JSON.stringify(p);
+      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot);
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot, JSON.stringify(actor));
       this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
       if (child)
         this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, child.sessionId, JSON.stringify(child));
@@ -5212,9 +4942,6 @@ import { lstatSync as lstatSync4, readFileSync, realpathSync as realpathSync4 } 
 import path4 from "node:path";
 import { fileURLToPath } from "node:url";
 function readBinding(file) {
-  return platformSecurityScope(() => readBindingInner(file));
-}
-function readBindingInner(file) {
   const p = file instanceof URL ? file : path4.resolve(file);
   const stat = lstatSync4(p);
   requireProgress(!stat.isSymbolicLink() && stat.isFile() && (windows ? sameWindowsObject(windowsPath(file instanceof URL ? fileURLToPath(file) : file), realpathSync4.native(p)) && privatePaths([realpathSync4.native(p)]) : stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
@@ -5245,10 +4972,8 @@ function activationFingerprint(binding, plugin, guidance) {
 function normalizeTargets(targets) {
   if (windows)
     try {
-      return platformSecurityScope(() => {
-        const [configRoot, dataRoot, storeRoot] = windowsPaths([targets.configRoot, targets.dataRoot, targets.storeRoot, path5.join(targets.configRoot, "plugins", "agent-progress"), path5.join(targets.storeRoot, "payloads")], true);
-        return { ...targets, configRoot, dataRoot, storeRoot };
-      });
+      const [configRoot, dataRoot, storeRoot] = windowsPaths([targets.configRoot, targets.dataRoot, targets.storeRoot, path5.join(targets.configRoot, "plugins", "agent-progress"), path5.join(targets.storeRoot, "payloads")], true);
+      return { ...targets, configRoot, dataRoot, storeRoot };
     } catch (e) {
       throw e instanceof PlatformError ? new SetupError(e.code) : e;
     }
@@ -5406,9 +5131,6 @@ function verifyFiles(root, expected, extras = []) {
   }
 }
 function inspect2(targets) {
-  return platformSecurityScope(() => inspectInner(targets));
-}
-function inspectInner(targets) {
   targets = normalizeTargets(targets);
   safe2(targets.configRoot);
   safe2(targets.dataRoot);
@@ -5483,24 +5205,22 @@ function removableSelectors(o) {
   });
 }
 function migrationBinding(targets) {
-  return platformSecurityScope(() => {
-    const o = owned(targets);
-    removableSelectors(o);
-    need(o.binding.source.verified && privatePaths([o.root, path5.join(o.root, ".ownership.json")]), "ownership-invalid");
-    const store = new Store(o.binding.database, { readOnly: true });
-    try {
-      verifyStore(store, o.binding);
-      store.subagentRunStorage();
-    } finally {
-      store.close();
-    }
-    const active = path5.join(targets.storeRoot, "payloads", o.manifest.active);
-    return {
-      binding: o.binding,
-      fingerprint: activationFingerprint(readBinding(path5.join(active, "progress-binding.json")), readFileSync2(path5.join(active, "index.js")), readFileSync2(path5.join(active, "SKILL.md"))),
-      ownership: digest(readFileSync2(path5.join(o.root, ".ownership.json")))
-    };
-  });
+  const o = owned(targets);
+  removableSelectors(o);
+  need(o.binding.source.verified && privatePaths([o.root, path5.join(o.root, ".ownership.json")]), "ownership-invalid");
+  const store = new Store(o.binding.database, { readOnly: true });
+  try {
+    verifyStore(store, o.binding);
+    store.subagentRunStorage();
+  } finally {
+    store.close();
+  }
+  const active = path5.join(targets.storeRoot, "payloads", o.manifest.active);
+  return {
+    binding: o.binding,
+    fingerprint: activationFingerprint(readBinding(path5.join(active, "progress-binding.json")), readFileSync2(path5.join(active, "index.js")), readFileSync2(path5.join(active, "SKILL.md"))),
+    ownership: digest(readFileSync2(path5.join(o.root, ".ownership.json")))
+  };
 }
 function migrationObject(file) {
   const s = lstatSync5(file, { bigint: true });
@@ -5535,48 +5255,44 @@ function migrationOwnedPaths(targets, m, selectors) {
   ])];
 }
 function migrationEvidence(targets) {
-  return platformSecurityScope(() => {
-    const o = owned(targets), selectors = removableSelectors(o).sort(), ownership = readFileSync2(path5.join(o.root, ".ownership.json"), "utf8");
-    const m = migrationOwnership(ownership), paths = migrationOwnedPaths(targets, m, selectors);
-    if (paths.length > MANAGED_STEP_LIMITS.claimPaths || Buffer.byteLength(ownership) > MANAGED_STEP_LIMITS.journalBytes)
-      throw new SetupError("managed-step-limit");
-    need(canonical(m) === canonical(o.manifest) && o.binding.source.verified && privatePaths([o.root, path5.join(o.root, ".ownership.json")]), "ownership-invalid");
-    const store = new Store(o.binding.database, { readOnly: true });
-    try {
-      verifyStore(store, o.binding);
-      store.subagentRunStorage();
-    } finally {
-      store.close();
-    }
-    return {
-      binding: o.binding,
-      legacy: { kind: "manifest", ownership, ownershipDigest: digest(ownership), claims: paths.map(migrationClaim) },
-      plan: migrationRemovalPlan(selectors.length)
-    };
-  });
+  const o = owned(targets), selectors = removableSelectors(o).sort(), ownership = readFileSync2(path5.join(o.root, ".ownership.json"), "utf8");
+  const m = migrationOwnership(ownership), paths = migrationOwnedPaths(targets, m, selectors);
+  if (paths.length > MANAGED_STEP_LIMITS.claimPaths || Buffer.byteLength(ownership) > MANAGED_STEP_LIMITS.journalBytes)
+    throw new SetupError("managed-step-limit");
+  need(canonical(m) === canonical(o.manifest) && o.binding.source.verified && privatePaths([o.root, path5.join(o.root, ".ownership.json")]), "ownership-invalid");
+  const store = new Store(o.binding.database, { readOnly: true });
+  try {
+    verifyStore(store, o.binding);
+    store.subagentRunStorage();
+  } finally {
+    store.close();
+  }
+  return {
+    binding: o.binding,
+    legacy: { kind: "manifest", ownership, ownershipDigest: digest(ownership), claims: paths.map(migrationClaim) },
+    plan: migrationRemovalPlan(selectors.length)
+  };
 }
 function discoverMigrationPaths(targets) {
-  return platformSecurityScope(() => {
-    const root = path5.join(targets.configRoot, "plugins", "agent-progress");
-    const manifestFile = path5.join(root, ".ownership.json"), descriptor = path5.join(root, "progress-binding.json");
-    const fixed = [targets.configRoot, targets.dataRoot, root, manifestFile, descriptor];
-    if (windows)
-      windowsPaths(fixed);
-    for (const file of [manifestFile, descriptor]) {
-      safe2(file);
-      const s = lstatSync5(file);
-      need(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && s.size <= MANAGED_STEP_LIMITS.journalBytes && privatePaths([root, file]), "ownership-invalid");
-    }
-    const before = migrationSnapshot(manifestFile), ownership = readFileSync2(manifestFile, "utf8"), manifest = migrationOwnership(ownership);
-    need(before === migrationSnapshot(manifestFile), "installation-changed");
-    const binding = readBinding(descriptor);
-    need(binding.source.verified && binding.installId === manifest.installId && binding.source.configRoot === targets.configRoot && binding.source.dataRoot === targets.dataRoot, "ownership-invalid");
-    const selectors = windows ? readdirSync(root).filter((n) => /^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)).map((n) => path5.join(root, n)).sort() : [];
-    const paths = migrationOwnedPaths({ ...targets, storeRoot: path5.dirname(binding.database), confirmed: true }, manifest, selectors);
-    if (paths.length > MANAGED_STEP_LIMITS.claimPaths)
-      throw new SetupError("managed-step-limit");
-    return { binding, ownership, paths };
-  });
+  const root = path5.join(targets.configRoot, "plugins", "agent-progress");
+  const manifestFile = path5.join(root, ".ownership.json"), descriptor = path5.join(root, "progress-binding.json");
+  const fixed = [targets.configRoot, targets.dataRoot, root, manifestFile, descriptor];
+  if (windows)
+    windowsPaths(fixed);
+  for (const file of [manifestFile, descriptor]) {
+    safe2(file);
+    const s = lstatSync5(file);
+    need(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && s.size <= MANAGED_STEP_LIMITS.journalBytes && privatePaths([root, file]), "ownership-invalid");
+  }
+  const before = migrationSnapshot(manifestFile), ownership = readFileSync2(manifestFile, "utf8"), manifest = migrationOwnership(ownership);
+  need(before === migrationSnapshot(manifestFile), "installation-changed");
+  const binding = readBinding(descriptor);
+  need(binding.source.verified && binding.installId === manifest.installId && binding.source.configRoot === targets.configRoot && binding.source.dataRoot === targets.dataRoot, "ownership-invalid");
+  const selectors = windows ? readdirSync(root).filter((n) => /^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)).map((n) => path5.join(root, n)).sort() : [];
+  const paths = migrationOwnedPaths({ ...targets, storeRoot: path5.dirname(binding.database), confirmed: true }, manifest, selectors);
+  if (paths.length > MANAGED_STEP_LIMITS.claimPaths)
+    throw new SetupError("managed-step-limit");
+  return { binding, ownership, paths };
 }
 function migrationRemovalPlan(selectors) {
   return [
@@ -5612,75 +5328,73 @@ function removalLayout(journal) {
   return { targets, root, manifest, selectors, discovery, paths, claims, file, completed, removed, intentFor };
 }
 function validateMigrationRemoval(journal) {
-  return platformSecurityScope(() => {
-    const layout = removalLayout(journal), { targets, root, manifest, selectors, claims, removed, completed } = layout, m = journal.migration;
-    const database = journal.database, historyFile = path5.join(targets.storeRoot, "installation-history.jsonl");
-    const extra = [database, ...["-journal", "-wal", "-shm"].map((s) => database + s), historyFile];
-    if (windows)
-      windowsPaths([...layout.paths, ...extra], true);
-    const rootRemoved = completed >= m.plan.findIndex((s) => s.name === "record-removal");
-    const rootMayBeMissing = rootRemoved || m.step?.name === "record-removal" && layout.intentFor(root);
-    for (const claim of claims.values()) {
-      const s = lstatSync5(claim.path, { throwIfNoEntry: false });
-      const missingAllowed = removed.has(claim.path) || claim.path === layout.file(m.step) && layout.intentFor(claim.path) || claim.path === root && rootMayBeMissing;
-      if (!s) {
-        need(missingAllowed, "modified-owned-files");
-        continue;
-      }
-      need(!removed.has(claim.path) && !(claim.path === root && rootRemoved), "installation-changed");
-      safe2(claim.path);
-      need(canonical(migrationObject(claim.path)) === canonical(claim.object), "installation-changed");
-      const publicRoot = claim.path === targets.configRoot || claim.path === targets.dataRoot;
-      need(!s.isSymbolicLink() && (claim.kind === "directory" ? s.isDirectory() : claim.kind === "file" && s.isFile() && s.nlink === 1) && (publicRoot ? isOwned(claim.path) : privatePaths([claim.path])), "ownership-invalid");
-      if (claim.kind === "file") {
-        const before = migrationSnapshot(claim.path);
-        need(digest(readFileSync2(claim.path)) === claim.digest && before === migrationSnapshot(claim.path), "modified-owned-files");
-      }
+  const layout = removalLayout(journal), { targets, root, manifest, selectors, claims, removed, completed } = layout, m = journal.migration;
+  const database = journal.database, historyFile = path5.join(targets.storeRoot, "installation-history.jsonl");
+  const extra = [database, ...["-journal", "-wal", "-shm"].map((s) => database + s), historyFile];
+  if (windows)
+    windowsPaths([...layout.paths, ...extra], true);
+  const rootRemoved = completed >= m.plan.findIndex((s) => s.name === "record-removal");
+  const rootMayBeMissing = rootRemoved || m.step?.name === "record-removal" && layout.intentFor(root);
+  for (const claim of claims.values()) {
+    const s = lstatSync5(claim.path, { throwIfNoEntry: false });
+    const missingAllowed = removed.has(claim.path) || claim.path === layout.file(m.step) && layout.intentFor(claim.path) || claim.path === root && rootMayBeMissing;
+    if (!s) {
+      need(missingAllowed, "modified-owned-files");
+      continue;
     }
-    for (const [name2, hash3] of Object.entries(manifest.files))
-      need(claims.get(path5.join(root, name2))?.digest === hash3, "ownership-invalid");
-    need(claims.get(path5.join(root, ".ownership.json"))?.digest === m.legacy.ownershipDigest, "ownership-invalid");
-    for (const [id, release] of Object.entries(manifest.releases)) {
-      const releaseRoot = path5.join(targets.storeRoot, "payloads", id);
-      need(canonical(readdirSync(releaseRoot).sort()) === canonical(Object.keys(release.files).sort()), "foreign-files");
-      for (const [name2, hash3] of Object.entries(release.files))
-        need(claims.get(path5.join(releaseRoot, name2))?.digest === hash3, "ownership-invalid");
+    need(!removed.has(claim.path) && !(claim.path === root && rootRemoved), "installation-changed");
+    safe2(claim.path);
+    need(canonical(migrationObject(claim.path)) === canonical(claim.object), "installation-changed");
+    const publicRoot = claim.path === targets.configRoot || claim.path === targets.dataRoot;
+    need(!s.isSymbolicLink() && (claim.kind === "directory" ? s.isDirectory() : claim.kind === "file" && s.isFile() && s.nlink === 1) && (publicRoot ? isOwned(claim.path) : privatePaths([claim.path])), "ownership-invalid");
+    if (claim.kind === "file") {
+      const before = migrationSnapshot(claim.path);
+      need(digest(readFileSync2(claim.path)) === claim.digest && before === migrationSnapshot(claim.path), "modified-owned-files");
     }
-    if (lstatSync5(root, { throwIfNoEntry: false })) {
-      const allowed = new Set([...layout.discovery, ...selectors].filter((p) => !removed.has(p) && lstatSync5(p, { throwIfNoEntry: false })).map((p) => path5.basename(p)));
-      need(readdirSync(root).every((name2) => allowed.has(name2)), "foreign-files");
-    }
-    const binding = readBinding(path5.join(targets.storeRoot, "payloads", manifest.active, "progress-binding.json"));
-    need(binding.installId === m.legacyInstallId && binding.database === database && binding.storeId === journal.storeId && canonical(binding.source) === canonical(journal.source), "ownership-invalid");
-    removableSelectors({ root, manifest, binding, staged: selectors.filter((p) => lstatSync5(p, { throwIfNoEntry: false })).map((p) => path5.basename(p)) });
-    for (const p of extra) {
-      const s = lstatSync5(p, { throwIfNoEntry: false });
-      if (!s)
-        continue;
-      safe2(p);
-      need(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && privatePaths([p]), "store-permissions");
-    }
-    const store = new Store(database, { readOnly: true });
-    let enabled;
-    try {
-      verifyStore(store, binding);
-      store.subagentRunStorage();
-      enabled = store.list({ limit: 1 }).captureEnabled;
-    } finally {
-      store.close();
-    }
-    const capture = { state: enabled ? "on" : "off", observedAt: new Date().toISOString() };
-    return { ...layout, capture };
-  });
+  }
+  for (const [name2, hash3] of Object.entries(manifest.files))
+    need(claims.get(path5.join(root, name2))?.digest === hash3, "ownership-invalid");
+  need(claims.get(path5.join(root, ".ownership.json"))?.digest === m.legacy.ownershipDigest, "ownership-invalid");
+  for (const [id, release] of Object.entries(manifest.releases)) {
+    const releaseRoot = path5.join(targets.storeRoot, "payloads", id);
+    need(canonical(readdirSync(releaseRoot).sort()) === canonical(Object.keys(release.files).sort()), "foreign-files");
+    for (const [name2, hash3] of Object.entries(release.files))
+      need(claims.get(path5.join(releaseRoot, name2))?.digest === hash3, "ownership-invalid");
+  }
+  if (lstatSync5(root, { throwIfNoEntry: false })) {
+    const allowed = new Set([...layout.discovery, ...selectors].filter((p) => !removed.has(p) && lstatSync5(p, { throwIfNoEntry: false })).map((p) => path5.basename(p)));
+    need(readdirSync(root).every((name2) => allowed.has(name2)), "foreign-files");
+  }
+  const binding = readBinding(path5.join(targets.storeRoot, "payloads", manifest.active, "progress-binding.json"));
+  need(binding.installId === m.legacyInstallId && binding.database === database && binding.storeId === journal.storeId && canonical(binding.source) === canonical(journal.source), "ownership-invalid");
+  removableSelectors({ root, manifest, binding, staged: selectors.filter((p) => lstatSync5(p, { throwIfNoEntry: false })).map((p) => path5.basename(p)) });
+  for (const p of extra) {
+    const s = lstatSync5(p, { throwIfNoEntry: false });
+    if (!s)
+      continue;
+    safe2(p);
+    need(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && privatePaths([p]), "store-permissions");
+  }
+  const store = new Store(database, { readOnly: true });
+  let enabled;
+  try {
+    verifyStore(store, binding);
+    store.subagentRunStorage();
+    enabled = store.list({ limit: 1 }).captureEnabled;
+  } finally {
+    store.close();
+  }
+  const capture = { state: enabled ? "on" : "off", observedAt: new Date().toISOString() };
+  return { ...layout, capture };
 }
 function removeMigrationFile(journal, validateJournal) {
   requirePlatformWriteBoundary();
   const m = journal.migration;
   need(m.state === "running" && m.intent !== null && ["remove-selector", "remove-discovery"].includes(m.step?.name ?? ""), "managed-step-conflict");
-  const before = platformSecurityScope(() => {
+  const before = (() => {
     validateJournal?.();
     return validateMigrationRemoval(journal);
-  }), file = before.file(m.step);
+  })(), file = before.file(m.step);
   need(file && before.intentFor(file) && before.completed >= 2 && before.capture.state === "off", "managed-step-conflict");
   if (!lstatSync5(file, { throwIfNoEntry: false }))
     return { removed: false, capture: before.capture };
@@ -5720,22 +5434,20 @@ function removalEvent(journal, capture) {
 `;
 }
 function migrationRemovalRecordClaims(journal) {
-  return platformSecurityScope(() => {
-    const layout = validateMigrationRemoval(journal), m = journal.migration;
-    need(m.step?.name === "record-removal" && m.intent === null && layout.capture.state === "off", "managed-step-conflict");
-    need(readdirSync(layout.root).length === 0, "foreign-files");
-    const history = removalHistory(journal), event = removalEvent(journal, layout.capture);
-    if (history.bytes.length + Buffer.byteLength(event) > MANAGED_STEP_LIMITS.journalBytes)
-      throw new SetupError("managed-step-limit");
-    return {
-      before: [layout.claims.get(layout.root), history.claim],
-      after: [
-        { path: layout.root, kind: "absent", object: null, digest: null },
-        { ...history.claim, digest: digest(Buffer.concat([history.bytes, Buffer.from(event)])) }
-      ],
-      capture: layout.capture
-    };
-  });
+  const layout = validateMigrationRemoval(journal), m = journal.migration;
+  need(m.step?.name === "record-removal" && m.intent === null && layout.capture.state === "off", "managed-step-conflict");
+  need(readdirSync(layout.root).length === 0, "foreign-files");
+  const history = removalHistory(journal), event = removalEvent(journal, layout.capture);
+  if (history.bytes.length + Buffer.byteLength(event) > MANAGED_STEP_LIMITS.journalBytes)
+    throw new SetupError("managed-step-limit");
+  return {
+    before: [layout.claims.get(layout.root), history.claim],
+    after: [
+      { path: layout.root, kind: "absent", object: null, digest: null },
+      { ...history.claim, digest: digest(Buffer.concat([history.bytes, Buffer.from(event)])) }
+    ],
+    capture: layout.capture
+  };
 }
 function validateRemovalRecord(journal) {
   const m = journal.migration, intent = m.intent;
@@ -5764,20 +5476,20 @@ function validateRemovalRecord(journal) {
 }
 function recordMigrationRemoval(journal, validateJournal) {
   requirePlatformWriteBoundary();
-  let current = platformSecurityScope(() => {
+  let current = (() => {
     validateJournal?.();
     return validateRemovalRecord(journal);
-  });
+  })();
   let removed = false;
   if (lstatSync5(current.layout.root, { throwIfNoEntry: false })) {
     requirePlatformWriteBoundary();
     rmdirSync(current.layout.root);
     syncDirectory(path5.dirname(current.layout.root));
     removed = true;
-    current = platformSecurityScope(() => {
+    current = (() => {
       validateJournal?.();
       return validateRemovalRecord(journal);
-    });
+    })();
   }
   if (!current.recorded) {
     requirePlatformWriteBoundary();
@@ -5787,23 +5499,21 @@ function recordMigrationRemoval(journal, validateJournal) {
   return { removed, recorded: !current.recorded, capture: { state: "unknown", observedAt: null } };
 }
 function migrationRemovalRecorded(journal) {
-  return platformSecurityScope(() => validateRemovalRecord(journal).recorded);
+  return validateRemovalRecord(journal).recorded;
 }
 function migrationRemovalComplete(journal) {
-  return platformSecurityScope(() => {
-    const layout = validateMigrationRemoval(journal), m = journal.migration;
-    need(layout.completed >= m.plan.findIndex((s) => s.name === "record-removal"), "managed-step-conflict");
-    const events = removalHistory(journal).text.split(`
+  const layout = validateMigrationRemoval(journal), m = journal.migration;
+  need(layout.completed >= m.plan.findIndex((s) => s.name === "record-removal"), "managed-step-conflict");
+  const events = removalHistory(journal).text.split(`
 `).flatMap((line) => {
-      try {
-        const event = JSON.parse(line);
-        return event?.action === "remove-capture" && event.installId === m.legacyInstallId && event.operationId === m.operationId ? [event] : [];
-      } catch {
-        return [];
-      }
-    });
-    return events.length === 1 && typeof events[0].at === "string" && Number.isFinite(Date.parse(events[0].at)) && new Date(events[0].at).toISOString() === events[0].at;
+    try {
+      const event = JSON.parse(line);
+      return event?.action === "remove-capture" && event.installId === m.legacyInstallId && event.operationId === m.operationId ? [event] : [];
+    } catch {
+      return [];
+    }
   });
+  return events.length === 1 && typeof events[0].at === "string" && Number.isFinite(Date.parse(events[0].at)) && new Date(events[0].at).toISOString() === events[0].at;
 }
 function history(targets, event) {
   const file = path5.join(targets.storeRoot, "installation-history.jsonl");
@@ -5832,7 +5542,7 @@ function matchesRetainedSource(source, targets) {
 }
 function lifecycle(action, targets, payload, testBoundary) {
   try {
-    return platformSecurityScope(() => lifecycleInner(action, targets, payload, testBoundary));
+    return lifecycleInner(action, targets, payload, testBoundary);
   } catch (e) {
     throw e instanceof PlatformError ? new SetupError(e.code) : e;
   }
@@ -5991,42 +5701,35 @@ function managedPath(value, missing = false) {
   return value;
 }
 function managedSourceRoots(env = process.env) {
-  return platformSecurityScope(() => {
-    need2(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
-    if (windows) {
-      const home2 = env.HOME ?? homedir();
-      const config = env.XDG_CONFIG_HOME ?? path6.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path6.join(home2, ".local/share");
-      const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
-      const roots = windowsPaths([...inputs, path6.join(config, "opencode"), path6.join(data, "opencode")], true);
-      return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
-    }
-    const home = () => managedPath(env.HOME ?? homedir(), true);
-    const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path6.join(home(), fallback), true);
-    return {
-      configRoot: managedPath(path6.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
-      dataRoot: managedPath(path6.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
-    };
-  });
+  need2(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+  if (windows) {
+    const home2 = env.HOME ?? homedir();
+    const config = env.XDG_CONFIG_HOME ?? path6.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path6.join(home2, ".local/share");
+    const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
+    const roots = windowsPaths([...inputs, path6.join(config, "opencode"), path6.join(data, "opencode")], true);
+    return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
+  }
+  const home = () => managedPath(env.HOME ?? homedir(), true);
+  const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path6.join(home(), fallback), true);
+  return {
+    configRoot: managedPath(path6.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
+    dataRoot: managedPath(path6.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
+  };
 }
 function managedBindingFile(env = process.env) {
-  return platformSecurityScope(() => {
-    const { dataRoot } = managedSourceRoots(env);
-    const proposed = path6.join(dataRoot, "agent-progress-managed");
-    const root = windows ? windowsPaths([proposed, path6.join(proposed, ".ownership.json"), path6.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
-    const stat = lstatSync6(root, { throwIfNoEntry: false });
-    if (stat) {
-      need2(stat.isDirectory() && privatePaths([root]));
-      const marker = path6.join(root, ".ownership.json");
-      const m = lstatSync6(marker, { throwIfNoEntry: false });
-      need2(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync3(marker, "utf8") === markerText);
-    }
-    return path6.join(root, "progress-binding.json");
-  });
+  const { dataRoot } = managedSourceRoots(env);
+  const proposed = path6.join(dataRoot, "agent-progress-managed");
+  const root = windows ? windowsPaths([proposed, path6.join(proposed, ".ownership.json"), path6.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
+  const stat = lstatSync6(root, { throwIfNoEntry: false });
+  if (stat) {
+    need2(stat.isDirectory() && privatePaths([root]));
+    const marker = path6.join(root, ".ownership.json");
+    const m = lstatSync6(marker, { throwIfNoEntry: false });
+    need2(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync3(marker, "utf8") === markerText);
+  }
+  return path6.join(root, "progress-binding.json");
 }
 function readManagedBinding(env = process.env) {
-  return platformSecurityScope(() => readManagedBindingInner(env));
-}
-function readManagedBindingInner(env) {
   const file = managedBindingFile(env);
   if (!lstatSync6(file, { throwIfNoEntry: false }))
     return;
@@ -6045,20 +5748,18 @@ function readManagedBindingInner(env) {
   return binding;
 }
 function createManagedBindingDirectory(env = process.env) {
-  return platformSecurityScope(() => {
-    const file = managedBindingFile(env), root = path6.dirname(file), { dataRoot } = managedSourceRoots(env);
-    need2(lstatSync6(dataRoot).isDirectory() && isOwned(dataRoot));
-    if (!lstatSync6(root, { throwIfNoEntry: false })) {
-      privateDirectory(root);
-      const marker = path6.join(root, ".ownership.json");
-      writeFileSync2(marker, markerText, { mode: 384, flag: "wx" });
-      syncFile(marker);
-      syncDirectory(root);
-      syncDirectory(dataRoot);
-    }
-    managedBindingFile(env);
-    return file;
-  });
+  const file = managedBindingFile(env), root = path6.dirname(file), { dataRoot } = managedSourceRoots(env);
+  need2(lstatSync6(dataRoot).isDirectory() && isOwned(dataRoot));
+  if (!lstatSync6(root, { throwIfNoEntry: false })) {
+    privateDirectory(root);
+    const marker = path6.join(root, ".ownership.json");
+    writeFileSync2(marker, markerText, { mode: 384, flag: "wx" });
+    syncFile(marker);
+    syncDirectory(root);
+    syncDirectory(dataRoot);
+  }
+  managedBindingFile(env);
+  return file;
 }
 function publishPrivateJson(file, value, replace = false) {
   const stage = `${file}.stage-${randomUUID5()}`;
@@ -6091,9 +5792,6 @@ function managedExpectationFile(binding) {
   return path6.join(path6.dirname(binding.database), `managed-expectation-${identity2}.json`);
 }
 function readManagedExpectation(binding) {
-  return platformSecurityScope(() => readManagedExpectationInner(binding));
-}
-function readManagedExpectationInner(binding) {
   const file = managedExpectationFile(binding);
   if (!lstatSync6(file, { throwIfNoEntry: false }))
     return;
@@ -6283,12 +5981,12 @@ function blockedTiming(store, detail, now = new Date, options = {}) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.1";
+var RELEASE = "1.5.2";
 
 // service/request-worker.ts
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import path16 from "node:path";
-import { randomBytes, randomUUID as randomUUID8, timingSafeEqual } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 
 // service/setup-controller.ts
 import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync10, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync4, closeSync as closeSync5, openSync as openSync5 } from "node:fs";
@@ -6748,31 +6446,29 @@ function migrationFile(env) {
   return path8.join(path8.dirname(managedBindingFile(env)), "migration.json");
 }
 function readMigration(env) {
-  return platformSecurityScope(() => {
-    const file = migrationFile(env);
-    if (!lstatSync7(file, { throwIfNoEntry: false }))
-      return;
-    managedPath(file);
-    if (!privatePaths([path8.dirname(file), file]))
-      throw new SetupError("managed-migration-conflict");
-    const raw = readBinding(file);
-    const m = raw.migration, roots = managedSourceRoots(env);
-    if (!m || m.format !== 1 || m.product !== "openchamber-agent-progress-managed" || !["pending", "removed", "complete"].includes(m.phase) || typeof m.legacyInstallId !== "string" || !m.legacyInstallId || m.legacyInstallId === raw.installId || raw.source.configRoot !== roots.configRoot || raw.source.dataRoot !== roots.dataRoot || !raw.source.verified || [roots.configRoot, roots.dataRoot, path8.dirname(file)].includes(path8.dirname(raw.database)) || ![roots.configRoot, roots.dataRoot].every((root) => lstatSync7(root).isDirectory() && isOwned(root)))
-      throw new SetupError("managed-migration-conflict");
-    const { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source } = raw;
-    const binding = { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source };
-    const store = new Store(database, { readOnly: true });
-    try {
-      verifyStore(store, binding);
-      store.subagentRunStorage();
-    } finally {
-      store.close();
-    }
-    return { binding, phase: m.phase, legacyInstallId: m.legacyInstallId };
-  });
+  const file = migrationFile(env);
+  if (!lstatSync7(file, { throwIfNoEntry: false }))
+    return;
+  managedPath(file);
+  if (!privatePaths([path8.dirname(file), file]))
+    throw new SetupError("managed-migration-conflict");
+  const raw = readBinding(file);
+  const m = raw.migration, roots = managedSourceRoots(env);
+  if (!m || m.format !== 1 || m.product !== "openchamber-agent-progress-managed" || !["pending", "removed", "complete"].includes(m.phase) || typeof m.legacyInstallId !== "string" || !m.legacyInstallId || m.legacyInstallId === raw.installId || raw.source.configRoot !== roots.configRoot || raw.source.dataRoot !== roots.dataRoot || !raw.source.verified || [roots.configRoot, roots.dataRoot, path8.dirname(file)].includes(path8.dirname(raw.database)) || ![roots.configRoot, roots.dataRoot].every((root) => lstatSync7(root).isDirectory() && isOwned(root)))
+    throw new SetupError("managed-migration-conflict");
+  const { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source } = raw;
+  const binding = { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source };
+  const store = new Store(database, { readOnly: true });
+  try {
+    verifyStore(store, binding);
+    store.subagentRunStorage();
+  } finally {
+    store.close();
+  }
+  return { binding, phase: m.phase, legacyInstallId: m.legacyInstallId };
 }
 function writeMigration(env, record2) {
-  const { prior, file } = platformSecurityScope(() => ({ prior: readMigration(env), file: migrationFile(env) }));
+  const { prior, file } = { prior: readMigration(env), file: migrationFile(env) };
   if (prior && (canonical(prior.binding) !== canonical(record2.binding) || prior.legacyInstallId !== record2.legacyInstallId))
     throw new SetupError("managed-migration-conflict");
   publishPrivateJson(file, { ...record2.binding, migration: { format: 1, product: "openchamber-agent-progress-managed", phase: record2.phase, legacyInstallId: record2.legacyInstallId } }, !!prior);
@@ -6781,10 +6477,6 @@ function sameMigrationTarget(a, b) {
   return a.database === b.database && a.storeId === b.storeId && canonical(a.source) === canonical(b.source);
 }
 function migrationError(e) {
-  if (e instanceof PlatformError && e.code === "windows-security-unavailable")
-    return e;
-  if (e instanceof SetupError && e.code === "windows-security-unavailable")
-    return new PlatformError(e.code);
   if (e instanceof ProgressError && e.code !== "binding")
     return e;
   if (e instanceof SetupError || e instanceof PlatformError || e instanceof ManagedBindingError || e instanceof SyntaxError || e instanceof ProgressError || ["ENOENT", "ENOTDIR", "ELOOP"].includes(e?.code ?? ""))
@@ -6792,9 +6484,6 @@ function migrationError(e) {
   return storageError(e);
 }
 function legacyMigration(env) {
-  return platformSecurityScope(() => legacyMigrationInner(env));
-}
-function legacyMigrationInner(env) {
   const roots = managedSourceRoots(env), root = path8.join(roots.configRoot, "plugins/agent-progress");
   if (!lstatSync7(root, { throwIfNoEntry: false }))
     return;
@@ -6807,9 +6496,6 @@ function legacyMigrationInner(env) {
   }
 }
 function removalRecorded(record2) {
-  return platformSecurityScope(() => removalRecordedInner(record2));
-}
-function removalRecordedInner(record2) {
   const file = path8.join(path8.dirname(record2.binding.database), "installation-history.jsonl");
   managedPath(file);
   const s = lstatSync7(file);
@@ -6826,74 +6512,72 @@ function removalRecordedInner(record2) {
   });
 }
 function readRemovalReceipt(record2, retained) {
-  return platformSecurityScope(() => {
-    const b = record2.binding;
-    const conflict = () => {
-      throw new SetupError("managed-migration-conflict");
-    };
-    if (!b.source.verified || !record2.legacyInstallId || record2.legacyInstallId === b.installId)
+  const b = record2.binding;
+  const conflict = () => {
+    throw new SetupError("managed-migration-conflict");
+  };
+  if (!b.source.verified || !record2.legacyInstallId || record2.legacyInstallId === b.installId)
+    conflict();
+  for (const root of [b.source.configRoot, b.source.dataRoot, path8.dirname(b.database)]) {
+    managedPath(root);
+    if (!lstatSync7(root).isDirectory() || !isOwned(root))
       conflict();
-    for (const root of [b.source.configRoot, b.source.dataRoot, path8.dirname(b.database)]) {
-      managedPath(root);
-      if (!lstatSync7(root).isDirectory() || !isOwned(root))
-        conflict();
-    }
-    const legacy = managedPath(path8.join(b.source.configRoot, "plugins/agent-progress"), true);
-    if (lstatSync7(legacy, { throwIfNoEntry: false }))
+  }
+  const legacy = managedPath(path8.join(b.source.configRoot, "plugins/agent-progress"), true);
+  if (lstatSync7(legacy, { throwIfNoEntry: false }))
+    conflict();
+  for (const file2 of [b.database, ...["-journal", "-wal", "-shm"].map((suffix) => b.database + suffix)]) {
+    const stat = lstatSync7(file2, { throwIfNoEntry: false });
+    if (!stat)
+      continue;
+    managedPath(file2);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([file2]))
       conflict();
-    for (const file2 of [b.database, ...["-journal", "-wal", "-shm"].map((suffix) => b.database + suffix)]) {
-      const stat = lstatSync7(file2, { throwIfNoEntry: false });
-      if (!stat)
-        continue;
-      managedPath(file2);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([file2]))
-        conflict();
-    }
-    const store = new Store(b.database, { readOnly: true });
-    try {
-      verifyStore(store, b);
-      store.subagentRunStorage();
-    } finally {
-      store.close();
-    }
-    const file = managedPath(path8.join(path8.dirname(b.database), "installation-history.jsonl"));
-    const before = lstatSync7(file, { bigint: true });
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || !privatePaths([path8.dirname(file), file]))
-      conflict();
-    if (before.size > BigInt(MANAGED_STEP_LIMITS.journalBytes))
-      throw new SetupError("managed-step-limit");
-    const object = { device: String(before.dev), inode: String(before.ino), birthNs: String(before.birthtimeNs) };
-    if (retained && (retained.history.path !== file || retained.history.kind !== "file" || canonical(retained.history.object) !== canonical(object)))
-      conflict();
-    const bytes = readFileSync4(file), after = lstatSync7(file, { bigint: true });
-    if ([before.dev, before.ino, before.birthtimeNs, before.size, before.mtimeNs, before.ctimeNs, before.nlink].join(":") !== [after.dev, after.ino, after.birthtimeNs, after.size, after.mtimeNs, after.ctimeNs, after.nlink].join(":"))
-      conflict();
-    let text2;
-    try {
-      text2 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      throw new SetupError("managed-migration-conflict");
-    }
-    let entry2;
-    for (const line of text2.split(`
+  }
+  const store = new Store(b.database, { readOnly: true });
+  try {
+    verifyStore(store, b);
+    store.subagentRunStorage();
+  } finally {
+    store.close();
+  }
+  const file = managedPath(path8.join(path8.dirname(b.database), "installation-history.jsonl"));
+  const before = lstatSync7(file, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || !privatePaths([path8.dirname(file), file]))
+    conflict();
+  if (before.size > BigInt(MANAGED_STEP_LIMITS.journalBytes))
+    throw new SetupError("managed-step-limit");
+  const object = { device: String(before.dev), inode: String(before.ino), birthNs: String(before.birthtimeNs) };
+  if (retained && (retained.history.path !== file || retained.history.kind !== "file" || canonical(retained.history.object) !== canonical(object)))
+    conflict();
+  const bytes = readFileSync4(file), after = lstatSync7(file, { bigint: true });
+  if ([before.dev, before.ino, before.birthtimeNs, before.size, before.mtimeNs, before.ctimeNs, before.nlink].join(":") !== [after.dev, after.ino, after.birthtimeNs, after.size, after.mtimeNs, after.ctimeNs, after.nlink].join(":"))
+    conflict();
+  let text2;
+  try {
+    text2 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new SetupError("managed-migration-conflict");
+  }
+  let entry2;
+  for (const line of text2.split(`
 `)) {
-      if (retained && line !== retained.entry)
-        continue;
-      try {
-        const event = JSON.parse(line);
-        if (event?.action === "remove-capture" && event.installId === record2.legacyInstallId) {
-          entry2 = line;
-          break;
-        }
-      } catch {}
-    }
-    if (!entry2) {
-      if (retained)
-        conflict();
-      return;
-    }
-    return { history: { path: file, kind: "file", object, digest: digest(bytes) }, entry: entry2 };
-  });
+    if (retained && line !== retained.entry)
+      continue;
+    try {
+      const event = JSON.parse(line);
+      if (event?.action === "remove-capture" && event.installId === record2.legacyInstallId) {
+        entry2 = line;
+        break;
+      }
+    } catch {}
+  }
+  if (!entry2) {
+    if (retained)
+      conflict();
+    return;
+  }
+  return { history: { path: file, kind: "file", object, digest: digest(bytes) }, entry: entry2 };
 }
 function journalSnapshot(file) {
   const s = lstatSync7(file, { bigint: true });
@@ -6921,65 +6605,61 @@ function managedJournalPaths(journal) {
   return paths;
 }
 function readManagedFreshStepJournal(env) {
-  return platformSecurityScope(() => {
-    const file = migrationFile(env), root = path8.dirname(file);
-    if (!lstatSync7(root, { throwIfNoEntry: false }))
-      return;
-    if (lstatSync7(path8.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink !== 1)
-      throw new SetupError("managed-binding-invalid");
-    const names = readdirSync2(root);
-    if (names.includes(".configuration-lock"))
-      throw new SetupError("managed-configuration-busy");
-    if (names.some((n) => n.startsWith("migration.json.stage-") || n.startsWith("progress-binding.json.stage-")))
+  const file = migrationFile(env), root = path8.dirname(file);
+  if (!lstatSync7(root, { throwIfNoEntry: false }))
+    return;
+  if (lstatSync7(path8.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink !== 1)
+    throw new SetupError("managed-binding-invalid");
+  const names = readdirSync2(root);
+  if (names.includes(".configuration-lock"))
+    throw new SetupError("managed-configuration-busy");
+  if (names.some((n) => n.startsWith("migration.json.stage-") || n.startsWith("progress-binding.json.stage-")))
+    throw new SetupError("managed-migration-conflict");
+  const stat = lstatSync7(file, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  managedPath(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([root, file]))
+    throw new SetupError("managed-migration-conflict");
+  if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
+    throw new SetupError("managed-step-limit");
+  const before = journalSnapshot(file), journal = parseManagedFreshStepJournal(readFileSync4(file)), roots = managedSourceRoots(env), m = journal.migration;
+  if (journal.source.configRoot !== roots.configRoot || journal.source.dataRoot !== roots.dataRoot || [roots.configRoot, roots.dataRoot, root].includes(path8.dirname(journal.database)) || ![roots.configRoot, roots.dataRoot].every((p) => lstatSync7(p).isDirectory() && isOwned(p)))
+    throw new SetupError("managed-migration-conflict");
+  for (const [p, directory] of [[path8.dirname(journal.database), true], [journal.database, false], ...m.fresh.sidecars.map((c) => [c.path, false])]) {
+    managedPath(p, true);
+    const s = lstatSync7(p, { throwIfNoEntry: false });
+    if (s && (!privatePaths([p]) || s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile() || s.nlink !== 1)))
       throw new SetupError("managed-migration-conflict");
-    const stat = lstatSync7(file, { throwIfNoEntry: false });
-    if (!stat)
-      return;
-    managedPath(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([root, file]))
-      throw new SetupError("managed-migration-conflict");
-    if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
-      throw new SetupError("managed-step-limit");
-    const before = journalSnapshot(file), journal = parseManagedFreshStepJournal(readFileSync4(file)), roots = managedSourceRoots(env), m = journal.migration;
-    if (journal.source.configRoot !== roots.configRoot || journal.source.dataRoot !== roots.dataRoot || [roots.configRoot, roots.dataRoot, root].includes(path8.dirname(journal.database)) || ![roots.configRoot, roots.dataRoot].every((p) => lstatSync7(p).isDirectory() && isOwned(p)))
-      throw new SetupError("managed-migration-conflict");
-    for (const [p, directory] of [[path8.dirname(journal.database), true], [journal.database, false], ...m.fresh.sidecars.map((c) => [c.path, false])]) {
-      managedPath(p, true);
-      const s = lstatSync7(p, { throwIfNoEntry: false });
-      if (s && (!privatePaths([p]) || s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile() || s.nlink !== 1)))
-        throw new SetupError("managed-migration-conflict");
-    }
-    if ((m.fresh.directory.kind === "directory" || m.created.directory) && !lstatSync7(path8.dirname(journal.database), { throwIfNoEntry: false })?.isDirectory() || (m.fresh.database.kind === "file" || m.created.database) && !lstatSync7(journal.database, { throwIfNoEntry: false })?.isFile() || before !== journalSnapshot(file))
-      throw new SetupError("managed-migration-conflict");
-    return journal;
-  });
+  }
+  if ((m.fresh.directory.kind === "directory" || m.created.directory) && !lstatSync7(path8.dirname(journal.database), { throwIfNoEntry: false })?.isDirectory() || (m.fresh.database.kind === "file" || m.created.database) && !lstatSync7(journal.database, { throwIfNoEntry: false })?.isFile() || before !== journalSnapshot(file))
+    throw new SetupError("managed-migration-conflict");
+  return journal;
 }
 function readManagedStepJournal(env) {
-  return platformSecurityScope(() => {
-    const file = migrationFile(env), root = path8.dirname(file);
-    if (!lstatSync7(root, { throwIfNoEntry: false }))
-      return;
-    if (lstatSync7(path8.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink !== 1)
-      throw new SetupError("managed-binding-invalid");
-    const names = readdirSync2(root);
-    if (names.includes(".configuration-lock"))
-      throw new SetupError("managed-configuration-busy");
-    if (names.some((name2) => name2.startsWith("migration.json.stage-")))
-      throw new SetupError("managed-migration-conflict");
-    const stat = lstatSync7(file, { throwIfNoEntry: false });
-    if (!stat)
-      return;
-    managedPath(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([root, file]))
-      throw new SetupError("managed-migration-conflict");
-    if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
-      throw new SetupError("managed-step-limit");
-    const before = journalSnapshot(file), journal = parseManagedStepJournal(readFileSync4(file));
-    const binding = readBinding(file), roots = managedSourceRoots(env);
-    if (canonical(managedJournalBinding(binding)) !== canonical(managedJournalBinding(journal)) || journal.source.configRoot !== roots.configRoot || journal.source.dataRoot !== roots.dataRoot || [roots.configRoot, roots.dataRoot, root].includes(path8.dirname(journal.database)) || ![roots.configRoot, roots.dataRoot].every((p) => lstatSync7(p).isDirectory() && isOwned(p)) || before !== journalSnapshot(file))
-      throw new SetupError("managed-migration-conflict");
-    return journal;
-  });
+  const file = migrationFile(env), root = path8.dirname(file);
+  if (!lstatSync7(root, { throwIfNoEntry: false }))
+    return;
+  if (lstatSync7(path8.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink !== 1)
+    throw new SetupError("managed-binding-invalid");
+  const names = readdirSync2(root);
+  if (names.includes(".configuration-lock"))
+    throw new SetupError("managed-configuration-busy");
+  if (names.some((name2) => name2.startsWith("migration.json.stage-")))
+    throw new SetupError("managed-migration-conflict");
+  const stat = lstatSync7(file, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  managedPath(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !privatePaths([root, file]))
+    throw new SetupError("managed-migration-conflict");
+  if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
+    throw new SetupError("managed-step-limit");
+  const before = journalSnapshot(file), journal = parseManagedStepJournal(readFileSync4(file));
+  const binding = readBinding(file), roots = managedSourceRoots(env);
+  if (canonical(managedJournalBinding(binding)) !== canonical(managedJournalBinding(journal)) || journal.source.configRoot !== roots.configRoot || journal.source.dataRoot !== roots.dataRoot || [roots.configRoot, roots.dataRoot, root].includes(path8.dirname(journal.database)) || ![roots.configRoot, roots.dataRoot].every((p) => lstatSync7(p).isDirectory() && isOwned(p)) || before !== journalSnapshot(file))
+    throw new SetupError("managed-migration-conflict");
+  return journal;
 }
 function validateManagedJournalChange(prior, next) {
   const fail = () => {
@@ -7036,11 +6716,11 @@ function validateManagedJournalChange(prior, next) {
 }
 function writeManagedStepJournal(env, next, expected, validate) {
   publishManagedJournal(env, next, expected, validate);
-  const written = platformSecurityScope(() => {
+  const written = (() => {
     if (windows)
       windowsPaths(managedJournalPaths(next), true);
     return next.migration.format === 3 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
-  });
+  })();
   if (!written || canonical(written) !== canonical(next))
     throw new SetupError("managed-step-unsettled");
 }
@@ -7065,7 +6745,7 @@ function upgradeManagedStepJournal(env, next, expected, validate) {
   validateInitialManagedCheckpoint(checked);
   if (expected.phase === "complete" || canonical(managedJournalBinding(checked)) !== canonical(expected.binding) || m.legacyInstallId !== expected.legacyInstallId || m.capture.state !== "unknown")
     throw new SetupError("managed-step-conflict");
-  const file = platformSecurityScope(() => {
+  const file = (() => {
     if (windows)
       windowsPaths(managedJournalPaths(checked), true);
     const file2 = migrationFile(env), root = path8.dirname(file2), names = readdirSync2(root);
@@ -7092,14 +6772,14 @@ function upgradeManagedStepJournal(env, next, expected, validate) {
     }
     validate?.();
     return file2;
-  });
+  })();
   requirePlatformWriteBoundary();
   publishPrivateJson(file, checked, true);
-  const written = platformSecurityScope(() => {
+  const written = (() => {
     if (windows)
       windowsPaths(managedJournalPaths(checked), true);
     return readManagedStepJournal(env);
-  });
+  })();
   if (!written || canonical(written) !== canonical(checked))
     throw new SetupError("managed-step-unsettled");
 }
@@ -7107,7 +6787,7 @@ function publishManagedJournal(env, next, expected, validate) {
   requirePlatformWriteBoundary();
   const checked = next.migration.format === 3 ? parseManagedFreshStepJournal(JSON.stringify(next)) : parseManagedStepJournal(JSON.stringify(next));
   const known = managedJournalPaths(checked);
-  const file = platformSecurityScope(() => {
+  const file = (() => {
     if (windows)
       windowsPaths(known, true);
     const current = checked.migration.format === 3 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
@@ -7125,7 +6805,7 @@ function publishManagedJournal(env, next, expected, validate) {
       throw new SetupError("managed-migration-conflict");
     validate?.();
     return file2;
-  });
+  })();
   requirePlatformWriteBoundary();
   publishPrivateJson(file, checked, !!expected);
 }
@@ -7135,9 +6815,6 @@ import { lstatSync as lstatSync8, realpathSync as realpathSync7 } from "node:fs"
 import path9 from "node:path";
 import { homedir as homedir2 } from "node:os";
 function setupSuggestions(context2) {
-  return platformSecurityScope(() => suggestions(context2));
-}
-function suggestions(context2) {
   const host = context2 ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
   if (host.platform !== "linux" && host.platform !== "win32")
     return;
@@ -7272,7 +6949,6 @@ class SetupController {
   error = "binding";
   expectedDescriptor = null;
   canPersist = true;
-  securityUnavailable = false;
   fixedError;
   activation = "unknown";
   readonlyPayload;
@@ -7351,7 +7027,7 @@ class SetupController {
   health() {
     if (this.workerHealth)
       return { ...this.workerHealth, diagnostics: [...this.workerHealth.diagnostics] };
-    const diagnostics = this.managedDiagnostic ? [this.managedDiagnostic] : this.store ? [] : this.securityUnavailable ? ["windows-security-unavailable"] : this.binding || !this.canPersist ? [this.fixedError?.code ?? this.error] : [];
+    const diagnostics = this.managedDiagnostic ? [this.managedDiagnostic] : this.store ? [] : this.binding || !this.canPersist ? [this.fixedError?.code ?? this.error] : [];
     return {
       state: !this.checked ? "starting" : this.store ? "ready" : diagnostics.length ? "refused" : "unconfigured",
       ready: !!this.store,
@@ -7386,17 +7062,15 @@ class SetupController {
     this.store?.close();
     this.store = next;
     this.binding = b;
-    this.securityUnavailable = false;
     this.fixedError = undefined;
   }
   recordError(e) {
     this.error = storageError(e).code;
     this.fixedError = e instanceof ManagedBindingError || platformErrorCode(e) ? e : undefined;
-    this.securityUnavailable = e instanceof PlatformError && e.code === "windows-security-unavailable";
   }
   refresh() {
     this.workerHealth = undefined;
-    platformSecurityScope(() => this.refreshInner());
+    this.refreshInner();
     if (this.managedEnv && this.store && this.binding && this.expectationPending) {
       this.expectationPending = false;
       try {
@@ -7453,10 +7127,10 @@ class SetupController {
     this.refresh();
     const targets = this.targets();
     if (!targets) {
-      const suggestions2 = includeSuggestions ? setupSuggestions(this.suggestionContext) : undefined;
-      return { configured: false, verified: false, installed: false, captureEnabled: null, targets: null, version: null, activation: "unknown", separateLifecycle: true, historyRetained: true, diagnostics: [...!this.canPersist ? ["service-binding-collision"] : [], ...this.securityUnavailable ? ["windows-security-unavailable"] : [], this.error === "binding" ? "targets-unverified" : this.error], ...suggestions2 ? { suggestions: suggestions2 } : {} };
+      const suggestions = includeSuggestions ? setupSuggestions(this.suggestionContext) : undefined;
+      return { configured: false, verified: false, installed: false, captureEnabled: null, targets: null, version: null, activation: "unknown", separateLifecycle: true, historyRetained: true, diagnostics: [...!this.canPersist ? ["service-binding-collision"] : [], this.error === "binding" ? "targets-unverified" : this.error], ...suggestions ? { suggestions } : {} };
     }
-    const base = { configured: true, verified: this.binding.source.verified, installed: false, captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : null, targets: { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot }, version: null, activation: this.activation, separateLifecycle: true, historyRetained: true, diagnostics: this.store ? [] : [...this.securityUnavailable ? ["windows-security-unavailable"] : [], this.error] };
+    const base = { configured: true, verified: this.binding.source.verified, installed: false, captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : null, targets: { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot }, version: null, activation: this.activation, separateLifecycle: true, historyRetained: true, diagnostics: this.store ? [] : [this.error] };
     if (this.store)
       base.reportingIdentity = { storeId: this.binding.storeId, sourceId: this.binding.source.id, verified: this.binding.source.verified };
     let payload;
@@ -7519,7 +7193,7 @@ class SetupController {
     requirePlatformStoreFence(path11.join(targets.storeRoot, "progress.sqlite"));
     if (["disable", "enable", "remove-capture"].includes(action)) {
       const current = this.targets();
-      if (!current || !(windows ? platformSecurityScope(() => sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot)) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
+      if (!current || !(windows ? sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
         throw new SetupError("ownership-invalid");
     }
     if (action === "install" || action === "update") {
@@ -7603,7 +7277,7 @@ class SetupController {
     writeManagedExpectation(b, { format: 1, storeId: b.storeId, sourceId: b.source.id, installId: b.installId, version: payload.version, fingerprint });
   }
   managedMigration(_targets) {
-    return platformSecurityScope(() => this.managedMigrationInner().state);
+    return this.managedMigrationInner().state;
   }
   managedMigrationInner() {
     this.migrationDiagnostic = undefined;
@@ -7646,7 +7320,7 @@ class SetupController {
   }
   managedStatus() {
     this.refresh();
-    return platformSecurityScope(() => this.managedStatusInner());
+    return this.managedStatusInner();
   }
   managedStatusInner() {
     const b = this.binding, targets = this.targets(), migration = this.managedMigrationInner();
@@ -7693,8 +7367,6 @@ class SetupController {
   }
   managedControlCandidate(storeRoot) {
     this.refresh();
-    if (this.securityUnavailable)
-      throw new PlatformError("windows-security-unavailable");
     if (!this.store || !this.binding)
       throw this.fixedError ?? new ProgressError(this.error);
     const b = this.binding, targets = this.targets();
@@ -7729,7 +7401,7 @@ class SetupController {
         }
       }
     }
-    return platformSecurityScope(() => this.managedFullCandidateInner(storeRoot, freshOnly));
+    return this.managedFullCandidateInner(storeRoot, freshOnly);
   }
   managedFullCandidateInner(storeRoot, freshOnly) {
     const env = this.managedEnv, roots = managedSourceRoots(env), file = managedBindingFile(env);
@@ -7975,7 +7647,7 @@ class SetupController {
   }
   validateDescriptor() {
     try {
-      return platformSecurityScope(() => this.validateDescriptorInner());
+      return this.validateDescriptorInner();
     } catch (e) {
       throw e instanceof PlatformError ? new SetupError(e.code) : e;
     }
@@ -8057,7 +7729,7 @@ function batch(paths) {
   if (windows)
     windowsPaths(unique, true);
 }
-function snapshot2(file) {
+function snapshot(file) {
   const s = lstatSync11(file, { bigint: true });
   return [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":");
 }
@@ -8069,8 +7741,8 @@ function claim(file) {
   need4(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path12.dirname(file), file]), "managed-migration-conflict");
   if (s.size > BigInt(MANAGED_STEP_LIMITS.journalBytes))
     throw new SetupError("managed-step-limit");
-  const before = snapshot2(file), hash4 = digest(readFileSync6(file));
-  need4(before === snapshot2(file));
+  const before = snapshot(file), hash4 = digest(readFileSync6(file));
+  need4(before === snapshot(file));
   return { path: file, kind: "file", object: { device: String(s.dev), inode: String(s.ino), birthNs: String(s.birthtimeNs) }, digest: hash4 };
 }
 function basePaths(roots) {
@@ -8148,157 +7820,153 @@ function reviewFor(session, observed) {
   return { expected, targets: { ...session.roots, storeRoot: path12.dirname(journal.database) }, storeId: journal.storeId, sourceId: journal.source.id };
 }
 function validateManagedInspectionReview(env, payload, session) {
-  return platformSecurityScope(() => {
-    need4(session.stage === MANAGED_INSPECTION_STEPS.length && session.review && session.candidate, "managed-inspection-expired");
-    batch(paths(session));
-    sameDiscovery(env, session);
-    const observed = validateCandidate(session, payload), review = reviewFor(session, observed);
-    need4(review.expected === session.review.expected);
-    return {
-      candidate: structuredClone(session.candidate),
-      prior: session.prior && structuredClone(session.prior),
-      operation: session.operation && structuredClone(session.operation),
-      capture: observed,
-      review
-    };
-  });
+  need4(session.stage === MANAGED_INSPECTION_STEPS.length && session.review && session.candidate, "managed-inspection-expired");
+  batch(paths(session));
+  sameDiscovery(env, session);
+  const observed = validateCandidate(session, payload), review = reviewFor(session, observed);
+  need4(review.expected === session.review.expected);
+  return {
+    candidate: structuredClone(session.candidate),
+    prior: session.prior && structuredClone(session.prior),
+    operation: session.operation && structuredClone(session.operation),
+    capture: observed,
+    review
+  };
 }
 function inspectManagedStep(env, payload, prior, storeRoot) {
   let stage = "roots", known;
   try {
-    return platformSecurityScope(() => {
-      let session;
-      if (!prior) {
-        const roots = managedSourceRoots(env);
-        batch(basePaths(roots));
-        for (const root of Object.values(roots))
-          need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
-        const file = container(env);
-        session = {
-          nonce: randomUUID7(),
-          cursor: randomUUID7(),
-          stage: 1,
-          roots,
-          selection: claim(file),
-          record: claim(migrationFile(env)),
-          ...storeRoot !== undefined ? { storeRoot: managedPath(storeRoot, true) } : {}
-        };
-        return { session, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: session.cursor } };
+    let session;
+    if (!prior) {
+      const roots = managedSourceRoots(env);
+      batch(basePaths(roots));
+      for (const root of Object.values(roots))
+        need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
+      const file = container(env);
+      session = {
+        nonce: randomUUID7(),
+        cursor: randomUUID7(),
+        stage: 1,
+        roots,
+        selection: claim(file),
+        record: claim(migrationFile(env)),
+        ...storeRoot !== undefined ? { storeRoot: managedPath(storeRoot, true) } : {}
+      };
+      return { session, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: session.cursor } };
+    }
+    session = structuredClone(prior);
+    need4(session.stage > 0 && session.stage < MANAGED_INSPECTION_STEPS.length, "managed-inspection-expired");
+    stage = MANAGED_INSPECTION_STEPS[session.stage];
+    batch(paths(session));
+    sameDiscovery(env, session);
+    known = session.operation;
+    if (stage === "managed-state") {
+      const selected = readManagedBinding(env);
+      if (selected)
+        session.binding = selected;
+      if (session.record.kind !== "absent") {
+        let raw;
+        try {
+          raw = JSON.parse(readFileSync6(session.record.path, "utf8"));
+        } catch {
+          throw new SetupError("managed-journal-unsupported");
+        }
+        if (raw?.migration?.format === 2) {
+          session.operation = readManagedStepJournal(env);
+          known = session.operation;
+        } else if (raw?.migration?.format === 1)
+          session.prior = readMigration(env);
+        else
+          throw new SetupError("managed-journal-unsupported");
       }
-      session = structuredClone(prior);
-      need4(session.stage > 0 && session.stage < MANAGED_INSPECTION_STEPS.length, "managed-inspection-expired");
-      stage = MANAGED_INSPECTION_STEPS[session.stage];
-      batch(paths(session));
-      sameDiscovery(env, session);
-      known = session.operation;
-      if (stage === "managed-state") {
-        const selected = readManagedBinding(env);
-        if (selected)
-          session.binding = selected;
-        if (session.record.kind !== "absent") {
-          let raw;
-          try {
-            raw = JSON.parse(readFileSync6(session.record.path, "utf8"));
-          } catch {
-            throw new SetupError("managed-journal-unsupported");
-          }
-          if (raw?.migration?.format === 2) {
-            session.operation = readManagedStepJournal(env);
-            known = session.operation;
-          } else if (raw?.migration?.format === 1)
-            session.prior = readMigration(env);
-          else
-            throw new SetupError("managed-journal-unsupported");
+      const retained = session.operation ?? session.prior?.binding;
+      need4(!selected || !retained || canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
+      need4(session.prior?.phase !== "complete", "managed-step-conflict");
+      if (retained && session.storeRoot !== undefined)
+        need4(session.storeRoot === path12.dirname(retained.database), "managed-selection-conflict");
+    } else if (stage === "legacy-discovery") {
+      if (session.operation)
+        session.candidate = structuredClone(session.operation);
+      else {
+        const legacy = path12.join(session.roots.configRoot, "plugins", "agent-progress");
+        managedPath(legacy, true);
+        if (lstatSync11(legacy, { throwIfNoEntry: false })) {
+          session.discovered = discoverMigrationPaths(session.roots);
+          if (session.binding)
+            need4(session.binding.installId !== session.discovered.binding.installId && session.binding.database === session.discovered.binding.database && session.binding.storeId === session.discovered.binding.storeId && canonical(session.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
+          if (session.storeRoot !== undefined)
+            need4(session.storeRoot === path12.dirname(session.discovered.binding.database), "managed-selection-conflict");
+          if (session.prior)
+            need4(session.prior.legacyInstallId === session.discovered.binding.installId && session.prior.binding.database === session.discovered.binding.database && session.prior.binding.storeId === session.discovered.binding.storeId && canonical(session.prior.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
+        } else
+          need4(session.prior, "managed-migration-required");
+      }
+      if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
+        throw new SetupError("managed-step-limit");
+    } else if (stage === "legacy-releases") {
+      if (session.candidate)
+        validateCandidate(session, payload);
+      else {
+        const discovered = session.discovered;
+        let evidence;
+        if (discovered) {
+          const current = discoverMigrationPaths(session.roots);
+          need4(canonical(current) === canonical(discovered));
+          evidence = migrationEvidence({ ...session.roots, storeRoot: path12.dirname(discovered.binding.database), confirmed: true });
+          need4(evidence.legacy.ownership === discovered.ownership);
         }
-        const retained = session.operation ?? session.prior?.binding;
-        need4(!selected || !retained || canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
-        need4(session.prior?.phase !== "complete", "managed-step-conflict");
-        if (retained && session.storeRoot !== undefined)
-          need4(session.storeRoot === path12.dirname(retained.database), "managed-selection-conflict");
-      } else if (stage === "legacy-discovery") {
-        if (session.operation)
-          session.candidate = structuredClone(session.operation);
-        else {
-          const legacy = path12.join(session.roots.configRoot, "plugins", "agent-progress");
-          managedPath(legacy, true);
-          if (lstatSync11(legacy, { throwIfNoEntry: false })) {
-            session.discovered = discoverMigrationPaths(session.roots);
-            if (session.binding)
-              need4(session.binding.installId !== session.discovered.binding.installId && session.binding.database === session.discovered.binding.database && session.binding.storeId === session.discovered.binding.storeId && canonical(session.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
-            if (session.storeRoot !== undefined)
-              need4(session.storeRoot === path12.dirname(session.discovered.binding.database), "managed-selection-conflict");
-            if (session.prior)
-              need4(session.prior.legacyInstallId === session.discovered.binding.installId && session.prior.binding.database === session.discovered.binding.database && session.prior.binding.storeId === session.discovered.binding.storeId && canonical(session.prior.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
-          } else
-            need4(session.prior, "managed-migration-required");
-        }
+        const binding = session.prior?.binding ?? session.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
+        const receipt = !evidence && session.prior ? readRemovalReceipt(session.prior) : undefined;
+        need4(evidence || receipt, "managed-migration-conflict");
+        const legacy = evidence?.legacy ?? {
+          kind: "removal-receipt",
+          ownership: null,
+          ownershipDigest: null,
+          claims: [{ path: path12.join(session.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }],
+          receipt
+        };
+        const plan2 = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name2) => ({ name: name2, batch: 0 }));
+        session.candidate = { ...binding, migration: {
+          format: 2,
+          product: "openchamber-agent-progress-managed",
+          phase: evidence ? "pending" : "removed",
+          legacyInstallId: session.prior?.legacyInstallId ?? evidence.binding.installId,
+          operationId: session.nonce,
+          sequence: 1,
+          state: "pending",
+          step: plan2[1],
+          lastCompleted: plan2[0],
+          consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan2)) },
+          expectation: expectation(binding, payload),
+          plan: plan2,
+          legacy,
+          captureRenewals: [],
+          intent: null,
+          receipt: null,
+          capture: { state: "unknown", observedAt: null },
+          diagnostic: null
+        } };
+        session.candidate.migration.consent.targetDigest = managedTargetDigest(session.candidate);
         if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
           throw new SetupError("managed-step-limit");
-      } else if (stage === "legacy-releases") {
-        if (session.candidate)
-          validateCandidate(session, payload);
-        else {
-          const discovered = session.discovered;
-          let evidence;
-          if (discovered) {
-            const current = discoverMigrationPaths(session.roots);
-            need4(canonical(current) === canonical(discovered));
-            evidence = migrationEvidence({ ...session.roots, storeRoot: path12.dirname(discovered.binding.database), confirmed: true });
-            need4(evidence.legacy.ownership === discovered.ownership);
-          }
-          const binding = session.prior?.binding ?? session.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
-          const receipt = !evidence && session.prior ? readRemovalReceipt(session.prior) : undefined;
-          need4(evidence || receipt, "managed-migration-conflict");
-          const legacy = evidence?.legacy ?? {
-            kind: "removal-receipt",
-            ownership: null,
-            ownershipDigest: null,
-            claims: [{ path: path12.join(session.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }],
-            receipt
-          };
-          const plan2 = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name2) => ({ name: name2, batch: 0 }));
-          session.candidate = { ...binding, migration: {
-            format: 2,
-            product: "openchamber-agent-progress-managed",
-            phase: evidence ? "pending" : "removed",
-            legacyInstallId: session.prior?.legacyInstallId ?? evidence.binding.installId,
-            operationId: session.nonce,
-            sequence: 1,
-            state: "pending",
-            step: plan2[1],
-            lastCompleted: plan2[0],
-            consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan2)) },
-            expectation: expectation(binding, payload),
-            plan: plan2,
-            legacy,
-            captureRenewals: [],
-            intent: null,
-            receipt: null,
-            capture: { state: "unknown", observedAt: null },
-            diagnostic: null
-          } };
-          session.candidate.migration.consent.targetDigest = managedTargetDigest(session.candidate);
-          if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
-            throw new SetupError("managed-step-limit");
-        }
-      } else if (stage === "store") {
-        validateCandidate(session, payload);
-        capture2(session.candidate);
-      } else if (stage === "review") {
-        const observed = validateCandidate(session, payload);
-        session.review = reviewFor(session, observed);
-        session.stage++;
-        session.cursor = randomUUID7();
-        return {
-          session,
-          inspection: { state: "complete", stage: "review", cursor: null, review: session.review },
-          progress: session.operation ? managedJournalProgress(session.operation, observed) : null
-        };
       }
+    } else if (stage === "store") {
+      validateCandidate(session, payload);
+      capture2(session.candidate);
+    } else if (stage === "review") {
+      const observed = validateCandidate(session, payload);
+      session.review = reviewFor(session, observed);
       session.stage++;
       session.cursor = randomUUID7();
-      return { session, progress: session.operation ? managedJournalProgress(session.operation) : null, inspection: { state: "incomplete", stage, cursor: session.cursor } };
-    });
+      return {
+        session,
+        inspection: { state: "complete", stage: "review", cursor: null, review: session.review },
+        progress: session.operation ? managedJournalProgress(session.operation, observed) : null
+      };
+    }
+    session.stage++;
+    session.cursor = randomUUID7();
+    return { session, progress: session.operation ? managedJournalProgress(session.operation) : null, inspection: { state: "incomplete", stage, cursor: session.cursor } };
   } catch (error) {
     throw new ManagedStepFailure(error, stage, known);
   }
@@ -8396,135 +8064,131 @@ function freshReview(s, observed) {
   };
 }
 function validateManagedFreshInspectionReview(env, payload, s) {
-  return platformSecurityScope(() => {
-    need4(s.family === 2 && s.stage === MANAGED_FRESH_INSPECTION_STEPS.length && s.review && s.candidate, "managed-inspection-expired");
-    batch(freshPaths(s));
-    freshDiscovery(env, s);
-    const j = s.candidate;
-    need4(canonical(j.migration.expectation) === canonical(expectation(j, payload)));
-    if (s.operation)
-      need4(canonical(readManagedFreshStepJournal(env)) === canonical(s.operation));
-    const observed = observeManagedFreshStore(j), review = freshReview(s, observed);
-    need4(review.expected === s.review.expected);
-    return { candidate: structuredClone(j), operation: s.operation && structuredClone(s.operation), capture: observed, review };
-  });
+  need4(s.family === 2 && s.stage === MANAGED_FRESH_INSPECTION_STEPS.length && s.review && s.candidate, "managed-inspection-expired");
+  batch(freshPaths(s));
+  freshDiscovery(env, s);
+  const j = s.candidate;
+  need4(canonical(j.migration.expectation) === canonical(expectation(j, payload)));
+  if (s.operation)
+    need4(canonical(readManagedFreshStepJournal(env)) === canonical(s.operation));
+  const observed = observeManagedFreshStore(j), review = freshReview(s, observed);
+  need4(review.expected === s.review.expected);
+  return { candidate: structuredClone(j), operation: s.operation && structuredClone(s.operation), capture: observed, review };
 }
 function inspectManagedFreshStep(env, payload, prior, storeRoot) {
-  return platformSecurityScope(() => {
-    let s;
-    if (!prior) {
-      const roots = managedSourceRoots(env), selected = storeRoot ?? path12.join(roots.dataRoot, "openchamber-progress");
-      batch([...basePaths(roots), selected]);
-      const target = managedPath(selected, true);
-      need4(![roots.configRoot, roots.dataRoot, path12.join(roots.dataRoot, "agent-progress-managed")].includes(target), "managed-selection-conflict");
-      for (const root of Object.values(roots))
-        need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
-      s = { family: 2, nonce: randomUUID7(), cursor: randomUUID7(), stage: 1, roots, storeRoot: target, ...storeRoot !== undefined ? { explicitStoreRoot: true } : {}, selection: claim(container(env)), record: claim(migrationFile(env)) };
-      return { session: s, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: s.cursor } };
-    }
-    s = structuredClone(prior);
-    need4(s.family === 2 && s.stage > 0 && s.stage < MANAGED_FRESH_INSPECTION_STEPS.length, "managed-inspection-expired");
-    const stage = MANAGED_FRESH_INSPECTION_STEPS[s.stage];
-    batch(freshPaths(s));
-    need4(canonical(managedSourceRoots(env)) === canonical(s.roots));
-    need4(canonical(claim(container(env))) === canonical(s.selection) && canonical(claim(migrationFile(env))) === canonical(s.record));
-    if (stage === "managed-state") {
-      if (s.record.kind === "file") {
-        s.operation = readManagedFreshStepJournal(env);
-        need4(s.operation, "managed-journal-unsupported");
-        if (s.explicitStoreRoot)
-          need4(s.storeRoot === path12.dirname(s.operation.database), "managed-selection-conflict");
-        s.storeRoot = path12.dirname(s.operation.database);
-        s.candidate = structuredClone(s.operation);
-      } else
-        need4(s.selection.kind === "absent", "managed-step-conflict");
-    } else if (stage === "legacy-discovery")
-      freshDiscovery(env, s);
-    else if (stage === "store") {
-      if (!s.operation) {
-        const database = path12.join(s.storeRoot, "progress.sqlite"), directory = managedFreshObjectClaim(s.storeRoot, true), db = managedFreshObjectClaim(database);
-        const sidecars = ["-journal", "-wal", "-shm"].map((x) => managedFreshObjectClaim(database + x));
-        let storeId = randomUUID7(), source = { id: randomUUID7(), ...s.roots, verified: true }, sourceMode = "create", captureState2 = "unknown";
-        if (db.kind === "absent") {
-          need4(sidecars.every((c) => c.kind === "absent"), "managed-migration-conflict");
-          if (directory.kind === "directory")
-            need4(readdirSync3(s.storeRoot).length === 0, "foreign-files");
-          else
-            need4(lstatSync11(path12.dirname(s.storeRoot), { throwIfNoEntry: false })?.isDirectory(), "managed-path-unverified");
-        } else {
-          const store = new Store(database, { readOnly: true });
-          try {
-            store.subagentRunStorage();
-            const e = store.list({ limit: 1 });
-            storeId = e.storeId;
-            captureState2 = e.captureEnabled ? "on" : "off";
-            const matches = e.sources.filter((x) => x.configRoot === s.roots.configRoot && x.dataRoot === s.roots.dataRoot);
-            need4(matches.length <= 1 && matches.every((x) => x.verified), "managed-source-conflict");
-            if (matches[0]) {
-              source = { ...matches[0] };
-              sourceMode = "reuse";
-            }
-            need4(!e.sources.some((x) => x.id === source.id && canonical(x) !== canonical(source)), "managed-source-conflict");
-          } finally {
-            store.close();
+  let s;
+  if (!prior) {
+    const roots = managedSourceRoots(env), selected = storeRoot ?? path12.join(roots.dataRoot, "openchamber-progress");
+    batch([...basePaths(roots), selected]);
+    const target = managedPath(selected, true);
+    need4(![roots.configRoot, roots.dataRoot, path12.join(roots.dataRoot, "agent-progress-managed")].includes(target), "managed-selection-conflict");
+    for (const root of Object.values(roots))
+      need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
+    s = { family: 2, nonce: randomUUID7(), cursor: randomUUID7(), stage: 1, roots, storeRoot: target, ...storeRoot !== undefined ? { explicitStoreRoot: true } : {}, selection: claim(container(env)), record: claim(migrationFile(env)) };
+    return { session: s, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: s.cursor } };
+  }
+  s = structuredClone(prior);
+  need4(s.family === 2 && s.stage > 0 && s.stage < MANAGED_FRESH_INSPECTION_STEPS.length, "managed-inspection-expired");
+  const stage = MANAGED_FRESH_INSPECTION_STEPS[s.stage];
+  batch(freshPaths(s));
+  need4(canonical(managedSourceRoots(env)) === canonical(s.roots));
+  need4(canonical(claim(container(env))) === canonical(s.selection) && canonical(claim(migrationFile(env))) === canonical(s.record));
+  if (stage === "managed-state") {
+    if (s.record.kind === "file") {
+      s.operation = readManagedFreshStepJournal(env);
+      need4(s.operation, "managed-journal-unsupported");
+      if (s.explicitStoreRoot)
+        need4(s.storeRoot === path12.dirname(s.operation.database), "managed-selection-conflict");
+      s.storeRoot = path12.dirname(s.operation.database);
+      s.candidate = structuredClone(s.operation);
+    } else
+      need4(s.selection.kind === "absent", "managed-step-conflict");
+  } else if (stage === "legacy-discovery")
+    freshDiscovery(env, s);
+  else if (stage === "store") {
+    if (!s.operation) {
+      const database = path12.join(s.storeRoot, "progress.sqlite"), directory = managedFreshObjectClaim(s.storeRoot, true), db = managedFreshObjectClaim(database);
+      const sidecars = ["-journal", "-wal", "-shm"].map((x) => managedFreshObjectClaim(database + x));
+      let storeId = randomUUID7(), source = { id: randomUUID7(), ...s.roots, verified: true }, sourceMode = "create", captureState2 = "unknown";
+      if (db.kind === "absent") {
+        need4(sidecars.every((c) => c.kind === "absent"), "managed-migration-conflict");
+        if (directory.kind === "directory")
+          need4(readdirSync3(s.storeRoot).length === 0, "foreign-files");
+        else
+          need4(lstatSync11(path12.dirname(s.storeRoot), { throwIfNoEntry: false })?.isDirectory(), "managed-path-unverified");
+      } else {
+        const store = new Store(database, { readOnly: true });
+        try {
+          store.subagentRunStorage();
+          const e = store.list({ limit: 1 });
+          storeId = e.storeId;
+          captureState2 = e.captureEnabled ? "on" : "off";
+          const matches = e.sources.filter((x) => x.configRoot === s.roots.configRoot && x.dataRoot === s.roots.dataRoot);
+          need4(matches.length <= 1 && matches.every((x) => x.verified), "managed-source-conflict");
+          if (matches[0]) {
+            source = { ...matches[0] };
+            sourceMode = "reuse";
           }
+          need4(!e.sources.some((x) => x.id === source.id && canonical(x) !== canonical(source)), "managed-source-conflict");
+        } finally {
+          store.close();
         }
-        const storeMode = db.kind === "absent" ? "create" : "retain", plan2 = managedFreshPlan(storeMode, directory.kind === "absent", sourceMode);
-        const binding = { protocolVersion: 2, schemaVersion: 2, installId: `managed-${digest(JSON.stringify([storeId, source]))}`, version: payload.version, database, storeId, source };
-        s.candidate = { ...binding, migration: {
-          format: 3,
-          planKind: "fresh",
-          product: "openchamber-agent-progress-managed",
-          phase: "pending",
-          operationId: s.nonce,
-          sequence: 1,
-          state: "pending",
-          step: plan2[1],
-          lastCompleted: plan2[0],
-          consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan2)) },
-          expectation: expectation(binding, payload),
-          plan: plan2,
-          fresh: {
-            storeMode,
-            sourceMode,
-            capturePolicy: storeMode === "create" ? "enable-new" : "preserve",
-            directory,
-            database: db,
-            sidecars,
-            source: sourceMode === "reuse" ? source : null,
-            capture: captureState2,
-            selection: s.selection,
-            journal: s.record,
-            legacy: { path: path12.join(s.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }
-          },
-          created: { directory: null, database: null },
-          intent: null,
-          receipt: null,
-          captureRenewals: [],
-          capture: { state: "unknown", observedAt: null },
-          diagnostic: null
-        } };
-        s.candidate.migration.consent.targetDigest = managedTargetDigest(s.candidate);
       }
-      observeManagedFreshStore(s.candidate);
-    } else if (stage === "review") {
-      need4(s.candidate, "managed-inspection-expired");
-      freshDiscovery(env, s);
-      need4(canonical(s.candidate.migration.expectation) === canonical(expectation(s.candidate, payload)));
-      const observed = observeManagedFreshStore(s.candidate);
-      s.review = freshReview(s, observed);
-      s.stage++;
-      s.cursor = randomUUID7();
-      return {
-        session: s,
-        inspection: { state: "complete", stage: "review", cursor: null, review: s.review },
-        progress: s.operation ? managedFreshJournalProgress(s.operation, observed) : null
-      };
+      const storeMode = db.kind === "absent" ? "create" : "retain", plan2 = managedFreshPlan(storeMode, directory.kind === "absent", sourceMode);
+      const binding = { protocolVersion: 2, schemaVersion: 2, installId: `managed-${digest(JSON.stringify([storeId, source]))}`, version: payload.version, database, storeId, source };
+      s.candidate = { ...binding, migration: {
+        format: 3,
+        planKind: "fresh",
+        product: "openchamber-agent-progress-managed",
+        phase: "pending",
+        operationId: s.nonce,
+        sequence: 1,
+        state: "pending",
+        step: plan2[1],
+        lastCompleted: plan2[0],
+        consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan2)) },
+        expectation: expectation(binding, payload),
+        plan: plan2,
+        fresh: {
+          storeMode,
+          sourceMode,
+          capturePolicy: storeMode === "create" ? "enable-new" : "preserve",
+          directory,
+          database: db,
+          sidecars,
+          source: sourceMode === "reuse" ? source : null,
+          capture: captureState2,
+          selection: s.selection,
+          journal: s.record,
+          legacy: { path: path12.join(s.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }
+        },
+        created: { directory: null, database: null },
+        intent: null,
+        receipt: null,
+        captureRenewals: [],
+        capture: { state: "unknown", observedAt: null },
+        diagnostic: null
+      } };
+      s.candidate.migration.consent.targetDigest = managedTargetDigest(s.candidate);
     }
+    observeManagedFreshStore(s.candidate);
+  } else if (stage === "review") {
+    need4(s.candidate, "managed-inspection-expired");
+    freshDiscovery(env, s);
+    need4(canonical(s.candidate.migration.expectation) === canonical(expectation(s.candidate, payload)));
+    const observed = observeManagedFreshStore(s.candidate);
+    s.review = freshReview(s, observed);
     s.stage++;
     s.cursor = randomUUID7();
-    return { session: s, inspection: { state: "incomplete", stage, cursor: s.cursor }, progress: s.operation ? managedFreshJournalProgress(s.operation) : null };
-  });
+    return {
+      session: s,
+      inspection: { state: "complete", stage: "review", cursor: null, review: s.review },
+      progress: s.operation ? managedFreshJournalProgress(s.operation, observed) : null
+    };
+  }
+  s.stage++;
+  s.cursor = randomUUID7();
+  return { session: s, inspection: { state: "incomplete", stage, cursor: s.cursor }, progress: s.operation ? managedFreshJournalProgress(s.operation) : null };
 }
 
 // setup/managed-step-engine.ts
@@ -8537,7 +8201,7 @@ function need5(value, code = "managed-step-conflict") {
   if (!value)
     throw new SetupError(code);
 }
-function snapshot3(file) {
+function snapshot2(file) {
   const s = lstatSync12(file, { bigint: true });
   return [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":");
 }
@@ -8549,7 +8213,7 @@ function fileClaim(file) {
   need5(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path13.dirname(file), file]), "managed-migration-conflict");
   need5(s.size <= BigInt(MANAGED_STEP_LIMITS.journalBytes), "managed-step-limit");
   const before = [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":"), hash4 = digest(readFileSync7(file));
-  need5(before === snapshot3(file), "managed-migration-conflict");
+  need5(before === snapshot2(file), "managed-migration-conflict");
   return { path: file, kind: "file", object: { device: String(s.dev), inode: String(s.ino), birthNs: String(s.birthtimeNs) }, digest: hash4 };
 }
 function expectation2(journal) {
@@ -8585,77 +8249,73 @@ function freshCapture(journal, created) {
   return observeManagedFreshStore(j);
 }
 function validateManagedStepTarget(env, payload, journal, created) {
-  return platformSecurityScope(() => {
-    if (windows)
-      windowsPaths(managedJournalPaths(journal), true);
-    const current = journal.migration.format === 3 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
-    need5(current && canonical(current) === canonical(journal));
-    const m = journal.migration, binding = managedJournalBinding(journal);
-    need5(payload.plugin && payload.guidance && payload.version === m.expectation.version && activationFingerprint({ ...binding, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance)) === m.expectation.fingerprint, "managed-review-stale");
-    const selector = managedBindingFile(env), expectedFile = managedExpectationFile(journal);
-    for (const file of [selector, expectedFile]) {
-      if (lstatSync12(path13.dirname(file), { throwIfNoEntry: false }))
-        need5(!readdirSync4(path13.dirname(file)).some((n) => n.startsWith(path13.basename(file) + ".stage-")), "managed-migration-conflict");
-      fileClaim(file);
+  if (windows)
+    windowsPaths(managedJournalPaths(journal), true);
+  const current = journal.migration.format === 3 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
+  need5(current && canonical(current) === canonical(journal));
+  const m = journal.migration, binding = managedJournalBinding(journal);
+  need5(payload.plugin && payload.guidance && payload.version === m.expectation.version && activationFingerprint({ ...binding, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance)) === m.expectation.fingerprint, "managed-review-stale");
+  const selector = managedBindingFile(env), expectedFile = managedExpectationFile(journal);
+  for (const file of [selector, expectedFile]) {
+    if (lstatSync12(path13.dirname(file), { throwIfNoEntry: false }))
+      need5(!readdirSync4(path13.dirname(file)).some((n) => n.startsWith(path13.basename(file) + ".stage-")), "managed-migration-conflict");
+    fileClaim(file);
+  }
+  const selected = readManagedBinding(env), expected = readManagedExpectation(journal);
+  need5(!selected || canonical(selected) === canonical(binding), "managed-selection-conflict");
+  if (completed(journal, "expectation"))
+    need5(expected && canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
+  if (completed(journal, "publish-binding"))
+    need5(selected, "managed-migration-conflict");
+  let capture3;
+  if (m.format === 3) {
+    need5(!lstatSync12(m.fresh.legacy.path, { throwIfNoEntry: false }), "managed-migration-conflict");
+    capture3 = freshCapture(journal, created);
+    if (m.fresh.storeMode === "create" && lstatSync12(path13.dirname(journal.database), { throwIfNoEntry: false })) {
+      const allowed = new Set([path13.basename(journal.database), ...["-journal", "-wal", "-shm"].map((s) => path13.basename(journal.database) + s), path13.basename(expectedFile)]);
+      need5(readdirSync4(path13.dirname(journal.database)).every((n) => allowed.has(n)), "foreign-files");
+      if (!completed(journal, "enable") && m.step?.name !== "enable")
+        need5(capture3.state !== "on", "managed-step-unsettled");
     }
-    const selected = readManagedBinding(env), expected = readManagedExpectation(journal);
-    need5(!selected || canonical(selected) === canonical(binding), "managed-selection-conflict");
-    if (completed(journal, "expectation"))
-      need5(expected && canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
-    if (completed(journal, "publish-binding"))
-      need5(selected, "managed-migration-conflict");
-    let capture3;
-    if (m.format === 3) {
-      need5(!lstatSync12(m.fresh.legacy.path, { throwIfNoEntry: false }), "managed-migration-conflict");
-      capture3 = freshCapture(journal, created);
-      if (m.fresh.storeMode === "create" && lstatSync12(path13.dirname(journal.database), { throwIfNoEntry: false })) {
-        const allowed = new Set([path13.basename(journal.database), ...["-journal", "-wal", "-shm"].map((s) => path13.basename(journal.database) + s), path13.basename(expectedFile)]);
-        need5(readdirSync4(path13.dirname(journal.database)).every((n) => allowed.has(n)), "foreign-files");
-        if (!completed(journal, "enable") && m.step?.name !== "enable")
-          need5(capture3.state !== "on", "managed-step-unsettled");
-      }
-      const reconnect = m.fresh.storeMode === "retain" && m.fresh.sourceMode === "reuse" && !completed(journal, "expectation");
-      if (expected && !reconnect)
-        need5(canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
-      if (selected)
-        need5(completed(journal, "publish-binding") || m.intent?.step.name === "publish-binding", "managed-selection-conflict");
-    } else if (m.legacy.kind === "manifest") {
-      capture3 = validateMigrationRemoval(journal).capture;
-      if (completed(journal, "record-removal"))
-        need5(migrationRemovalComplete(journal), "managed-migration-conflict");
-    } else {
-      need5(readRemovalReceipt({ binding, phase: "removed", legacyInstallId: m.legacyInstallId }, m.legacy.receipt), "managed-migration-conflict");
-      capture3 = observeCapture(journal);
-    }
-    return capture3;
-  });
+    const reconnect = m.fresh.storeMode === "retain" && m.fresh.sourceMode === "reuse" && !completed(journal, "expectation");
+    if (expected && !reconnect)
+      need5(canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
+    if (selected)
+      need5(completed(journal, "publish-binding") || m.intent?.step.name === "publish-binding", "managed-selection-conflict");
+  } else if (m.legacy.kind === "manifest") {
+    capture3 = validateMigrationRemoval(journal).capture;
+    if (completed(journal, "record-removal"))
+      need5(migrationRemovalComplete(journal), "managed-migration-conflict");
+  } else {
+    need5(readRemovalReceipt({ binding, phase: "removed", legacyInstallId: m.legacyInstallId }, m.legacy.receipt), "managed-migration-conflict");
+    capture3 = observeCapture(journal);
+  }
+  return capture3;
 }
 function managedStepEffectClaims(env, payload, journal) {
-  return platformSecurityScope(() => {
-    const captureBefore = validateManagedStepTarget(env, payload, journal), m = journal.migration;
-    need5(m.step && m.step.name !== "prepare" && !m.intent);
-    if (m.format === 3 && (m.step.name === "store-directory" || m.step.name === "create-store")) {
-      const directory = m.step.name === "store-directory", before = directory ? m.fresh.directory : m.fresh.database;
-      need5(before.kind === "absent");
-      return { before: [before], after: [{ path: before.path, kind: directory ? "directory" : "file", object: null, digest: null }], captureBefore };
-    }
-    if (m.step.name === "record-removal") {
-      const claims2 = migrationRemovalRecordClaims(journal);
-      return { before: claims2.before, after: claims2.after, captureBefore: claims2.capture };
-    }
-    if (["remove-selector", "remove-discovery"].includes(m.step.name)) {
-      const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
-      need5(file && captureBefore.state === "off");
-      return { before: [layout.claims.get(file)], after: [{ path: file, kind: "absent", object: null, digest: null }], captureBefore };
-    }
-    if (m.step.name === "expectation" || m.step.name === "publish-binding") {
-      const file = m.step.name === "expectation" ? managedExpectationFile(journal) : managedBindingFile(env), before = fileClaim(file);
-      const value = m.step.name === "expectation" ? expectation2(journal) : managedJournalBinding(journal);
-      const after = m.step.name === "publish-binding" && before.kind === "file" ? before : { path: file, kind: "file", object: null, digest: digest(JSON.stringify(value)) };
-      return { before: [before], after: [after], captureBefore };
-    }
-    return { before: [], after: [], captureBefore };
-  });
+  const captureBefore = validateManagedStepTarget(env, payload, journal), m = journal.migration;
+  need5(m.step && m.step.name !== "prepare" && !m.intent);
+  if (m.format === 3 && (m.step.name === "store-directory" || m.step.name === "create-store")) {
+    const directory = m.step.name === "store-directory", before = directory ? m.fresh.directory : m.fresh.database;
+    need5(before.kind === "absent");
+    return { before: [before], after: [{ path: before.path, kind: directory ? "directory" : "file", object: null, digest: null }], captureBefore };
+  }
+  if (m.step.name === "record-removal") {
+    const claims2 = migrationRemovalRecordClaims(journal);
+    return { before: claims2.before, after: claims2.after, captureBefore: claims2.capture };
+  }
+  if (["remove-selector", "remove-discovery"].includes(m.step.name)) {
+    const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
+    need5(file && captureBefore.state === "off");
+    return { before: [layout.claims.get(file)], after: [{ path: file, kind: "absent", object: null, digest: null }], captureBefore };
+  }
+  if (m.step.name === "expectation" || m.step.name === "publish-binding") {
+    const file = m.step.name === "expectation" ? managedExpectationFile(journal) : managedBindingFile(env), before = fileClaim(file);
+    const value = m.step.name === "expectation" ? expectation2(journal) : managedJournalBinding(journal);
+    const after = m.step.name === "publish-binding" && before.kind === "file" ? before : { path: file, kind: "file", object: null, digest: digest(JSON.stringify(value)) };
+    return { before: [before], after: [after], captureBefore };
+  }
+  return { before: [], after: [], captureBefore };
 }
 function matchesAfter(actual, expected) {
   return actual.path === expected.path && actual.kind === expected.kind && actual.digest === expected.digest && (expected.object === null && expected.kind === "file" || canonical(actual.object) === canonical(expected.object));
@@ -8677,40 +8337,38 @@ function publication(journal, env) {
   return { file, value, committed, replace: isExpectation && actual.kind === "file" };
 }
 function managedStepEffectCommitted(env, payload, journal, created) {
-  return platformSecurityScope(() => {
-    const capture3 = validateManagedStepTarget(env, payload, journal, created), m = journal.migration;
-    need5(m.intent && m.step);
-    const evidence = structuredClone(journal);
-    evidence.migration.state = "running";
-    if (m.state === "running")
-      validatePublishedManagedIntent(env, journal);
-    let committed;
-    if (m.step.name === "expectation" || m.step.name === "publish-binding")
-      committed = publication(journal, env).committed;
-    else if (m.format === 3 && ["store-directory", "create-store"].includes(m.step.name)) {
-      const directory = m.step.name === "store-directory", file = directory ? path13.dirname(journal.database) : journal.database;
-      need5(canonical(m.intent.before) === canonical([{ path: file, kind: "absent", object: null, digest: null }]) && canonical(m.intent.after) === canonical([{ path: file, kind: directory ? "directory" : "file", object: null, digest: null }]));
-      committed = directory ? !!created?.directory : capture3.state === "off";
-    } else if (m.format === 3 && m.step.name === "register-source") {
-      need5(m.intent.before.length === 0 && m.intent.after.length === 0);
-      const store = new Store(journal.database, { readOnly: true });
-      try {
-        committed = store.list({ limit: 1 }).sources.some((s) => canonical(s) === canonical(journal.source));
-      } finally {
-        store.close();
-      }
-    } else if (m.step.name === "record-removal")
-      committed = migrationRemovalRecorded(evidence);
-    else if (m.step.name === "remove-selector" || m.step.name === "remove-discovery") {
-      const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
-      need5(file && layout.intentFor(file));
-      committed = !lstatSync12(file, { throwIfNoEntry: false });
-    } else {
-      need5(m.intent.before.length === 0 && m.intent.after.length === 0);
-      committed = m.step.name === "reconcile" || capture3.state === (m.step.name === "enable" ? "on" : "off");
+  const capture3 = validateManagedStepTarget(env, payload, journal, created), m = journal.migration;
+  need5(m.intent && m.step);
+  const evidence = structuredClone(journal);
+  evidence.migration.state = "running";
+  if (m.state === "running")
+    validatePublishedManagedIntent(env, journal);
+  let committed;
+  if (m.step.name === "expectation" || m.step.name === "publish-binding")
+    committed = publication(journal, env).committed;
+  else if (m.format === 3 && ["store-directory", "create-store"].includes(m.step.name)) {
+    const directory = m.step.name === "store-directory", file = directory ? path13.dirname(journal.database) : journal.database;
+    need5(canonical(m.intent.before) === canonical([{ path: file, kind: "absent", object: null, digest: null }]) && canonical(m.intent.after) === canonical([{ path: file, kind: directory ? "directory" : "file", object: null, digest: null }]));
+    committed = directory ? !!created?.directory : capture3.state === "off";
+  } else if (m.format === 3 && m.step.name === "register-source") {
+    need5(m.intent.before.length === 0 && m.intent.after.length === 0);
+    const store = new Store(journal.database, { readOnly: true });
+    try {
+      committed = store.list({ limit: 1 }).sources.some((s) => canonical(s) === canonical(journal.source));
+    } finally {
+      store.close();
     }
-    return { committed, capture: capture3 };
-  });
+  } else if (m.step.name === "record-removal")
+    committed = migrationRemovalRecorded(evidence);
+  else if (m.step.name === "remove-selector" || m.step.name === "remove-discovery") {
+    const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
+    need5(file && layout.intentFor(file));
+    committed = !lstatSync12(file, { throwIfNoEntry: false });
+  } else {
+    need5(m.intent.before.length === 0 && m.intent.after.length === 0);
+    committed = m.step.name === "reconcile" || capture3.state === (m.step.name === "enable" ? "on" : "off");
+  }
+  return { committed, capture: capture3 };
 }
 function applyManagedStepEffect(env, payload, journal, freshCapture2 = false) {
   requirePlatformWriteBoundary();
@@ -8742,10 +8400,8 @@ function applyManagedStepEffect(env, payload, journal, freshCapture2 = false) {
   if (m.format === 3 && m.step.name === "create-store") {
     let committed = false;
     if (lstatSync12(journal.database, { throwIfNoEntry: false })) {
-      platformSecurityScope(() => {
-        committed = managedStepEffectCommitted(env, payload, journal).committed;
-        validatePublishedManagedIntent(env, journal);
-      });
+      committed = managedStepEffectCommitted(env, payload, journal).committed;
+      validatePublishedManagedIntent(env, journal);
       need5(committed, "managed-step-unsettled");
     } else {
       const initialized = Store.createFresh(journal.database, { storeId: journal.storeId, validate });
@@ -8755,7 +8411,7 @@ function applyManagedStepEffect(env, payload, journal, freshCapture2 = false) {
   }
   let store;
   try {
-    const prepared = platformSecurityScope(() => {
+    const prepared = (() => {
       const result = managedStepEffectCommitted(env, payload, journal);
       if (result.committed)
         return;
@@ -8773,7 +8429,7 @@ function applyManagedStepEffect(env, payload, journal, freshCapture2 = false) {
       verifyStore(store, journal);
       store.subagentRunStorage();
       return;
-    });
+    })();
     requirePlatformWriteBoundary();
     if (prepared)
       publishPrivateJson(prepared.file, prepared.value, prepared.replace);
@@ -8790,22 +8446,20 @@ function applyManagedStepEffect(env, payload, journal, freshCapture2 = false) {
 
 // setup/managed-step-engine.ts
 function observeManagedStep(env, operationId, version2 = 1) {
-  return platformSecurityScope(() => {
-    const roots = managedSourceRoots(env), root = path14.join(roots.dataRoot, "agent-progress-managed");
-    if (windows)
-      windowsPaths([
-        roots.configRoot,
-        roots.dataRoot,
-        root,
-        path14.join(root, ".ownership.json"),
-        path14.join(root, "migration.json"),
-        path14.join(root, "progress-binding.json")
-      ], true);
-    const journal = version2 === 2 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
-    if (operationId && journal?.migration.operationId !== operationId)
-      throw new SetupError("not-found");
-    return journal;
-  });
+  const roots = managedSourceRoots(env), root = path14.join(roots.dataRoot, "agent-progress-managed");
+  if (windows)
+    windowsPaths([
+      roots.configRoot,
+      roots.dataRoot,
+      root,
+      path14.join(root, ".ownership.json"),
+      path14.join(root, "migration.json"),
+      path14.join(root, "progress-binding.json")
+    ], true);
+  const journal = version2 === 2 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
+  if (operationId && journal?.migration.operationId !== operationId)
+    throw new SetupError("not-found");
+  return journal;
 }
 function managedSetupJournalProgress(journal, capture3) {
   return journal.migration.format === 3 ? managedFreshJournalProgress(journal, capture3) : managedJournalProgress(journal, capture3);
@@ -8853,12 +8507,12 @@ function beginManagedStep(env, payload, request, budget, session) {
     validateReview(env, payload, session);
   };
   if ("prior" in reviewed && reviewed.prior) {
-    budget.require(2, 6000);
+    budget.require(STEP_HEADROOM_MS);
     upgradeManagedStepJournal(env, next, reviewed.prior, validate);
   } else {
-    budget.require(5, 13500);
+    budget.require(STEP_HEADROOM_MS);
     createManagedBindingDirectory(env);
-    budget.require(2, 6000);
+    budget.require(STEP_HEADROOM_MS);
     writeManagedStepJournal(env, next, undefined, validate);
   }
   return { disposition: "applied", progress: managedSetupJournalProgress(next), journal: next };
@@ -8870,18 +8524,16 @@ function need6(value, code = "managed-step-conflict") {
 }
 function loadOperation(env, request, hint) {
   if (!hint || hint.migration.format === 3 !== (request.version === 2)) {
-    const current = observeManagedStep(env, request.operationId, request.version);
-    need6(current, "not-found");
-    return current;
+    const current2 = observeManagedStep(env, request.operationId, request.version);
+    need6(current2, "not-found");
+    return current2;
   }
   const known = parseJournal(hint, request.version);
-  return platformSecurityScope(() => {
-    if (windows)
-      windowsPaths(managedJournalPaths(known), true);
-    const current = request.version === 2 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
-    need6(current && current.migration.operationId === request.operationId, "not-found");
-    return current;
-  });
+  if (windows)
+    windowsPaths(managedJournalPaths(known), true);
+  const current = request.version === 2 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
+  need6(current && current.migration.operationId === request.operationId, "not-found");
+  return current;
 }
 function renewalFor(request, journal) {
   if (request.action !== "advance")
@@ -8917,7 +8569,7 @@ function advance(env, payload, request, budget, hint, remember) {
   requirePlatformWriteBoundary();
   let capture3 = unknownCapture;
   let claims2, evidence;
-  const prior = platformSecurityScope(() => {
+  const prior = (() => {
     const journal = loadOperation(env, request, hint);
     remember(journal);
     if (!replay(request, journal)) {
@@ -8932,7 +8584,7 @@ function advance(env, payload, request, budget, hint, remember) {
       }
     }
     return journal;
-  });
+  })();
   const repeated = replay(request, prior);
   if (repeated)
     return repeated;
@@ -8966,8 +8618,7 @@ function advance(env, payload, request, budget, hint, remember) {
     running.migration.state = "running";
     running.migration.diagnostic = null;
     running.migration.capture = capture3;
-    const remaining = ["record-removal", "store-directory", "create-store"].includes(m.step.name) ? 5 : 4;
-    budget.require(remaining, remaining * 2500 + 1000);
+    budget.require(STEP_HEADROOM_MS);
     if (canonical(running) !== canonical(prior)) {
       try {
         publishManagedStepIntent(env, running, prior, () => {
@@ -8975,12 +8626,12 @@ function advance(env, payload, request, budget, hint, remember) {
         });
       } catch (error) {
         try {
-          budget.require(1, 3500);
-          const current = platformSecurityScope(() => {
+          budget.require();
+          const current = (() => {
             if (windows)
               windowsPaths(managedJournalPaths(running), true);
             return request.version === 2 ? readManagedFreshStepJournal(env) : readManagedStepJournal(env);
-          });
+          })();
           if (current && canonical(current) === canonical(running))
             published = true;
           else if (current && canonical(current) === canonical(prior))
@@ -9031,7 +8682,7 @@ function advance(env, payload, request, budget, hint, remember) {
     f.diagnostic = failure;
     f.receipt = { requestDigest, expectedSequence: m.sequence, sequence: f.sequence, step: f.step, outcome: "failed" };
     try {
-      budget.require(2, 6000);
+      budget.require();
       writeManagedStepJournal(env, failed, running);
       return result(failed, "refused", unknownCapture, failure);
     } catch (settlement) {
@@ -9051,11 +8702,11 @@ function controlManagedStep(env, payload, request, budget, hint, session) {
 }
 function control(env, payload, request, budget, hint, session, remember) {
   requirePlatformWriteBoundary();
-  const admitted = platformSecurityScope(() => {
+  const admitted = (() => {
     const journal = loadOperation(env, request, hint);
     remember(journal);
     return { journal, capture: replay(request, journal) ? unknownCapture : validateManagedStepTarget(env, payload, journal) };
-  });
+  })();
   const prior = admitted.journal;
   let capture3 = admitted.capture;
   const repeated = replay(request, prior);
@@ -9093,7 +8744,7 @@ function control(env, payload, request, budget, hint, session, remember) {
       n.captureRenewals.push({ reviewDigest: review.expected, sequence: n.sequence, priorIntent: structuredClone(m.intent) });
   }
   n.receipt = { requestDigest: managedRequestDigest(request, prior), expectedSequence: m.sequence, sequence: n.sequence, step: n.step, outcome: "applied" };
-  budget.require(2, 6000);
+  budget.require();
   writeManagedStepJournal(env, next, prior, () => {
     validateManagedStepTarget(env, payload, prior);
     if (review)
@@ -9193,95 +8844,93 @@ function observeManagedSetup(env, expectedDescriptor) {
   }
 }
 function readSetup(env, expectedDescriptor, family) {
-  return platformSecurityScope(() => {
-    const { binding: b, descriptor, journal, prior, legacy } = selection(env, expectedDescriptor, family);
-    const retained = b ?? journal ?? prior?.binding;
-    const base = {
-      configured: !!b,
-      verified: false,
-      installed: false,
-      captureEnabled: null,
-      targets: b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path15.dirname(b.database) } : null,
-      version: null,
-      activation: "unknown",
-      separateLifecycle: false,
-      historyRetained: true,
-      diagnostics: [],
-      delivery: {
-        kind: "managed",
-        revision: 1,
-        managedMigrationSteps: 1,
-        managedFreshSteps: 1,
-        configuration: b ? "configured" : "unconfigured",
-        migration: journal ? journal.migration.state === "complete" ? legacy ? "conflict" : "complete" : "pending" : prior ? prior.phase === "complete" ? legacy ? "conflict" : "complete" : "pending" : legacy ? "available" : "none",
-        ...(journal ? journal.migration.format === 3 : !prior && !legacy) ? { planKind: "fresh" } : {},
-        mode: "unknown",
-        observation: "unknown",
-        expectedVersion: null
-      }
-    };
-    if (journal) {
-      if (journal.migration.format === 3)
-        base.delivery.freshProgress = managedFreshJournalProgress(journal);
-      else
-        base.delivery.migrationProgress = managedJournalProgress(journal);
+  const { binding: b, descriptor, journal, prior, legacy } = selection(env, expectedDescriptor, family);
+  const retained = b ?? journal ?? prior?.binding;
+  const base = {
+    configured: !!b,
+    verified: false,
+    installed: false,
+    captureEnabled: null,
+    targets: b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path15.dirname(b.database) } : null,
+    version: null,
+    activation: "unknown",
+    separateLifecycle: false,
+    historyRetained: true,
+    diagnostics: [],
+    delivery: {
+      kind: "managed",
+      revision: 1,
+      managedMigrationSteps: 1,
+      managedFreshSteps: 1,
+      configuration: b ? "configured" : "unconfigured",
+      migration: journal ? journal.migration.state === "complete" ? legacy ? "conflict" : "complete" : "pending" : prior ? prior.phase === "complete" ? legacy ? "conflict" : "complete" : "pending" : legacy ? "available" : "none",
+      ...(journal ? journal.migration.format === 3 : !prior && !legacy) ? { planKind: "fresh" } : {},
+      mode: "unknown",
+      observation: "unknown",
+      expectedVersion: null
     }
-    if (!retained)
-      return { status: base, descriptor, journal, subagentRuns: false };
-    const unavailable = structuredClone(base);
+  };
+  if (journal) {
+    if (journal.migration.format === 3)
+      base.delivery.freshProgress = managedFreshJournalProgress(journal);
+    else
+      base.delivery.migrationProgress = managedJournalProgress(journal);
+  }
+  if (!retained)
+    return { status: base, descriptor, journal, subagentRuns: false };
+  const unavailable = structuredClone(base);
+  try {
+    if (journal?.migration.format === 3) {
+      if (windows)
+        windowsPaths(managedJournalPaths(journal), true);
+      const observed = observeManagedFreshStore(journal);
+      base.delivery.freshProgress = managedFreshJournalProgress(journal, observed);
+      base.captureEnabled = observed.state === "unknown" ? null : observed.state === "on";
+      if (!b)
+        return { status: base, descriptor, journal, subagentRuns: false };
+    }
+    storePaths2(retained);
+    const store = new Store(retained.database, { readOnly: true });
     try {
-      if (journal?.migration.format === 3) {
-        if (windows)
-          windowsPaths(managedJournalPaths(journal), true);
-        const observed = observeManagedFreshStore(journal);
-        base.delivery.freshProgress = managedFreshJournalProgress(journal, observed);
-        base.captureEnabled = observed.state === "unknown" ? null : observed.state === "on";
-        if (!b)
-          return { status: base, descriptor, journal, subagentRuns: false };
+      verifyStore(store, retained);
+      const runs = store.subagentRunStorage();
+      base.captureEnabled = store.list({ limit: 1 }).captureEnabled;
+      if (journal) {
+        const capture3 = { state: base.captureEnabled ? "on" : "off", observedAt: new Date().toISOString() };
+        if (journal.migration.format === 3)
+          base.delivery.freshProgress = managedFreshJournalProgress(journal, capture3);
+        else
+          base.delivery.migrationProgress = managedJournalProgress(journal, capture3);
       }
-      storePaths2(retained);
-      const store = new Store(retained.database, { readOnly: true });
-      try {
-        verifyStore(store, retained);
-        const runs = store.subagentRunStorage();
-        base.captureEnabled = store.list({ limit: 1 }).captureEnabled;
-        if (journal) {
-          const capture3 = { state: base.captureEnabled ? "on" : "off", observedAt: new Date().toISOString() };
-          if (journal.migration.format === 3)
-            base.delivery.freshProgress = managedFreshJournalProgress(journal, capture3);
-          else
-            base.delivery.migrationProgress = managedJournalProgress(journal, capture3);
+      if (b) {
+        base.verified = b.source.verified;
+        base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
+        const expected = readManagedExpectation(b);
+        if (expected) {
+          base.version = expected.version;
+          base.delivery.expectedVersion = expected.version;
+          const loaded = store.loadedFingerprint(b.source.id, b.installId);
+          base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
         }
-        if (b) {
-          base.verified = b.source.verified;
-          base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
-          const expected = readManagedExpectation(b);
-          if (expected) {
-            base.version = expected.version;
-            base.delivery.expectedVersion = expected.version;
-            const loaded = store.loadedFingerprint(b.source.id, b.installId);
-            base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
-          }
-        }
-        return { status: base, descriptor, journal, subagentRuns: !!b && ["current", "previous"].includes(runs) };
-      } finally {
-        store.close();
       }
-    } catch (error) {
-      unavailable.diagnostics = [observationDiagnostic(error)];
-      if (journal?.migration.format === 3 && journal.migration.created.database === null && journal.migration.state !== "complete") {
-        unavailable.delivery.migration = "unavailable";
-        delete unavailable.delivery.freshProgress;
-      }
-      return { status: unavailable, descriptor, journal, subagentRuns: false };
+      return { status: base, descriptor, journal, subagentRuns: !!b && ["current", "previous"].includes(runs) };
+    } finally {
+      store.close();
     }
-  });
+  } catch (error) {
+    unavailable.diagnostics = [observationDiagnostic(error)];
+    if (journal?.migration.format === 3 && journal.migration.created.database === null && journal.migration.state !== "complete") {
+      unavailable.delivery.migration = "unavailable";
+      delete unavailable.delivery.freshProgress;
+    }
+    return { status: unavailable, descriptor, journal, subagentRuns: false };
+  }
 }
 function controlManagedCapture(env, enabled, expectedDescriptor) {
   requirePlatformWriteBoundary();
   let store, descriptor = null;
   try {
-    platformSecurityScope(() => {
+    {
       const current = enabled ? selection(env, expectedDescriptor) : { ...selected(env, expectedDescriptor), journal: undefined, prior: undefined, legacy: false };
       const { binding, journal, prior, legacy } = current;
       descriptor = current.descriptor;
@@ -9296,7 +8945,7 @@ function controlManagedCapture(env, enabled, expectedDescriptor) {
       store = new Store(binding.database);
       verifyStore(store, binding);
       store.subagentRunStorage();
-    });
+    }
     requirePlatformWriteBoundary();
     store.setEnabled(enabled);
     return { value: { ok: true, captureEnabled: enabled }, descriptor };
@@ -9345,7 +8994,7 @@ function runSetupRequestWorker() {
   if (!isSetupRequestWorker() || !parentPort)
     throw new Error("managed-step-unsupported");
   const input = workerData;
-  const budget = new PlatformRequestBudget(input.startedAt, input.counter, input.fence);
+  const budget = new PlatformRequestBudget(input.startedAt, input.fence);
   let setup;
   let value, code;
   let inspection;
@@ -9500,9 +9149,9 @@ class SetupRequestWorker {
       return Promise.resolve(refused(diagnostic2(error)));
     }
     this.active = true;
-    const scope2 = digest(canonical(env)), context2 = digest(canonical({ env, payload: payload ?? null })), requestId = randomUUID8();
+    const scope = digest(canonical(env)), context2 = digest(canonical({ env, payload: payload ?? null })), requestId = randomUUID8();
     const saved = this.inspection?.context === context2 ? this.inspection.session : undefined;
-    const journal = this.journal?.context === scope2 ? this.journal.value : undefined;
+    const journal = this.journal?.context === scope ? this.journal.value : undefined;
     let targets;
     try {
       targets = setupWriterTargets(env, journal?.database ?? saved?.candidate?.database ?? (saved && "family" in saved ? path16.join(saved.storeRoot, "progress.sqlite") : undefined));
@@ -9511,7 +9160,7 @@ class SetupRequestWorker {
       return Promise.resolve(refused(diagnostic2(error)));
     }
     const consumesInspection = request.action === "managed-step" && managedSetupStepRequest(request.body)?.action !== "status";
-    if (this.inspection?.scope !== scope2 || payload !== undefined && this.inspection?.context !== context2 || consumesInspection)
+    if (this.inspection?.scope !== scope || payload !== undefined && this.inspection?.context !== context2 || consumesInspection)
       this.inspection = undefined;
     this.journal = undefined;
     const pending = new Promise((resolve) => {
@@ -9528,41 +9177,12 @@ class SetupRequestWorker {
       };
       const remaining = Math.max(0, MANAGED_STEP_LIMITS.responseMs - budget.elapsedMs);
       const timer = setTimeout(() => finish(refused("managed-step-deadline")), remaining);
-      const fence = { port: writerTargetPort(targets[0]), nonce: randomBytes(32).toString("hex"), targets };
-      const expected = Buffer.from(fence.nonce + `
-`);
-      const sockets = new Set;
-      const connection = (socket) => {
-        sockets.add(socket);
-        socket.once("close", () => sockets.delete(socket));
-        socket.setTimeout(1000, () => socket.destroy());
-        let bytes = Buffer.alloc(0);
-        socket.on("error", () => socket.destroy());
-        socket.on("data", (chunk) => {
-          bytes = Buffer.concat([bytes, chunk]);
-          if (bytes.length > expected.length) {
-            socket.destroy();
-            return;
-          }
-          if (bytes.length !== expected.length)
-            return;
-          let admitted = false;
-          try {
-            budget.require();
-            admitted = timingSafeEqual(bytes, expected);
-          } catch {}
-          socket.end(admitted ? `ok
-` : `no
-`);
-        });
-      };
-      acquireWriterSlots(targets, connection, () => {
+      const fence = { targets };
+      acquireWriterSlots(targets, undefined, () => {
         result2 = refused("managed-step-unsettled");
         finish(result2);
       }).then((unlock) => {
         const release = (reply) => {
-          for (const socket of sockets)
-            socket.destroy();
           unlock().then(() => {
             this.active = false;
             finish(reply);
@@ -9583,7 +9203,6 @@ class SetupRequestWorker {
             payload,
             request,
             startedAt,
-            counter: budget.counter.buffer,
             fence,
             ...saved && consumesInspection ? { inspection: saved } : {},
             ...journal ? { journal } : {}
@@ -9621,9 +9240,9 @@ class SetupRequestWorker {
             release(refused("managed-step-deadline"));
           else {
             if (!settled && result2.ok && nextInspection && request.action === "managed-step")
-              this.inspection = { scope: scope2, context: context2, session: nextInspection };
+              this.inspection = { scope, context: context2, session: nextInspection };
             if (!settled && result2.ok && nextJournal && (request.action === "managed-step" || request.action === "status"))
-              this.journal = { context: scope2, value: nextJournal };
+              this.journal = { context: scope, value: nextJournal };
             const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
             release({
               ...result2,
@@ -10078,7 +9697,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       res.end(text2);
     }
     const supplied = Buffer.from(req.headers.authorization ?? "");
-    if (supplied.length !== expected.length || !timingSafeEqual2(supplied, expected))
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
     const admittedAt = process.hrtime.bigint();
     let stepRoute = false, stepVersion = 1, stepStage = "journal";
@@ -10311,8 +9930,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
           return answer(404, { error: "not-found" });
         if (!setup && (!store || standaloneError))
           return answer(503, { error: standaloneError ?? "storage" });
-        const snapshot4 = setup ? setup.health() : { state: "ready", ready: true, sqlite: true, diagnostics: [], subagentRuns: standaloneRuns };
-        const { subagentRuns, ...health } = snapshot4;
+        const snapshot3 = setup ? setup.health() : { state: "ready", ready: true, sqlite: true, diagnostics: [], subagentRuns: standaloneRuns };
+        const { subagentRuns, ...health } = snapshot3;
         return answer(200, {
           ok: true,
           ...health,

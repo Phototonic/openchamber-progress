@@ -10,7 +10,7 @@ import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
 import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
-import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject,writerTarget,requirePlatformStoreFence } from '../shared/platform.ts';
+import { windows, windowsPath, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject,writerTarget,requirePlatformStoreFence } from '../shared/platform.ts';
 import {SetupRequestWorker,withSetupWriter,type SetupWorkerRequest,type SetupWorkerHealth} from './request-worker.ts';
 import {setupWriterTargets} from './writer-fence.ts';
 
@@ -30,7 +30,6 @@ function refuseMigrationPresence(configRoot:string,file:string,action:'inspect'|
 export class SetupController {
   private store?: Store; private binding?: Binding; private error: Code = 'binding';
   private expectedDescriptor: string | null = null; private canPersist = true;
-  private securityUnavailable = false;
   private fixedError?: PlatformError | ManagedBindingError;
   private activation = 'unknown';
   private readonly readonlyPayload: () => Payload;
@@ -74,7 +73,7 @@ export class SetupController {
     this.workerEntry=workerEntry;
     this.readonlyPayload=readonlyPayload;this.suggestionContext=suggestionContext;
     if(typeof privateFile !== 'string') {
-      // Listening and host liveness must not wait on cold security helpers. No
+      // Listening and host liveness must not wait on filesystem validation. No
       // background admission: real setup/data operations validate synchronously.
       this.managedEnv={...privateFile.env};this.bindingFile='';
       return;
@@ -98,7 +97,7 @@ export class SetupController {
   health() {
     if(this.workerHealth)return {...this.workerHealth,diagnostics:[...this.workerHealth.diagnostics]};
     const diagnostics=this.managedDiagnostic?[this.managedDiagnostic]:this.store?[]:
-      this.securityUnavailable?['windows-security-unavailable']:this.binding||!this.canPersist?[this.fixedError?.code??this.error]:[];
+      this.binding||!this.canPersist?[this.fixedError?.code??this.error]:[];
     return {state:!this.checked?'starting':this.store?'ready':diagnostics.length?'refused':'unconfigured',
       ready:!!this.store,sqlite:!!this.store,diagnostics,subagentRuns:!!this.store&&this.runsAvailable};
   }
@@ -109,13 +108,13 @@ export class SetupController {
     // Validate optional run storage before admitting the store, not later in
     // /health capability discovery where a schema refusal fails host readiness.
     try{verifyStore(next,b);const runs=next.subagentRunStorage();this.runsAvailable=runs==='current'||runs==='previous';next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
-    this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;this.fixedError=undefined;
+    this.store?.close();this.store=next;this.binding=b;this.fixedError=undefined;
   }
-  private recordError(e:unknown) {this.error=storageError(e).code;this.fixedError=e instanceof ManagedBindingError||platformErrorCode(e)?e as ManagedBindingError|PlatformError:undefined;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
+  private recordError(e:unknown) {this.error=storageError(e).code;this.fixedError=e instanceof ManagedBindingError||platformErrorCode(e)?e as ManagedBindingError|PlatformError:undefined;}
   private refresh() {
     this.workerHealth=undefined;
-    platformSecurityScope(()=>this.refreshInner());
-    // Once per admitted package generation, outside read-only security scopes.
+    this.refreshInner();
+    // Once per admitted package generation, outside read-only observation.
     // Failure remains an unknown expectation, not an authorization or a retry loop.
     if(this.managedEnv&&this.store&&this.binding&&this.expectationPending){
       this.expectationPending=false;
@@ -149,9 +148,9 @@ export class SetupController {
     const targets=this.targets();
     if(!targets){
       const suggestions=includeSuggestions?setupSuggestions(this.suggestionContext):undefined;
-      return {configured:false,verified:false,installed:false,captureEnabled:null,targets:null,version:null,activation:'unknown',separateLifecycle:true,historyRetained:true,diagnostics:[...(!this.canPersist?['service-binding-collision']:[]),...(this.securityUnavailable?['windows-security-unavailable']:[]),this.error==='binding'?'targets-unverified':this.error],...(suggestions?{suggestions}:{})};
+      return {configured:false,verified:false,installed:false,captureEnabled:null,targets:null,version:null,activation:'unknown',separateLifecycle:true,historyRetained:true,diagnostics:[...(!this.canPersist?['service-binding-collision']:[]),this.error==='binding'?'targets-unverified':this.error],...(suggestions?{suggestions}:{})};
     }
-    const base:SetupRead={configured:true,verified:this.binding!.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,targets:{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot},version:null,activation:this.activation,separateLifecycle:true,historyRetained:true,diagnostics:this.store?[]:[...(this.securityUnavailable?['windows-security-unavailable']:[]),this.error]};
+    const base:SetupRead={configured:true,verified:this.binding!.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,targets:{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot},version:null,activation:this.activation,separateLifecycle:true,historyRetained:true,diagnostics:this.store?[]:[this.error]};
     if(this.store)base.reportingIdentity={storeId:this.binding!.storeId,sourceId:this.binding!.source.id,verified:this.binding!.source.verified};
     let payload:Payload|undefined;
     if(this.store&&base.verified)try{payload=this.readonlyPayload();}catch{/* Missing bundled bytes make no update claim. */}
@@ -187,7 +186,7 @@ export class SetupController {
     if(!targets.confirmed)throw new SetupError('confirmation-required');
     requirePlatformStoreFence(path.join(targets.storeRoot,'progress.sqlite'));
     if(['disable','enable','remove-capture'].includes(action)) {
-      const current=this.targets();if(!current||!(windows?platformSecurityScope(()=>sameWindowsDirectory(current.configRoot,targets.configRoot)&&sameWindowsDirectory(current.dataRoot,targets.dataRoot)&&sameWindowsDirectory(current.storeRoot,targets.storeRoot)):current.configRoot===targets.configRoot&&current.dataRoot===targets.dataRoot&&current.storeRoot===targets.storeRoot))throw new SetupError('ownership-invalid');
+      const current=this.targets();if(!current||!(windows?(sameWindowsDirectory(current.configRoot,targets.configRoot)&&sameWindowsDirectory(current.dataRoot,targets.dataRoot)&&sameWindowsDirectory(current.storeRoot,targets.storeRoot)):current.configRoot===targets.configRoot&&current.dataRoot===targets.dataRoot&&current.storeRoot===targets.storeRoot))throw new SetupError('ownership-invalid');
     }
     if(action==='install'||action==='update'){
       this.validateDescriptor();
@@ -222,7 +221,7 @@ export class SetupController {
   }
   /** Compatibility HTTP path for fresh configuration only. The caller holds the
    * same scope/Store writer slots as step workers for the entire synchronous
-   * operation. Keep the existing review nonce and legacy security timeouts. */
+   * operation. Keep the existing review nonce. */
   runFreshManaged(action:'managed-inspect'|'managed-configure',body:unknown):SetupRead {
     if(!this.managedEnv)throw new SetupError('managed-service-required');
     const result=this.runManaged(action,body,true);
@@ -247,7 +246,7 @@ export class SetupController {
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
   private managedMigration(_targets?:Targets):ManagedMigrationState {
-    return platformSecurityScope(()=>this.managedMigrationInner().state);
+    return this.managedMigrationInner().state;
   }
   private managedMigrationInner():{state:ManagedMigrationState;captureEnabled:boolean|null} {
     this.migrationDiagnostic=undefined;
@@ -276,7 +275,7 @@ export class SetupController {
   }
   private managedStatus():SetupRead {
     this.refresh();
-    return platformSecurityScope(()=>this.managedStatusInner());
+    return this.managedStatusInner();
   }
   private managedStatusInner():SetupRead {
     const b=this.binding,targets=this.targets(),migration=this.managedMigrationInner();
@@ -309,7 +308,6 @@ export class SetupController {
   }
   private managedControlCandidate(storeRoot?:string): {review:ManagedReview;binding:Binding;targets:Targets} {
     this.refresh();
-    if(this.securityUnavailable)throw new PlatformError('windows-security-unavailable');
     if(!this.store||!this.binding)throw this.fixedError??new ProgressError(this.error);
     const b=this.binding,targets=this.targets()!;
     if(!b.source.verified)throw new ProgressError('source-unverified');
@@ -322,7 +320,7 @@ export class SetupController {
   private managedFullCandidate(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
     this.checked=true;
     if(freshOnly){
-      // A non-authoritative local presence hint avoids cold PowerShell just to
+      // A non-authoritative local presence hint avoids a full validation just to
       // refuse. Absence/read failure grants nothing: the full fresh validation
       // and canonical presence check below still run before review or effects.
       const env=this.managedEnv!,home=env.HOME??homedir();
@@ -333,7 +331,7 @@ export class SetupController {
         catch(e){if(e instanceof SetupError)throw e; /* The validated owner diagnoses unreadable/invalid paths. */}
       }
     }
-    return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot,freshOnly));
+    return this.managedFullCandidateInner(storeRoot,freshOnly);
   }
   private managedFullCandidateInner(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
     const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env);
@@ -426,7 +424,7 @@ export class SetupController {
   private migrate(candidate:ReturnType<SetupController['managedCandidate']>):SetupRead {
     const env=this.managedEnv!;
     // The candidate was fully inspected in this synchronous request. The lock
-    // boundary below obtains a new candidate, with a fresh security scope.
+    // boundary below obtains a new candidate.
     const {record:prior,legacy}=candidate;
     if(prior?.phase==='complete'&&legacy)throw new SetupError('managed-migration-conflict');
     if(prior?.phase==='complete'&&!legacy)return {...this.managedStatus(),action:'managed-migrate'};
@@ -465,7 +463,7 @@ export class SetupController {
     }
   }
   private validateDescriptor() {
-    try{return platformSecurityScope(()=>this.validateDescriptorInner());}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
+    try{return this.validateDescriptorInner();}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
   }
   private validateDescriptorInner() {
     if(!this.canPersist)throw new SetupError('service-binding-collision');
