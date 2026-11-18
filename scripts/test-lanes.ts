@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 /** `lowPriority` runs the step under `nice`, so a lane that must keep its timing
  * headroom wins the cores when the machine is short of them. */
-export type Step = { label: string; command: string; args: string[]; lowPriority?: boolean };
+export type Step = { label: string; command: string; args: string[]; lowPriority?: boolean; env?: Record<string, string> };
 export type Lane = { name: string; steps: Step[] };
 export type StepResult = { lane: string; label: string; seconds: number; status: 'passed' | 'failed' | 'stopped' };
 
@@ -35,7 +35,7 @@ export async function runLanes(lanes: Lane[]): Promise<StepResult[]> {
     const chunks: Buffer[] = [];
     // Own process group, so stopping a step also stops the test files it started.
     const niced = step.lowPriority && process.platform !== 'win32';
-    const child = spawn(niced ? 'nice' : step.command, niced ? ['-n', '10', step.command, ...step.args] : step.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn(niced ? 'nice' : step.command, niced ? ['-n', '10', step.command, ...step.args] : step.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, ...step.env } });
     if (child.pid) children.add(child.pid);
     child.stdout.on('data', chunk => chunks.push(chunk));
     child.stderr.on('data', chunk => chunks.push(chunk));

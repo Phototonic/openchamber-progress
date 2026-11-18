@@ -114,6 +114,13 @@ own heading, the first failure stops both lanes, and the run ends with a
 per-step duration list. A file that takes a Setup port belongs in the serial
 group; never add one to the other lane.
 
+Both runners also turn on Node's compile cache for every step they start
+(`NODE_COMPILE_CACHE`, a folder under the ignored `node_modules/.cache/`). It keeps
+V8's compiled code per source, keyed by the source's content, so each test process and each
+request worker the managed-step tests start compiles a shared module once. It changes
+no test input and is safe to delete; a standalone `node --test` run does not use it
+unless you export the variable yourself.
+
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
 The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, on every pull request whatever branch it targets, weekly on Tuesday at 04:17 UTC, and on manual dispatch. A PR stacked on another feature branch gets the same selection as one targeting `dev`. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the full Windows job on its `main` push. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.

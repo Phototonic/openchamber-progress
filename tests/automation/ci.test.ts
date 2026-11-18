@@ -76,6 +76,11 @@ test('portable lanes run every portable file once, keep the port-bound group ser
   assert.equal(alone.length,1);assert.equal(alone[0].steps.length,1,'the port-bound group shares its lane with nothing that could take a port');
   assert.ok(!serial[0].lowPriority&&full.find(l=>l.steps.includes(serial[0]))!.steps.length===1,'the serial group never yields cores');
   assert.ok(full.flatMap(l=>l.steps).filter(s=>s!==serial[0]).every(s=>s.lowPriority),'the lane beside it yields cores to it');
+  // Every step shares one compile cache folder inside the ignored dependency folder, never a tracked path.
+  const caches=new Set(full.flatMap(l=>l.steps).map(s=>s.env?.NODE_COMPILE_CACHE));
+  assert.equal(caches.size,1);
+  assert.ok([...caches][0]?.endsWith(join('node_modules','.cache','agent-progress-compile')),'the cache lives under node_modules/.cache');
+  assert.equal(spawnSync('git',['check-ignore','-q',join('node_modules','.cache','agent-progress-compile','x')]).status,0,'git ignores the cache folder');
   // Every other test step is bounded by an explicit worker count rather than the host default.
   for(const step of every(full).filter(s=>s!==serial[0]))assert.ok(step.args.some(a=>/^--test-concurrency=[1-9]\d*$/.test(a)),step.label);
   assert.deepEqual(files(every(fast)),files(every(full)).filter(f=>!files(serial).includes(f)));
