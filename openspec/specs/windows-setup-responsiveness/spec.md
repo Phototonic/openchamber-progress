@@ -7,22 +7,22 @@ Keep Windows service health responsive and support legacy migration and fresh co
 
 ### Requirement: Cheap honest health and nonblocking admission
 
-Authenticated health SHALL return a cheap last-observed liveness/admission snapshot without security queries or legacy discovery. Starting or unverified state MUST NOT be presented as fresh Store authority.
+Authenticated health SHALL return a cheap last-observed liveness/admission snapshot without filesystem validation or legacy discovery. Starting or unverified state MUST NOT be presented as fresh Store authority.
 
 #### Scenario: Admission and worker boundaries
 - **WHEN** migration, fresh configuration or data access needs admission
-- **THEN** required fresh admission SHALL be obtained on demand without synchronous security work blocking the health-serving event loop
+- **THEN** required fresh admission SHALL be obtained on demand without blocking the health-serving event loop
 - **AND** fresh inspection, effects, controls and status SHALL reuse the existing request-driven worker boundary, not an autonomous job
 
 #### Scenario: Cold legacy upgrade
 - **WHEN** the service starts with a released legacy installation and no managed selection
-- **THEN** health responds without opening/adopting the legacy store or spawning security helpers
+- **THEN** health responds without opening/adopting the legacy store or starting any process
 - **AND** Setup and background composer access can request admission rather than treating starting as permanently unavailable
 
 #### Scenario: Slow security work is active
-- **WHEN** a migration, fresh-setup or admission request performs a cold, slow or failing security query
+- **WHEN** a migration, fresh-setup or admission request is running
 - **THEN** a concurrent authenticated health request remains responsive and honest
-- **AND** scheduling main-thread spawnSync through a timer or Promise is not treated as nonblocking
+- **AND** no permission check starts a process, so none can block that request
 
 #### Scenario: No fresh store yet
 - **WHEN** a fresh operation has prepared its journal but has not created its store
@@ -31,13 +31,12 @@ Authenticated health SHALL return a cheap last-observed liveness/admission snaps
 
 ### Requirement: Bounded separate setup requests
 
-Each migration or negotiated fresh-setup step SHALL be a separate request driven by Setup, with at most six actual security-process spawns including retries, validation, mutation, diagnostics and cleanup.
+Each migration or negotiated fresh-setup step SHALL be a separate request driven by Setup, bounded by a 17-second work deadline and an 18-second response deadline below the host's 20-second limit. No step starts a process; deadline exhaustion SHALL be explicit rather than weakening checks.
 
 #### Scenario: Request deadline allocation
-- **WHEN** a request budgets security work at the 2.5-second-per-spawn planning assumption
-- **THEN** six spawns allow 15 seconds of security work plus 5 seconds of headroom under the host's 20-second limit
-- **AND** inspection/status SHALL be trimmed or continued to meet the same budget
-- **AND** work and response deadlines SHALL remain 17 and 18 seconds respectively; deadline exhaustion SHALL be explicit rather than weakening checks
+- **WHEN** a request is admitted
+- **THEN** work and response deadlines SHALL remain 17 and 18 seconds respectively, and no step starts a process
+- **AND** inspection/status SHALL be trimmed or continued to meet the same deadlines
 - **AND** fresh store-directory creation, database initialization and source registration MUST NOT be hidden inside an already full preparation request
 
 #### Scenario: A phase exceeds the request budget
@@ -46,33 +45,33 @@ Each migration or negotiated fresh-setup step SHALL be a separate request driven
 - **AND** Setup receives bounded progress and explicitly drives the next request rather than one long background operation
 
 #### Scenario: Helper exceeds the planning assumption
-- **WHEN** a helper is slower than assumed or fails within the service's below-host deadline
+- **WHEN** a request runs past its work deadline, for example on a slow disk
 - **THEN** the request stops admitting further work and reports pending, uncertain or failed effects honestly
-- **AND** no unbounded cold retry or misleading rollback/success claim occurs
+- **AND** no unbounded retry or misleading rollback/success claim occurs
 
 #### Scenario: Supported migration on a slow machine
-- **WHEN** the supported legacy fixture is inspected and migrated with helper latency around the 2.5-second-per-spawn assumption
-- **THEN** the full switch completes successfully through separate requests below the 20-second host limit and within the six-spawn ceiling
+- **WHEN** the supported legacy fixture is inspected and migrated
+- **THEN** the full switch completes successfully through separate requests below the 20-second host limit with no process started
 - **AND** repeated bounded refusals are not accepted as successful migration
 
 #### Scenario: Fresh setup on a slow machine
-- **WHEN** a supported Windows fixture has no legacy install, managed journal or store and helpers take 2.5 seconds per launch
-- **THEN** reviewed fresh setup completes with a valid selected Store/source and verified capture through requests below twenty seconds and within six launches each
+- **WHEN** a supported Windows fixture has no legacy install, managed journal or store
+- **THEN** reviewed fresh setup completes with a valid selected Store/source and verified capture through requests below twenty seconds with no process started
 - **AND** repeated bounded refusals do not count as successful setup
-- **AND** persistent slower-helper exhaustion is a bounded recovery refusal, not a guarantee of eventual completion
+- **AND** persistent deadline exhaustion is a bounded recovery refusal, not a guarantee of eventual completion
 
 ### Requirement: Fresh authority for every mutation step
 
-Every step SHALL freshly validate its current target, consent/sequence, ownership, privacy, path safety, relevant files and Store/source identity before its mutation. Previous discoveries and durable progress MUST NOT replace current security checks.
+Every step SHALL freshly validate its current target, consent/sequence, canonical path, links, relevant files and Store/source identity before its mutation. Previous discoveries and durable progress MUST NOT replace current checks. Windows applies no ACL or ownership query.
 
 #### Scenario: Fresh creation authority
 - **WHEN** a step creates an object
-- **THEN** full legacy ownership and existing removal safeguards SHALL remain, with no ACL cache across requests or mutations
+- **THEN** full legacy ownership-of-content and existing removal safeguards SHALL remain, and nothing is cached across requests or mutations
 - **AND** fresh creation SHALL validate absence and frozen proposed identity where objects do not yet exist, and freshly validate resulting objects before further effects
 - **AND** proposed identities MUST NOT authorize ordinary selected-binding or companion admission
 
 #### Scenario: State changes between steps
-- **WHEN** an ACL, path object, manifest, source/store, reviewed selection or operation sequence changes
+- **WHEN** a path object, manifest, source/store, reviewed selection or operation sequence changes
 - **THEN** the next affected mutation refuses before acting on stale authority
 - **AND** no foreign bytes, history or existing locks are removed to force progress
 
@@ -166,7 +165,7 @@ Setup SHALL show actual step progress, pending/paused state, fixed last-action s
 #### Scenario: Older fresh client on Windows
 - **WHEN** an authenticated caller posts old managed-inspect or managed-configure input to the new Windows service
 - **THEN** it receives HTTP 409 with exactly the existing managed-action-required error object
-- **AND** no security helper, worker or product write occurs
+- **AND** no worker or product write occurs
 
 #### Scenario: Non-Windows compatibility
 - **WHEN** an older caller uses the old fresh routes on Linux or macOS with no legacy discovery or journal
@@ -185,23 +184,24 @@ Setup SHALL show actual step progress, pending/paused state, fixed last-action s
 
 ### Requirement: Native Windows responsiveness evidence
 
-Acceptance SHALL include native Windows released-legacy migration and fresh setup over authenticated HTTP, per-request spawn ceilings, sanitized per-step traces and concurrent health checks. Undelayed CI requests SHALL take at most 8 seconds, providing more than twofold margin to the host timeout. Delayed tests SHALL meet the below-host deadline instead.
+Acceptance SHALL include native Windows released-legacy migration and fresh setup over authenticated HTTP, an independent count of process launches that must be zero, sanitized per-step traces and health checks. Requests SHALL take at most 8 seconds, providing more than twofold margin to the host timeout.
 
 #### Scenario: Evidence fidelity
 - **WHEN** acceptance results are recorded
 - **THEN** native effect/recovery evidence and browser screenshots SHALL accompany logic checks
-- **AND** portable fake-spawn tests SHALL count actual launch attempts for each new step, including errors and replay, but MUST NOT be described as native Windows measurements
+- **AND** portable tests SHALL spy on every child-process entry point and prove none is called, but MUST NOT be described as native Windows measurements
 
 #### Scenario: CI verifies the built candidate
 - **WHEN** the final built service migrates an isolated released 1.1.1 installation under a non-admin Windows test principal
-- **THEN** inspect, step, failure, retry and status paths meet the spawn/time bounds with retained identities/history and honest capture state
+- **THEN** inspect, step, retry and status paths start no process and meet the time bound with retained identities/history and honest capture state
 - **AND** traces contain only bounded stage/code/timing/count/state facts, never account names, paths, credentials or raw logs
 
 #### Scenario: CI verifies empty-store setup
 - **WHEN** the built candidate starts with only isolated config/data roots and no legacy, managed directory, store or journal
-- **THEN** undelayed and 2.5-second-helper fresh journeys complete within their respective request bounds
-- **AND** concurrent health uses zero security launches and responds within the existing 1.25-second native health bound
-- **AND** representative restart, dropped-reply, pause/resume, retained reconnection and over-budget cases assert actual durable effects
+- **THEN** fresh journeys complete within the request bound with no process started
+- **AND** health starts no process and responds within the existing 1.25-second native health bound
+- **AND** representative restart, dropped-reply, pause/resume and retained reconnection cases assert actual durable effects
+- **AND** over-budget, late-worker and injected-fault cases are covered by portable fixtures only, not by native CI
 
 #### Scenario: Rendered fresh Setup
 - **WHEN** current-source guests run the fresh journey in the existing rendered browser harness
