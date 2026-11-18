@@ -1188,7 +1188,13 @@ automatically. Stop and a change of account, store/binding or board reading end
 the run after the in-flight request. One progress line shows completed/total
 counts; start and result are announced once, not per plan. One final
 invalidation/re-read reconciles the result, including uncertain failures. Only
-validated receipts count as completed; all other targets are reported as skipped.
+validated receipts count as completed. A plan the service refused (changed,
+closed, reused operation, not found, store busy) and a plan the run did not send
+(left out of the view before sending, or after Stop) are reported as skipped. A
+plan whose attempted request got no valid answer (a lost reply, a connection or
+host failure, an unreadable receipt, or an attempt that failed before the service
+could receive it) is reported separately as unconfirmed: it may have been
+applied. Undo covers validated receipts only.
 
 Undo restores exactly the successful archive receipts of that action through
 the restore route, each bound to the generation returned by its receipt and a

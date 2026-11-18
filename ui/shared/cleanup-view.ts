@@ -129,7 +129,7 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
   const result = state?.result;
   // Progress is visible but not live: only start/result are announced, never each plan.
   const message = state?.progress ? text.progress(0, state.progress.total, state.progress.action)
-    : result ? text.result(result.succeeded.length, result.total, result.action) : '';
+    : result ? text.result(result.succeeded.length, result.total, result.action, result.unconfirmed) : '';
   if (tidyLive.textContent !== message) tidyLive.textContent = message;
   tidyLive.className = state?.progress ? 'ap-sr' : 'ap-note';
   box.append(tidyLive);

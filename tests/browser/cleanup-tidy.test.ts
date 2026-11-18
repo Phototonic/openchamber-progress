@@ -208,3 +208,78 @@ test('a counted plan reopened by its agent is skipped without acknowledgement or
     assert.equal(f.store.get('source-fixture', 'P-other')?.lifecycle, 'active');
   } finally { await f.stop(); }
 });
+
+/** A host that lets chosen plans' requests reach the service, then loses the reply. */
+function lossyHost(f: Awaited<ReturnType<typeof launchCleanupService>>, loseReplyFor: Set<string>): ServiceHost {
+  return { serviceRequest: async q => {
+    const r = await f.request(q.path + (q.query ? '?' + new URLSearchParams(q.query) : ''), q.body ? JSON.parse(q.body) : undefined);
+    const body = await r.text();
+    if (q.body && loseReplyFor.has(JSON.parse(q.body).plan)) throw Object.assign(new Error('host timed out'), { code: 'HOST_TIMEOUT' });
+    return { status: r.status, body };
+  } };
+}
+async function closedTargets(f: Awaited<ReturnType<typeof launchCleanupService>>, ids: string[]) {
+  const read = await readList(lossyHost(f, new Set()), { archived: 'exclude' });
+  assert.ok(read.ok && read.read);
+  const targets = tidyConfirmation(read.read.plans.filter(p => p.sourceId === 'source-fixture' && ids.includes(p.id)), read.read.storeId, 'board').targets;
+  assert.deepEqual(targets.map(t => t.request.plan).sort(), [...ids].sort());
+  return targets;
+}
+
+test('against the cleanup service: a refusal is skipped, a lost reply is unconfirmed and applied, and Undo takes receipts only', async () => {
+  const f = await launchCleanupService(false);
+  try {
+    const targets = await closedTargets(f, ['P-done', 'P-other', 'P-cancelled', 'P-failed']);
+    const [, changed] = targets;
+    assert.ok((await cleanupCall(lossyHost(f, new Set()), 'archive', { ...changed.request, oid: crypto.randomUUID() })).ok, 'another cleanup moves this plan first');
+    const lostPlan = targets[2].request.plan;
+    const result = await runTidy(lossyHost(f, new Set([lostPlan])), 'archive', targets, () => true);
+    assert.equal(result.succeeded.length, 2);
+    assert.equal(result.unconfirmed, 1, 'the refusal as changed is skipped; only the lost reply is unconfirmed');
+    assert.deepEqual(result.remaining.map(t => t.request.plan).sort(), [changed.request.plan, lostPlan].sort());
+    assert.equal(f.store.detail('source-fixture', lostPlan).plan.cleanup?.state, 'archived', 'the unconfirmed plan was in fact archived');
+    const undo = await runTidy(lossyHost(f, new Set()), 'restore', result.succeeded, () => true);
+    assert.equal(undo.succeeded.length, 2);
+    assert.equal(f.store.detail('source-fixture', lostPlan).plan.cleanup?.state, 'archived', 'Undo never restores a plan it holds no receipt for');
+  } finally { await f.stop(); }
+});
+
+test('a restore whose reply was lost, sent again with the same request, returns the saved receipt and restores once', async () => {
+  const f = await launchCleanupService(false);
+  try {
+    const targets = await closedTargets(f, ['P-done', 'P-failed']);
+    const archived = await runTidy(lossyHost(f, new Set()), 'archive', targets, () => true);
+    assert.equal(archived.succeeded.length, 2);
+    const lostPlan = archived.succeeded[1].request.plan;
+    const first = await runTidy(lossyHost(f, new Set([lostPlan])), 'restore', archived.succeeded, () => true);
+    assert.equal(first.succeeded.length, 1);
+    assert.equal(first.unconfirmed, 1);
+    assert.deepEqual(first.remaining.map(t => t.request), [archived.succeeded[1].request], 'the remaining restore keeps its request and receipt generation');
+    const generation = f.store.detail('source-fixture', lostPlan).plan.cleanup?.revision;
+    const again = await runTidy(lossyHost(f, new Set()), 'restore', first.remaining, () => true);
+    assert.equal(again.succeeded.length, 1, 'the applied restore is confirmed, not refused');
+    assert.equal(again.unconfirmed ?? 0, 0);
+    assert.equal(f.store.detail('source-fixture', lostPlan).plan.cleanup?.state, 'visible');
+    assert.equal(f.store.detail('source-fixture', lostPlan).plan.cleanup?.revision, generation, 'restored once: the generation did not move again');
+  } finally { await f.stop(); }
+});
+
+test('a repeated restore after another cleanup of the plan is a conflict and counts as skipped', async () => {
+  const f = await launchCleanupService(false);
+  try {
+    const targets = await closedTargets(f, ['P-done']);
+    const archived = await runTidy(lossyHost(f, new Set()), 'archive', targets, () => true);
+    const [receipt] = archived.succeeded;
+    const first = await runTidy(lossyHost(f, new Set([receipt.request.plan])), 'restore', archived.succeeded, () => true);
+    assert.equal(first.unconfirmed, 1);
+    // The restore was applied; another cleanup archives the plan again before the repeat.
+    const host = lossyHost(f, new Set());
+    const moved = await cleanupCall(host, 'archive', { ...receipt.request, cleanupRev: receipt.request.cleanupRev + 1, oid: crypto.randomUUID() });
+    assert.ok(moved.ok);
+    const again = await runTidy(host, 'restore', first.remaining, () => true);
+    assert.equal(again.succeeded.length, 0);
+    assert.equal(again.unconfirmed ?? 0, 0, 'refused because the generation moved: skipped');
+    assert.equal(again.remaining.length, 1);
+    assert.equal(f.store.detail('source-fixture', receipt.request.plan).plan.cleanup?.state, 'archived', 'left as the other cleanup made it');
+  } finally { await f.stop(); }
+});
