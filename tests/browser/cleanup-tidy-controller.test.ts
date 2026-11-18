@@ -15,6 +15,7 @@ import * as sessionContext from '../../ui/shared/session-context.ts';
 import * as checkpoints from '../../ui/shared/change-digest-checkpoint.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { HEALTH, plansPage, summary, S } from './fixtures.ts';
+import { pageHook } from './page-hooks.ts';
 
 const APP = ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const drain = async () => { for (let n = 0; n < 40; n++) await new Promise<void>(r => setImmediate(r)); };
@@ -22,7 +23,7 @@ async function until(check: () => boolean) {
   for (let n = 0; n < 100; n++) { if (check()) return; await drain(); }
   assert.fail('Controller did not reach the expected state');
 }
-function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true) {
+function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<{ filter: string }>> = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
@@ -89,7 +90,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
        return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
          visited: 50, nextCursor: offset === 2000 ? null : String(offset + 50) };
      }) : undefined,
-    wantProjects: () => [], wantDetails: () => [], paint: (_root, c) => { vc = c; },
+    wantProjects: () => [], wantDetails: () => [], paint: (_root, c) => { vc = c; }, ...extra,
   };
   exports.startView(spec);
   listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: null, theme: {} });
@@ -304,5 +305,72 @@ test('Delete requires its own step; archive cannot confirm it, and Stop ends aft
     assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 1);
     f.vc.undoTidy(); await drain();
     assert.equal(f.posts.length, 1, 'delete has no Undo path');
+  } finally { f.stop(); }
+});
+
+// The board page's own scope hooks, with the effective filters the board displays under test control.
+function effectiveScope() {
+  const state = { filters: { project: 'all', worktree: 'all', session: 'all' }, selectionEpoch: 0 };
+  const globals: Record<string, unknown> = { derivedBoard: () => ({ filters: state.filters }), isSearching: () => false, selectionEpoch: 0, tidyEffective: '' };
+  return { state, extra: { tidyScope: pageHook('tidyScope', globals) } as Partial<ViewSpec<{ filter: string }>> };
+}
+for (const [name, open] of [
+  ['Tidy', (f: ReturnType<typeof frame>) => f.vc.requestTidy()],
+  ['Select all', (f: ReturnType<typeof frame>) => f.vc.requestSelection('delete', { all: true, plans: f.vc.read!.plans, includes: () => true })],
+] as const) test(`${name} confirmation is retired when a refresh changes the effective board scope before it is confirmed`, async () => {
+  const scope = effectiveScope();
+  const f = frame('page', false, true, true, scope.extra);
+  try {
+    await until(() => !!f.vc?.read);
+    open(f); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    const stale = f.vc;
+    scope.state.filters = { project: 'p:other', worktree: 'all', session: 'all' };
+    stale.deleteTidy(); await drain();
+    if (name === 'Tidy') assert.notEqual(f.vc.cleanup.tidy?.confirmation?.deleting, true, 'Delete cannot proceed to its second step');
+    stale.confirmTidy(); stale.confirmTidyDelete(); await drain();
+    assert.equal(f.posts.length, 0, 'no request is sent for the earlier, broader count');
+    f.vc.invalidate(); await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the confirmation is gone after the next paint');
+  } finally { f.stop(); }
+});
+test('a run keeps its own result when its reconciliation reshapes the effective scope', async () => {
+  // The board narrows to a project while the first read is shown; once the run reloads, that project is gone.
+  const state: { first?: unknown } = {};
+  const globals: Record<string, unknown> = {
+    derivedBoard: (c: { read: unknown }) => { state.first ??= c.read; return { filters: { project: c.read === state.first ? 'p:one' : 'all', worktree: 'all', session: 'all' } }; },
+    isSearching: () => false, selectionEpoch: 0, tidyEffective: '',
+  };
+  const f = frame('page', false, false, true, { tidyScope: pageHook('tidyScope', globals) });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    await until(() => !!f.vc.read && f.vc.read !== state.first);
+    await drain();
+    assert.equal(f.vc.cleanup.tidy?.result?.succeeded.length, 2, 'the finished run keeps its result and Undo');
+    f.vc.undoTidy(); await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
+    assert.equal(f.posts.filter(p => p.endsWith('/restore')).length, 2);
+  } finally { f.stop(); }
+});
+
+test('only receipt-confirmed plans leave a selection held across a truncated library', async () => {
+  const selection = new cleanup.PlanSelection();
+  const globals = { selection, captures: { retire() {} }, reporting: { retire() {} }, search: { select() {} } };
+  const f = frame('page', false, false, true, { forgetPlans: pageHook('forgetPlans', globals) });
+  try {
+    await until(() => !!f.vc?.read);
+    const plans = f.vc.read!.plans;
+    selection.reconcile('scope', plans, true); selection.mode = true;
+    for (const p of plans) selection.toggle(p);
+    assert.equal(selection.count, 2);
+    f.refuse('two');
+    f.vc.requestSelection('archive', { ...selection.snapshot() });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    assert.equal(selection.has(plans[0].key), false, 'the archived plan is no longer selected');
+    assert.equal(selection.has(plans[1].key), true, 'a refused plan stays selected');
+    assert.equal(selection.count, 1);
   } finally { f.stop(); }
 });

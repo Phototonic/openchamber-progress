@@ -1,30 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { runInNewContext } from 'node:vm';
-import ts from 'typescript';
 import { CleanupScan, tidyConfirmation } from '../../ui/shared/cleanup.ts';
 import { BoardDerivation, ALL, NO_FILTERS, pageListScope } from '../../ui/shared/scope.ts';
 import { freezeLive, inPlace, scopeAvailability } from '../../ui/shared/search.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
-import { plansPage, summary, SRC } from './fixtures.ts';
+import { plansPage, summary, SRC, S } from './fixtures.ts';
+import { pageHook } from './page-hooks.ts';
 
 // Execute the production page callbacks, with the real board normalization and scan engine.
-const file = ts.createSourceFile('page.ts', readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
-function hook(name: string, globals: Record<string, unknown>) {
-  let expression = '';
-  const visit = (node: ts.Node) => {
-    if (ts.isCallExpression(node) && node.expression.getText(file) === 'startView' && ts.isObjectLiteralExpression(node.arguments[0])) {
-      const property = node.arguments[0].properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(file) === name);
-      if (property && ts.isPropertyAssignment(property)) expression = property.initializer.getText(file);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  assert.ok(expression, name);
-  return runInNewContext(ts.transpileModule(`(${expression})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
-}
+const hook = pageHook;
 
 for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gone' }]) {
   test(`Tidy uses the displayed normalized scope after the last ${Object.keys(stale)[0]} plan leaves the list`, async () => {
@@ -64,3 +49,38 @@ for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gon
     assert.deepEqual(tidyConfirmation(derivedBoard().plans, vc.read.storeId, 'board').targets.map(p => p.request.plan), counted?.targets.map(p => p.request.plan));
   });
 }
+
+// A plan's recorded directory outside the discovered roots still belongs to its browse worktree.
+function outsideRoots() {
+  const owner = { id: S.M, title: '', projectId: 'proj', directory: '/fixture/Proj', parentId: null, archivedAt: null, worktree: null, activity: 'idle' as const, outcome: null };
+  const live = { ...EMPTY_LIVE, projectsState: 'ready' as const, projects: [{ id: 'proj', name: 'Proj', directory: '/fixture/Proj' }],
+    sessions: new Map([['proj', { state: 'ready' as const, records: [owner] }]]) };
+  const plans = parsePlansPage(JSON.stringify(plansPage([
+    summary('shown', [], { directory: '/elsewhere/wt' }), summary('older', [], { lifecycle: 'failed', directory: '/elsewhere/wt' }),
+  ]))).data;
+  const board = new BoardDerivation();
+  const vc = {
+    ui: { filters: { ...NO_FILTERS, worktree: 'w:/elsewhere/wt' }, archived: false, search: null as null | { criteria: unknown } }, live,
+    env: { boundSource: SRC }, read: { ...parsePlansPage(JSON.stringify(plansPage([]))).envelope, plans: plans.slice(0, 1), truncated: true },
+    service: () => ({ serviceRequest: async () => { throw Error('Unexpected transport'); } }),
+  };
+  const derivedBoard = () => board.get({ plans: vc.read.plans, live, filters: vc.ui.filters, bound: SRC, locale: 'en', archived: false, reading: 'board' });
+  const globals = {
+    isSearching: () => !!vc.ui.search, derivedBoard, ALL, freezeLive, inPlace, scopeAvailability, pageListScope, CleanupScan,
+    cleanupSearchReader: () => async () => { throw Error('Unexpected search'); },
+    readCleanupListPage: async () => ({ plans, visited: 2, nextCursor: null }),
+  };
+  return { vc, plans, derivedBoard, globals };
+}
+test('a truncated browse Tidy follows browse placement for a worktree outside the discovered roots', async () => {
+  const { vc, derivedBoard, globals } = outsideRoots();
+  assert.equal(derivedBoard().filters.worktree, 'w:/elsewhere/wt', 'the board itself offers this worktree');
+  assert.notEqual(scopeAvailability(derivedBoard().filters, freezeLive(vc.live)), 'ok', 'the search-only check cannot classify it');
+  const counted = await (hook('tidyScan', globals)(vc, 'board') as CleanupScan).more(() => true);
+  assert.deepEqual(counted?.targets.map(p => p.request.plan), ['older']);
+});
+test('a search scan still refuses locations this window cannot classify', async () => {
+  const { vc, globals } = outsideRoots();
+  vc.ui.search = { criteria: { q: 'x', source: ALL, session: ALL, lifecycle: ALL, status: ALL, project: 'p:gone', worktree: ALL } };
+  await assert.rejects((hook('tidyScan', globals)(vc, 'search') as CleanupScan).more(() => true));
+});

@@ -79,6 +79,8 @@ type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number;
 const boardDerivation = new BoardDerivation();
 const selection = new PlanSelection();
 let selectionEpoch = 0;
+/** Effective board filters at the last read, for the Tidy/selection context. */
+let tidyEffective = '';
 function selectionChanged() { selectionEpoch++; frame?.updateUi(() => ({})); }
 let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
@@ -288,15 +290,22 @@ startView<Ui>({
     }, identity) : null;
     return new CleanupScan(key, identity.storeId, vc.ui.archived, async (cursor, current) => {
       active = current;
-      if (scopeAvailability(filters, live) !== 'ok') throw new Error('The selected locations are unavailable.');
+      // Only a search needs its chosen locations classifiable now; browse places a plan by its recorded directory.
+      if (criteria && scopeAvailability(criteria, live) !== 'ok') throw new Error('The selected locations are unavailable.');
       const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
         { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
       return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
     }, matching, criteria ? 64 : 50, includes, allowActive);
   },
-  // Stable through the run's own reconciliation (which temporarily clears read).
-  tidyScope: vc => JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch]),
-  forgetPlans: (keys, ui) => {
+  // The displayed (effective) filters bind a count and its run, not only the saved ones. They are kept
+  // through the run's own reconciliation, which temporarily clears the read.
+  tidyScope: vc => {
+    if (vc.read) tidyEffective = isSearching(vc) ? '' : JSON.stringify(derivedBoard(vc).filters);
+    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyEffective]);
+  },
+  forgetPlans: (keys, ui, _vc, confirmed) => {
+    // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list.
+    if (confirmed?.size) selection.forget([...confirmed]);
     if (!keys.has(ui.selected ?? '')) return {};
     captures.retire(); reporting.retire(); search.select(null); return { selected: null };
   },
@@ -386,6 +395,8 @@ startView<Ui>({
       selectionSearchPlans = [...new Map(v.page.hits.map(h => [h.plan.key, h.plan])).values()];
     }
     if (!v) selectionPlans = visiblePlans(vc);
+    // Without cleanup support the bar is gone: leave Select mode so rows open again.
+    if (vc.health?.planCleanup !== 1 && selection.mode) { selection.clear(); selection.mode = false; }
     selection.reconcile(selectionScope(vc),
       v ? selectionSearchPlans : selectionPlans!, v ? true : !!read.truncated);
     const empty = !v && !read.plans.length && ui.filters.session === ALL;

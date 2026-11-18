@@ -26,7 +26,7 @@ const plans = parsePlansPage(JSON.stringify(plansPage([
 function frame() {
   const selection = new PlanSelection(), board = new BoardDerivation();
   const vc = {
-    identity: 'fixture', ctx: { connection: { account: 'fixture' } },
+    identity: 'fixture', health: { planCleanup: 1 as 1 | undefined }, ctx: { connection: { account: 'fixture' } },
     ui: { filters: { ...NO_FILTERS }, archived: false, search: null as null | { key: string } },
     read: { plans, truncated: false },
     env: { live: { ...EMPTY_LIVE, projectsState: 'ready' as const }, boundSource: SRC },
@@ -70,4 +70,16 @@ test('Select all counts newly appended hits in the same search page array, dedup
   hits.push({ plan: plans[0] }, { plan: plans[1] }); f.paint();
   assert.equal(f.selection.count, 2);
   assert.equal(f.selection.snapshot().plans.length, 2);
+});
+
+for (const searching of [false, true]) test(`Select mode ends when the service stops offering cleanup (${searching ? 'search results' : 'browse'})`, () => {
+  const f = frame();
+  if (searching) { f.vc.ui.search = { key: 'search' }; f.globals.v = { page: { hits: [], number: 1, checked: true }, criteria: { ...NO_FILTERS } }; }
+  f.paint(); f.selection.mode = true; f.selection.toggle(plans[0]);
+  f.paint();
+  assert.equal(f.selection.mode, true, 'capable service keeps the mode');
+  f.vc.health = { planCleanup: undefined };
+  f.paint();
+  assert.equal(f.selection.mode, false);
+  assert.equal(f.selection.count, 0);
 });

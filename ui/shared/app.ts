@@ -247,7 +247,8 @@ export interface ViewSpec<U> {
   tidyArchived?: (vc: ViewContext<U>) => boolean;
   tidyMatching?: (vc: ViewContext<U>) => boolean;
   tidyScope?: (vc: ViewContext<U>) => string;
-  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
+  /** `confirmed`: keys whose cleanup receipt succeeded, given only when a cleanup action ended. */
+  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlySet<string>) => Partial<U>;
   /**
    * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
    * selected session; board: its own list scope, never the host session). Its task-reading state
@@ -562,6 +563,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
   let tidyReconcile = false;
+  /** The next successful read adopts its effective scope into a finished run's result. */
+  let tidyRebase = false;
   let handoff: (Handoff & { from: FocusKey }) | null = null;
   /** The hand-off's short notice, kept while focus stays on that heading (repaints rebuild the root). */
   let handoffNote: { hook: string; notice: NonNullable<Handoff['notice']> } | null = null;
@@ -760,9 +763,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     if (detailsDeferred) detailQueue = Promise.resolve();
   };
-  const forgetPlans = (keys: Set<string>) => {
+  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
-    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; }
+    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed) }; versions.ui++; }
   };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
@@ -941,7 +944,11 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), 'inbox' in result ? result.inbox : undefined)) versions.data++;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
-      if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
+      if (sig !== readSig || failure) {
+        readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++;
+        // The run's own reconciliation may legitimately reshape the effective scope (its last plans left).
+        if (tidyRebase) { tidyRebase = false; if (cleanup.tidy?.result) cleanup.tidy.context = tidyContext(); }
+      }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
       refreshDetails(generation);
@@ -1057,10 +1064,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     const same = cleanup.tidy === state && state.context === tidyContext();
     if (same && document.activeElement?.closest('[data-testid="tidy-stop"]')) cleanupFocus = 'tidy-open';
     // Reconcile once, including uncertain requests; never retry a refused plan automatically.
-    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)));
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), new Set(result.succeeded.map(t => t.key)));
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
-    tidyReconcile = same;
+    tidyReconcile = same; tidyRebase = same;
     versions.ui++; versions.data++; schedule(); retry();
   }
   function validTarget(target: CleanupTarget) {
@@ -1097,7 +1104,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const sameContext = target.context === cleanupContext();
     // Also reconcile ambiguous failures. Never replay an action automatically or retain
     // pre-action data as a fresh success; every part/list reply from before this is retired.
-    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]));
+    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]), new Set(result.ok ? [target.key] : []));
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
