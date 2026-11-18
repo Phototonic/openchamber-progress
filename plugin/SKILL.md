@@ -46,7 +46,7 @@ it is not evidence of a host outage. Empty/all-skipped plans cannot finish
 successfully. Denied document access still commits valid checklist changes with
 diagnostics; `source` is optional and never a reason to manufacture a file.
 
-If work moves back to a task's prerequisites after the later task's own work began, mark the later task blocked with blocker category dependency and a short reason; if none of its own work was done yet, set it back to pending.
+If work moves back to a task's prerequisites after the later task's own work began, mark that task blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}]; keep an existing decision or review blocker instead, and if none of its own work was done set it back to pending. When the prerequisite is done again, set the task back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready.
 
 Inline guidance documents the other operations. Routine
 requests use `op=change`, `plan`, fresh `oid`, expected `rev`, and changed items.

@@ -1893,7 +1893,7 @@ prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to workin
 to load the skill when writing, receiving or coordinating plans and before
 dispatching sub-agents. The description is at most 4,096 characters, with the
 checklist and executable prerequisite start example inside the first 2,048.
-Operation details remain in the skill. The skill and the inline guidance also say, in one sentence, that when work moves back to a task's prerequisites after the later task's own work began, the later task is marked blocked with category dependency and a short reason (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), and that a task with none of its own work done is set back to pending. The following conditional rule still applies:
+Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to a task's prerequisites after the later task's own work began, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites) unless it already carries a decision or review blocker, which is kept; that a task with none of its own work done is set back to pending; and that once the prerequisite is done again the task is set back to working or pending, including before a handoff, because an explicit blocked task never becomes Ready. The following conditional rule still applies:
 tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
