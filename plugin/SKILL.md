@@ -46,6 +46,8 @@ it is not evidence of a host outage. Empty/all-skipped plans cannot finish
 successfully. Denied document access still commits valid checklist changes with
 diagnostics; `source` is optional and never a reason to manufacture a file.
 
+If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. When every prerequisite it was blocked on is done again, set the task you blocked this way back to working or pending, including before a handoff, since an explicit blocked task never becomes Ready.
+
 Inline guidance documents the other operations. Routine
 requests use `op=change`, `plan`, fresh `oid`, expected `rev`, and changed items.
 For large structures stage numbered chunks and explicitly commit all chunks;
