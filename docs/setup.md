@@ -39,8 +39,8 @@ managed discovery selectors. No root scanning or automatic legacy adoption occur
 
 Opening Setup, inspecting status or loading an unconfigured companion creates no
 binding directory, marker, descriptor or store. Confirmed configuration creates
-private product state (0700 directories and 0600 files on Linux, equivalent ACLs
-on supported Windows). Mutable state never lives in the extension code folder.
+product state (0700 directories and 0600 files on Linux and macOS; ordinary
+per-user folders with the profile's default inherited permissions on Windows). Mutable state never lives in the extension code folder.
 After configuration, the next eligible native context/report boundary can activate
 a previously dormant companion; no global install or automatic restart is needed.
 
@@ -94,22 +94,15 @@ retain the diagnostic vocabulary needed for support.
 
 ![Fresh Setup with the recording state, optional progress folder and collapsed technical disclosure (synthetic example)](images/setup-fresh.png)
 
-Each request has at most six security launches, a 17-second work deadline and an
-18-second response deadline below the host's 20-second limit. Health remains cheap
-while workers run. Portable counters measure six launches for prepare, folder and
-database creation and five for each later effect. Native Windows timing and
-successful 2.5-second-helper journeys remain CI acceptance gates, not claims
-inferred from Linux tests. Persistently slower helpers can still refuse within the
-budget; a timeout is not rollback and never permits deleting metadata or changing
-permissions to force a retry. Linux/macOS do not launch PowerShell.
+Each request has a 17-second work deadline and an 18-second response deadline
+below the host's 20-second limit, and no step starts a process. Health remains
+cheap while workers run. A timeout is not rollback and never permits deleting
+metadata or changing permissions to force a retry.
 
 The service's five-second HTTP `requestTimeout`/`headersTimeout` bounds receiving
 request bytes, not executing a fully received Setup request. It produces HTTP 408,
-not a JSON `storage` failure. Portable regressions exercise fresh inspection and
-configuration beyond five seconds with a 4.5-second first security launch and
-350 ms later launches, still below the host budget. Actual helper timeouts retain
-`windows-security-unavailable` (or `managed-step-deadline` in step mode), never
-become evidence of absent state or permission to write.
+not a JSON `storage` failure. A deadline refusal (`managed-step-deadline`) never
+becomes evidence of absent state or permission to write.
 
 ## Reach and disable/removal
 
@@ -166,20 +159,19 @@ Authenticated health and Setup delivery advertise independent
 `/v1/setup/managed-step` route uses wire 1 for migration and wire 2 for fresh setup.
 An absent fresh capability shows update-together guidance, with no old-route
 fallback. The old migrate
-URL always returns 409 `managed-action-required` with no security launches or
-migration work. On Windows the old inspect/configure URLs always refuse with that
-exact 409 object before body parsing, workers, security queries or product writes.
+URL always returns 409 `managed-action-required` with no migration work. On Windows the old inspect/configure URLs always refuse with that
+exact 409 object before body parsing, workers or product writes.
 On Linux/macOS these compatibility routes do the same no-write refusal when
 legacy discovery or any migration journal applies (configuration of ambiguous
 legacy plus managed selection without a journal returns `managed-migration-conflict`,
 while inspection still returns `managed-action-required`). Legacy/journal inspect
-refusal uses local presence hints before security queries, with no writes; its acceptance budget
-is at most six security launches and eight seconds on the undelayed runner. The
+refusal uses local presence hints before full validation, with no writes; its acceptance budget
+is eight seconds on the undelayed runner. The
 old inspect/configure routes remain supported only on Linux/macOS for no-legacy,
 no-journal fresh setup under the existing nonce-bound review and writer fence;
 migration must never fall back to them. A presence hint authorizes only refusal:
 it neither validates nor reads the journal/legacy contents. An absent or unreadable
-hint still runs the full fresh path, ACL and ownership checks, including canonical
+hint still runs the full fresh path and filesystem checks, including canonical
 presence checks, before offering a review or writing. Invalid metadata without a
 migration hint retains its precise ownership/path refusal; step inspection
 diagnoses metadata behind a migration hint.
@@ -246,8 +238,8 @@ reply; reopening reads status and requires an explicit Continue or Resume.
 At an unchanged journal sequence, a refreshed status observation can replace
 unknown capture and Resume with the actual capture bit and a required review.
 
-Step errors retain fixed platform codes such as `windows-security-unavailable`
-and `private-permissions`, alongside the actual requested step or journal/lock
+Step errors retain fixed platform codes such as `path-unverified`
+and `symlink-escape`, alongside the actual requested step or journal/lock
 stage. No raw exception, path, account identity, token, command or database content
 is included. A non-null error means failure even if the disposition says
 `replayed`: that is a failed receipt, not a successful retry. Budget/deadline/busy
@@ -272,7 +264,7 @@ Managed-directory bootstrap also retains narrow **manual-recovery crash windows*
 from versions 1.2.0 and 1.3.0. A crash after directory creation but before the
 ownership marker, or between linking a published file and removing its staging
 link, can leave invalid private metadata. Such an unmarked directory, hard-link
-anomaly, permissive ACL or foreign content is refused, never adopted, repaired or
+anomaly or foreign content is refused, never adopted, repaired or
 deleted automatically. A valid marked same-target directory with no migration
 journal can be reused after fresh validation and confirmation; it is not the same
 as an unmarked directory. The step protocol's `prepare` stage uses this
@@ -530,63 +522,46 @@ guide. Historical companion-update confirmations are not the managed update path
 
 ## Native Windows
 
-Native filesystem protection uses existing JavaScript and built-in Windows
-PowerShell 5.1/.NET, not a new executable/compiler/module. Fixed profile-free,
-noninteractive scripts receive UTF-8 JSON through stdin; paths are not executable
-command text. Missing/blocked PowerShell is a fixed privacy/setup failure.
+Native filesystem protection uses existing JavaScript and ordinary Node
+filesystem calls only. No process is started for any permission check, no ACL is
+queried, applied or repaired, and no native helper, compiler or module is part of
+the runtime. State lives under the user's profile and relies on its default
+per-user permissions, like other per-user applications. This was a maintainer
+decision ([#172](https://github.com/Phototonic/openchamber-progress/issues/172)):
+starting Windows PowerShell synchronously for each check (one to two seconds each)
+blocked the OpenCode event loop inside the companion for tens of seconds.
 
-Outside the setup step engine, the first security query per loaded
-service/companion has a 30-second attempt and
-one identical retry only on timeout (up to 60 seconds configured wait). Later
-queries have one 10-second attempt. Termination/OS overhead is additional; these
-are not setup-operation deadlines. Non-zero exits, spawn errors and malformed
-results are not retried. No path is admitted without parsed security evidence.
+Windows keeps the checks that need only filesystem calls: drive-qualified path
+syntax, canonical path, refusal of symbolic links and junctions in the path chain,
+refusal of hard-linked owned state files, content-ownership markers, hashes and
+schema validation. Directories are created with default inheritance, and an
+existing directory is accepted as it is. Existing roots that carry a private ACL
+from an earlier version keep working and are never modified. Linux and macOS keep
+their uid and mode checks.
 
-Managed service construction and health perform **zero security queries** and no
-legacy payload/Store preflight. Read-only validation scopes coalesce their known
-paths; security results do not survive the synchronous operation, and mutation
-boundaries retain fresh validation. There is no process-lifetime or TTL ACL cache.
-The host's liveness deadline is separate from these security-helper budgets.
-OpenChamber 2.7.1 also limits both the guest bridge and service proxy to **20 seconds**
-per request (`packages/sdk/src/contract.ts:499`, `host.ts:607-618`, and
-`packages/web/server/lib/guests/service.js:725,832,855-856` at tag `v2.7.1`).
-Migration and fresh setup run as separate inspection pages and confirmed steps, with at most
-**six actual PowerShell starts per request**, including failures, replay, checks,
-publication and cleanup. The 17-second work and 18-second response deadlines sit
-below the host limit; the undelayed runner gates each request at eight seconds.
-The native suite also exercises helpers delayed by 2.5 seconds, concurrent health,
-pause/reopen/resume and failed workers. Native results remain pending CI; these
-are acceptance budgets, not a latency guarantee for every machine.
+Managed service construction and health do no legacy payload/Store preflight.
+Every request and every mutation boundary repeats its path and object checks; no
+result survives a request. The host's liveness deadline is separate from the
+setup deadlines. OpenChamber 2.7.1 also limits both the guest bridge and service
+proxy to **20 seconds** per request (`packages/sdk/src/contract.ts:499`,
+`host.ts:607-618`, and `packages/web/server/lib/guests/service.js:725,832,855-856`
+at tag `v2.7.1`). Migration and fresh setup run as separate inspection pages and
+confirmed steps. The 17-second work and 18-second response deadlines sit below the
+host limit; the undelayed runner gates each request at eight seconds. The native
+suite also exercises pause/reopen/resume and failed workers, and an independent
+observer asserts that the service starts no process. Native results remain
+pending CI; these are acceptance budgets, not a latency guarantee for every
+machine.
 
-Every request uses fresh ownership checks; no ACL result survives a mutation or
-request boundary. A blocked helper fails closed, never skips a check to meet the
-deadline, and step mode does not inherit the cold-query retry. Workers retain
-their fence until exit; timeout is not rollback. The portable HTTP fixture counts
-real helper-launch calls at a substituted OS boundary, not legacy file reads or
-native NTFS security. Fresh inspection pages measure 1 each (retained roots can
-take 2); prepare, store-directory and create-store measure 6 each; later effects
-measure 5; settled replay 1, controls normally 3, Setup status 3 before binding and
-4 afterwards. All failure/settlement attempts remain within 6. The old non-Windows
-compatibility controller remains synchronous; its historical Windows accounting
-was 3/24, not the current Windows path.
-Measured portable manifest/selector journeys use 1, 1, 4, 1, 1, 1 launches for
-the six inspection pages, 6 for prepare, 5 per ordinary advance/removal batch,
-6 for recording removal, 1 for a successful replay, 3 per pause/stop/resume,
-and 4 for an active-operation status read. Receipt recovery uses 2, 3, 2, 2,
-1, 1 for inspection and 3 for prepare, then skips already completed removal.
-Old-route refusals measure 0 for legacy/journal inspect/configure and for migrate.
-These are fixture measurements, not a promise that every refusal has the same
-cost; the six-launch ceiling includes failure and settlement work.
-See [the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)
-for accounting and settlement rules.
+Workers retain their fence until exit; timeout is not rollback. The portable
+fixtures spy on every child-process entry point of a projected Windows path; they
+do not exercise native NTFS behaviour. See
+[the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)
+for deadline and settlement rules.
 
-Use one account and local NTFS storage. Config/data roots require current-account
-ownership; dedicated store and managed state require private ACLs permitting only
-that account, SYSTEM and Administrators. New roots get ACLs at creation; existing
-foreign/permissive roots or replaceable ancestors are refused, not repaired or
-taken over. Ancestor ownership must be current user, SYSTEM, Administrators or
-TrustedInstaller. Owned hard-linked state files are refused. Journals/side files
-remain under the secured store. No elevation is attempted.
+Use one account and local NTFS storage. Owned hard-linked state files are
+refused. Journals/side files remain in the store folder. No elevation is
+attempted.
 
 Drive-qualified paths support either separator, spaces, Unicode and trailing
 directory separators through actual identity checks, not blind lowercasing.
@@ -595,8 +570,8 @@ alternate data streams and reserved aliases are refused. Long paths and other
 filesystems are not certified; APPDATA is not assumed to be OpenCode config.
 
 Capture checks requested/canonical permissions, opened-file identity and bounded
-bytes, then file/ancestor identity and mutation metadata. Source documents do not
-need private-store ACLs. Failure retains prior text and valid structured reports.
+bytes, then file/ancestor identity and mutation metadata. Source documents are
+ordinary authorized reads. Failure retains prior text and valid structured reports.
 Trusted same-account processes are assumed; this is not Linux final-opened-path
 proof against coordinated hostile filesystem races. Windows flushes writable file
 descriptors but lacks POSIX directory fsync/power-loss namespace guarantees.

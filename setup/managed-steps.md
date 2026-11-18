@@ -1,5 +1,16 @@
 # Bounded managed setup contract
 
+> **Since 1.5.2 no step starts a process.** The Windows permission queries
+> (Windows PowerShell, one to two seconds each) were removed together with the
+> six-launch ceiling, the helper cold-start budgets and the account-scoped mutex
+> barrier. Windows relies on the profile's default permissions; ACLs are never
+> queried, applied or repaired. The step names, the split into separate durable
+> requests, the 17-second work and 18-second response deadlines, the writer slots
+> and the fresh validation of every mutation are unchanged, and
+> `accounting.securitySpawns` stays on the wire as a constant 0. Where this
+> document describes launch counts, allocations or ACL checks below, read it as the
+> history of why the steps are split, not as a current requirement.
+
 ## Fresh consumer contract (wire 2 / journal 3)
 
 Fresh setup is a separate family on the same route: `ManagedFreshStepRequest`,
@@ -50,48 +61,39 @@ Only pending/complete coarse phases exist, never fabricated removal evidence.
 The storage lane implements `Store.createFresh(file, {storeId, validate})`, returning
 a normal Store handle. `storeId` is the frozen proposed ID; `validate` is mandatory
 full same-target/intent validation, called in the helper's read-only preflight
-scope. Creation is exclusive, uses mode 0600/private inherited Windows ACLs, checks
-all fixed sidecars absent, ends the preflight before reservation, and freshly checks
+scope. Creation is exclusive, uses mode 0600 (Windows: the default inherited
+permissions), checks all fixed sidecars absent, ends the preflight before reservation, and freshly checks
 the reserved file/object/ancestors before initialization. The initial schema
 transaction installs the frozen ID, capture **off**, schema 2 and receipt index.
 It registers no source. Ordinary constructor defaults/partial-file refusals stay
 unchanged. Failed/partial files are retained, never reopened for initialization.
 Immediately before either exclusive creation, after the final read-only preflight,
-the helper rechecks room for three launches and 8.5 seconds: creation/new-object
-admission plus checkpoint validation and readback, at 2.5 seconds each with one
-second headroom. Slow preflight can therefore refuse while the target is still
-absent and safely retryable; the earlier engine reservation alone is insufficient.
+the helper rechecks that the request deadline has not passed. A slow preflight can
+therefore refuse while the target is still absent and safely retryable.
 
 The platform lane extends `privateDirectory(file, false, {exclusive: true,
-validate})`. Mandatory validation shares its read-only path preflight; that actual
-scope ends before the creation query. An existing/unexpected directory refuses,
+validate})`. Mandatory validation shares its read-only path preflight, which ends
+before creation. An existing/unexpected directory refuses,
 never becomes adopted authority. The caller checkpoints the resulting identity
 only through the corresponding durable intent. A crash before that checkpoint
-requires manual diagnosis, not automatic adoption. No raw security-backend bypass,
-claim file, repair, new schema or cached ACL authority is introduced.
+requires manual diagnosis, not automatic adoption. No claim file, repair, new
+schema or cached authority is introduced.
 
-These interfaces are frozen for consumers. Portable full-engine measurements are
-prepare/store-directory/create-store 6 launches each, expectation/register-source/
-publish-binding/enable/reconcile 5 each, settled replay 1 and normal controls 3.
-Fresh inspection pages measure 1 each (retained roots can take 2); ordinary Setup
-status measures 3 before selection/4 after. Injected failure settlement remains
-within 6. These substitute only the OS-spawn boundary, not native timing or NTFS
-ACLs. Native CI tests default/custom empty stores undelayed, the default store
-with 2.5-second helpers, retained reused sources with capture on/off, and a retained
-new source with capture off. Requests assert six launches, eight seconds undelayed
-or below twenty seconds delayed, and concurrent zero-query health.
-The six-launch gate includes all validation,
-actual attempts, creation, readback and failure settlement. Stop for a technical
-amendment if safe creation cannot fit. Format-3 observation before storage exists
+These interfaces are frozen for consumers. Portable full-engine tests assert that
+no step starts a process on a projected Windows path. Native CI tests default and
+custom empty stores, retained reused sources with capture on/off, and a retained
+new source with capture off. Requests assert no process launch and eight seconds,
+and health answers with zero launches. Safe creation that cannot finish before
+the deadline refuses and is retried by a new request. Format-3 observation before storage exists
 requires the fresh journal reader, not `readBinding` on an absent directory.
 Rollback retains journals/data and requires a fresh-capable build for recovery.
 
 The sections below retain the wire-1 / format-2 migration contract. Wire 2 and
 format 3 extend the same engine, worker and single Setup driver, not a parallel
 installer. Backend HTTP and rendered synthetic-shell journeys are integrated;
-portable query accounting is **not a native performance result**. Fresh default
-native recovery tests prepare timeout, replay and restart/pause/resume before and
-after creation; migration tests additionally exercise slower/late-worker refusal.
+portable tests are **not a native performance result**. Fresh default
+native recovery tests replay and restart/pause/resume before and
+after creation; migration tests additionally exercise late-worker refusal.
 Native acceptance and independent trust-boundary/error-path review remain delivery gates.
 
 ## Owners and invariants
@@ -101,13 +103,13 @@ Native acceptance and independent trust-boundary/error-path review remain delive
 - Consumer examples: `tests/fixtures/managed-steps.ts` (synthetic, not traces).
 - Extend `setup/managed-migration.ts`, the lifecycle ownership/removal owner and
   the existing private-publication helpers. No alternate installer/remover.
-- Preserve bearer authentication, current-account ownership, safe ancestors,
+- Preserve bearer authentication, content ownership (POSIX: current-account
+  ownership and modes), canonical paths,
   no reparse/hard-linked private files, exact manifest/byte checks, Store/source
   identity and schema checks, independent companion admission, retained history,
   payloads and receipts. Neither a cursor nor journal nor health grants authority.
-- No cached ACL verdict across requests **or mutations**. A nested
-  `platformSecurityScope` does not clear an outer scope. End/reset the actual
-  scope at every write boundary; a helper rename alone is not a reset.
+- No validation result is cached across requests **or mutations**; every write
+  boundary rereads the filesystem.
 - Serialize across processes for both discovery target and shared Store capture
   control, including ordinary capture controls. Hold no lock over user think
   time. New locking must be crash-releasing or positively reconciled; a timestamp
@@ -211,30 +213,29 @@ request refusal uses the same envelope with `disposition: refused`, non-null
 sequence/target/review, unsupported format/version and ownership conflicts are
 409, including `managed-configuration-busy`, `managed-path-unverified` and
 `managed-scope-unsupported`; worker/coordination busy, deadline, budget and
-unavailable security/storage are 503. A response
+unavailable storage are 503. A response
 failure is not rollback. Unknown operation status is 404, never another target's
 progress. Ordinary authentication/method/body-limit failures keep existing HTTP
 handling and do not require this envelope.
-Accounting uses an integer security-spawn count and finite nonnegative elapsed
+Accounting uses an integer launch count (always 0) and finite nonnegative elapsed
 milliseconds; the monotonic duration may include a fractional millisecond.
 Non-null `error` overrides `disposition`, including a `replayed` failed receipt;
 clients must render that reply as failed, not continue the success path. A worker
 crash is treated as effect uncertainty and requires explicit observation/recovery.
 
 Old-shaped `/v1/setup/managed-migrate` returns exactly HTTP 409
-`{"error":"managed-action-required"}` with **zero security spawns and migration
+`{"error":"managed-action-required"}` with **no migration
 writes**, before candidate discovery. It is never a partial-success 200.
 On Windows `managed-inspect` and `managed-configure` also return exactly that 409
-object with zero workers, security launches or product writes before body parsing.
+object with zero workers or product writes before body parsing.
 On Linux/macOS they remain supported for fresh configuration
 with no canonical legacy installation or migration journal. They retain the
 existing controller's nonce-bound review, explicit confirmation and fresh locked
 revalidation. Presence of legacy discovery or any journal refuses these routes
 with 409 `managed-action-required` before monolithic legacy inspection or writes;
 use negotiated step inspection instead. Legacy/journal inspection refusal is
-read-only, with at most six security launches and an eight-second undelayed
-acceptance budget. Local legacy/journal presence hints refuse before security
-queries; absent or unreadable hints grant no authority and still require full
+read-only, with an eight-second undelayed acceptance budget. Local
+legacy/journal presence hints refuse before full validation; absent or unreadable hints grant no authority and still require full
 fresh validation and the canonical presence check. These hints read no metadata
 contents and are not retained between requests or used to admit an effect.
 Without a journal, configuration with concurrent legacy discovery and a managed
@@ -251,83 +252,64 @@ capability is independent.
 
 The old Linux/macOS inspection/configuration routes remain outside the negotiated
 step-request budget and worker boundary. They keep the synchronous 1.3.0
-controller and security timeouts, holding the same target-derived scope **and**
+controller, holding the same target-derived scope **and**
 Store writer slots for the entire request, including publication and cleanup.
 A busy slot refuses before controller admission; fresh configuration cannot race
 a migration or capture worker. The fence releases on completion/failure, not on
 client disconnection. Partial bootstrap still has the existing recovery limits.
 
-Historical portable Windows-helper accounting measured 3/24 launches for these
-old routes. Windows now refuses them before work; the current UI uses negotiated
+Windows refuses these old routes before work; the current UI uses negotiated
 fresh steps on all platforms. A compatibility timeout is not rollback: inspect
 state before explicitly retrying; never reset or repair it automatically.
-Linux/macOS do not launch PowerShell. No old-route fallback is allowed from the
-fresh client if its capability is absent.
+No old-route fallback is allowed from the fresh client if its capability is absent.
 
 The five-second HTTP request/header timeouts limit receipt of bytes (HTTP 408),
 not handler execution after body parsing. They are not a five-second setup
-deadline and remain unchanged. Portable HTTP regressions model a 4.5-second first
-launch and 350 ms subsequent launches: both fresh inspection and confirmation
-complete beyond five seconds but below the host limit. Real helper timeouts
-remain `windows-security-unavailable` outside step mode and
-`managed-step-deadline` inside it, not generic `storage` failures. This does not
-authorize old Windows routes or remove bounded refusals for persistently slow helpers.
+deadline and remain unchanged. A step that runs past its work deadline refuses with
+`managed-step-deadline`, not a generic `storage` failure.
 
-## Request budgets and measured-stage split
+## Request budgets and stage split
 
-Six is the **total real process-start ceiling**, not six logical queries. Count
-the first cold launch, failed launch attempts, retries, validation, creation,
-post-write checks, journal/lock/staging cleanup and reply construction, including
-work in another thread/process. No warm-up outside the charged request. Worker
-spawn itself is not a security-process spawn; every PowerShell descendant is.
+No step starts a process, so there is no launch ceiling to allocate. The service's
+monotonic work deadline is 17 seconds from authenticated request admission;
+response deadline is 18 seconds, below the 20-second host boundary. Time waiting
+for serialization consumes this budget. If a needed fresh validation cannot finish
+before the deadline, stop before the effect with `managed-step-deadline` and
+return the already-known diagnostic/progress without a synchronous status scan.
+After an uncertain effect, return unknown capture and
+`managed-step-unsettled`/deadline, retaining intent. Fence a late worker before
+any competing request can mutate. Termination is not proof of rollback; health
+must continue to answer without any filesystem validation.
 
-The service's monotonic work deadline is 17 seconds from authenticated request
-admission; response deadline is 18 seconds, below the 20-second host boundary.
-Time waiting for serialization consumes this budget. Bound each helper wait by
-remaining work time minus required settlement headroom; do not inherit the
-30-second cold wait/retry. No automatic cold retry in step mode. Reserve the
-remaining spawn/time slots for completion and cleanup **before** admitting an
-effect. If a needed fresh batch exceeds the bound, stop before the effect with
-`managed-step-budget` or `managed-step-deadline`. Return the already-known
-diagnostic/progress without a synchronous status scan. After an uncertain effect,
-return unknown capture and `managed-step-unsettled`/deadline, retaining intent.
-Fence a late worker before any competing request can mutate. Termination is not
-proof of rollback; health must continue to answer without security queries.
+The original measured stages were split into the request units below to fit the
+old per-request launch ceiling. The split is kept, because journals and the Setup
+driver depend on it, but the ceiling itself is gone.
 
-The following is a required allocation for step requests, not a claim that
-unmodified helpers fit.
-The original stage totals overlap semantic work; do not add them to infer a new
-total. All step requests, including status/replay/failure, remain capped at six.
+| Old measured stage | New request unit |
+| --- | --- |
+| inspect | `roots`, `managed-state`, `legacy-discovery`, `legacy-releases` per bounded release group, `store`, `review`; no writes |
+| preflight + create | discovery above, then `prepare` alone |
+| locked validation | no standalone authority checkpoint; freshly validate the fully discovered target in **each** one-effect mutation request; reread every manifest/binding/hash/Store fact, never reuse an earlier verdict |
+| expectation | `expectation` only |
+| record writes | initial prepare; intent/completion inside each separate effect; `record-removal`; final `reconcile` |
+| removal | one `remove-selector` per staged selector; one `remove-discovery` per root file; then `record-removal` |
+| final status | `publish-binding`, `enable`, then `reconcile`; ordinary status is a bounded projection |
 
-| Old measured stage | New request unit | Security-spawn allocation |
-| --- | --- | --- |
-| inspect 19 | `roots`, `managed-state`, `legacy-discovery`, `legacy-releases` per bounded release group, `store`, `review` | at most 4 validation + 2 failure/cleanup each; no writes |
-| preflight + create 12 | discovery above, then `prepare` alone | 2 fresh validation + 1 private container creation + 2 publication/checkpoint validation + 1 cleanup = 6 |
-| locked validation 10 | no standalone authority checkpoint; freshly batch the fully discovered target in **each** one-effect mutation request | 1 full known-path batch per validation boundary, as allocated below; reread every manifest/binding/hash/Store fact, never reuse an earlier verdict |
-| expectation 1 | `expectation` only | 1 admission + 1 intent + 1 effect + 2 checkpoint/reconciliation + 1 cleanup = 6 |
-| record writes 12 | initial prepare; intent/completion inside each separate effect; `record-removal`; final `reconcile` | same per-request six-slot envelope; no three phase publications plus final status in one request |
-| removal 7 | one `remove-selector` per staged selector; one `remove-discovery` per root file; then `record-removal` | each 1 admission + 1 intent + 1 effect + 2 checkpoint + 1 cleanup = 6 |
-| final status 11 | `publish-binding`, `enable`, then `reconcile`; ordinary status is a bounded projection | publication/enable use six-slot effect envelope; reconcile 2 validation + 1 intent + 2 checkpoint + 1 cleanup = 6; status <=4 reads +2 failure/cleanup |
-
-Full checks fit fewer launches by batching **already discovered path claims plus
-all ancestors**, not by splitting authorization across requests. Claim paths
+Full checks batch **already discovered path claims plus all ancestors**, not
+split authorization across requests. Claim paths
 include journal/marker/selector, roots, descriptors, manifest, every retained
 release file, removal candidates, expectation, history and existing SQLite side
-files as applicable. Within each fresh batch check object snapshots before/after,
-then reread and validate manifests/descriptors and all required hashes/Store
-facts under that scope. A changed manifest, object or discovered set invalidates
-the batch. Do not follow a newly discovered path from an unvalidated manifest or
-authorize by cached byte hashes. Rechecking known safe paths may be coalesced;
-new paths require another charged batch or a read-only discovery continuation.
+files as applicable. Check object snapshots before/after, then reread and validate
+manifests/descriptors and all required hashes/Store facts. A changed manifest,
+object or discovered set invalidates the batch. Do not follow a newly discovered
+path from an unvalidated manifest or authorize by cached byte hashes.
 
 The bounded claim set is at most 256 paths (ancestors additionally deduplicated);
 the byte/request/deadline bounds still apply. More paths or bytes are an explicit
 `managed-step-limit` **before confirmation/effects**, not a truncated successful
 review. Read-only release inspection may be paged, but full fresh ownership is
-still required at every affected mutation. Increasing this limit or discovering
-that a safe atomic step cannot fit six requires technical review, not weakened
-checks. The supported released fixture must actually complete at 2.5 seconds
-per launch; endless bounded refusals do not pass acceptance.
+still required at every affected mutation. The supported released fixture must
+complete; endless bounded refusals do not pass acceptance.
 
 ## Effect sequence and partial removal
 
@@ -344,7 +326,7 @@ journal; no capture, expectation, loader or selector effect. Reuse the unchanged
 `createManagedBindingDirectory` helper, as the managed-configuration path does,
 then publish the initial journal as a **file** inside the validated managed
 directory using the existing no-clobber private-file publication. There is no
-claim file, atomic-container requirement, new ACL mechanism or directory repair.
+claim file, atomic-container requirement or directory repair.
 Only a fully published, freshly validated prepare checkpoint releases the next
 step. Existing managed directories/format-1 records require same-target validation
 rather than replacement of foreign bytes.
@@ -356,7 +338,7 @@ rather than replacement of foreign bytes.
 | Managed directory absent | Freshly validate the confirmed target, then use existing directory creation. |
 | Valid private managed directory and exact marker; journal absent | Freshly validate the same target and consent, then publish only the initial journal. After restart before a durable request receipt exists, fresh inspection/confirmation may be needed. |
 | Valid managed directory, marker and same-operation journal | Validate the journal and reconcile/replay its durable receipt; never repeat completed effects. |
-| Directory without a valid marker, foreign bytes, permissive ACLs or any reparse/hard-link anomaly | Refuse with stage `prepare` and `managed-binding-invalid` or the precise allowlisted failure code; never adopt, repair or delete. |
+| Directory without a valid marker, foreign bytes or any reparse/hard-link anomaly | Refuse with stage `prepare` and `managed-binding-invalid` or the precise allowlisted failure code; never adopt, repair or delete. |
 | Retained publication stage or two-link state after interrupted file publication | Refuse ambiguous/invalid state without automatic cleanup, link adoption or overwriting. |
 | Existing format-1 state | Use its separately specified full same-target inspection/consent and validated upgrade path. |
 
@@ -371,10 +353,9 @@ rather than claim that all bootstrap crashes resume automatically.
 
 On a refused partial bootstrap, stop migration and retain the state for manual
 diagnosis. Follow `docs/setup.md` recovery guidance; do not delete the directory,
-publication stage or lock, change ACLs, or restore a global loader merely to make
+publication stage or lock, or restore a global loader merely to make
 Setup continue. Public diagnostics contain only stage/code, never local paths.
-All validation, creation, publication and failure/cleanup spawns still count
-toward prepare's six-spawn limit. No warming or safety check is exempted.
+No safety check is exempted to meet the deadline.
 
 The documented trusted-same-account-process assumption still applies; there is
 no new claim of resistance to coordinated hostile same-account races. Windows

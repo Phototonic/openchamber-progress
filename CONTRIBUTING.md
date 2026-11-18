@@ -24,7 +24,7 @@ Larger changes to behaviour, storage or compatibility are proposed under `opensp
 
 Use **Node.js 24.x >= 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. Node 24.19.0 is the tested baseline and CI's release gate uses exactly 24.19.0 and a second job runs the newest 24.x; later 24.x releases are accepted but not separately certified. Linux integration was tested with OpenCode 2.1.4 and OpenChamber 2.5.1; native Windows validation used OpenCode 2.1.4 and OpenChamber 2.5.2. Current native runtime tests use the OpenCode baseline below. These are tested configurations, not proof of every newer runtime. Linux package checks also need system `zip` and `unzip`.
 
-For native Windows development, use the built-in Windows PowerShell 5.1 and local NTFS storage. No native helper or compiler is part of the runtime. After the frozen dependency install, run `node --experimental-strip-types --test tests/backend/windows-platform.test.ts`, the root/UI typechecks, and the relevant browser tests. The Windows suite creates and cleans isolated private fixtures under a fresh drive-root folder; it does not use a live profile or model. Foreign-owner and persisted callback-ACE fixtures explicitly skip if the account/OS cannot create them; pure descriptor policy still runs. The existing Linux isolation/auth/performance helpers are not Windows tests. ZIP production can remain on Linux; Windows consumers install the built outputs without compiling.
+For native Windows development, use local NTFS storage. No native helper, compiler or child process is part of the runtime: Windows permission checks are plain Node filesystem calls, and state relies on the user profile's default permissions. After the frozen dependency install, run `node --experimental-strip-types --test tests/backend/windows-platform.test.ts`, the root/UI typechecks, and the relevant browser tests. The Windows suite creates and cleans isolated fixtures under a fresh drive-root folder; it does not use a live profile or model. One fixture sets an owner-only ACL with the built-in `icacls` to prove that existing ACLs keep working and are never modified; the product never applies or queries an ACL. The existing Linux isolation/auth/performance helpers are not Windows tests. ZIP production can remain on Linux; Windows consumers install the built outputs without compiling.
 
 From the repository root:
 
@@ -172,11 +172,10 @@ These cover the native tests' imports and backend build entries/payloads;
 unknown paths, an empty diff or a failed listing conservatively run Windows.
 
 Ordinary PRs and every `dev` push run the fast Windows set: all native tests
-except the two released 1.1.1 migration journeys and the `empty-delayed` fresh
-journey. Every PR into `main`, every `main` push, the weekly run and manual
+except the released 1.1.1 migration journey. Every PR into `main`, every `main` push, the weekly run and manual
 dispatch run the full set, even for UI/docs-only changes. The workflow sets
 `AP_WINDOWS_FULL=1` only for those full runs and fetches `v1.1.1` only then.
-Without that opt-in, the three journeys explicitly skip; no per-request
+Without that opt-in, that journey explicitly skips; no per-request
 assertion, budget or deadline is relaxed. Local full native runs must also set
 `AP_WINDOWS_FULL=1`. The Windows job starts the platform file and the service file
 as two processes at once, each in its own serial test runner and as the same

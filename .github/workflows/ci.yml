@@ -214,8 +214,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Hosted Windows runners are elevated; test the supported normal-user
-          # ownership semantics without relaxing the product's SID policy.
+          # Hosted Windows runners are elevated; run the native tests as a normal
+          # user with its own profile, as a real per-user installation would.
           $name = 'progress' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
           $password = ConvertTo-SecureString ('Aa1!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
           $trace = Join-Path $env:RUNNER_TEMP 'windows-migration-trace.jsonl'

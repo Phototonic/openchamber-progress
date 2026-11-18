@@ -1366,8 +1366,8 @@ Other frames converge on their existing successful refresh, not a new bus/poll r
 No GET, service open or ordinary capture initializes the cleanup extension. After
 read-only eligibility checks, first explicit cleanup takes a verified private
 SQLite snapshot at `cleanup-backup-<random>.sqlite` in the verified private store
-folder (POSIX0700/file0600; on Windows the existing native path/owner/DACL policy
-and private inherited file ACL), then revalidates and atomically installs format1 metadata and persistent
+folder (POSIX0700/file0600; on Windows the native path and hard-link checks, with
+default inherited permissions), then revalidates and atomically installs format1 metadata and persistent
 guards with the action. A racing or failed action can leave recovery material;
 it cannot partially change the selected plan. Unknown format/missing or altered
 guards fail closed, never silently repair/reset. No arbitrary backup destination.
@@ -1641,7 +1641,7 @@ an error. Config roots use the corresponding XDG config/HOME rule. State roots,
 never select managed authority. `OPENCODE_DB` and `OPENCODE_CONFIG_DIR` are
 unsupported effective scopes; no search, fallback, automatic adoption or repair.
 The owned 0700 product directory and exact 0600 `.ownership.json` marker, private
-descriptor, canonical non-symlink roots, owner, Windows ACL/object checks,
+descriptor, canonical non-symlink roots, owner (POSIX), Windows object checks,
 `readBinding`, Store schema and `verifyStore` all remain required.
 
 Absent discovery is `unconfigured`; present unsafe/invalid/unsupported state is
@@ -1664,7 +1664,7 @@ and settles sequence 1 with lastCompleted prepare. Advance performs one advertis
 step. Pause/abandon/resume retain intent and never imply undo or capture changes.
 Identical last-request replay reconciles durable evidence; changed/stale input
 refuses. Error overrides disposition, including replayed failure. All requests
-retain the six-launch, 17-second-work/18-second-response budgets and writer fence.
+retain the 17-second-work/18-second-response deadlines and writer fence, and start no process.
 
 Fresh review discloses `planKind:fresh`, store/source create/retain/reuse modes,
 capture policy, package version, canonical folders, identities and frozen plan.
@@ -1702,7 +1702,7 @@ budgets and recovery boundaries.
 ### Compatibility controls
 
 On Windows old `managed-inspect` and `managed-configure` always return exactly
-409 `{"error":"managed-action-required"}` before body parsing, security queries,
+409 `{"error":"managed-action-required"}` before body parsing,
 worker dispatch or writes. Old `managed-migrate` refuses that way on every OS.
 Linux/macOS retain old fresh inspect/configure only without legacy discovery or
 any journal, under their nonce-bound review and writer fence. A new UI without
@@ -1795,10 +1795,13 @@ against an explicitly injected legacy fixture refuse `managed-service-required`.
 Existing schema/binding/busy/corrupt/storage errors retain their 503 semantics;
 existing bounded bodies, auth, method and query checks remain unchanged.
 Migration inspection preserves schema/busy/corrupt/storage failures rather than
-converting them into `managed-migration-conflict`. Platform security query failure
-retains `windows-security-unavailable` in status diagnostics and the existing
-503 `storage` mutation response. Retry requires resolving the underlying failure;
-it does not authorize cleanup or takeover.
+converting them into `managed-migration-conflict`. Windows starts no process for
+permission checks, so `windows-security-unavailable`, `private-permissions` and
+`unsafe-parent` are no longer produced; they stay in the fixed diagnostic
+vocabulary so earlier journals and clients remain readable. A platform failure
+retains its fixed code in status diagnostics and the existing 503 `storage`
+mutation response. Retry requires resolving the underlying failure; it does not
+authorize cleanup or takeover.
 
 Managed capture enable requires the valid verified managed binding and refuses a
 legacy conflict, not executable ownership in a global package. The existing

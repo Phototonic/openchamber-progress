@@ -273,7 +273,7 @@ under the canonical XDG data/HOME OpenCode root, in the private marked
 state-root/env binding overrides, package siblings and legacy selectors are not
 fallbacks. Reads/dormant load create no binding, marker or store. Confirmed
 configuration alone persists a verified private Store/source selection. Existing
-ownership, canonical-path, marker, mode/ACL and schema boundaries remain enforced.
+ownership, canonical-path, marker, schema and (on Linux and macOS) mode boundaries remain enforced; Windows starts no process and relies on the profile's default permissions.
 
 Dormant/coalesced activation retries only at eligible native context/report
 boundaries, not a timer/watcher/probe. An active generation pins verified identity;
@@ -309,16 +309,16 @@ returns an honest last-admission snapshot (`starting`, `unconfigured`, `ready`,
 `refused`), fixed diagnostics and capabilities captured during admission; no
 discovery, SQLite open or legacy inspection runs there. Unknown is never ready.
 All real Setup/store operations retain fresh fail-closed checks, descriptor
-pinning, private ACL/ancestor/hard-link and schema validation. Read-only managed
-validation shares a synchronous security scope and batches known paths, never a
-TTL or process-lifetime ACL cache. No admission work is scheduled in the background.
+pinning, canonical-path, link, hard-link and schema validation (plus mode checks on Linux and macOS). Read-only managed
+validation reads plain filesystem state and keeps no result across operations, never a
+TTL or process-lifetime cache. No admission work is scheduled in the background.
 The UI explicitly requests Setup admission then re-reads health on the new
 `starting`/`refused` snapshots; old services without the state field are unchanged.
 Managed step, ordinary Setup read and ordinary capture requests run in dedicated
-workers, leaving health responsive during their security work. Other synchronous
+workers, leaving health responsive during their work. Other synchronous
 data/configuration operations retain their existing event-loop limitations.
 Identical payload-free status requests in the same environment/descriptor context
-share only the in-flight run, deadline and spawn counter; mutations, inspection and
+share only the in-flight run and deadline; mutations, inspection and
 other contexts retain overlap refusal, without sharing or refreshing consent.
 
 The legacy controller's error funnel preserves only allowlisted `PlatformError` codes. Migration
@@ -366,10 +366,9 @@ Changed-installation and invalid-payload failures map respectively to the frozen
 settle a journal due to a compare conflict is surfaced, not hidden by an earlier
 effect failure.
 
-The worker budget charges actual security-process launch attempts, including
-failed launches, through a shared counter. It refuses a seventh launch, suppresses
-the legacy cold retry, and bounds helper waits by the monotonic 17-second work
-deadline with one second of settlement headroom. The supervisor has an 18-second
+The worker budget is the monotonic 17-second work deadline; it starts no process
+and keeps no launch counter (the wire accounting field `securitySpawns` remains and
+is always 0). The supervisor has an 18-second
 response deadline. A deadline reply never clears busy or terminates a worker as
 if its effects rolled back; settlement waits for worker exit. A worker crash is
 treated as an uncertain effect, requiring bounded observation/reconciliation.
@@ -395,19 +394,16 @@ to its environment and payload, consumes continuation cursors once, and accepts
 state only after a matching single reply and successful worker exit before the
 deadline. A fresh inspection replaces it; restart or a changed environment/package
 expires it. Private manifest/journal claims never enter the public result. The
-inspection review is not a durable action receipt or a substitute for fresh ACL
+inspection review is not a durable action receipt or a substitute for fresh
 checks.
-Portable launch accounting measures at most four queries per inspection stage
-for intact, format-1 and receipt-proven fixtures, and one for fresh complete-review
-admission. This is not native timing or the full slow-machine migration gate.
 
 The worker's confirmed `begin` path now consumes the supervisor review, freshly
-validates it, reserves the remaining spawn/time budget, and executes only prepare
+validates it, checks the remaining time budget, and executes only prepare
 through the existing directory and journal owners. It assigns the client operation
 identity and full-request receipt before publication. Format-1 consent upgrades
 are wired into this same path. Lost-reply retries after restart compare the durable
 receipt instead of requiring an expired review; changed requests cannot replace
-the operation. A slow helper can leave a valid marker with no journal, requiring
+the operation. A slow disk can leave a valid marker with no journal, requiring
 explicit retry, never automatic repair. Unmarked directories still refuse.
 
 Worker status is a bounded private-journal projection, with unknown capture and
@@ -421,9 +417,8 @@ prepare has non-null lastCompleted; no speculative progress is projected.
 Its discovery indicator is not a confirmable ownership review.
 A requested different operation returns
 `not-found`, never the current operation's progress. Status does not consume an
-unfinished inspection review. Portable accounting measures six launches for new
-prepare, five with an existing same-target managed selection, three for format-1
-prepare, and three for cold begin replay/status.
+unfinished inspection review. Prepare, format-1 prepare and cold begin
+replay/status start no process.
 
 The private worker now also dispatches sequenced advance, pause, abandon and
 resume. Each advance publishes a running intent before one effect, verifies that
@@ -454,17 +449,13 @@ published running intent to be read back under fresh validation.
 
 The supervisor privately carries the last journal as a discovery claim between
 workers. Admission reads the current private journal and revalidates
-all known paths and lifecycle facts; no ACL result crosses a request or write.
+all known paths and lifecycle facts; no validation result crosses a request or write.
 An outdated hint is discarded as authority, not a conflict with an otherwise
 valid current request; operation identity is still checked.
-Status can restore those claims after restart. A cold mutation that cannot reserve
-its remaining batches refuses before publishing an intent; explicit bounded
+Status can restore those claims after restart. A cold mutation that cannot finish
+before the work deadline refuses before publishing an intent; explicit bounded
 status/resume is the recovery path, not a hidden retry or a weakened check.
-Portable HTTP accounting measures five launches for expectation, capture,
-each selector/discovery file, binding publication and reconcile, six for prepare
-and record-removal, three for controls/cold journal status, and at most four for
-ordinary Setup reads. Exact settled replays with a supervisor hint use one.
-These are query-count measurements, not native Windows timing evidence.
+Portable HTTP tests assert that no step starts a process.
 
 The supervisor acquires deterministic per-target loopback writer slots for
 each request: a discovery data-root slot and a separate Store-root slot. This
@@ -472,23 +463,18 @@ covers different discovery scopes sharing a Store without unnecessarily fencing
 unrelated profiles/users. Multiple slots are sorted/deduplicated by port, acquired
 without waiting and released together; partial acquisition releases all slots.
 Contention or
-an unrelated listener is a refusal, not a takeover. Windows security children
-additionally acquire an account-scoped system mutex **before** checking the
-current writer slot's per-request nonce. A child surviving its parent therefore
-either finishes while holding that barrier, or refuses when the nonce no longer
-matches. A new writer's first fresh security query must cross the barrier before
-any effect. Neither the slot nor an abandoned mutex proves an effect committed:
-ordinary fresh validation and durable-intent reconciliation remain mandatory.
-No extra security process, native dependency, persisted lease or age-based cleanup
-is introduced. HTTP writers, including ordinary enable and disable, share this
+an unrelated listener is a refusal, not a takeover. The slot does not prove an
+effect committed: ordinary fresh validation and durable-intent reconciliation
+remain mandatory. No extra process, native dependency, persisted lease or
+age-based cleanup is introduced. (Earlier versions also fenced a Windows
+security child through an account-scoped mutex; no such child exists any more.) HTTP writers, including ordinary enable and disable, share this
 boundary; an in-process busy flag alone is not sufficient. Capture-off verifies
 the selected Store without requiring successful legacy removal inspection.
-Enable refuses unfinished migration. Native Windows late-child fencing remains
-a separate gate. The first ordinary data admission's existing expectation write
+Enable refuses unfinished migration. The first ordinary data admission's existing expectation write
 also acquires the shared slot; subsequent read-only admissions cannot publish it.
 Worker status/capture preserve the controller's selected-descriptor pin without
 returning that private digest over HTTP. A successful bounded Setup read updates
-health's last-admission snapshot, not a reusable Store handle or ACL verdict.
+health's last-admission snapshot, not a reusable Store handle or validation verdict.
 Ordinary Setup status and capture control do not load bundled migration payloads.
 Payload-free reads retain inspection consent without refreshing it; the next
 inspection/effect still compares its package-bound context. Journal hints bind
@@ -528,28 +514,24 @@ ordinary binding/source and companion admission never accept proposed identities
 2, receipt index, the frozen Store ID and capture off in one transaction. Folder
 creation and source registration are separate effects; expectation precedes source
 registration. Retained plans never change capture or recreate data. Creation
-checkpoints record native object observations, not cached ACL authority; immutable
+checkpoints record native object observations, not cached authority; immutable
 fresh facts remain in the target digest. Uncheckpointed folders and partial files
 are retained/refused, never adopted or repaired. Exact initialized database results
 can reconcile read-only from their matching durable creation intent.
 
-Portable full-engine counters measure prepare/folder/database 6 launches, each
-later effect 5, settled replay 1 and normal controls 3; ordinary fresh Setup status
-uses 3 before selection/4 after. Failure settlement also stays within 6. These are
-substituted OS-spawn measurements, not native Windows timing. Native CI tests
-empty default/custom stores undelayed and the default store with 2.5-second helpers,
-retained matching sources with capture on/off, and a retained new source with capture
-off. Default fresh recovery tests prepare timeout, replay and restart/pause/resume;
-migration tests add late-worker and slower-helper refusal. Native requests assert
-six launches, eight seconds undelayed or below twenty seconds delayed, and concurrent
-zero-query health.
+Portable full-engine tests run the whole fresh engine on a projected Windows path
+and assert that no creation, settlement, replay or control starts a process.
+Native CI tests empty default/custom stores, retained matching sources with
+capture on/off, and a retained new source with capture off. Default fresh
+recovery tests replay and restart/pause/resume; migration tests add late-worker
+refusal. Native requests assert no process launch and eight seconds, and health
+answers with zero launches.
 
 The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber
 publication with compare-before-replacement. Reads reject unsupported state,
 foreign scope, hard links, retained publication stages and old configuration
-locks. Writes refuse an enclosing security scope so post-write validation cannot
-reuse its ACL cache. These helpers do **not** admit a Store or authorize a saved
+locks. Post-write validation rereads the filesystem and reuses no earlier result. These helpers do **not** admit a Store or authorize a saved
 claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
 Cold progress projection reports capture as unknown unless supplied a fresh
 observation. Both journal families are integrated through the same worker/fence;
@@ -579,9 +561,9 @@ repair. History reads are bounded by the journal byte limit before effects.
 For this two-subeffect unit, unsequenced intent publication has no separate
 post-publication scan: the effect admission batch reads back and compares the
 durable intent before rmdir. Settled checkpoint publication still verifies its
-write. This coalesces reads, not authority across writes. Portable accounting
-measures six launches for the complete record-removal request, including both
-journal writes and the fresh check between rmdir and append. The private step
+write. This coalesces reads, not authority across writes. The complete
+record-removal request, including both journal writes and the fresh check
+between rmdir and append, starts no process. The private step
 engine now uses these owners; the old monolithic route is not made resumable.
 
 The format-1 upgrade writer accepts only an explicitly reviewed initial prepare
@@ -594,8 +576,8 @@ retains the full plan even if the old coarse phase says removed. The only upgrad
 effect replaces the old journal atomically. Complete old records, different
 selectors, retained stages/locks and unsupported records refuse. The private
 worker supplies consent, fencing and lost-begin-reply handling; this writer never
-runs automatically on startup. Portable tests measure three security launches
-for admission plus upgrade/checkpoint, not native Windows latency.
+runs automatically on startup. Portable tests assert that admission, upgrade and
+checkpoint start no process.
 
 `readRemovalReceipt` returns the specific same-install history event and a freshly
 validated native file claim for format-1 recovery. It refuses remaining discovery,
@@ -751,10 +733,10 @@ write transaction. Under `BEGIN IMMEDIATE`, eligibility, store/key, progress rev
 and cleanup generation are checked again before DDL/action commit. Backup/init
 failure never auto-restores or resets data; a race can leave a private recovery file.
 Snapshot privacy reuses `shared/platform.ts`: POSIX owner/mode checks, or Windows
-native object/ancestor checks and private DACLs. An exclusively created Windows
-backup inherits the verified private parent ACL and is checked before copying any
-content and after snapshot completion; existing ACLs are never repaired. Changed
-public ACLs and hard-linked Windows source state refuse without activating cleanup.
+native object and hard-link checks. An exclusively created Windows backup inherits
+the parent folder's default permissions and is checked before copying any
+content and after snapshot completion; ACLs are never queried or repaired.
+Hard-linked Windows source state refuses without activating cleanup.
 Archived directory filters retain the base's Windows separator/drive spelling
 equivalence without folding directory-name case or probing presentation paths.
 
