@@ -5,7 +5,7 @@
 // - a changed first window, a 409 or an identity change restarts continuation visibly
 // - reported state only: nothing here writes, settles, assigns or navigates the host
 import { isNeedsYou, NEEDS_YOU_LIMITS } from '../../shared/needs-you.ts';
-import type { InboxRowView, InboxTaskTarget, InboxWindowView, PlanView } from './model.ts';
+import { itemNeedsYou, type InboxRowView, type InboxTaskTarget, type InboxWindowView, type PlanDetail, type PlanView } from './model.ts';
 import { readNeedsYou, type InboxFirst, type ReadFailure, type ServiceHost } from './source.ts';
 import { hiddenItemKey, type DeviceViewState } from './device-view-state.ts';
 
@@ -58,6 +58,54 @@ export function scopeInbox(model: InboxModel, keys: ReadonlySet<string> | null, 
     alsoBlocked: model.alsoBlocked.slice(0, model.counts.alsoBlocked).filter(inside).length,
   }, complete: model.complete && complete },
     hidden: hidden.filter(inside), other: counted.filter(r => !inside(r)).length };
+}
+
+export interface PlanInbox {
+  needsYou: InboxRowView[]; alsoBlocked: InboxRowView[]; hidden: InboxRowView[];
+  counts: { needsYou: number; alsoBlocked: number };
+}
+/** Partition once, including hidden keys and first-window-only count authority on recheck. */
+export function partitionInbox(model: InboxModel, device?: DeviceViewState, store = '') {
+  const result = new Map<string, PlanInbox>();
+  const group = (key: string) => {
+    let g = result.get(key);
+    if (!g) { g = { needsYou: [], alsoBlocked: [], hidden: [], counts: { needsYou: 0, alsoBlocked: 0 } }; result.set(key, g); }
+    return g;
+  };
+  model.needsYou.forEach((r, i) => {
+    const g = group(r.planKey);
+    if (device?.hidden(hiddenItemKey(store, r))) g.hidden.push(r);
+    else { g.needsYou.push(r); if (i < model.counts.needsYou) g.counts.needsYou++; }
+  });
+  model.alsoBlocked.forEach((r,i) => { const g = group(r.planKey); g.alsoBlocked.push(r); if (i < model.counts.alsoBlocked) g.counts.alsoBlocked++; });
+  return result;
+}
+
+/** One frame's partition, retired on held-row, authority, hidden-set or binding change. */
+export class InboxPartition {
+  private inputs: unknown[] = [];
+  private value = new Map<string, PlanInbox>();
+  get(model: InboxModel, device?: DeviceViewState, store = '', binding = '') {
+    const inputs = [store, binding, device, model.needsYou.length, ...model.needsYou, model.alsoBlocked.length, ...model.alsoBlocked,
+      model.counts.needsYou, model.counts.alsoBlocked, ...(device?.hiddenKeys ?? [])];
+    if (inputs.length !== this.inputs.length || inputs.some((v,i) => v !== this.inputs[i])) {
+      this.inputs = inputs;
+      this.value = partitionInbox(model, device, store);
+    }
+    return this.value;
+  }
+}
+
+/** Missing other plans cannot raise a plan whose complete current detail already
+ * accounts for every count-authoritative visible row. Never promotes retained rows. */
+export function planInboxComplete(model: InboxModel, plan: PlanView, part: PlanInbox | undefined, detail: PlanDetail | null, device?: DeviceViewState, store = '') {
+  if (model.complete) return true;
+  if (!detail || detail.key !== plan.key || detail.revision !== plan.revision) return false;
+  const expected = detail.items.filter(i => itemNeedsYou(plan, i) && !device?.hidden(hiddenItemKey(store, {
+    source: plan.sourceId, plan: plan.id, task: i, blocker: i.reportedBlocker ?? { state: 'absent' },
+  })));
+  const counted = part?.needsYou.slice(0, part.counts.needsYou) ?? [];
+  return expected.length === counted.length && expected.every(i => counted.some(r => r.task.id === i.id && r.revision === plan.revision));
 }
 
 const rowSignature = (r: InboxRowView) => [r.rowKey, r.revision, r.structuralRevision, r.cleanupRev, r.planTitle, r.task.title, r.group, r.mainSessionKind, r.coordinatorSessionId, r.blocker, r.ancestors, r.omittedAncestors, r.wait ? [r.wait.kind, r.wait.since] : null];

@@ -16,7 +16,7 @@ test('arrow cue: the reviewed prerequisite × dependent table, by reported endpo
   // Rows: prerequisite; columns: dependent (pending, working, blocked, done, skipped).
   const table: Record<Status, (string | null)[]> = {
     pending: [null, null, null, null, null],
-    working: ['working', null, 'working', null, null],
+    working: ['working', 'working', 'working', null, null],
     blocked: ['blocked', 'blocked', 'blocked', null, null],
     done: [null, null, null, null, null],
     skipped: [null, null, null, null, null],
@@ -28,6 +28,9 @@ test('arrow cue: the reviewed prerequisite × dependent table, by reported endpo
 
 test('arrow cue: direction matters (a pending prerequisite of a working task is never a flow)', () => {
   assert.equal(arrowCue('working', 'pending'), 'working');
+  assert.equal(arrowCue('working', 'working'), 'working', 'work moved back: an in-progress task feeding another in-progress task still shows beads');
+  assert.equal(arrowCue('working', 'done'), null);
+  assert.equal(arrowCue('working', 'skipped'), null);
   assert.equal(arrowCue('pending', 'working'), null);
   assert.equal(arrowCue('blocked', 'pending'), 'blocked');
   assert.equal(arrowCue('pending', 'blocked'), null);
@@ -84,8 +87,9 @@ test('flow count: visible endpoints and the selection chain only; filters cannot
   const status: Record<string, Status> = { W1: 'working', W2: 'working', P1: 'pending', P2: 'pending', B: 'blocked', K: 'working', D: 'done' };
   const edges = [['W1', 'P1'], ['W1', 'B'], ['W2', 'P2'], ['W1', 'K'], ['B', 'P2'], ['W2', 'D']] as const;
   const all = () => true;
-  assert.equal(arrowFlowCount(edges, id => status[id], all, null), 3, 'working → pending/blocked only');
-  assert.equal(arrowFlowCount(edges, id => status[id], id => id !== 'P2', null), 2, 'a hidden endpoint removes the flow');
+  assert.equal(arrowFlowCount(edges, id => status[id], all, null), 4, 'working → pending/blocked/working; never → done');
+  assert.equal(arrowFlowCount(edges, id => status[id], id => id !== 'P2', null), 3, 'a hidden endpoint removes the flow');
+  assert.equal(arrowFlowCount(edges, id => status[id], id => id !== 'K', null), 3, 'a hidden working dependent removes its flow');
   assert.equal(arrowFlowCount(edges, id => status[id], all, (a, z) => a === 'W1' && z === 'P1'), 1, 'chain only while selected');
   // A filtered view still reports the FULL plan's arrows to the bound: here 301 recorded arrows, 1 visible flow.
   const many = Array.from({ length: 301 }, (_, n) => [`X${n}`, `Y${n}`] as const);
@@ -134,4 +138,5 @@ test('waiting summary: nothing new without current guidance or on a closed plan'
   assert.equal(readinessText(item('T'), f.get('T'), false, true, titles, false), 'Reported pending. Readiness is hidden until the current revision is matched.');
   assert.equal(readinessText(item('T'), f.get('T'), false, false, titles, false), 'Reported pending when the plan closed.');
   assert.equal(readinessText(item('T', 'blocked'), f.get('T'), true, true, titles, true), '');
+  assert.equal(readinessText(item('T', 'working'), f.get('T'), true, true, titles, true), '', 'an in-progress dependent is not waiting: no sentence, though its arrow shows beads');
 });

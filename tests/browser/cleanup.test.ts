@@ -51,6 +51,8 @@ test('official-main instructions and stale reasons are localized without a sourc
   assert.match(officialMainText(notice,'en').body,/timed out/);
 });
 test('cleanup capability and metadata are explicit and fail closed', () => {
+  for (const planCleanupActive of [undefined, 0, true, '1', 2]) assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanupActive })).planCleanupActive, undefined);
+  assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanupActive: 1 })).planCleanupActive, 1);
   for (const planCleanup of [undefined, 0, true, '1', 2]) assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanup })).planCleanup, undefined);
   assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanup: 1 })).planCleanup, 1);
   for (const cleanup of [{ state: 'deleted', revision: 1 }, { state: 'archived', revision: -1 }, { state: 'visible', revision: 0.2 }, null]) {
@@ -58,6 +60,10 @@ test('cleanup capability and metadata are explicit and fail closed', () => {
   }
 });
 test('cleanup bodies are bounded to the contract; only delete confirms', () => {
+  assert.deepEqual(JSON.parse(cleanupBody({ ...request, active: true }, 'archive')), { ...request, active: true });
+  assert.deepEqual(JSON.parse(cleanupBody({ ...request, active: true }, 'delete')), { ...request, active: true, confirmed: true });
+  assert.deepEqual(JSON.parse(cleanupBody({ ...request, active: true }, 'restore')), request);
+  assert.deepEqual(JSON.parse(cleanupBody({ ...request, active: false } as never, 'archive')), request);
   assert.deepEqual(JSON.parse(cleanupBody({ ...request, privatePath: 'not allowed' } as CleanupRequest, 'archive')), request);
   assert.deepEqual(JSON.parse(cleanupBody(request, 'delete')), { ...request, confirmed: true });
   assert.deepEqual(JSON.parse(cleanupBody(request, 'restore')), request);

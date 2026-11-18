@@ -257,9 +257,15 @@ try {
     // ── Rendering probes (Designer): what the card and inspector actually say and where.
     const card = (surface: string, id: string) => guest<any>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]');if(!n)return null;const who=n.querySelector('[data-testid="map-card-who-${id}"]'),live=n.querySelector('[data-testid="map-card-live-${id}"]'),t=who?.querySelector('.ap-map-card-who-text');return {attribution:n.dataset.attribution??null,live:n.dataset.live??null,name:n.getAttribute('aria-label'),status:n.querySelector('.ap-map-card-word')?.textContent,who:who?.textContent??null,whoFits:!!t&&t.scrollWidth<=t.clientWidth,chip:live?.dataset.live??null,markOnSession:!!live&&live.getAttribute('aria-hidden')==='true'&&live.nextSibling?.textContent==='Session map-child'&&getComputedStyle(live).borderRadius==='2px'&&live.offsetWidth===8,statusMarkRound:getComputedStyle(n.querySelector('.ap-map-mark')).borderRadius==='50%'}`);
     /** Card boxes plus each row's box inside it: activity must change none of these numbers. */
-    const boxes = (surface: string) => guest<string>(surface, `return JSON.stringify([...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')].map(n=>[n.dataset.task,n.offsetLeft,n.offsetTop,n.offsetWidth,n.offsetHeight,...[...n.children].map(c=>c.className+'@'+c.offsetTop+'+'+c.offsetHeight)]))`);
+    const boxes = (surface: string) => guest<string>(surface, `return JSON.stringify([...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')].map(n=>[n.dataset.task,n.offsetLeft,n.offsetTop,n.offsetWidth,n.offsetHeight]))`);
+    /** The persistent rows' boxes in one card. Cards with a session row use slightly tighter padding, so compare like with like. */
+    const rowBoxes = (surface: string, id: string) => guest<string>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]');return JSON.stringify(['.ap-map-card-status','.ap-map-card-title'].map(q=>{const c=n.querySelector(q);return [c.offsetTop,c.offsetHeight]}))`);
+    /** The optional session row's box in the card (null when absent), compared whenever it is present. */
+    const whoBox = (surface: string, id: string) => guest<string | null>(surface, `const r=d.querySelector('[data-testid="map-card-who-${id}"]');return r?JSON.stringify([r.offsetTop,r.offsetHeight]):null`);
+    /** A long title keeps its two lines and every persistent row stays inside the card, with or without the session row. */
+    const titleKeepsTwoLines = (surface: string, id: string) => guest<boolean>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]'),t=n.querySelector('.ap-map-card-title'),lh=parseFloat(getComputedStyle(t).lineHeight)||parseFloat(getComputedStyle(t).fontSize)*1.2;return t.offsetHeight>=lh*1.9&&t.offsetTop+t.offsetHeight<=n.clientHeight+0.5&&n.querySelector('.ap-map-card-status').offsetTop+n.querySelector('.ap-map-card-status').offsetHeight<=t.offsetTop+0.5`);
     const contained = (surface: string) => guest<boolean>(surface, `const cards=[...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')];return cards.length>0&&cards.every(n=>[...n.children].every(c=>c.offsetTop+c.offsetHeight<=n.clientHeight+0.5))`);
-    const inspector = (surface: string) => guest<any>(surface, `const s=d.querySelector('[data-testid="map-attribution"]');if(!s)return null;const t=id=>s.querySelector('[data-testid="'+id+'"] dd')?.textContent??null;return {assignment:s.dataset.assignment,live:s.dataset.live,assignmentText:t('map-attribution-assignment'),links:t('map-attribution-links'),reports:t('map-attribution-reports'),activity:t('map-attribution-live'),liveMark:!!s.querySelector('[data-testid="map-attribution-live"] .ap-map-live-mark[aria-hidden="true"]')}`);
+    const inspector = async (surface: string, id: string) => { const r = await guest<any>(surface, `const ins=d.querySelector('[data-testid="map-inspector"][data-selected]'),selected=ins?.dataset.selected??null,s=ins?.querySelector('[data-testid="map-attribution"]');if(!s)return {selected,assignment:null,live:'',assignmentText:null,links:null,reports:null,activity:null,session:null,liveMark:false};const t=id=>s.querySelector('[data-testid="'+id+'"] dd')?.textContent??null;return {selected,session:s.querySelector('[data-testid="map-attribution-live"] dt')?.textContent??null,assignment:s.dataset.assignment,live:s.dataset.live,assignmentText:t('map-attribution-assignment'),links:t('map-attribution-links'),reports:t('map-attribution-reports'),activity:t('map-attribution-live'),liveMark:!!s.querySelector('[data-testid="map-attribution-live"] .ap-map-live-mark[aria-hidden="true"]')}`); if (r.selected !== id) throw new Error(`map-inspector shows ${r.selected}, expected ${id}`); return r; };
     const select = async (surface: string, id: string) => { await guest(surface, `w.mapPreview.dispatch({type:'select',id:'${id}'});return true`); await frames2(); };
     /** No “running”/“unassigned” in visible text or any accessible name inside the map region. */
     const words = (surface: string) => guest<boolean>(surface, `const r=d.querySelector('[data-testid="map-region"]');const text=r.textContent+' '+[...r.querySelectorAll('[aria-label]')].map(n=>n.getAttribute('aria-label')).join(' ');return !/\\brunning\\b/i.test(text)&&!/unassigned/i.test(text)`);
@@ -275,11 +281,11 @@ try {
       // Rendered words: only the proof-positive card says Assigned and carries the session chip.
       await wait(surface, `d.querySelector('[data-testid="map-card-live-B"]')`, 'proven session chip painted');
       const b = await card(surface, 'B'), cc = await card(surface, 'C'), a = await card(surface, 'A');
-      check(`attribution:render:${surface}:assigned-caption`, b.attribution === 'assigned' && b.who === 'Assigned to Session map-child' && b.whoFits);
+      check(`attribution:render:${surface}:assigned-caption`, b.attribution === 'assigned' && b.who === 'Session map-child' && b.whoFits);
       check(`attribution:render:${surface}:session-mark-shape-on-session-name`, b.live === 'active' && b.chip === 'active' && b.markOnSession && b.statusMarkRound);
-      check(`attribution:render:${surface}:status-stays-reported-working`, b.status === 'Reported working');
-      check(`attribution:render:${surface}:assigned-name`, b.name.includes('Assigned to Session map-child') && b.name.includes('Assigned session active now, session activity only'));
-      check(`attribution:render:${surface}:unverified-never-assigned`, cc.attribution === 'recorded' && cc.who === 'Unverified assignee · Session map-linked' && cc.chip === null && cc.live === null && !cc.name.includes('Assigned to'));
+      check(`attribution:render:${surface}:status-stays-reported-working`, b.status === 'In progress');
+      check(`attribution:render:${surface}:assigned-name`, b.name.includes('Session map-child') && b.name.includes('Assigned session active now, session activity only'));
+      check(`attribution:render:${surface}:unverified-never-assigned`, cc.attribution === 'recorded' && cc.who === null && cc.chip === null && cc.live === null && !cc.name.includes('Assigned to'));
       check(`attribution:render:${surface}:no-assignee-no-line`, a.attribution === 'none' && a.who === null && a.chip === null);
       check(`attribution:render:${surface}:one-chip-only`, await guest(surface, `return d.querySelectorAll('[data-testid^="map-card-live-"]').length===1`));
       check(`attribution:render:${surface}:no-running-or-unassigned-words`, await words(surface));
@@ -316,25 +322,23 @@ try {
     // Inspector: the full context for the proof-positive card and the unverified card, both frames.
     for (const surface of ['page', 'panel']) {
       await select(surface, 'B');
-      const i = await inspector(surface);
-      check(`attribution:render:${surface}:inspector-verified`, i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child') && await guest(surface, `return /Verified delegation, current for revision \\d+\\./.test(d.querySelector('[data-testid=\"map-help\"]').textContent)`));
-      check(`attribution:render:${surface}:inspector-live-hedged`, i.live === 'active' && i.activity.startsWith('Assigned session active now') && i.liveMark && await guest(surface, `return /doesn’t show which task the session is working on/.test(d.querySelector('[data-testid=\"map-attribution-help\"]').textContent)&&/Session activity only: the assigned session is active/.test(d.querySelector('[data-testid=\"map-help\"]').textContent)`));
-      const p = (await proof(surface)).B;
-      check(`attribution:render:${surface}:inspector-reports-separate`, typeof i.reports === 'string' && !i.reports.includes('Assigned') && (p.reports.length
-        ? p.reports.every((r: any) => i.reports.includes(r.mode === 'parent-relay' ? `Reported by Session ${r.reporterSessionId} for Session ${r.attributedSessionId}` : `Reported directly by Session ${r.reporterSessionId}`))
-        : i.reports === `Last reported by Session ${p.reporter} · report mode unavailable`));
+      const i = await inspector(surface, 'B');
+      check(`attribution:render:${surface}:inspector-verified`, i.assignment === 'assigned' && i.session === 'Session map-child' && i.assignmentText === null && i.links === null && i.reports === null && await guest(surface, `const n=d.querySelector('[data-testid="map-card-B"]');return n.dataset.attribution==='assigned'&&n.querySelector('[data-testid="map-card-who-B"]').textContent==='Session map-child'&&/Session map-child/.test(n.getAttribute('aria-label'))&&!/Verified delegation/.test(d.querySelector('[data-testid="map-help"]').textContent)`));
+      check(`attribution:render:${surface}:inspector-live-hedged`, i.live === 'active' && i.activity.startsWith('Assigned session active now') && i.liveMark && await guest(surface, `const n=d.querySelector('[data-testid="map-card-B"]');return !d.querySelector('[data-testid="map-attribution-help"]')&&/Assigned session active now, session activity only/.test(n.getAttribute('aria-label'))&&!/Session activity only: the assigned session is active/.test(d.querySelector('[data-testid="map-help"]').textContent)`));
+      // Report authorship stays in Troubleshooting → Advanced details; the compact summary carries none.
+      check(`attribution:render:${surface}:inspector-omits-report-authorship`, i.reports === null && await guest(surface, `return !/Reported (by|directly)|Last reported/.test(d.querySelector('[data-testid="map-inspector"]').innerText)`));
     }
     await mapShot('attribution-assigned', 'page');
     await mapShot('rail-attribution-assigned', 'panel');
     await select('page', 'C');
     {
-      const i = await inspector('page');
-      check('attribution:render:inspector-provenance-unavailable', i.assignment === 'recorded' && i.assignmentText.startsWith('Recorded assignee Session map-linked · delegation provenance unavailable') && i.assignmentText.includes('doesn’t mean the task is unassigned'));
-      check('attribution:render:inspector-link-context', i.links === 'Linked to Session map-linked · no verified delegation');
-      check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity === 'Not shown' && await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return !h.open&&!d.querySelector('[data-testid="map-inspector"]').innerText.includes('Shown only for a verified assignment.')`));
+      const i = await inspector('page', 'C');
+      check('attribution:render:inspector-omits-unverified-provenance', i.assignment === null && i.assignmentText === null && await guest('page', `return !/Recorded assignee|Unverified assignee|unassigned/.test(d.querySelector('[data-testid="map-inspector"]').innerText)`));
+      check('attribution:render:inspector-omits-link-context', i.links === null);
+      check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity === null && await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return !h.open&&!d.querySelector('[data-testid="map-inspector"]').innerText.includes('Shown only for a verified assignment.')`));
       await mapShot('review-help-collapsed', 'page');
       await click('page', '[data-testid="map-help-trigger"]'); await frames2();
-      check('attribution:render:help-explains-verified-activity', await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return h.open&&h.innerText.includes('Session activity is shown only for a verified assignment.')`));
+      check('attribution:render:help-stays-compact-no-attribution-prose', await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return h.open&&!h.innerText.includes('verified assignment')&&!d.querySelector('[data-testid="map-attribution-help"]')`));
       await mapShot('review-help-open', 'page');
       await click('page', '[data-testid="map-help-trigger"]'); await frames2();
       check('attribution:render:no-active-assertion-without-proof', await guest('page', `return !d.querySelector('[data-testid="map-help"]').textContent.includes('Session activity only: the assigned session is active')`));
@@ -346,7 +350,7 @@ try {
     await theme('dark'); await mapShot('attribution-dark', 'page'); await theme('light');
     await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-motion', value: 'reduce' }] }); await frames2();
     check('attribution:render:forced-colors-session-mark', await guest('page', `const m=d.querySelector('[data-testid="map-card-live-B"]'),n=d.querySelector('[data-testid="map-card-B"]');return w.matchMedia('(forced-colors: active)').matches&&getComputedStyle(m).backgroundColor===getComputedStyle(n).color&&getComputedStyle(m).backgroundColor!==getComputedStyle(n).backgroundColor`));
-    check('attribution:render:forced-colors-selected-rows-unsqueezed', await guest('page', `const n=d.querySelector('[data-testid="map-card-B"]'),t=n.querySelector('.ap-map-card-title'),wl=n.querySelector('.ap-map-card-who'),f=n.querySelector('.ap-map-card-foot');return getComputedStyle(n).borderTopWidth==='3px'||parseFloat(getComputedStyle(n).borderTopWidth)>=3?t.offsetHeight>=16&&t.offsetTop+t.offsetHeight<=wl.offsetTop&&f.offsetTop+f.offsetHeight<=n.clientHeight+0.5:false`));
+    check('attribution:render:forced-colors-selected-rows-unsqueezed', await guest('page', `const n=d.querySelector('[data-testid="map-card-B"]'),t=n.querySelector('.ap-map-card-title'),wl=n.querySelector('.ap-map-card-who');return getComputedStyle(n).borderTopWidth==='3px'||parseFloat(getComputedStyle(n).borderTopWidth)>=3?t.offsetHeight>=16&&t.offsetTop+t.offsetHeight<=wl.offsetTop&&wl.offsetTop+wl.offsetHeight<=n.clientHeight+0.5:false`));
     await mapShot('attribution-forced-colors', 'page');
     await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }); await frames2();
     check('attribution:render:no-motion', await guest('page', `return [...d.querySelectorAll('[data-testid="map-region"] *')].every(n=>{const s=getComputedStyle(n);return s.animationName==='none'&&(s.transitionDuration.split(',').every(t=>parseFloat(t)===0))})`));
@@ -356,22 +360,27 @@ try {
     await mapShot('rail-attribution-360', 'panel');
     await show(['page', 'panel'], 600); await ready('page'); await ready('panel');
     await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')`, 'board chip after resize');
-    const cardBoxes = await boxes('page');
+    // A selected card draws a thicker border, so the baseline is taken in the same selection state as the comparisons.
+    await select('page', 'B');
+    const cardBoxes = await boxes('page'), whoBefore = await whoBox('page', 'B'), rowsWithSession = await rowBoxes('page', 'B');
+    let rowsWithoutSession = '';
+    check('attribution:render:long-title-keeps-two-lines-with-session-row', whoBefore !== null && await titleKeepsTwoLines('page', 'B') && await contained('page'));
     // Real controller fallback: a failed poll retains ready/cached rows for the roster, but that
     // successful older read must not keep the map's live session proof alive.
     await select('page', 'B');
     await evaluate(`qa.fail.push({path:'/v1/subagent-runs',frame:'page',status:503,code:'unavailable'});true`);
     await wait('page', `!w.mapPreview.attribution.B.live.proven`, 'failed refresh withdraws proof');
     {
-      const b = await card('page', 'B'), i = await inspector('page');
-      check('attribution:render:failed-refresh-removes-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith('This view’s run records aren’t available.'));
+      const b = await card('page', 'B'), i = await inspector('page', 'B');
+      rowsWithoutSession = await rowBoxes('page', 'B');
+      check('attribution:render:failed-refresh-removes-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity === null);
       check('attribution:render:failed-refresh-keeps-roster', await guest('page', `return d.querySelector('[data-testid="subagent-activity"]')?.dataset.state==='ready'&&!!d.querySelector('[data-testid="subagent-activity"] [data-run]')`));
       check('attribution:render:failed-refresh-zero-movement', await boxes('page') === cardBoxes && JSON.stringify(await positions('page')) === JSON.stringify(coordinates));
     }
     await mapShot('failed-run-refresh', 'page');
     await evaluate(`qa.fail=qa.fail.filter(f=>!(f.path==='/v1/subagent-runs'&&f.frame==='page'));true`);
     await wait('page', `w.mapPreview.attribution.B.live.proven&&d.querySelector('[data-testid="map-card-live-B"]')`, 'recovered refresh restores proof');
-    check('attribution:render:failed-refresh-recovery', (await card('page', 'B')).chip === 'active' && await boxes('page') === cardBoxes);
+    check('attribution:render:failed-refresh-recovery', (await card('page', 'B')).chip === 'active' && await boxes('page') === cardBoxes && await whoBox('page', 'B') === whoBefore && await rowBoxes('page', 'B') === rowsWithSession);
     for (const fault of ['missing', 'unloaded', 'childless', 'other']) {
       await evaluate(`qa.mapRunFault={page:'${fault}'};true`);
       await wait('page', `!w.mapPreview.attribution.B.live.proven`, `${fault} evidence withheld`);
@@ -380,13 +389,13 @@ try {
       check(`attribution:${fault}:zero-activity-movement`, JSON.stringify(await positions('page')) === JSON.stringify(coordinates));
       await wait('page', `!d.querySelector('[data-testid="map-card-live-B"]')`, `${fault}: chip removed`);
       const b = await card('page', 'B');
-      check(`attribution:render:${fault}:assigned-without-chip`, b.who === 'Assigned to Session map-child' && b.chip === null && b.live === null && b.status === 'Reported working');
-      check(`attribution:render:${fault}:no-box-moves`, await boxes('page') === cardBoxes);
+      check(`attribution:render:${fault}:assigned-without-chip`, b.who === null && b.chip === null && b.live === null && b.status === 'In progress');
+      check(`attribution:render:${fault}:no-box-moves`, await boxes('page') === cardBoxes && await whoBox('page', 'B') === null && await rowBoxes('page', 'B') === rowsWithoutSession && await titleKeepsTwoLines('page', 'B') && await contained('page'));
       check(`attribution:render:${fault}:panel-chip-kept`, !!(await card('panel', 'B')).chip);
       if (fault === 'other') {
         // The bound child's session runs nothing here; another child's run is not this task's activity.
-        const i = await inspector('page');
-        check('attribution:render:other-child-not-proven-reason', i.live === '' && i.activity.endsWith('This view’s run records don’t confirm the assigned session’s latest run.'));
+        const i = await inspector('page', 'B');
+        check('attribution:render:other-child-not-proven-reason', i.live === '' && i.activity === null);
         await mapShot('live-not-proven-other-child', 'page');
       }
       await evaluate('qa.mapRunFault={};true');
@@ -401,9 +410,9 @@ try {
     await wait('panel', `!d.querySelector('[data-testid="map-card-live-B"]')`, 'rail child root: no chip');
     await select('panel', 'B');
     {
-      const b = await card('panel', 'B'), i = await inspector('panel');
-      check('attribution:render:rail-child-scope-assigned-no-chip', b.who === 'Assigned to Session map-child' && b.chip === null && !!(await card('page', 'B')).chip);
-      check('attribution:render:rail-child-scope-reason', i.live === '' && i.activity.startsWith('Not shown'));
+      const b = await card('panel', 'B'), i = await inspector('panel', 'B');
+      check('attribution:render:rail-child-scope-assigned-no-chip', b.who === null && b.chip === null && !!(await card('page', 'B')).chip);
+      check('attribution:render:rail-child-scope-reason', i.live === '' && i.activity === null);
     }
     await shot('rail-child-scope', '[data-testid="map-region"]', 12, 1600, 'panel');
     await evaluate(`qa.context('M');true`); await ready('panel');
@@ -418,25 +427,25 @@ try {
     // operation records an assignee too, so the shell removes only L's assignee in the detail DTO.
     await select('page', 'L');
     {
-      const l = await card('page', 'L'), i = await inspector('page'), p = (await proof('page')).L;
+      const l = await card('page', 'L'), i = await inspector('page', 'L'), p = (await proof('page')).L;
       check('attribution:render:legacy-link-only-data', p.recordedAssignee === null && !p.assignment && p.links.includes('map-linked'));
-      check('attribution:render:legacy-link-only-card', l.attribution === 'linked' && l.who === 'Linked to Session map-linked · no verified delegation' && l.chip === null);
-      check('attribution:render:legacy-link-only-inspector', i.assignment === 'linked' && i.assignmentText.startsWith('No assignee recorded') && i.links === 'Linked to Session map-linked · no verified delegation' && i.live === '');
+      check('attribution:render:legacy-link-only-card', l.attribution === 'linked' && l.who === null && l.chip === null);
+      check('attribution:render:legacy-link-only-inspector', i.assignment === null && i.assignmentText === null && i.links === null && i.live === '');
     }
     await mapShot('link-only', 'page');
     await select('page', 'B');
     {
-      const i = await inspector('page');
-      check('attribution:render:repeated-relay-grouped', i.reports === 'Reported by Session M for Session map-child · 2 reports');
-      check('attribution:render:relay-is-not-assignment', i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child'));
+      const i = await inspector('page', 'B');
+      check('attribution:render:repeated-relay-not-in-summary', i.reports === null);
+      check('attribution:render:relay-is-not-assignment', i.assignment === 'assigned' && i.assignmentText === null);
     }
     await mapShot('repeated-relay-reports', 'page');
     await guest('page', `w.mapPreview.omitAttribution('B');return true`);
     await wait('page', `d.querySelector('[data-testid="map-card-B"]')?.dataset.attribution==='unavailable'`, 'missing optional projection painted');
     {
-      const b = await card('page', 'B'), i = await inspector('page');
+      const b = await card('page', 'B'), i = await inspector('page', 'B');
       check('attribution:render:missing-projection-card', b.attribution === 'unavailable' && b.who === null && b.chip === null);
-      check('attribution:render:missing-projection-inspector', i.assignment === 'unavailable' && i.assignmentText.startsWith('Unavailable in this view') && i.activity.startsWith('Not shown'));
+      check('attribution:render:missing-projection-inspector', i.assignment === null && i.activity === null);
     }
     await mapShot('missing-projection', 'page');
     await guest('page', 'w.mapPreview.omitAttribution(null);return true');
@@ -447,29 +456,29 @@ try {
       { id: 'map-child', title: 'Map worker', projectId: 'alpha', directory: '/fixture/main', parentId: 'M', archivedAt: null, worktree: null, activity, outcome: null, items: [] },
     ];
     await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${javascriptLiteral(sessionRecords('running'))});true`);
-    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Map worker'`, 'verified host title');
-    check('attribution:render:verified-source-host-title', (await card('page', 'B')).name.includes('Assigned to Map worker'));
+    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Map worker'`, 'verified host title');
+    check('attribution:render:verified-source-host-title', (await card('page', 'B')).name.includes('Map worker'));
     await mapShot('verified-host-title', 'page');
     await evaluate(`qa.setSessions('alpha',${javascriptLiteral(sessionRecords('waiting-question'))});true`);
     await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='waiting'`, 'waiting session mark');
     {
-      const b = await card('page', 'B'), i = await inspector('page');
+      const b = await card('page', 'B'), i = await inspector('page', 'B');
       check('attribution:render:waiting-card', b.live === 'waiting' && b.chip === 'waiting' && b.name.includes('Assigned session waiting for input now, session activity only'));
       check('attribution:render:waiting-inspector', i.live === 'waiting' && i.activity.startsWith('Assigned session waiting for input now') && i.liveMark);
       check('attribution:render:waiting-mark-outlined', await guest('page', `const m=d.querySelector('[data-testid="map-card-live-B"]');return getComputedStyle(m).backgroundColor==='rgba(0, 0, 0, 0)'&&parseFloat(getComputedStyle(m).borderTopWidth)>0`));
     }
     await mapShot('waiting-session', 'page');
     await evaluate(`qa.setSessions('alpha',[]);true`);
-    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Session map-child'&&d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='active'`, 'plain labels restored');
+    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Session map-child'&&d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='active'`, 'plain labels restored');
     const lastRevision = await guest<string>('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision`);
     await evaluate(`qa.holds.push({path:'/v1/plan-graph',frame:'page',tag:'attribution-newer-graph'});true`);
     fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] });
     await wait('page', `parent.qa.held.some(h=>h.tag==='attribution-newer-graph')&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='false'`, 'last reported picture during graph hold');
     {
-      const b = await card('page', 'B'), i = await inspector('page');
+      const b = await card('page', 'B'), i = await inspector('page', 'B');
       check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${javascriptLiteral(lastRevision)}`));
-      check('attribution:render:superseded-hides-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith(`Hidden while the map shows revision ${lastRevision} as last reported.`));
-      check('attribution:render:superseded-status-last-reported', b.status === 'Reported working' && !(await proof('page')).B.live.proven);
+      check('attribution:render:superseded-hides-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity === null);
+      check('attribution:render:superseded-status-last-reported', b.status === 'In progress' && !(await proof('page')).B.live.proven);
     }
     await mapShot('superseded-picture', 'page');
     await evaluate(`qa.release('attribution-newer-graph');true`); await ready('page');
@@ -481,9 +490,9 @@ try {
     await wait('page', `!d.querySelector('[data-testid="map-card-live-B"]')`, 'terminal: chip removed');
     await select('page', 'B');
     {
-      const b = await card('page', 'B'), i = await inspector('page');
-      check('attribution:render:terminal-assigned-no-chip', b.who === 'Assigned to Session map-child' && b.chip === null);
-      check('attribution:render:terminal-reason', i.assignment === 'assigned' && i.live === '' && i.activity.endsWith('The assigned session’s latest recorded run isn’t active now.'));
+      const b = await card('page', 'B'), i = await inspector('page', 'B');
+      check('attribution:render:terminal-assigned-no-chip', b.who === null && b.chip === null);
+      check('attribution:render:terminal-reason', i.live === '' && i.activity === null);
       check('attribution:render:terminal-no-box-moves', await boxes('page') === cardBoxes);
       check('attribution:render:terminal-no-running-words', await words('page'));
     }
@@ -493,9 +502,9 @@ try {
     await guest('page', `w.mapPreview.source('source-beta');return true`); await ready('page');
     await select('page', 'B');
     {
-      const b = await card('page', 'B'), i = await inspector('page'), p = (await proof('page')).B;
+      const b = await card('page', 'B'), i = await inspector('page', 'B'), p = (await proof('page')).B;
       check('attribution:render:foreign-source-no-assignment-or-live', p.recordedAssignee === 'map-child' && !p.assignment && !p.live.proven && b.attribution === 'recorded' && b.chip === null);
-      check('attribution:render:foreign-source-no-host-title', b.who === 'Unverified assignee · Session map-child' && !b.name.includes('Map worker') && i.assignmentText.startsWith('Recorded assignee Session map-child'));
+      check('attribution:render:foreign-source-no-host-title', b.who === null && !b.name.includes('Map worker') && i.assignmentText === null);
     }
     await mapShot('foreign-source', 'page');
     check('attribution:status-no-map-work', (await reqs(`r.frame==='status'&&r.path==='/v1/plan-graph'`)).length === 0);
@@ -561,9 +570,9 @@ try {
         await show([surface], width); await ready(surface); await said(surface);
         await command(surface, { type: 'select', id: 'C' }); await frames2();
         // Native help is closed by default, keyboard discoverable and scoped to this reading.
-        check(`help:${tag}:collapsed-description`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]'),s=h.querySelector('summary'),v=d.querySelector('[data-testid="map-viewport"]');return !h.open&&s.tabIndex===0&&/Map help/.test(s.textContent)&&!!d.getElementById(v.getAttribute('aria-describedby'))`));
+        check(`help:${tag}:collapsed-description`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]'),s=h.querySelector('summary'),v=d.querySelector('[data-testid="map-viewport"]');return !h.open&&s.tabIndex===0&&/Map help/.test(s.getAttribute('aria-label'))&&!!d.getElementById(v.getAttribute('aria-describedby'))`));
         await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
-        check(`help:${tag}:opens-truthful`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]');return h.open&&/not a schedule/.test(h.innerText)&&/not proof that work ran/.test(h.innerText)&&/neither Ready nor Unlocks next is permission/.test(h.innerText)&&/verified delegation/.test(h.innerText)&&/doesn’t show which task/.test(h.innerText)&&/Escape/.test(h.innerText)&&/Click the background to clear selection/.test(h.innerText)`));
+        check(`help:${tag}:opens-truthful`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]');return h.open&&/Arrow keys/.test(h.innerText)&&/Esc clear/.test(h.innerText)&&/Beads: work in progress as reported, not progress made/.test(h.innerText)&&!/verified delegation|doesn’t show which task|not a schedule/.test(h.innerText)&&!d.querySelector('[data-testid="map-attribution-help"]')`));
         await shot(`${tag}-help-open`, '[data-testid="map-region"]', 0, 1400, surface);
         await guest(surface, 'w.mapPreview.repaint();return true'); await frames2();
         check(`help:${tag}:repaint-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'`));

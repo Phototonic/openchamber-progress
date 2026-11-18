@@ -322,10 +322,26 @@ function intentDisposition(db:DatabaseSync,i:DurableIntent,state:'pending'|'rese
   db.prepare('UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?').run(JSON.stringify(reply),i.caller.sourceId,i.request.plan,i.request.oid!);return reply;
 }
 export class PendingDelegationError extends ProgressError { constructor(){super('conflict');} }
+/** Cleanup owns the transaction. Retire authority without touching guarded receipts
+ * or session-owned runs; restoring a plan must not resurrect an earlier intent. */
+export function retireCleanupIntent(db:DatabaseSync,source:string,plan:string) {
+  if(runStorageCompatibility(db)!=='absent')db.prepare('DELETE FROM runs_intents WHERE source=? AND plan=?').run(source,plan);
+}
 export function declareIntent(db:DatabaseSync,r:Request,actor:Actor,validate:()=>void) {
   const c=runControl(db);need(c.enabled,'disabled');const payloadHash=hash([r,actor.sourceId,actor.sessionId]);
+  const cleanup=cleanupInstalled(db)?cleanupState(db,actor.sourceId,r.plan):undefined;
+  need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
   const old=db.prepare('SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?').get(actor.sourceId,r.plan,r.oid!);
-  if(old){need(old.payload_hash===payloadHash,'operation-reused');return JSON.parse(String(old.receipt));}
+  if(old){
+    need(old.payload_hash===payloadHash,'operation-reused');
+    const receipt=JSON.parse(String(old.receipt));
+    if(cleanup?.state==='visible'&&['pending','reserved'].includes(receipt.delegation?.state)){
+      const intent=activeIntent(db,actor.sourceId,actor.sessionId);
+      if(intent?.request.plan!==r.plan||intent.request.oid!==r.oid)
+        return {...receipt,delegation:{...receipt.delegation,state:'retired',reason:'closed',recovery:'redeclare-or-link'}};
+    }
+    return receipt;
+  }
   validate();const current=activeIntent(db,actor.sourceId,actor.sessionId);
   if(r.assign!.length&&current)throw new PendingDelegationError();
   else if(current){intentDisposition(db,current,'retired','cancelled',current.dispatch??undefined);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=?').run(actor.sourceId,actor.sessionId);}
@@ -388,8 +404,15 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     if(!identifier(row.plan)||r.plan!==row.plan||a.oid!==row.oid||!identifier(a.oid)||!Number.isSafeInteger(a.declaredRevision)||a.declaredRevision<1||r.rev!==a.declaredRevision||!Array.isArray(a.taskIds)||a.taskIds.length>DELEGATION_VIEW_LIMITS.tasks||!a.taskIds.every(identifier)||new Set(a.taskIds).size!==a.taskIds.length||a.dispatch!==null&&(!a.dispatch||a.dispatch.tool!=='subagent'||!identifier(a.dispatch.messageId)||!identifier(a.dispatch.callId))){result.complete=false;continue;}
     // Only the latest declaration per plan matters. A fresh pending/bound/cancel
     // declaration must not resurrect an older refusal in coordinator guidance.
-    if(cleanupInstalled(db)&&['archived','deleted'].includes(String(cleanupState(db,sourceId,r.plan)?.state??'')))continue;
-    if(d.state!=='retired'||d.reason==='cancelled'||!a.taskIds.length)continue;
+    const cleanup=cleanupInstalled(db)?String(cleanupState(db,sourceId,r.plan)?.state??''):'';
+    if(['archived','deleted'].includes(cleanup))continue;
+    // Cleanup retires an intent without rewriting its guarded receipt. Only a
+    // restored plan (explicit visible cleanup record, as replay requires) explains
+    // a pending/reserved receipt with no active intent; otherwise it is incomplete.
+    const orphaned=['pending','reserved'].includes(d.state)&&!db.prepare('SELECT 1 FROM runs_intents WHERE source=? AND parent=? AND plan=? AND oid=?').get(sourceId,sessionId,r.plan,row.oid);
+    if(orphaned&&cleanup!=='visible'){result.complete=false;continue;}
+    const reason=orphaned?'closed':d.reason;
+    if(!orphaned&&d.state!=='retired'||reason==='cancelled'||!a.taskIds.length)continue;
     // Explicit links have no delegation receipt. Read the bounded current
     // assignment instead; historical refusals and their exact retries stay intact.
     const recovery=delegationAssignmentRecovery(db,sourceId,r.plan,sessionId,a,DELEGATION_VIEW_LIMITS.inputBytes-bytes);
@@ -398,7 +421,7 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     if(recovery.recovered)continue;
     if(result.refusals.length===3){result.complete=false;continue;}
     const reasons=['relevant-change','conflict','structural-change','closed','assignment','source-unverified','unverified','incomplete-proof','missing-proof','budget','dispatch-unconfirmed','binding','disabled','capture-disabled','not-found','storage','corrupt','schema','busy'];
-    result.refusals.push({plan:r.plan,declaration:{oid:a.oid,coordinatorSessionId:sessionId,declaredRevision:a.declaredRevision,taskIds:[...a.taskIds],dispatch:a.dispatch?{tool:'subagent',messageId:a.dispatch.messageId,callId:a.dispatch.callId}:null},reason:reasons.includes(d.reason)?d.reason:'unverified',recovery:'redeclare-or-link'});
+    result.refusals.push({plan:r.plan,declaration:{oid:a.oid,coordinatorSessionId:sessionId,declaredRevision:a.declaredRevision,taskIds:[...a.taskIds],dispatch:a.dispatch?{tool:'subagent',messageId:a.dispatch.messageId,callId:a.dispatch.callId}:null},reason:reasons.includes(reason)?reason:'unverified',recovery:'redeclare-or-link'});
   }
   return result;
 }
@@ -478,10 +501,11 @@ export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number,
 }
 function associatedPlan(db:DatabaseSync,actor:Actor,at:number):RunRow['planContext'] {
   // Bounded complete discovery: historical contributions never count as context.
-  const p=db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active' AND
+  // Archived plans are excluded before the candidate limit: they never count toward ambiguity.
+  const visible=cleanupInstalled(db)?" AND NOT EXISTS(SELECT 1 FROM cleanup_state c WHERE c.source=plans.source AND c.plan=plans.id AND c.state IN('archived','deleted'))":'';
+  const eligible=db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active'${visible} AND
     (json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=? AND json_array_length(json_extract(l.value,'$.itemIds'))>0)) LIMIT 3`).all(actor.sourceId,actor.sessionId,actor.sessionId);
-  const eligible=p.filter(r=>!cleanupInstalled(db)||!['archived','deleted'].includes(String(cleanupState(db,actor.sourceId,String(r.id))?.state)));
-  if(p.length>=3)return null;
+  if(eligible.length>=3)return null;
   const incoming=db.prepare(`SELECT json_extract(payload,'$.planContext.plan') AS plan FROM runs_rows r WHERE source=? AND child=? AND terminal=0 AND json_extract(payload,'$.ran.state')='running' AND json_extract(payload,'$.planContext.plan') IS NOT NULL
     AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId,actor.sessionId);
   if(incoming.length===1){const plan=db.prepare("SELECT id,revision FROM plans WHERE source=? AND id=? AND json_extract(snapshot,'$.lifecycle')='active'").get(actor.sourceId,String(incoming[0]!.plan));if(plan&&(!cleanupInstalled(db)||!['archived','deleted'].includes(String(cleanupState(db,actor.sourceId,String(plan.id))?.state))))eligible.push(plan);}

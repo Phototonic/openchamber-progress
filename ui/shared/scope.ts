@@ -2,7 +2,7 @@
 // Session and directory scoping is done by the service (its filters include participants);
 // project/worktree grouping uses the plan's recorded directory plus live SDK labels.
 import { baseName } from './format.ts';
-import { coverageFor, EMPTY_LIVE, findSession, planProject, projectFor, sessionLabel, type LiveSnapshot } from './live.ts';
+import { coverageFor, EMPTY_LIVE, findSession, indexedLive, planProject, projectFor, sessionLabel, type LiveSnapshot } from './live.ts';
 import { orderPlans, type PlanView } from './model.ts';
 import type { ListScope } from './source.ts';
 import { directoryKey } from './path.ts';
@@ -152,6 +152,7 @@ export function searchFilterOptions(plans: (Pick<PlanView, 'ownerSessionId' | 'd
 
 /** Drops project/worktree values that no longer exist (e.g. after a store change). */
 export function normalizeFilters(plans: PlanView[], live: LiveSnapshot, f: Filters, bound?: Bound): Filters {
+  if (f.project === ALL && f.worktree === ALL) return f;
   const o1 = filterOptions(plans, live, f, plans, bound);
   const project = o1.projects.some((o) => o.id === f.project) ? f.project : ALL;
   const o2 = filterOptions(plans, live, { ...f, project }, plans, bound);
@@ -161,10 +162,55 @@ export function normalizeFilters(plans: PlanView[], live: LiveSnapshot, f: Filte
 
 /** Client-side project/worktree narrowing of a (possibly session-scoped) server list. */
 export function applyFilters(plans: PlanView[], live: LiveSnapshot, f: Filters, bound?: Bound) {
+  if (f.project === ALL && f.worktree === ALL) return orderPlans(plans);
   return orderPlans(plans.filter((plan) => {
     const place = placeOf(plan, live, bound);
     return (f.project === ALL || place.projectKey === f.project) && (f.worktree === ALL || place.worktreeKey === f.worktree);
   }));
+}
+
+interface BoardInput {
+  plans: PlanView[]; live: LiveSnapshot; filters: Filters; bound?: Bound;
+  locale: InterfaceLanguage; archived: boolean; reading: string;
+}
+export interface BoardDerived {
+  plans: PlanView[]; filters: Filters; live: LiveSnapshot; places: Map<string, Place>;
+  groups: { key: string; label: string; plans: PlanView[]; current: PlanView[]; finished: PlanView[] }[];
+  options: () => ReturnType<typeof filterOptions>;
+  select: (key: string | null | undefined) => PlanView | null;
+}
+/** One bounded board projection. No choice list is built until somebody opens Filters. */
+export class BoardDerivation {
+  private inputs: unknown[] = [];
+  private value: BoardDerived | null = null;
+  get(input: BoardInput): BoardDerived {
+    const { plans, live, filters, bound, locale, archived, reading } = input;
+    const inputs = [plans, live.projectsState, live.projects, ...live.sessions.keys(), ...live.sessions.values(),
+      ...live.worktrees.keys(), ...live.worktrees.values(), live.capped.join(), filters.project, filters.worktree, filters.session, bound, locale, archived, reading];
+    if (this.value && inputs.length === this.inputs.length && inputs.every((v,i) => v === this.inputs[i])) return this.value;
+    const indexed = indexedLive(live), places = new Map(plans.map(p => [p.key, placeOf(p, indexed, bound, locale)]));
+    // Normalisation needs membership, not all session labels and counts.
+    const project = filters.project === ALL || [...places.values()].some(p => p.projectKey === filters.project) ? filters.project : ALL;
+    const worktree = filters.worktree === ALL || [...places.values()].some(p => (project === ALL || p.projectKey === project) && p.worktreeKey === filters.worktree) ? filters.worktree : ALL;
+    const normalized = { project, worktree, session: filters.session };
+    const shown = orderPlans(project === ALL && worktree === ALL ? plans : plans.filter(p => {
+      const place = places.get(p.key)!;
+      return (project === ALL || place.projectKey === project) && (worktree === ALL || place.worktreeKey === worktree);
+    }));
+    const groups = new Map<string, { key: string; label: string; plans: PlanView[] }>();
+    for (const p of shown) {
+      const place = places.get(p.key)!;
+      const group = groups.get(place.projectKey) ?? { key: place.projectKey, label: place.projectLabel, plans: [] };
+      group.plans.push(p); groups.set(place.projectKey, group);
+    }
+    let options: ReturnType<typeof filterOptions> | undefined;
+    let selection: { key: string | null | undefined; plan: PlanView | null } | undefined;
+    this.inputs = inputs;
+    return this.value = { plans: shown, filters: normalized, live: indexed, places,
+      groups: [...groups.values()].map(g => ({ ...g, ...partitionBoardPlans(g.plans, archived) })),
+      options: () => options ??= filterOptions(plans, indexed, normalized, plans, bound, locale),
+      select: key => { if (!selection || selection.key !== key) selection = { key, plan: pickPlan(shown, key) }; return selection.plan; } };
+  }
 }
 
 /** Projects whose sessions should be watched so these plans get live state. */

@@ -7,7 +7,9 @@ import { resolveLanguage } from '../../ui/shared/i18n.ts';
 import * as model from '../../ui/shared/model.ts';
 import * as scope from '../../ui/shared/scope.ts';
 import * as live from '../../ui/shared/live.ts';
+import * as inbox from '../../ui/shared/inbox.ts';
 import * as defaultView from '../../ui/shared/default-view.ts';
+import * as cleanup from '../../ui/shared/cleanup.ts';
 import { formatCount, plural } from '../../ui/shared/format.ts';
 import { queryProblem } from '../../ui/shared/search.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
@@ -40,7 +42,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
   const exposed = surface === 'status' ? 'statusProgress, messages' : surface === 'page' ? 'planList, labelsFor, boardTop, currentTask, surface, footer' : 'picker';
-  const historyIntent = surface === 'page' ? `exports.historyIntent = (key,stage='detail') => { pendingTask = { key, item:'I1', title:'Fixture task', stage, origin:stage==='detail'?'history':'search' }; }; exports.surfacePanel = kind => { shell.activePanel = kind; }; exports.pendingIntent = () => pendingTask;` : '';
+  const historyIntent = surface === 'page' ? `exports.historyIntent = (key,stage='detail') => { pendingTask = { key, item:'I1', title:'Fixture task', stage, origin:stage==='detail'?'history':'search' }; }; exports.surfacePanel = kind => { shell.activePanel = kind; }; exports.pendingIntent = () => pendingTask; exports.boardContext = vc => { frame = vc; };` : '';
   runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });\n${historyIntent}`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: frameWindow, require: (path: string) => {
     if (overrides[path]) return overrides[path];
     if (path.endsWith('/app.ts')) return { startView: (value: any) => { spec = value; } };
@@ -48,12 +50,14 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/model.ts')) return model;
     if (path.endsWith('/scope.ts')) return scope;
     if (path.endsWith('/live.ts')) return live;
+    if (path.endsWith('/inbox.ts')) return inbox;
     if (path.endsWith('/format.ts')) return { formatCount, plural };
     if (path.endsWith('/primitives.ts')) return { segmentedBar: (_s: any, label: string) => ({ text: label }), stateChip: ({ count, label }: any) => count ? { text: `${count} ${label}` } : null, warningLine: (text: string) => ({ text }), icon: () => ({ text: '' }) };
     if (path === '@openchamber/sdk/ui') return { mountList(_holder: any, options: any) { nodes.push(...options.items.map((item: any) => ({ text: item.title }))); } };
     if (path.endsWith('/components.ts')) return components;
     if (path.endsWith('/dependency-map-view.ts')) return { createMapFrame: () => ({ sync(...args: any[]) { maps.push(args); }, paint() { nodes.push({ dataset: { testid: 'painted-map' } }); }, listTargets() {} }) };
     if (path.endsWith('/default-view.ts')) return defaultView;
+    if (path.endsWith('/cleanup.ts')) return cleanup;
     if (path.endsWith('/refresh.ts')) return { RecentMemory: class {} };
     if (path.endsWith('/search.ts')) return { SearchController: noopController };
     if (path.endsWith('/capture-comparison.ts')) return { CaptureController: noopController };
@@ -77,7 +81,7 @@ function shellContext() {
     ctx: { connection: { account: 'fixture' } }, identity: 'fixture', session: { id: plan.ownerSessionId },
     ui: { filters: scope.NO_FILTERS, selected: plan.key, tab: 'progress', presentation: 'list', archived: false, search: null },
     read: { plans: [plan], binding: { verified: true }, captureEnabled: true }, health: { ready: true, planGraph: 1 },
-    live: live.EMPTY_LIVE, env: { locale: 'en', live: live.EMPTY_LIVE, boundSource: plan.sourceId },
+    live: live.EMPTY_LIVE, env: { locale: 'en', live: live.EMPTY_LIVE, boundSource: plan.sourceId, unverifiedSources: new Set() },
     detailResult: () => ({ current: () => true, result: { ok: true, plan, detail: { items } } }),
     detail: () => null, summary: () => null, document: () => null,
   };
@@ -248,6 +252,9 @@ test('board finished folds translate without changing source-qualified grouping 
   const h = surfaceHarness('page');
   const plans = parsePlansPage(JSON.stringify(plansPage([summary('done-plan', [], { title: 'User title unchanged', lifecycle: 'finished' })]))).data;
   const env = { locale: 'ru', live: live.EMPTY_LIVE, boundSource: null, unverifiedSources: new Set() };
+  const { vc } = shellContext();
+  vc.read.plans = plans; vc.env = env;
+  h.exports.boardContext(vc);
   const key = scope.placeOf(plans[0], env.live, env.boundSource).projectKey;
   const board = { key: 'reading', finished: new Map([[key, true]]) };
   h.exports.planList(plans, plans[0], env, () => {}, false, board);
