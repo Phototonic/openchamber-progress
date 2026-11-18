@@ -406,6 +406,11 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     // declaration must not resurrect an older refusal in coordinator guidance.
     const cleanup=cleanupInstalled(db)?String(cleanupState(db,sourceId,r.plan)?.state??''):'';
     if(['archived','deleted'].includes(cleanup))continue;
+    // Read a pending/reserved receipt as the per-plan reader does (ui/shared/adapter.ts
+    // intentDeclaration): pending names no dispatch, reserved names one, both declare a task.
+    // A failing receipt is unreadable evidence, never a `closed` refusal. Retired (both
+    // cancellation shapes) and bound receipts are not checked here and read as before.
+    if(['pending','reserved'].includes(d.state)&&((d.state==='reserved')!==(a.dispatch!==null)||!a.taskIds.length)){result.complete=false;continue;}
     // Cleanup retires an intent without rewriting its guarded receipt. Only a
     // restored plan (explicit visible cleanup record, as replay requires) explains
     // a pending/reserved receipt with no active intent; otherwise it is incomplete.

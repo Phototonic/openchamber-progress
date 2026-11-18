@@ -1159,14 +1159,18 @@ service's 16 KiB encoded-query limit each, pinned to the expected store and
 binding). This applies to scans that use the named reader: a truncated or searched
 scope on a service that advertises `planTaskSearch`. A complete non-search list
 counts from the displayed metadata without a lookup, and an older service still
-counts a truncated browse scope with the list scan. In the named reader, where the
-view's scope depends on content the client cannot evaluate (a search, a session
-scope) a plan whose revision moved since the count began (the revision captured
-when the count was requested, not necessarily when the rows were chosen) is
+counts a truncated browse scope with the list scan. Only the point lookup
+compares a named plan with a baseline: the revision supplied to the count, which
+is the revision the chosen plan carried and, on Try again, the original target's
+revision (not the revision at which the count began). A complete list takes a
+named plan as its loaded row shows it, and the older service's list scan takes it
+as the scan's row shows it; neither compares it with a supplied revision. In the
+point lookup, where the view's scope depends on content the client cannot evaluate
+(a search, a session scope) a plan whose revision differs from the supplied one is
 skipped as changed; elsewhere it is re-read with one `/v1/plan` head read,
 verified against the expected store and binding, and a missing plan is dropped
 only after the pinned lookup confirms its absence. Every request carries the
-captured revision and the service enforces it. Each lookup and each head read is one request of the
+captured revision and the service enforces it, in every path. Each lookup and each head read is one request of the
 per-action budget; unfinished plans wait for Check more.
 The count distinguishes a target ceiling with a confirmed further match (**more
 remain**) from unchecked plans that may or may not match: a full set keeps scanning
@@ -1921,7 +1925,7 @@ prerequisites; `delegate`/`link` sub-agent tasks; `change` actual work to workin
 to load the skill when writing, receiving or coordinating plans and before
 dispatching sub-agents. The description is at most 4,096 characters, with the
 checklist and executable prerequisite start example inside the first 2,048.
-Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that once every prerequisite it was blocked on is done again the task blocked this way is set back to working or pending, including before a handoff, because an explicit blocked task never becomes Ready. The following conditional rule still applies:
+Operation details remain in the skill. The skill and the inline guidance also say that when work moves back to the prerequisites of a task that is working, that task is marked blocked with a `blocker:{category:"dependency",reason}` payload (an Also blocked entry, never Needs you; the map shows beads into it from working prerequisites), or set back to pending if none of its own work was done; that a task that is already blocked is left as it is, so its decision, review, external or other blocker is never replaced; and that the block is cleared against the plan's current prerequisites: before a handoff, and when a prerequisite finishes, the agent reads the current plan, and once every prerequisite the task still lists is done the task blocked this way is set back to working or pending, because an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds the task, and a skipped prerequisite that is still listed counts as unfinished. This guidance is advisory; the store is unchanged and a structural revision keeps an explicit blocked status. The following conditional rule still applies:
 tracker updates are not Agent Progress reports; explicitly mirror
 meaningful unreported canonical state at PLAN_READY handoff, review approval,
 owner approval and actual work start, not again when already current. These are
