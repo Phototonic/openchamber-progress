@@ -2,7 +2,7 @@
 
 ### Requirement: A bulk count is exact only when its read can show it
 
-A Tidy or Select all count taken from the loaded plan list SHALL be stated as exact only when that list was read in a single page. Otherwise the confirmation SHALL say that some plans may have been missed, on its first step and on the deletion step. A count of explicitly chosen rows SHALL stay exact. A Try again recount from a list read in several pages SHALL stay exact only when it found every plan it names. The qualification MUST NOT add a read.
+A Tidy or Select all count taken from the loaded plan list SHALL be stated as exact only when that list was read in a single page. Otherwise the confirmation SHALL say that some plans may have been missed, on its first step and on the deletion step. A count of rows explicitly chosen from that list SHALL stay exact. A Try again recount from a list read in several pages SHALL stay exact only when it found every plan it names. The qualification MUST NOT add a read.
 
 #### Scenario: List read in several pages
 - **WHEN** Tidy is opened on a complete list of 120 plans that was read in three pages
@@ -18,8 +18,12 @@ A Tidy or Select all count taken from the loaded plan list SHALL be stated as ex
 - **THEN** the confirmation says that some plans may have been missed
 
 #### Scenario: Explicitly chosen rows
-- **WHEN** three rows are chosen one by one on a list read in several pages and an action is opened
+- **WHEN** three rows are chosen one by one on a complete list read in several pages and an action is opened
 - **THEN** the confirmation states three plans without qualification
+
+#### Scenario: Chosen rows counted by a scan
+- **WHEN** rows are chosen in a searched or truncated scope, where the count runs through a scan
+- **THEN** the scan's existing qualification and Check more rules apply unchanged, also on an older service, whose list scan cannot vouch for what crossed its cursor
 
 #### Scenario: Try again finds every named plan
 - **WHEN** Try again is chosen after a partial run on a complete list that was read in several pages, and every remaining plan is among the loaded rows
@@ -40,7 +44,7 @@ A Tidy or Select all count taken from the loaded plan list SHALL be stated as ex
 
 ### Requirement: A bulk run completes only into the account and store it ran in
 
-A bulk run SHALL capture the integration account and the store and binding identity when it starts. When it finishes after the frame observed a change of either, it SHALL drop its own state and MUST NOT reset caches, change the selection, close the opened plan or show a result on the board shown then. A validated Delete receipt SHALL still remove the device review marker captured for its plan in the account and store the run started in.
+A bulk run SHALL capture the integration account and the store and binding identity when it starts. When it finishes after the frame observed a change of either, even one that has since changed back, it SHALL drop its own state and MUST NOT reset caches, change the selection, close the opened plan or show a result on the board shown then. A validated Delete receipt SHALL still remove the device review marker captured for its plan in the account and store the run started in.
 
 #### Scenario: Account switched while a request is held
 - **WHEN** the integration account changes while a bulk archive request is held, a plan is opened and selected on the new board, and the held request then answers
@@ -51,6 +55,10 @@ A bulk run SHALL capture the integration account and the store and binding ident
 - **WHEN** the board shown after the change holds a selected plan with the same source and plan identifier as a target of the earlier run
 - **THEN** that plan stays selected and is not treated as archived, restored or deleted
 
+#### Scenario: Account switched away and back while a request is held
+- **WHEN** the integration account changes and changes back while a bulk archive request is held, a plan is opened on the board shown, no newer run is started, and the held request then answers
+- **THEN** that board keeps its opened plan, its selection and its loaded list, and shows no result line
+
 #### Scenario: Delete receipt arrives after the switch
 - **WHEN** the integration account changes while a bulk delete request is held, and the request then answers with a valid receipt
 - **THEN** the review marker stored for that plan under the account and store the run started in is removed
@@ -58,11 +66,15 @@ A bulk run SHALL capture the integration account and the store and binding ident
 
 #### Scenario: Board scope changed in the same account and store
 - **WHEN** only the board's filters or search changed while the run was in flight
-- **THEN** the run stops after the request in flight and reconciles once, as before this change
+- **THEN** the run stops after the request in flight, shows no result line and sends its one reconciliation read when it ends, as the interface did before this change
 
 #### Scenario: Store changed during a run without the frame observing it
 - **WHEN** the store changes with no account change while a bulk run has the list reads paused
 - **THEN** the run ends on the board it started on, and the list read that follows it adopts the new store and clears that board, as before this change
+
+#### Scenario: Store change observed after a board change resumed list reads
+- **WHEN** the board's filters change while a bulk request is held, so list reads resume, a list reply then shows that the store changed, and the held request answers
+- **THEN** the board shown keeps its loaded list and its selection, and shows no result of that run
 
 ### Requirement: Cleanup support follows the service's latest answer
 
@@ -81,8 +93,8 @@ Cleanup controls SHALL follow the cleanup facts of the latest health reply the f
 - **THEN** the controls return with that reply, not earlier
 
 #### Scenario: Support granted after a view was remembered
-- **WHEN** Current plans was last read while the service offered no cleanup, a later refresh in Archived plans accepts a health reply that offers it, and the person switches back to Current plans while its new read is pending
-- **THEN** Tidy and Select are offered while the remembered Current plans list is shown
+- **WHEN** one view of Current plans was last read while the service offered no cleanup, a later refresh in another view of Current plans, such as the same list under a session filter, accepts a health reply that offers it, and the person switches back to the first view while its new read is pending
+- **THEN** Tidy and Select are offered while the remembered list of the first view is shown
 
 ### Requirement: Background cleanup updates do not interrupt the person
 
@@ -106,7 +118,8 @@ A focus move that cleanup deferred SHALL be applied only if, at the paint that a
 
 #### Scenario: Focus moved to Undo before Tidy returns
 - **WHEN** a run ends while Stop has focus, the result line offers Undo while the Tidy button is absent during the reconciliation read, and the person focuses Undo before that read finishes
-- **THEN** focus stays on Undo when the Tidy button reappears, and on every later paint
+- **THEN** focus stays on Undo for as long as Undo is shown, also when the Tidy button reappears
+- **AND** the dropped move to the Tidy button is not applied later, also after the result expires and Undo is removed
 
 #### Scenario: Focus lost with the removed control
 - **WHEN** a run ends while Stop has focus and the person focuses nothing else
@@ -143,16 +156,22 @@ After the frame observes a change of the integration account or of the store and
 
 ### Requirement: A run's own updates do not replace a held control
 
-A progress update of a bulk run, and the repaint at its end with the result line and the selection changes its receipts cause, SHALL repaint as background data, so they wait while a control is held or a picker is open. The run itself, the release of its busy state, its cache invalidation and its reconciliation read MUST NOT wait for the repaint.
+A progress update of a bulk run, and the repaint at its end with the result line and the selection changes its receipts cause, SHALL repaint as background data, so they wait while a control is held or a picker is open. The run itself, the release of its busy state, its cache invalidation and its reconciliation read MUST NOT wait for the repaint. A refresh MUST NOT expire a result that has not been painted yet.
 
 #### Scenario: Stop pressed while a plan is confirmed
 - **WHEN** a plan's receipt arrives between pointer down and pointer up on Stop, and requests remain
 - **THEN** Stop is not replaced before its click, and the run stops after the request in flight
 
 #### Scenario: Last reply arrives during a press
-- **WHEN** the run's last reply arrives between pointer down and pointer up on an unrelated control such as Filters
-- **THEN** that control is not replaced before its click, the click takes effect and the result line appears on the next paint
+- **WHEN** the run's last reply arrives between pointer down and pointer up on an unrelated control
+- **THEN** that control is not replaced while it is held, and the result line appears on the next paint
 - **AND** the reconciliation read is sent without waiting for that paint
+- **AND** a held control of the board whose data the run invalidated, such as Filters, stays in place and ignores that click, as after any cache reset
+
+#### Scenario: Hold lasts past the next refresh
+- **WHEN** the run's last reply arrives while a control is held or a picker is open, and the hold lasts past the next refresh
+- **THEN** that refresh does not expire the result, and the result line, with Undo after an archive, appears on the paint after the hold ends
+- **AND** the refresh after that paint expires it, as before this change
 
 #### Scenario: Progress still advances
 - **WHEN** no control is held and no picker is open during a run
@@ -191,7 +210,8 @@ The result line SHALL state how many plans were archived, restored or deleted, h
 #### Scenario: Try again after a partial Undo
 - **WHEN** Undo restored some plans, others were skipped or could not be confirmed, and Try again is chosen
 - **THEN** the restore is sent again for exactly those remaining plans, each still bound to the revision and cleanup generation its archive receipt returned, without a recount in the view shown
-- **AND** a plan that changed since, including one whose earlier restore was in fact applied, is left as it is and reported
+- **AND** a plan whose earlier restore was in fact applied is confirmed as restored from the receipt the service saved for that same request, and is not restored twice
+- **AND** a plan that another cleanup changed since is refused, left as it is and reported as skipped
 
 #### Scenario: Three languages
 - **WHEN** the result line is shown in English, Russian or Simplified Chinese
@@ -235,7 +255,7 @@ Opening Tidy SHALL show an inline panel, not a modal, whose one short line state
 #### Scenario: Context changes mid-run
 - **WHEN** the frame observes a change of the store, account, binding or board reading while requests remain
 - **THEN** no further request is sent and no plan is reported as done without its validated receipt
-- **AND** a change of board reading in the same account, store and binding is followed by one reconciliation read
+- **AND** after a change of board reading in the same account, store and binding the run shows no result line and sends its one reconciliation read when it ends
 
 #### Scenario: Account, store or binding changes mid-run
 - **WHEN** the frame observes a change of the account, store or binding while requests remain

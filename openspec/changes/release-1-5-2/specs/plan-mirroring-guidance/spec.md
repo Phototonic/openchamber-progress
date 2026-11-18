@@ -23,3 +23,24 @@ The skill, the tool description and the inline guidance SHALL tell an agent that
 #### Scenario: Description limits
 - **WHEN** the companion's texts are built
 - **THEN** the tool description stays within its existing total limit, with the checklist and start example inside its first part
+
+### Requirement: The companion's system prompt section stays identical across requests
+
+The companion's section of the system prompt SHALL contain only text that does not change within a session, and SHALL be byte-identical on every request where it is present. The one-request hint, the sub-agent resume capsule and the delegation refusal note SHALL be added for that request only after the content of its latest message, with their text and eligibility unchanged. The stored conversation MUST NOT change.
+
+#### Scenario: A hint is due
+- **WHEN** a dispatch or a plan-file write makes the one-request hint due and the next request is built
+- **THEN** the system section is identical to the previous request's, and the hint is added after the latest message's content for that request only
+
+#### Scenario: A sub-agent's plan moved on
+- **WHEN** a sub-agent session sends two requests and the plan's revision changed between them, or the capsule lookup timed out for one of them
+- **THEN** the system section is identical on both requests, and each request carries its own capsule, or none, after its latest message
+
+#### Scenario: A refusal appears and clears
+- **WHEN** a delegation refusal note applies to one request and not to the next
+- **THEN** the system section is identical on both, and only the first carries the note after its latest message
+
+#### Scenario: Section removed
+- **WHEN** capture is off, the report tool is unavailable or the source is unverified
+- **THEN** the section is absent as before, and no note is added to the message
+

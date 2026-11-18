@@ -2,7 +2,7 @@
 
 ### Requirement: A selection follows confirmed changes during a search
 
-While searching, a freshness reply SHALL certify only the result page it was asked about, identified by that page's number in the search and not by its position among the retained pages, and only when it covered every plan that page shows when the reply arrives. A plan that a freshness reply shows missing, deleted or moved across the archive boundary SHALL leave the selection whichever page is shown.
+While searching, a freshness reply SHALL certify only the result page it was asked about, identified by its number in the search and not by its position among the retained pages, and only when it covered every plan that page shows when the reply arrives. Hits the search reads into a page after it was checked SHALL leave it checked. A plan that a freshness reply shows missing, deleted or moved across the archive boundary SHALL leave the selection whichever page is shown.
 
 #### Scenario: Load more replaces the page a reply was asked about
 - **WHEN** a freshness reply for result page 2 is held, Load more drops page 1 from the retained pages and shows page 3, and the reply then arrives
@@ -13,6 +13,11 @@ While searching, a freshness reply SHALL certify only the result page it was ask
 - **WHEN** a freshness reply for an unchecked result page is held, the search appends further hits to that same page, and the reply then arrives with every covered plan unchanged
 - **THEN** the page is not counted as checked by that reply
 - **AND** it counts as checked once a reply has covered the plans it then shows
+
+#### Scenario: Hits read after a page was checked
+- **WHEN** a freshness reply has certified a result page and the running search then reads further hits into that page
+- **THEN** the page stays checked: those hits were read from the service at that moment, as the hits on the first page of a search are
+- **AND** the next freshness read covers the plans the page then shows
 
 #### Scenario: Plan confirmed gone while another page is shown
 - **WHEN** a selected plan has hits on two retained pages, a freshness reply for page 2 is held, the person goes back to page 1, and the reply shows that another frame archived the plan
@@ -37,7 +42,7 @@ When a cleanup action in this frame invalidates the search, the freshness reads 
 
 ### Requirement: Deselection and departure are kept apart
 
-Under Select all, a plan the person deselected and a plan a cleanup receipt took out of view SHALL be tracked separately. A deselection SHALL last until the person selects the plan again or the selection ends. A departure SHALL end when an Undo receipt returns the plan, a verified read lists it, the person clicks its row, or a fresh count finds it in the view at a newer cleanup generation. Only that click SHALL also end a deselection. A cached, unchecked page MUST NOT end a departure.
+Under Select all, a plan the person deselected and a plan a cleanup receipt took out of view SHALL be tracked separately. Both SHALL last until the person clicks the plan's row, replaces the selection with Select all or ends it. A departure SHALL also end when an Undo receipt returns the plan, a verified read lists it, or a fresh count finds it in the view at a newer cleanup generation; none of these SHALL end a deselection. A cached, unchecked page MUST NOT end a departure.
 
 #### Scenario: Restored elsewhere, then counted again
 - **WHEN** a plan is archived from this frame under Select all, the retained search drops it, another frame restores it, and the person opens the next action
@@ -49,7 +54,11 @@ Under Select all, a plan the person deselected and a plan a cleanup receipt took
 
 #### Scenario: Deselected and departed
 - **WHEN** a plan was both deselected by the person and taken out by a receipt, and an Undo receipt, a verified read or a fresh count returns it to the view
-- **THEN** its departure ends and it stays out of the action as a deselected plan, until the person clicks its row
+- **THEN** its departure ends and it stays out of the action as a deselected plan, until the person clicks its row or replaces the selection with Select all
+
+#### Scenario: Select all pressed again
+- **WHEN** the person presses Select all again after deselecting plans
+- **THEN** the selection is replaced and those plans are selected again, as before this change
 
 #### Scenario: Still archived
 - **WHEN** a departed plan is still archived when the next action in Current plans is counted
@@ -57,12 +66,16 @@ Under Select all, a plan the person deselected and a plan a cleanup receipt took
 
 ### Requirement: A new search result page starts unchecked
 
-A result page opened by Load more SHALL start unchecked, whatever the state of the page shown before it, and SHALL count as checked only after a freshness reply covered its own plans.
+A result page opened by Load more SHALL start unchecked, whatever the state of the page shown before it, and SHALL count as checked only after a freshness reply covered its own plans. A page that shows no plan has nothing to check and MUST NOT show the checking note.
 
 #### Scenario: New page after a checked page
 - **WHEN** Load more opens a new result page while the page shown before it was checked
 - **THEN** the new page is not treated as checked until a freshness reply has covered its plans
 - **AND** the note that results are being checked can show until then, with no time limit; a failed freshness read leaves the page unchecked and is reported by the existing stale indication
+
+#### Scenario: Load more finds nothing
+- **WHEN** Load more opens a new result page and the search ends without a hit for it
+- **THEN** the page shows no checking note, and no freshness read is added for it
 
 ### Requirement: A Select all count states the plans the frame has loaded
 

@@ -21,7 +21,7 @@ Before coordinator guidance infers from a delegation receipt that cleanup retire
 - **THEN** coordinator guidance reads it as before this change: it reports no refusal for it and is not marked incomplete because of it
 
 #### Scenario: Well-formed receipt after restore
-- **WHEN** a restored plan's latest delegation receipt is pending without a dispatch, or reserved with one, its intent was retired by cleanup, and its declared tasks have not been verifiably recovered since
+- **WHEN** a restored plan's latest delegation receipt is pending without a dispatch, or reserved with one, names at least one task, its intent was retired by cleanup, and its declared tasks have not been verifiably recovered since
 - **THEN** coordinator guidance reports the `closed` refusal as before
 
 #### Scenario: Well-formed receipt whose tasks were recovered
@@ -29,5 +29,5 @@ Before coordinator guidance infers from a delegation receipt that cleanup retire
 - **THEN** coordinator guidance reports no refusal for it, as before this change
 
 #### Scenario: Both readers agree
-- **WHEN** the per-plan reader rejects a receipt because its dispatch disagrees with its state
+- **WHEN** the per-plan reader rejects a pending or reserved receipt because its dispatch disagrees with its state
 - **THEN** coordinator guidance does not present that same receipt as complete evidence
