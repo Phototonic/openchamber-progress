@@ -197,7 +197,11 @@ test('Windows selects fast PR/push checks and full release, weekly and manual jo
   const windows = source.split('\n  windows-native:\n')[1].split('\n  publish:\n')[0];
   assert.ok(windows.includes("AP_WINDOWS_FULL: ${{ needs.gate.outputs.windows_full == 'true' && '1' || '0' }}"));
   assert.match(windows, /name: Fetch released Windows migration fixture\n        if: env.AP_WINDOWS_FULL == '1'\n        run: git fetch --no-tags origin tag v1\.1\.1/);
-  assert.match(windows, /--test-concurrency=1 tests\/backend\/windows-platform\.test\.ts tests\/backend\/windows-service\.test\.ts/);
+  assert.match(windows, /\$runs = @\('windows-platform', 'windows-service'\)/);
+  assert.match(windows, /--test-concurrency=1 tests\/backend\/\$\(\$run\.File\)\.test\.ts/);
+  assert.ok(!windows.includes(' -Wait '), 'both native files are waited for before either result is read');
+  assert.match(windows, /foreach \(\$run in \$runs\) \{ \$run\.Process\.WaitForExit\(\) \}/);
+  assert.match(windows, /Where-Object \{ \$_\.Process\.ExitCode -ne 0 \}/);
 
   const root = mkdtempSync(join(tmpdir(), 'workflow-windows-'));
   const git = (...args: string[]) => {
