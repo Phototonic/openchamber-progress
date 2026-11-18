@@ -797,10 +797,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     cleanup.tidy.scan?.cancel(); cleanup = { ...cleanup, tidy: undefined }; versions.data++;
   };
   /** `confirmed`: plans a cleanup receipt took out of view; `returned`: plans a receipt put back (Undo). */
-  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>, background = false) => {
+  /** Callers choose how the change repaints: an explicit action or refresh bumps `versions.ui`, a run's own end `versions.data`. */
+  const forgetPlans = (keys: Set<string>, confirmed?: ReadonlySet<string>, returned?: ReadonlySet<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
-    // `background`: the end of a run, which finishes by itself and must not replace a held control.
-    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) }; if (background) versions.data++; else versions.ui++; }
+    if (keys.size && spec.forgetPlans) ui = { ...ui, ...spec.forgetPlans(keys, ui, context(), confirmed, returned) };
   };
 
   /**
@@ -1000,7 +1000,7 @@ export function startView<U>(spec: ViewSpec<U>) {
             const next = nextRead.plans.find((n) => n.key === p.key);
             return !next || (next.cleanup?.revision ?? 0) !== (p.cleanup?.revision ?? 0);
           }).map((p) => p.key));
-          if (changed.size) { resetCaches(); forgetPlans(changed); }
+          if (changed.size) { resetCaches(); forgetPlans(changed); versions.ui++; }
         }
         identity = nextIdentity;
         // The source-wide inbox window of this same read; an unchanged one repaints nothing.
@@ -1174,7 +1174,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const receipts = new Set(result.succeeded.map(t => t.key));
     // Undo of an archive puts plans back in view; every other successful receipt takes them out.
     const back = undo && (state.result?.action === 'archive' || !!state.result?.returned);
-    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined, true);
+    gate.retire(); resetCaches(); forgetPlans(new Set(targets.map(t => t.key)), back ? undefined : receipts, back ? receipts : undefined);
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), tidy: same ? { context: state.context, result: back ? { ...result, returned: true } : result, selection: state.selection, selectionRequest: state.selectionRequest, opener: state.opener } : undefined };
     tidyReconcile = same;
@@ -1586,6 +1586,8 @@ export function startView<U>(spec: ViewSpec<U>) {
 
     const ownsFocus = document.hasFocus?.() ?? true;
     const active = !ownsFocus && !retainDeferredFocus ? null : deferredFocus && emptyFocus(document.activeElement) ? deferredFocus : document.activeElement as HTMLElement | null;
+    // What had focus is judged before the root is replaced: a rebuilt control is detached afterwards, and that must not read as "no focus".
+    const activeEmpty = emptyFocus(active), activeId = cleanupFocusFrom ? controlId(active) : '';
     const focus = focusKey(mount!, active);
     const coverage = coverageFocus(mount!, active);
     deferredFocus = null;
@@ -1752,7 +1754,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // A deferred move is applied only while focus is still on the control it was queued from, or on none because
       // that control was removed. Judged from the element that had focus before this paint replaced the root, at
       // every paint, also while its target is absent: a person who moved on keeps focus, whatever appears later.
-      else if (cleanupFocusFrom !== undefined && !emptyFocus(active) && !(cleanupFocusFrom && controlId(active) === cleanupFocusFrom)) askFocus(null);
+      else if (cleanupFocusFrom !== undefined && !activeEmpty && !(cleanupFocusFrom && activeId === cleanupFocusFrom)) askFocus(null);
       else if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); askFocus(null); }
     }
     const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');

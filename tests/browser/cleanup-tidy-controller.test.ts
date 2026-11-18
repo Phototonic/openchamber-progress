@@ -136,7 +136,12 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
        return { plans: offset === 0 ? c.read!.plans.slice(0, 1) : offset === 2000 ? c.read!.plans.slice(1) : [],
          visited: 50, nextCursor: offset === 2000 ? null : String(offset + 50) };
      }) : undefined,
-    wantProjects: () => [], wantDetails: () => [], ...extra, paint: (root, c) => { vc = c; (extra as any).paint?.(root, c); },
+    wantProjects: () => [], wantDetails: () => [], ...extra, paint: (root, c) => {
+      vc = c; (extra as any).paint?.(root, c);
+      // A rebuilt control is replaced by a new node that takes focus back; the old one is detached, as in the browser.
+      const before = focused as { isConnected: boolean; rebuild?: () => unknown } | null;
+      if (before?.rebuild) { before.isConnected = false; focused = before.rebuild(); }
+    },
   };
   exports.startView(spec);
   listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: opts.item ?? null, theme: {} });
@@ -1222,12 +1227,19 @@ test('a later equal list read replaces the facts a failed read granted, after a 
 
 // Background cleanup updates and deferred focus moves. A press is simulated with `press` and ended with `releasePress`;
 // a paint is counted through the spec's paint hook, so "the control is not replaced" is "no paint ran".
-/** The focused element as the controller reads it: the test id of its owner and whether it sits in the cleanup panel. */
-const control = (id: string) => ({
-  isConnected: true,
-  closest: (selector: string) => selector === '[data-testid]' ? { dataset: { testid: id } }
-    : selector === `[data-testid="${id}"]` || selector === '[data-testid="tidy-actions"]' && id.startsWith('tidy-') ? {} : null,
-});
+/**
+ * The focused element as the controller reads it: the test id of its owner and whether it sits in the cleanup panel.
+ * `rebuilt`: a control every paint replaces (Search, Undo): the old node is detached and a new one holds focus.
+ */
+const control = (id: string, rebuilt = true) => {
+  const node: { isConnected: boolean; closest: (selector: string) => unknown; rebuild?: () => unknown } = {
+    isConnected: true,
+    closest: (selector: string) => selector === '[data-testid]' ? { dataset: { testid: id } }
+      : selector === `[data-testid="${id}"]` || selector === '[data-testid="tidy-actions"]' && id.startsWith('tidy-') ? {} : null,
+  };
+  if (rebuilt) node.rebuild = () => control(id);
+  return node;
+};
 const pressing = () => ({ closest: () => ({}), isConnected: true, setPointerCapture() {} });
 const threePlans = () => [summary('one', [], { lifecycle: 'finished' }), summary('two', [], { lifecycle: 'cancelled' }), summary('three', [], { lifecycle: 'finished' })];
 function countedScan() {
@@ -1359,7 +1371,7 @@ async function endedOnStop(f: Held) {
   await until(() => !!f.vc?.read);
   f.vc.requestTidy(); await drain(); f.hold(); f.vc.confirmTidy();
   await until(() => f.posts.length === 1);
-  f.focusAt(control('tidy-stop'));
+  f.focusAt(control('tidy-stop', false));
   f.holdHealth(); f.release();
   await until(() => f.vc.cleanup.tidy?.result !== undefined && !f.vc.cleanup.pending);
   await drain();
