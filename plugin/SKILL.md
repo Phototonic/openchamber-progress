@@ -46,6 +46,8 @@ it is not evidence of a host outage. Empty/all-skipped plans cannot finish
 successfully. Denied document access still commits valid checklist changes with
 diagnostics; `source` is optional and never a reason to manufacture a file.
 
+If work moves back to a task's prerequisites (for example review fixes reopen earlier work), set the later task back to pending instead of leaving it in progress.
+
 Inline guidance documents the other operations. Routine
 requests use `op=change`, `plan`, fresh `oid`, expected `rev`, and changed items.
 For large structures stage numbered chunks and explicitly commit all chunks;

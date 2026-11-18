@@ -28,7 +28,7 @@ export const ARROW_SMALL: ItemInput[] = [
 export const ARROW_SMALL_CUES: Record<string, '' | 'working' | 'blocked'> = {
   'T1>T2': '', 'T2>T3': '', 'T3>T4': '', 'T3>T5': '', 'T3>T6': '', 'T3>T7': '',
   'T4>T8': 'working', 'T5>T8': 'blocked', 'T6>T8': '', 'T7>T8': '',
-  'S>K': '', 'T4>K': 'working', 'T4>T9': '', 'T4>T10': 'working', 'T5>T11': '', 'T5>T12': 'blocked',
+  'S>K': '', 'T4>K': 'working', 'T4>T9': 'working', 'T4>T10': 'working', 'T5>T11': '', 'T5>T12': 'blocked',
 };
 
 /**

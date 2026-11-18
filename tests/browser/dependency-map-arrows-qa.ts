@@ -77,8 +77,8 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   facts.small = st;
   const sorted = (o: Record<string, string>) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
   check('arrows:board:state-table', sorted(st.cues) === sorted(ARROW_SMALL_CUES), undefined, st.cues);
-  check('arrows:board:canonical-edges-not-doubled', st.paths === st.edges && st.edges === 16 && JSON.stringify(st.beads) === JSON.stringify(['T4>K', 'T4>T10', 'T4>T8']), undefined, st);
-  check('arrows:board:flow-runs-on-shared-phase', st.motion === 'on' && st.flows === 3 && st.running === 3 && st.phase && st.targets && JSON.stringify(st.names) === '["ap-map-flow"]', undefined, st);
+  check('arrows:board:canonical-edges-not-doubled', st.paths === st.edges && st.edges === 16 && JSON.stringify(st.beads) === JSON.stringify(['T4>K', 'T4>T10', 'T4>T8', 'T4>T9']), undefined, st);
+  check('arrows:board:flow-runs-on-shared-phase', st.motion === 'on' && st.flows === 4 && st.running === 4 && st.phase && st.targets && JSON.stringify(st.names) === '["ap-map-flow"]', undefined, st);
   const offsets = await guest<string[]>('page', `const b=d.querySelector('.ap-map-flows .ap-map-bead');const a=getComputedStyle(b).strokeDashoffset;return new Promise(r=>setTimeout(()=>r([a,getComputedStyle(b).strokeDashoffset]),300))`);
   check('arrows:board:dash-offset-changes', offsets[0] !== offsets[1], undefined, offsets);
   check('arrows:board:blocked-static-with-stop-bar', await guest('page', `const ps=[...d.querySelectorAll('path[data-arrow="blocked"]')];return ps.length===2&&ps.every(p=>p.getAnimations().length===0&&d.querySelector(p.getAttribute('marker-end').slice(4,-1)+' .ap-map-stopbar'))&&!d.querySelector('path[data-arrow="working"] ~ .ap-map-stopbar')`));
@@ -89,28 +89,28 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   check('arrows:inspector:waiting-counts', await guest('page', `return [...d.querySelectorAll('[data-testid="map-inspector"] .ap-note')].some(n=>n.textContent==='Waiting on 3 unfinished recorded prerequisites: 1 in progress, 1 blocked.')`));
   // Selection: chain beads may move, chain bar stays, off-chain beads are stationary and fade.
   st = await state('page'); facts.selected = st;
-  check('arrows:selection:chain-moves-off-chain-still', st.motion === 'on' && JSON.stringify(st.moving) === '["T4>T8"]' && st.running === 1 && st.phase && await guest('page', `const off=[...d.querySelectorAll('.ap-map-edges:not(.ap-map-flows) .ap-map-bead')];return off.length===2&&off.every(b=>!b.dataset.chain&&getComputedStyle(b).opacity==='0.3'&&b.getAnimations().length===0)&&d.querySelector('path[data-from="T5"][data-to="T8"]').dataset.path==='upstream'&&d.querySelector('path[data-from="T5"][data-to="T8"]').getAttribute('marker-end').includes('blocked-path')`), undefined, st);
+  check('arrows:selection:chain-moves-off-chain-still', st.motion === 'on' && JSON.stringify(st.moving) === '["T4>T8"]' && st.running === 1 && st.phase && await guest('page', `const off=[...d.querySelectorAll('.ap-map-edges:not(.ap-map-flows) .ap-map-bead')];return off.length===3&&off.every(b=>!b.dataset.chain&&getComputedStyle(b).opacity==='0.3'&&b.getAnimations().length===0)&&d.querySelector('path[data-from="T5"][data-to="T8"]').dataset.path==='upstream'&&d.querySelector('path[data-from="T5"][data-to="T8"]').getAttribute('marker-end').includes('blocked-path')`), undefined, st);
   await h.select('page', 'K');
   check('arrows:inspector:skipped-warning-kept', await guest('page', `return [...d.querySelectorAll('[data-testid="map-inspector"] .ap-note')].some(n=>n.textContent.startsWith('Waiting: a recorded prerequisite was skipped (Optional benchmark)')&&n.textContent.endsWith('Its unfinished recorded prerequisites include 1 in progress.'))`));
   const beforeClear = await h.coords('page');
   await guest('page', `d.querySelector('[data-testid="map-card-K"]').focus();return true`); await key('Escape'); await frames2();
-  await moving('page', 3); st = await state('page');
-  check('arrows:selection:clear-restores-motion-same-geometry', st.phase && st.running === 3 && JSON.stringify(beforeClear) === JSON.stringify(await h.coords('page')), undefined, st);
+  await moving('page', 4); st = await state('page');
+  check('arrows:selection:clear-restores-motion-same-geometry', st.phase && st.running === 4 && JSON.stringify(beforeClear) === JSON.stringify(await h.coords('page')), undefined, st);
   // Repaint (status refresh): a new bead node, still on the document phase; no restart.
   await guest('page', `w.__bead=d.querySelector('.ap-map-flows .ap-map-bead');return true`);
   const rev = Number(await guest('page', `return d.querySelector('${REGION}').dataset.revision`));
   report('P-arrows', { op: 'change', changes: [{ id: 'T11', status: 'skipped' }] });
   await wait4('page', `r.dataset.revision==='${rev + 1}'&&r.dataset.current==='true'&&r.dataset.motion==='on'`, 'status refresh repaint'); st = await state('page');
-  check('arrows:repaint-keeps-shared-phase', st.phase && st.running === 3 && await guest('page', `return w.__bead!==d.querySelector('.ap-map-flows .ap-map-bead')`), undefined, st);
+  check('arrows:repaint-keeps-shared-phase', st.phase && st.running === 4 && await guest('page', `return w.__bead!==d.querySelector('.ap-map-flows .ap-map-bead')`), undefined, st);
   // Motion is silent and leaves names alone.
   await h.observeSpeech('page'); const namesMoving = await names('page');
   await media({ reduce: true }); await still('page'); st = await state('page');
-  check('arrows:reduced-motion-stationary-cues', st.animations === 0 && st.beads.length === 3 && Object.values(st.cues).filter(v => v === 'blocked').length === 2 && await guest('page', `return [...d.querySelectorAll('${REGION} *')].every(n=>getComputedStyle(n).animationName==='none'&&getComputedStyle(n).transitionDuration.split(',').every(t=>parseFloat(t)===0))`), undefined, st);
+  check('arrows:reduced-motion-stationary-cues', st.animations === 0 && st.beads.length === 4 && Object.values(st.cues).filter(v => v === 'blocked').length === 2 && await guest('page', `return [...d.querySelectorAll('${REGION} *')].every(n=>getComputedStyle(n).animationName==='none'&&getComputedStyle(n).transitionDuration.split(',').every(t=>parseFloat(t)===0))`), undefined, st);
   check('arrows:motion-changes-names-and-speech-unchanged', namesMoving === await names('page') && !(await h.speech('page')).length);
-  await media(); await moving('page', 3);
+  await media(); await moving('page', 4);
 
   // ── Captures: board 1920 dark, 1100 light selected, frame sequence
-  await wide(true); await d.theme('dark'); await h.activate('page', 'map-fit-all'); await moving('page', 3);
+  await wide(true); await d.theme('dark'); await h.activate('page', 'map-fit-all'); await moving('page', 4);
   await d.shot('motion-board1920-dark', REGION, 6, 1100, 'page');
   await sequence('board1920-dark', 'page');
   await wide(false); await d.theme('light'); await h.select('page', 'T8'); await d.shot('motion-board1100-light-selected', REGION, 6, 1500, 'page');
@@ -119,14 +119,14 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   await wide(true); await h.activate('page', 'map-fit-all');
   await media({ reduce: true }); await d.shot('motion-reduced', '[data-testid="map-viewport"]', 0, 1100, 'page');
   await media({ reduce: true, forced: true }); await h.select('page', 'T8');
-  const forced = await guest<any>('page', `const css=n=>getComputedStyle(n);const bead=d.querySelector('.ap-map-bead[data-chain]'),off=d.querySelector('.ap-map-bead:not([data-chain])'),blocked=d.querySelector('path[data-arrow="blocked"]:not([data-path])'),chainBlocked=d.querySelector('path[data-arrow="blocked"][data-path]'),skipped=d.querySelector('path[data-skipped]'),plain=d.querySelector('path[data-from="T4"][data-to="T9"]:not([data-path])');return {forced:w.matchMedia('(forced-colors: active)').matches,bead:[css(bead).stroke,css(bead).strokeLinecap,css(bead).strokeDasharray],off:css(off).stroke,blocked:[css(blocked).stroke,css(blocked).strokeWidth],chainBlocked:[css(chainBlocked).stroke,css(chainBlocked).strokeWidth],skipped:css(skipped).strokeDasharray,plain:css(plain).strokeWidth,bar:!!d.querySelector(chainBlocked.getAttribute('marker-end').slice(4,-1)+' .ap-map-stopbar'),animations:d.querySelector('${REGION}').getAnimations({subtree:true}).length}`);
+  const forced = await guest<any>('page', `const css=n=>getComputedStyle(n);const bead=d.querySelector('.ap-map-bead[data-chain]'),off=d.querySelector('.ap-map-bead:not([data-chain])'),blocked=d.querySelector('path[data-arrow="blocked"]:not([data-path])'),chainBlocked=d.querySelector('path[data-arrow="blocked"][data-path]'),skipped=d.querySelector('path[data-skipped]'),plain=d.querySelector('path[data-from="T5"][data-to="T11"]:not([data-path])');return {forced:w.matchMedia('(forced-colors: active)').matches,bead:[css(bead).stroke,css(bead).strokeLinecap,css(bead).strokeDasharray],off:css(off).stroke,blocked:[css(blocked).stroke,css(blocked).strokeWidth],chainBlocked:[css(chainBlocked).stroke,css(chainBlocked).strokeWidth],skipped:css(skipped).strokeDasharray,plain:css(plain).strokeWidth,bar:!!d.querySelector(chainBlocked.getAttribute('marker-end').slice(4,-1)+' .ap-map-stopbar'),animations:d.querySelector('${REGION}').getAnimations({subtree:true}).length}`);
   facts.forced = forced;
   check('arrows:forced-colours-shapes', forced.forced && forced.bead[1] === 'round' && /^0(px)?,? 10(px)?$/.test(forced.bead[2].replace(/\s+/g, ' ').replace(', ', ' ')) && forced.bead[0] !== forced.off && parseFloat(forced.blocked[1]) > parseFloat(forced.plain) && forced.chainBlocked[0] === forced.bead[0] && forced.bar && forced.skipped !== 'none' && forced.animations === 0, undefined, forced);
   await d.shot('motion-forced-selected', '[data-testid="map-viewport"]', 0, 1100, 'page');
   await media(); await guest('page', `d.querySelector('[data-testid="map-card-T8"]').focus();return true`); await key('Escape'); await frames2();
   await wide(false);
   for (let step = 0; step < 40 && (await state('page')).zoom < 80; step++) await h.activate('page', 'map-zoom-in');
-  await moving('page', 3);
+  await moving('page', 4);
   // 200%/400% reflow (CSS zoom of the embedding section, as the accessibility mode does).
   for (const factor of [2, 4]) {
     await evaluate(`(()=>{const n=document.querySelector('section[data-frame=page]');n.style.width='${1100 / factor}px';n.style.zoom='${factor}';frame('page').style.height='${850 / factor}px';return true})()`);
@@ -139,14 +139,15 @@ export async function arrowMotionQa(d: Driver, h: ArrowQaHelpers) {
   // ── Freshness gates
   await fx.setCapture(false); await h.polls('page');
   await wait4('page', `r.dataset.current==='true'&&r.dataset.motion!=='on'&&r.getAnimations({subtree:true}).length===0`, 'capture off stops motion'); st = await state('page');
-  check('arrows:capture-off-static-cues', st.current === 'true' && st.beads.length === 3 && Object.values(st.cues).filter(v => v).length === 5 && st.animations === 0 && await guest('page', `return !!d.querySelector('[data-testid="capture-off"]')`), undefined, st);
-  await fx.setCapture(true); await h.polls('page'); await moving('page', 3); st = await state('page');
-  check('arrows:capture-on-resumes-on-phase', st.phase && st.running === 3, undefined, st);
+  check('arrows:capture-off-static-cues', st.current === 'true' && st.beads.length === 4 && Object.values(st.cues).filter(v => v).length === 6 && st.animations === 0 && await guest('page', `return !!d.querySelector('[data-testid="capture-off"]')`), undefined, st);
+  await fx.setCapture(true); await h.polls('page'); await moving('page', 4); st = await state('page');
+  check('arrows:capture-on-resumes-on-phase', st.phase && st.running === 4, undefined, st);
   await evaluate(`qa.fail.push({path:'/v1/plans',frame:'page',status:503});true`);
   await wait4('page', `r.dataset.state==='error'`, 'failed read'); st = await state('page');
   check('arrows:failed-read-removes-cues', st.current === 'false' && !st.beads.length && !Object.values(st.cues).some(v => v) && st.animations === 0 && await guest('page', `return d.querySelector('[data-testid="map-state"]').dataset.tone==='warning'&&d.querySelector('[data-testid="map-card-T5"]').dataset.mark==='blocked'`), undefined, st);
-  await evaluate(`qa.fail=[];true`); await moving('page', 3);
+  await evaluate(`qa.fail=[];true`); await moving('page', 4);
   await evaluate(`qa.holds.push({tag:'arrow-graph',path:'/v1/plan-graph',frame:'page'});true`);
+  // T9 done also ends the working → working flow T4 → T9: three flows from here on.
   report('P-arrows', { op: 'change', changes: [{ id: 'T9', status: 'done' }] });
   await wait('page', `qa.held.some(h=>h.tag==='arrow-graph')`, 'held newer graph');
   await wait4('page', `r.dataset.state==='updating'`, 'superseded picture'); st = await state('page');

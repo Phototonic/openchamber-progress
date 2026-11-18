@@ -447,7 +447,7 @@ type Status = ItemView['status'];
 /** `working`: beads; `blocked`: static stop bar; null: the arrow keeps its existing style. */
 export type ArrowCue = 'working' | 'blocked' | null;
 export function arrowCue(prerequisite: Status | undefined, dependent: Status | undefined): ArrowCue {
-  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'blocked' ? 'working' : null;
+  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'working' : null;
   if (prerequisite === 'blocked') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'blocked' : null;
   return null;
 }
