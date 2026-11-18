@@ -46,7 +46,7 @@ function liveFeed(config: { projects: LiveProject[]; sessions: LiveSession[]; wo
   };
 }
 const liveSession = (id: string, projectId = 'proj', directory = '/fixture/proj'): LiveSession => ({ id, title: id, projectId, directory, parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null });
-type Opts = { plans?: PlanSummary[]; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
+type Opts = { plans?: PlanSummary[]; item?: unknown; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
 function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<any>> = {}, opts: Opts = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
   const focusables = new Map<string, { focused: number; tagName: string; focus(): void; querySelector(): null }>();
@@ -104,7 +104,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     storage: { get: async (key: string) => markers.get(key), set: async (key: string, value: unknown) => { markers.set(key, value); },
       keys: async () => [...markers.keys()], delete: async (key: string) => { markers.delete(key); } },
     onReady(fn: any) { listeners.ready = fn; }, onSession(fn: any) { listeners.session = fn; },
-    onDirectory(fn: any) { listeners.directory = fn; }, onItem() {}, onConnection() {}, ...feed?.host,
+    onDirectory(fn: any) { listeners.directory = fn; }, onItem() {}, onConnection(fn: any) { listeners.connection = fn; }, ...feed?.host,
   };
   const exports: any = {};
   runInNewContext(APP, {
@@ -135,7 +135,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     wantProjects: () => [], wantDetails: () => [], ...extra, paint: (root, c) => { vc = c; (extra as any).paint?.(root, c); },
   };
   exports.startView(spec);
-  listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: null, theme: {} });
+  listeners.ready({ session: { id: S.M }, directory: '/fixture', connection: { connected: true, account: 'example' }, features: { deviceStorage: true }, locale: 'en', surface, settings: {}, item: opts.item ?? null, theme: {} });
   return {
     get vc() { return vc; }, posts, markers, bodies, live: feed,
     capability(on: boolean) { capability = on; },
@@ -161,6 +161,8 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     get lists() { return lists; },
     session(id: string) { listeners.session({ id }); },
     account(name = 'other-account') { listeners.ready({ ...vc.ctx, connection: { connected: true, account: name } }); },
+    /** The host announces another integration account (action panes only). */
+    connection(name: string) { listeners.connection({ connected: true, account: name }); },
     stop() { listeners.pagehide(); },
   };
 }
@@ -184,7 +186,7 @@ for (const switchAccount of [false, true]) test(`Tidy delete retires only confir
       await until(() => f.posts.length === 1);
       f.account(); await drain(); f.release();
     }
-    await until(() => !f.vc.cleanup.pending);
+    await until(() => !f.markers.has(keys[0]));
     await drain();
     assert.equal(f.markers.has(keys[0]), false, 'validated deletion retires the original account marker');
     assert.ok(keys.slice(1).every(key => f.markers.has(key)), 'refused/unsent plans and other contexts keep their markers');
@@ -246,7 +248,7 @@ for (const switchAccount of [false, true]) test(`selection delete retires only r
       await until(() => f.posts.length === 1);
       f.account(); await drain(); f.release();
     }
-    await until(() => !f.vc.cleanup.pending);
+    await until(() => !f.markers.has(keys[0]));
     await drain();
     assert.equal(f.bodies[0].active, true);
     assert.equal(f.markers.has(keys[0]), false);
@@ -868,8 +870,8 @@ function boardSpy() {
   const forgotten: string[][] = [];
   const retires: string[] = [];
   const extra = {
-    initialUi: () => ({ filter: 'all', selected: [] as string[] }),
-    forgetPlans: (keys: Set<string>, ui: { selected: string[] }) => { forgotten.push([...keys]); return { selected: ui.selected.filter(k => !keys.has(k)) }; },
+    initialUi: () => ({ filter: 'all', selected: [] as string[], open: null as string | null }),
+    forgetPlans: (keys: Set<string>, ui: { selected: string[]; open: string | null }) => { forgotten.push([...keys]); return { selected: ui.selected.filter(k => !keys.has(k)), ...(ui.open && keys.has(ui.open) ? { open: null } : {}) }; },
     retire: (reason: string) => { retires.push(reason); },
     // Single-plan actions run on the closed plan the board shows.
     actionPlan: (c: ViewContext<any>) => c.read?.plans.find(p => p.id === 'two') ?? null,
@@ -891,6 +893,7 @@ async function boardReloaded(f: Held, change: () => void) {
 }
 /** The board shown must be exactly what it was: the late answer reached nothing on it. */
 function untouched(f: Held, spy: ReturnType<typeof boardSpy>, board: unknown, selected: string[], lists: number, retires: number) {
+  assert.equal((f.vc.ui as { open?: string | null }).open, selected[0], 'the plan opened on the board shown stays open');
   assert.equal(f.vc.read, board, 'the loaded list is the one that was shown');
   assert.deepEqual((f.vc.ui as { selected?: string[] }).selected, selected, 'the selection on the board shown is unchanged');
   assert.deepEqual(spy.forgotten, [], 'no plan of the late run is forgotten on the board shown');
@@ -908,7 +911,7 @@ test('a bulk run ending after an account switch touches nothing on the board sho
     await boardReloaded(f, () => f.account());
     const board = f.vc.read!;
     // The new board has a plan with the same key; the person selects it.
-    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key], open: board.plans[0].key }); await drain();
     const retires = spy.retires.length, lists = f.lists;
     f.release(); await drain();
     assert.equal(f.posts.length, 1, 'the retired run sends nothing more');
@@ -924,7 +927,7 @@ test('a bulk run ending after a switch away and back, with no newer run, touches
     await boardReloaded(f, () => f.account());
     await boardReloaded(f, () => f.account('example'));
     const board = f.vc.read!;
-    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key], open: board.plans[0].key }); await drain();
     const retires = spy.retires.length, lists = f.lists;
     f.release(); await drain();
     assert.equal(f.posts.length, 1);
@@ -943,7 +946,7 @@ test('a bulk run ending after a store change that a list reply showed during a f
     await boardReloaded(f, () => f.vc.retry());
     assert.equal(f.vc.read!.storeId, 'store-b');
     const board = f.vc.read!;
-    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key] }); await drain();
+    (f.vc as ViewContext<any>).setUi({ selected: [board.plans[0].key], open: board.plans[0].key }); await drain();
     const retires = spy.retires.length, lists = f.lists;
     f.release(); await drain();
     untouched(f, spy, board, [board.plans[0].key], lists, retires);
@@ -1065,6 +1068,35 @@ test('a store change shown by a list reply frees the cleanup controls before a h
   } finally { f.stop(); }
 });
 
+test('a Try again callback captured before a switch away and back does nothing', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.refuse('two'); f.vc.confirmTidy();
+    await until(() => (f.vc.cleanup.tidy?.result?.remaining.length ?? 0) === 1);
+    const stale = f.vc;
+    await boardReloaded(f, () => f.account());
+    await boardReloaded(f, () => f.account('example'));
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the result belonged to the earlier board');
+    stale.retryTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy, undefined, 'the retired callback opens nothing on the reloaded board');
+  } finally { f.stop(); }
+});
+
+const TARGET = { kind: 'session', action: 'open-progress', sessionId: S.M, directory: '/fixture' };
+test('an announced account change drops the old account\'s health until the new one is read', async () => {
+  const f = frame('panel', false, false, true, {}, { item: TARGET, live: { projects: [], sessions: [] } });
+  try {
+    await until(() => !!f.vc?.health);
+    assert.equal(f.vc.health?.planCleanup, 1);
+    f.holdHealth();
+    f.connection('other-account'); await drain();
+    assert.equal(f.vc.health, null, 'no flag of the earlier account shows while the new account loads');
+    f.releaseHealth(); await drain();
+  } finally { f.stop(); }
+});
+
 // Cleanup facts of the latest accepted health reply, whichever remembered list is shown.
 const factScopes = { scope: (_context: unknown, ui: { filter: string }) => ui.filter === 'archived' ? { archived: 'only' as const } : ui.filter === 'session' ? { session: S.U } : {} } as Partial<ViewSpec<any>>;
 const offered = (f: Held) => f.vc.health?.planCleanup === 1;
@@ -1137,6 +1169,42 @@ test('a held read equal to the remembered one, without support, takes the contro
     await grantedElsewhere(f);
     assert.equal(offered(f), true);
     f.releaseHealth();
+    await until(() => !offered(f));
+    assert.equal(await refusesCleanup(f), true);
+  } finally { f.stop(); }
+});
+
+/** Current plans read without support (remembered so), then a failed read whose health grants it. */
+async function grantedByFailedRead(f: Held) {
+  await until(() => !!f.vc?.read);
+  f.capability(false); f.vc.retry();
+  await until(() => !offered(f)); await drain();
+  f.capability(true); f.failPlans(true); f.vc.retry();
+  await until(() => !!f.vc.failure && offered(f)); await drain();
+}
+
+test('while a read has failed, no cleanup action opens even though the failed read\'s health granted support', async () => {
+  const spy = boardSpy();
+  const f = frame('page', false, false, true, spy.extra);
+  try {
+    await grantedByFailedRead(f);
+    assert.equal(await refusesCleanup(f), true, 'Tidy and Select are refused');
+    f.vc.requestDelete(f.vc.read!.plans[1]); await drain();
+    assert.ok(!f.vc.cleanup.target, 'the per-plan action is refused');
+  } finally { f.stop(); }
+});
+
+test('a later equal list read replaces the facts a failed read granted, after a freshness read cleared the failure', async () => {
+  let freshness = false;
+  const fresh = async () => ({ state: 'fresh' as const, captureEnabled: true });
+  const f = frame('page', false, false, true, { freshness: () => freshness ? fresh : null } as Partial<ViewSpec<any>>);
+  try {
+    await grantedByFailedRead(f);
+    // The board search's own read clears the failure without a list read.
+    freshness = true; f.failPlans(false); f.vc.retry();
+    await until(() => !f.vc.failure); await drain();
+    assert.equal(offered(f), true, 'the failed read\'s health is the latest accepted one');
+    freshness = false; f.capability(false); f.vc.retry();
     await until(() => !offered(f));
     assert.equal(await refusesCleanup(f), true);
   } finally { f.stop(); }

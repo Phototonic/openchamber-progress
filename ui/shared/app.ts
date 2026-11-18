@@ -797,10 +797,22 @@ export function startView<U>(spec: ViewSpec<U>) {
    * Cleanup support is what the service last said, whichever list is shown: `latest` (the health reply
    * accepted last) decides both facts, in either direction. `base` is returned itself when they agree.
    */
+  const AFTER_CLEANUP_FACTS = new Set(['planChangeDigests', 'planTaskSearch', 'documentCaptureComparison', 'subagentRuns', 'needsYouInbox', 'delegationIntent']);
   const withCleanupFacts = (base: HealthView, latest: HealthView | null): HealthView => {
     if (!latest || base.planCleanup === latest.planCleanup && base.planCleanupActive === latest.planCleanupActive) return base;
     const { planCleanup: _support, planCleanupActive: _active, ...rest } = base;
-    return { ...rest, ...(latest.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(latest.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}) };
+    // Same key order as a parsed reply (adapter.ts), so the signature of this health equals that of the next identical reply.
+    const merged: Record<string, unknown> = {};
+    let placed = false;
+    const place = () => {
+      if (placed) return;
+      placed = true;
+      if (latest.planCleanup === 1) merged.planCleanup = 1;
+      if (latest.planCleanupActive === 1) merged.planCleanupActive = 1;
+    };
+    for (const [name, value] of Object.entries(rest)) { if (AFTER_CLEANUP_FACTS.has(name)) place(); merged[name] = value; }
+    place();
+    return merged as unknown as HealthView;
   };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
@@ -1009,7 +1021,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       failure = result.failure;
       // The health reply read before the failure still says what the service offers: the page learns a loss too.
       if (result.health) {
-        if (health) { const next = withCleanupFacts(health, result.health); if (next !== health) { health = next; versions.data++; } }
+        if (health) {
+          const next = withCleanupFacts(health, result.health);
+          // The signature of the list read no longer describes this health: an equal later read must still replace it.
+          if (next !== health) { health = next; readSig = ''; versions.data++; }
+        }
         retirePendingTidy(result.health);
       }
     }
@@ -1455,7 +1471,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       tidyPlans: () => spec.tidyPlans?.(context()) ?? [],
       requestTidy: () => { if (actionContext === cleanupContext()) requestTidy(); },
       retryTidy: () => {
-        if (actionContext !== cleanupContext()) return;
+        if (actionContext !== cleanupContext() || tidyState !== cleanup.tidy) return;
         if (tidyState?.selection && tidyState.selectionRequest) {
           const remaining = tidyState.result?.remaining;
           const keys = new Set(remaining?.map(t => t.key));
@@ -1876,7 +1892,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   host.onConnection((next) => {
     if (!ctx || disposed || item.kind === 'ordinary' || next.account === ctx.connection?.account) return;
     ctx = { ...ctx, connection: next };
-    identity = ''; ui = spec.initialUi(); observeSwitch(); cleanup = initialCleanup(); revalidateAction(); spec.onContext?.(context());
+    identity = ''; ui = spec.initialUi(); health = null; observeSwitch(); cleanup = initialCleanup(); revalidateAction(); spec.onContext?.(context());
   });
 
   host.onReady((next) => {
