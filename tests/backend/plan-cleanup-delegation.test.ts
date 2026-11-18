@@ -128,3 +128,76 @@ test('an unlinked dispatch keeps its visible plan when other active plans are ar
     assert.equal(JSON.parse(String(row.payload)).planContext?.plan,'P-active-c');
   }finally{f.cleanup();}
 });
+
+// Receipt evidence: coordinator guidance validates a pending or reserved receipt as the per-plan
+// reader does (adapter intentDeclaration) before it reads a cleanup retirement into it.
+function restoredReceipt(state:'pending'|'reserved',edit:(receipt:any)=>void,after?:(f:ReturnType<typeof cleanupFixture>)=>void) {
+  const f=cleanupFixture();
+  try{
+    f.store.bindReads(f.source.id,true);f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'declare',assign:['A']},f.actor);
+    if(state==='reserved')f.store.beforeRun({source:f.source.id,parent:'M',message:'message',call:'call'},f.actor,'subagent',{},1000);
+    f.store.cleanup('archive',{...f.body('P-active',0,'cleanup',1),active:true});
+    f.store.cleanup('restore',f.body('P-active',1,'restore',1));
+    const row=f.store.db.prepare("SELECT receipt FROM receipts WHERE plan='P-active' AND oid='declare'").get()!;
+    const receipt=JSON.parse(String(row.receipt));edit(receipt);
+    f.store.db.prepare("UPDATE receipts SET receipt=? WHERE plan='P-active' AND oid='declare'").run(JSON.stringify(receipt));
+    const before=f.store.db.prepare("SELECT receipt FROM receipts WHERE plan='P-active' AND oid='declare'").get()!.receipt;
+    after?.(f);
+    const guidance=f.store.delegationRefusals(f.source.id,'M');
+    assert.equal(f.store.db.prepare("SELECT receipt FROM receipts WHERE plan='P-active' AND oid='declare'").get()!.receipt,before,'the receipt is never rewritten');
+    return guidance;
+  }finally{f.cleanup();}
+}
+const dispatchOf={tool:'subagent',messageId:'message',callId:'call'};
+
+for(const [state,edit,label] of [
+  ['reserved',(r:any)=>{r.delegation.declaration.dispatch=null;},'reserved without a dispatch'],
+  ['pending',(r:any)=>{r.delegation.declaration.dispatch=dispatchOf;},'pending with a dispatch'],
+] as const)
+test(`a ${label} receipt makes restored guidance incomplete instead of closed`,()=>{
+  const guidance=restoredReceipt(state,edit);
+  assert.deepEqual(guidance.refusals,[]);assert.equal(guidance.complete,false);
+});
+
+for(const state of ['pending','reserved'] as const)
+test(`a ${state} receipt that declares no task makes restored guidance incomplete`,()=>{
+  const guidance=restoredReceipt(state,r=>{r.delegation.declaration.taskIds=[];});
+  assert.deepEqual(guidance.refusals,[]);assert.equal(guidance.complete,false);
+});
+
+for(const state of ['pending','reserved'] as const)
+test(`a well-formed ${state} receipt after restore still reports closed and declares a task`,()=>{
+  const guidance=restoredReceipt(state,r=>{assert.ok(r.delegation.declaration.taskIds.length>=1);assert.equal(r.delegation.declaration.dispatch!==null,state==='reserved');});
+  assert.equal(guidance.complete,true);assert.deepEqual(guidance.refusals.map(r=>[r.plan,r.reason,r.declaration.oid]),[['P-active','closed','declare']]);
+});
+
+test('a well-formed restored receipt whose tasks were explicitly linked since yields no refusal',()=>{
+  const guidance=restoredReceipt('pending',()=>{},f=>{
+    f.store.apply({op:'link',plan:'P-active',oid:'link',rev:f.store.get(f.source.id,'P-active')!.revision,child:'C1',assign:['A']},f.actor,f.capture(),f.child);
+  });
+  assert.equal(guidance.complete,true);assert.deepEqual(guidance.refusals,[]);
+});
+
+test('a bound receipt without a dispatch is skipped without marking guidance incomplete',()=>{
+  const guidance=restoredReceipt('pending',r=>{r.delegation.state='bound';r.delegation.declaration.dispatch=null;});
+  assert.deepEqual(guidance.refusals,[]);assert.equal(guidance.complete,true);
+});
+
+for(const shape of ['empty cancelling declaration','earlier declaration it retired'] as const)
+test(`cancellation read as before: the ${shape}`,()=>{
+  const f=cleanupFixture();
+  try{
+    f.store.bindReads(f.source.id,true);f.store.installSubagentRuns();f.store.installDelegationControl();
+    f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'declare',assign:['A']},f.actor);
+    const cancel=f.store.declareDelegation({op:'delegate',plan:'P-active',rev:1,oid:'cancel',assign:[]},f.actor);
+    assert.equal(cancel.delegation.state,'retired');assert.equal(cancel.delegation.reason,'cancelled');
+    if(shape==='earlier declaration it retired'){
+      f.store.db.prepare("DELETE FROM receipts WHERE plan='P-active' AND oid='cancel'").run();
+      const earlier=JSON.parse(String(f.store.db.prepare("SELECT receipt FROM receipts WHERE plan='P-active' AND oid='declare'").get()!.receipt));
+      assert.equal(earlier.delegation.state,'retired');assert.deepEqual(earlier.delegation.declaration.taskIds,['A'],'the retired declaration keeps its tasks');
+    }
+    const guidance=f.store.delegationRefusals(f.source.id,'M');
+    assert.equal(guidance.complete,true);assert.deepEqual(guidance.refusals,[]);
+  }finally{f.cleanup();}
+});
