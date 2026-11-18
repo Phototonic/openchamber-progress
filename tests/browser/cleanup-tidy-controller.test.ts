@@ -49,17 +49,19 @@ const liveSession = (id: string, projectId = 'proj', directory = '/fixture/proj'
 type Opts = { plans?: PlanSummary[]; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
 function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<any>> = {}, opts: Opts = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
+  const focusables = new Map<string, { focused: number; tagName: string; focus(): void; querySelector(): null }>();
+  let focused: unknown = null;
   class Node {
     dataset: Record<string, string> = {}; children: Node[] = [];
     get firstElementChild() { return this.children[0] ?? null; }
     contains(n: unknown): boolean { return n === this || this.children.some(c => c.contains(n)); }
-    querySelectorAll() { return []; } querySelector() { return null; } closest() { return null; }
+    querySelectorAll() { return []; } querySelector(selector?: string) { return (selector && focusables.get(selector)) || null; } closest() { return null; }
     focus() {} getAnimations() { return []; } setAttribute() {}
     append(...nodes: Node[]) { this.children.push(...nodes); }
     replaceChildren(node: Node) { this.children = [node]; }
   }
   const mount = new Node();
-  const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', activeElement: null, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {} };
+  const document = { documentElement: new Node(), head: new Node(), body: new Node(), visibilityState: 'visible', get activeElement() { return focused; }, scrollingElement: { scrollTop: 0 }, getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {} };
   const plans = opts.plans ?? [summary('one', [], { lifecycle: active ? 'active' : 'finished' }), summary('two', [], { lifecycle: 'cancelled' })];
   const feed = opts.live ? liveFeed(opts.live) : null;
   let capability = true;
@@ -126,6 +128,13 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     capability(on: boolean) { capability = on; },
     setup(lost: boolean) { setupLost = lost; },
     refuse(plan: string) { refused = plan; },
+    addPlan(plan: (typeof plans)[number]) { plans.push(plan); },
+    /** The control painted with this test id; counts the times the controller moved focus to it. */
+    focusable(id: string) {
+      const node = { focused: 0, tagName: 'BUTTON', focus() { node.focused++; }, querySelector: () => null };
+      focusables.set(`[data-testid="${id}"]`, node); return node;
+    },
+    focusAt(element: unknown) { focused = element; },
     normalizeScope(value: string) { effectiveScope = value; },
     hold() { hold = true; }, release() { assert.ok(release); release(); },
     session(id: string) { listeners.session({ id }); },
@@ -604,5 +613,90 @@ test('an unconfigured-service read retires an open Tidy Delete confirmation, whi
     stale.confirmTidyDelete(); f.vc.confirmTidyDelete(); await drain();
     assert.equal(f.posts.length, 0);
     assert.equal(f.vc.cleanup.tidy, undefined);
+  } finally { f.stop(); }
+});
+
+type TidyScan = NonNullable<ViewSpec<{ filter: string }>['tidyScan']>;
+
+// A retry recounts what the run left, never the whole scope again (and never newly matching plans).
+test('Tidy Try again recounts only the remaining plans when the whole scope is loaded', async () => {
+  const f = frame('page');
+  try {
+    await until(() => !!f.vc?.read);
+    f.refuse('two');
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    // Another plan matches while the run is under way; the run's reconciliation read sees it.
+    f.addPlan(summary('three', [], { lifecycle: 'failed' }));
+    f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    await until(() => f.vc.read?.plans.length === 3);
+    assert.deepEqual(f.vc.cleanup.tidy?.result?.remaining.map(t => t.request.plan), ['two']);
+    f.vc.retryTidy();
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.deepEqual(f.vc.cleanup.tidy?.confirmation?.targets.map(t => t.request.plan), ['two']);
+  } finally { f.stop(); }
+});
+test('Tidy Try again hands the scan only the remaining identities and never lets active plans in', async () => {
+  const calls: { allowActive?: boolean; known?: cleanup.CleanupPlan[] }[] = [];
+  const tidyScan: TidyScan = (c, key, includes, allowActive, known) => {
+    calls.push({ allowActive, known });
+    return new cleanup.CleanupScan(key, c.read!.storeId, false, async () => ({ plans: c.read!.plans, visited: 2, nextCursor: null }), false, 50, includes, allowActive);
+  };
+  const f = frame('page', false, false, true, { tidyScan });
+  try {
+    await until(() => !!f.vc?.read);
+    f.refuse('two');
+    f.vc.requestTidy(); await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.equal(calls[0].known, undefined, 'the first count walks the scope');
+    f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    f.vc.retryTidy();
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].known?.map(p => p.id), ['two']);
+    assert.equal(calls[1].allowActive, false);
+    assert.ok(calls[1].known?.[0].ownerSessionId && calls[1].known[0].directory !== undefined, 'placement facts travel with the identity');
+    assert.deepEqual(f.vc.cleanup.tidy?.confirmation?.targets.map(t => t.request.plan), ['two']);
+  } finally { f.stop(); }
+});
+test('an explicit selection names its plans to the scan; Select all does not', async () => {
+  const known: (cleanup.CleanupPlan[] | undefined)[] = [];
+  const tidyScan: TidyScan = (c, key, includes, allowActive, plans) => {
+    known.push(plans);
+    return new cleanup.CleanupScan(key, c.read!.storeId, false, async () => ({ plans: c.read!.plans, visited: 2, nextCursor: null }), false, 50, includes, allowActive);
+  };
+  const f = frame('page', false, false, true, { tidyScan });
+  try {
+    await until(() => !!f.vc?.read);
+    const plans = f.vc.read!.plans;
+    f.vc.requestSelection('archive', { all: false, plans: plans.slice(0, 1), includes: p => p.key === plans[0].key });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    f.vc.cancelTidy(); await drain();
+    f.vc.requestSelection('archive', { all: true, plans, includes: () => true });
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    assert.deepEqual(known.map(k => k?.map(p => p.id)), [['one'], undefined]);
+  } finally { f.stop(); }
+});
+
+for (const [name, focus, restored] of [
+  ['another control keeps focus', { closest: () => null }, false],
+  ['a removed control hands focus back to Cancel', null, true],
+] as const) test(`background counting finishing: ${name}`, async () => {
+  let open!: () => void;
+  const gate = new Promise<void>(r => { open = r; });
+  const tidyScan: TidyScan = (c, key) =>
+    new cleanup.CleanupScan(key, c.read!.storeId, false, async () => { await gate; return { plans: c.read!.plans, visited: 2, nextCursor: null }; });
+  const f = frame('page', false, false, true, { tidyScan });
+  try {
+    await until(() => !!f.vc?.read);
+    const cancel = f.focusable('tidy-cancel');
+    f.vc.requestTidy(); await drain();
+    const opened = cancel.focused;
+    assert.ok(opened >= 1, 'Cancel takes focus when the panel opens');
+    f.focusAt(focus);
+    open();
+    await until(() => !!f.vc.cleanup.tidy?.confirmation);
+    await drain();
+    assert.equal(cancel.focused > opened, restored);
   } finally { f.stop(); }
 });

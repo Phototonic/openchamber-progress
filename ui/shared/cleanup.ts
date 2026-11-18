@@ -160,7 +160,8 @@ export class CleanupScan {
     const active = () => !this.retired && current();
     let visited = 0, windows = 0;
     try {
-      while (!this.exhausted && this.targets.size < TIDY_LIMIT && visited + this.windowBound <= TIDY_SCAN_LIMIT && windows < TIDY_SCAN_WINDOWS) {
+      // A full set keeps scanning until one more match proves overflow, so "more match" is never a guess.
+      while (!this.exhausted && !this.overflow && visited + this.windowBound <= TIDY_SCAN_LIMIT && windows < TIDY_SCAN_WINDOWS) {
         if (!active()) return null;
         windows++;
         const page = await this.read(this.cursor, active);
@@ -181,8 +182,7 @@ export class CleanupScan {
       return { context: this.context, targets: [...this.targets.values()], total: this.targets.size,
         ...(this.excludedActive.size ? { excludedActive: this.excludedActive.size } : {}),
         archived: this.archived, matching: this.matching,
-        limited: this.overflow || this.targets.size === TIDY_LIMIT && !this.exhausted,
-        unchecked: this.targets.size < TIDY_LIMIT && !this.exhausted };
+        limited: this.overflow, unchecked: !this.overflow && !this.exhausted };
     } finally { this.busy = false; }
   }
 }

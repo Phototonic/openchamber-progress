@@ -154,6 +154,11 @@ export function tidyPanel(state: TidyState | undefined, locale: string, controls
       : !c.targets.length ? text.empty : c.matching ? text.matching(c.targets.length) : text.heading(c.targets.length);
     const heading = el('p', '', line); heading.id = 'tidy-heading';
     confirm.append(heading);
+    // The final destructive step keeps the count's qualification: a subset is never presented as everything.
+    if (c.deleting && (c.limited || c.unchecked)) {
+      const subset = el('p', 'ap-note', c.selection ? selection.scope(c.targets.length, c.limited, c.unchecked) : c.limited ? text.limited(c.targets.length, c.matching) : text.unchecked(c.targets.length, c.matching));
+      subset.id = 'tidy-subset'; confirm.setAttribute('aria-describedby', 'tidy-subset'); confirm.append(subset);
+    }
     if (c.deleting) {
       const details = el('details');
       details.append(el('summary', '', text.details), el('p', '', deletion.effect), el('p', 'ap-note', deletion.privacy));

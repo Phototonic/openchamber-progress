@@ -10,14 +10,15 @@ const code = ts.transpileModule(readFileSync(new URL('../../ui/shared/cleanup-vi
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 function panel() {
   const buttons: { id: string; run: () => void }[] = [];
+  const texts: string[] = [];
   const node = () => ({ dataset: {}, textContent: '', setAttribute() {}, append() {}, addEventListener() {} });
   const exports: any = {};
   runInNewContext(code, { exports, requestAnimationFrame() {}, require: (name: string) => ({
     './cleanup.ts': cleanup, './i18n.ts': { resolveLanguage },
-    './components.ts': { el: node, testid: (n: any, id: string) => { n.dataset.testid = id; return n; },
+    './components.ts': { el: (_tag: string, _cls?: string, text?: string) => { if (text !== undefined) texts.push(text); return node(); }, testid: (n: any, id: string) => { n.dataset.testid = id; return n; },
       button: (_parent: any, id: string, _text: string, run: () => void) => buttons.push({ id, run }) },
   } as Record<string, unknown>)[name] });
-  return { render: exports.tidyPanel as (state: cleanup.TidyState, locale: string, controls: any) => void, buttons };
+  return { render: exports.tidyPanel as (state: cleanup.TidyState, locale: string, controls: any) => void, buttons, texts };
 }
 
 test('a bounded selection Delete confirmation can Check more before its explicit final action', () => {
@@ -42,4 +43,19 @@ test('failed selection Restore opens a fresh panel, while receipt-bound Undo ret
     h.buttons.find(b => b.id === 'tidy-retry')!.run();
     assert.equal(called, selection === 'restore' ? 'retry' : 'undo');
   }
+});
+
+for (const locale of ['en', 'ru', 'zh-CN']) test(`a permanent-delete confirmation keeps its subset qualification (${locale})`, () => {
+  const p: cleanup.CleanupPlan = { key: 'fixture/p', sourceId: 'fixture', id: 'p', title: 'Sample', revision: 1, lifecycle: 'completed' };
+  const t = cleanup.tidyCopy(locale), s = cleanup.selectionCopy(locale);
+  const base = cleanup.tidyConfirmation([p], 'store', 'scope');
+  const lines = (state: cleanup.TidyState) => { const h = panel(); h.render(state, locale, { delete() {}, cancel() {} }); return h.texts; };
+  // Tidy: both a confirmed overflow and an unchecked remainder qualify the final step; a complete set does not.
+  assert.ok(lines({ context: 'scope', confirmation: { ...base, deleting: true, limited: true } }).includes(t.limited(1, undefined)));
+  assert.ok(lines({ context: 'scope', confirmation: { ...base, deleting: true, unchecked: true, matching: true } }).includes(t.unchecked(1, true)));
+  assert.ok(!lines({ context: 'scope', confirmation: { ...base, deleting: true } }).some(x => x === t.limited(1, undefined) || x === t.unchecked(1, undefined)));
+  // Selection: the same qualification from the selection wording.
+  const chosen = cleanup.selectionConfirmation([p], 'store', 'scope', false, 'delete', true);
+  assert.ok(lines({ context: 'scope', selection: 'delete', confirmation: { ...chosen, limited: true } }).includes(s.scope(1, true, undefined)));
+  assert.ok(lines({ context: 'scope', selection: 'delete', confirmation: { ...chosen, unchecked: true } }).includes(s.scope(1, undefined, true)));
 });

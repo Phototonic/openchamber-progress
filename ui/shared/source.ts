@@ -72,12 +72,23 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
 
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
-/** Panel-owned list traversal: no health/setup read, refresh budget, inbox or cache writes. */
+/** The last plan one scan has seen; the next page re-reads it to prove the offsets did not shift. */
+export interface ListContinuation { last?: string }
+
+/**
+ * Panel-owned list traversal: no health/setup read, refresh budget, inbox or cache writes.
+ * Offsets move when another frame archives or deletes a plan already behind the cursor. With a
+ * `continuation`, each later page starts one row early and must open with the plan that ended the
+ * previous page; otherwise the count is retired rather than skipping plans and claiming it is complete.
+ */
 export async function readCleanupListPage(host: ServiceHost, scope: ListScope, cursor: string | null,
-  expected: Pick<StoreRead, 'storeId' | 'binding' | 'sources'>) {
+  expected: Pick<StoreRead, 'storeId' | 'binding' | 'sources'>, continuation?: ListContinuation) {
+  const overlap = continuation?.last !== undefined && cursor !== null;
+  const offset = overlap ? Number(cursor) - 1 : NaN;
+  if (overlap && !(Number.isSafeInteger(offset) && offset >= 0)) throw new ContractError('The plan list continuation is unreadable.');
   const page = parsePlansPage(await call(host, ROUTES.plans, query({
     limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null,
-    archived: scope.archived ?? 'exclude', cursor,
+    archived: scope.archived ?? 'exclude', cursor: overlap ? String(offset) : cursor,
   })));
   const e = page.envelope;
   const verification = (sources: StoreRead['sources']) => JSON.stringify(sources.map(s => [s.id, s.verified]).sort());
@@ -85,7 +96,44 @@ export async function readCleanupListPage(host: ServiceHost, scope: ListScope, c
     e.binding.verified !== expected.binding.verified || verification(e.sources) !== verification(expected.sources)) {
     throw new ContractError('The progress store or binding changed during cleanup counting.');
   }
-  return { plans: page.data, visited: Math.max(1, page.data.length), nextCursor: page.nextCursor };
+  let plans = page.data;
+  if (overlap) {
+    if (plans[0]?.key !== continuation.last) throw new ContractError('The plan list changed during cleanup counting.');
+    plans = plans.slice(1);
+  }
+  if (continuation && page.data.length) continuation.last = page.data[page.data.length - 1].key;
+  return { plans, visited: Math.max(1, plans.length), nextCursor: page.nextCursor };
+}
+
+/** Placement facts (`ownerSessionId`, `directory`) ride along untouched for the per-target scope check. */
+export type KnownPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'> & Partial<Pick<PlanView, 'ownerSessionId' | 'directory'>>;
+/**
+ * An explicit selection (or a retry) names its plans: validate exactly those, 50 point lookups at a
+ * time, instead of walking the library. A plan that is gone drops out; one whose progress revision
+ * moved is re-read once for its current lifecycle. Cleanup state always comes from the lookup.
+ */
+export function cleanupKnownReader(host: ServiceHost, known: readonly KnownPlan[], expected: Pick<StoreRead, 'storeId' | 'binding'>) {
+  return async (cursor: string | null) => {
+    const start = cursor === null ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(start) || start < 0) throw new ContractError('The selection continuation is unreadable.');
+    const batch = known.slice(start, start + 50);
+    const next = start + batch.length;
+    if (!batch.length) return { plans: [] as KnownPlan[], visited: 1, nextCursor: null };
+    const result = await readSearchState(host, expected.storeId, batch.map(p => ({ source: p.sourceId, plan: p.id })));
+    if (!result.ok) throw new ContractError(result.failure.message);
+    const b = result.state.binding;
+    if (b.sourceId !== expected.binding.sourceId || b.verified !== expected.binding.verified) throw new ContractError('The progress binding changed during cleanup counting.');
+    const plans: KnownPlan[] = [];
+    for (const [i, row] of result.state.data.entries()) {
+      if (!row.exists || row.cleanup.state === 'deleted' || row.revision === null) continue;
+      const plan = batch[i];
+      if (row.revision === plan.revision) { plans.push({ ...plan, cleanup: { state: row.cleanup.state, revision: row.cleanup.revision } }); continue; }
+      const head = await readPlanHead(host, plan);
+      if (head.ok) plans.push(head.plan);
+      else if (head.status !== 404) throw new ContractError(head.failure.message);
+    }
+    return { plans, visited: batch.length, nextCursor: next < known.length ? String(next) : null };
+  };
 }
 
 /** A separate search traversal, never the board search's cursor, pages or counts. */

@@ -1143,8 +1143,18 @@ round trips when one task-heavy plan spans many hit windows. Check more continue
 from the same cursor with fresh per-action budgets, adding matches without
 restarting the traversal. Its cursor and targets belong to one
 account, store/binding and board reading, and are discarded when that changes.
-The count distinguishes a target ceiling with more remaining from unchecked plans
-that may or may not match. No scan changes ordinary list/search caches or refresh
+Offset pages shift when a plan behind the cursor is archived or deleted elsewhere,
+so each later `/v1/plans` page of a count is requested one row early (cursor minus
+one) and must begin with the plan that ended the previous page; otherwise the
+count fails and is retired rather than skipping plans. Plans a user explicitly
+chose, and the remaining plans of a retry, are not searched for: they are
+validated with `/v1/search-state` point lookups (at most 50 keys each) and, for a
+plan whose revision moved, one `/v1/plan` head read.
+The count distinguishes a target ceiling with a confirmed further match (**more
+remain**) from unchecked plans that may or may not match: a full set keeps scanning
+within the budget until one more match proves overflow, and a remaining cursor
+alone never claims more matches. The final delete step repeats that qualification.
+No scan changes ordinary list/search caches or refresh
 budgets. The confirmation captures every target's store/source/plan, progress
 revision and cleanup generation. One short line names the count, not plan titles;
 Cancel gets initial focus. Opening, Cancel and Escape send no cleanup request.

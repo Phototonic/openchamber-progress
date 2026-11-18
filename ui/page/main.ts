@@ -19,7 +19,7 @@ import {
 } from '../shared/scope.ts';
 import { criteriaKey, freezeLive, inPlace, queryProblem, searchable, scopeAvailability, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
 import { CleanupScan, PlanSelection, tidyCopy } from '../shared/cleanup.ts';
-import { cleanupSearchReader, readCleanupListPage, type ServiceHost } from '../shared/source.ts';
+import { cleanupKnownReader, cleanupSearchReader, readCleanupListPage, type ServiceHost } from '../shared/source.ts';
 import {
   announceSearch, boardBar, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, statusLine, unavailableNote, type ChipKind, type SearchDraft,
 } from '../shared/search-view.ts';
@@ -279,7 +279,7 @@ startView<Ui>({
   selectionScope,
   tidyArchived: vc => vc.ui.archived,
   tidyMatching: vc => isSearching(vc) || Object.values(derivedBoard(vc).filters).some(v => v !== ALL),
-  tidyScan: (vc, key, includes, allowActive = true) => {
+  tidyScan: (vc, key, includes, allowActive = true, known) => {
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
     const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
@@ -293,12 +293,16 @@ startView<Ui>({
       session: criteria.session === ALL ? null : criteria.session, lifecycle: criteria.lifecycle === ALL ? null : criteria.lifecycle,
       status: criteria.status === ALL ? null : criteria.status, archived: vc.ui.archived ? 'only' : 'exclude', limit: 50,
     }, identity) : null;
+    // Named plans (a selection or a retry) are validated directly; the scope is walked only for Select all.
+    const named = known && vc.health?.planTaskSearch === 1 ? cleanupKnownReader(host, known, identity) : null;
+    const continuation = {};
     return new CleanupScan(key, identity.storeId, vc.ui.archived, async (cursor, current) => {
       active = current;
+      if (named) return named(cursor);
       // Only a search needs its chosen locations classifiable now; browse places a plan by its recorded directory.
       if (criteria && scopeAvailability(criteria, live) !== 'ok') throw new Error('The selected locations are unavailable.');
       const page = searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
-        { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity);
+        { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity, continuation);
       return { ...page, plans: page.plans.filter(p => inPlace(filters, p, live, bound)) };
     }, matching, criteria ? 64 : 50, includes, allowActive);
   },

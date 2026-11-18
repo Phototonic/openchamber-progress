@@ -242,7 +242,8 @@ export interface ViewSpec<U> {
   actionPlan?: (vc: ViewContext<U>) => PlanView | null;
   /** Complete loaded scope; a separate panel reader covers incomplete lists/search. */
   tidyPlans?: (vc: ViewContext<U>) => PlanView[];
-  tidyScan?: (vc: ViewContext<U>, context: string, includes?: (plan: CleanupPlan) => boolean, allowActive?: boolean) => CleanupScan | null;
+  /** `known`: the exact plans an explicit selection or retry names; they are validated, not searched for. */
+  tidyScan?: (vc: ViewContext<U>, context: string, includes?: (plan: CleanupPlan) => boolean, allowActive?: boolean, known?: CleanupPlan[]) => CleanupScan | null;
   selectionScope?: (vc: ViewContext<U>) => string;
   tidyArchived?: (vc: ViewContext<U>) => boolean;
   tidyMatching?: (vc: ViewContext<U>) => boolean;
@@ -989,14 +990,28 @@ export function startView<U>(spec: ViewSpec<U>) {
   const cleanupContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, session?.id ?? null, directory, scopeKey(currentScope())]);
   // Board bulk actions follow its own filters, not host-session notifications.
   const tidyContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface === 'page' ? null : session?.id ?? null, scopeKey(currentScope()), spec.tidyScope?.(context())]);
-  function requestTidy() {
+  /** A captured target as a plan to re-validate: identity, revision and the placement facts the per-target check needs. */
+  const remainingPlan = (t: CleanupTarget, vc: ViewContext<U>): CleanupPlan => ({
+    key: t.key, title: t.title, lifecycle: t.lifecycle, sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,
+    ...(t.where ? { ownerSessionId: t.where.owner, directory: t.where.directory } : {}),
+    ...(spec.tidyArchived?.(vc) ? { cleanup: { state: 'archived' as const, revision: t.request.cleanupRev } } : {}),
+  });
+  /**
+   * `remaining`: Try again after a stopped or partial run recounts only those plans (current revision and
+   * eligibility, the scope displayed now), never the whole scope or plans that began matching since.
+   */
+  function requestTidy(remaining?: CleanupTarget[]) {
     if (cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
     cleanup.tidy?.scan?.cancel();
     // A shown result no longer pins the scope: this request is bound to the scope displayed now.
     if (cleanup.tidy?.result) cleanup = initialCleanup();
     const vc = context(), key = tidyContext();
-    const scan = spec.tidyScan?.(vc, key) ?? undefined;
-    const confirmation = scan ? undefined : { ...tidyConfirmation(spec.tidyPlans?.(vc) ?? [], read.storeId, key, spec.tidyArchived?.(vc)), matching: spec.tidyMatching?.(vc) };
+    const keys = remaining && new Set(remaining.map(t => t.key));
+    const scan = (keys
+      ? spec.tidyScan?.(vc, key, p => keys.has(p.key), false, remaining!.map(t => remainingPlan(t, vc)))
+      : spec.tidyScan?.(vc, key)) ?? undefined;
+    const listed = (spec.tidyPlans?.(vc) ?? []).filter(p => !keys || keys.has(p.key));
+    const confirmation = scan ? undefined : { ...tidyConfirmation(listed, read.storeId, key, spec.tidyArchived?.(vc)), matching: spec.tidyMatching?.(vc) };
     cleanup = { ...initialCleanup(), tidy: { context: key, confirmation, scan } };
     cleanupFocus = 'tidy-cancel'; versions.ui++; schedule();
     if (scan) void moreTidy();
@@ -1008,7 +1023,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     cleanup.tidy?.scan?.cancel();
     if (cleanup.tidy?.result) cleanup = initialCleanup();
     const key = tidyContext();
-    const scan = spec.tidyScan?.(vc, key, selection.includes, action === 'restore' || health.planCleanupActive === 1) ?? undefined;
+    // A named selection validates its own plans; only Select all walks the scope.
+    const scan = spec.tidyScan?.(vc, key, selection.includes, action === 'restore' || health.planCleanupActive === 1, selection.all ? undefined : selection.plans) ?? undefined;
     const latest = new Map(read.plans.map(p => [p.key, p]));
     // A complete list is the displayed one: a plan that has since moved out of scope is not offered.
     const shown = spec.tidyPlans ? new Set(spec.tidyPlans(vc).map(p => p.key)) : null;
@@ -1031,7 +1047,13 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (!current()) return;
       state.scan.cancel(); state.countFailed = true;
     } finally {
-      if (current()) { state.counting = false; cleanupFocus = 'tidy-cancel'; versions.ui++; schedule(); }
+      if (current()) {
+        state.counting = false;
+        // Cancel took focus when the panel opened; keep it only if the panel still owns focus or lost it.
+        const at = document.activeElement;
+        if (!at || at === document.body || at.closest('[data-testid="tidy-actions"]')) cleanupFocus = 'tidy-cancel';
+        versions.ui++; schedule();
+      }
     }
   }
   function cancelTidy() {
@@ -1397,14 +1419,11 @@ export function startView<U>(spec: ViewSpec<U>) {
           const selection = remaining ? {
             scope: spec.selectionScope?.(context()),
             all: false, includes: (p: CleanupPlan) => keys.has(p.key),
-            plans: remaining.map(t => ({ key: t.key, title: t.title, lifecycle: t.lifecycle,
-              sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,
-              ...(t.where ? { ownerSessionId: t.where.owner, directory: t.where.directory } : {}),
-              ...(spec.tidyArchived?.(context()) ? { cleanup: { state: 'archived' as const, revision: t.request.cleanupRev } } : {}) })),
+            plans: remaining.map(t => remainingPlan(t, context())),
           } : tidyState.selectionRequest;
           requestSelection(tidyState.selection, selection);
         }
-        else requestTidy();
+        else requestTidy(tidyState?.result?.remaining.length ? tidyState.result.remaining : undefined);
       },
       requestSelection: (action, selection) => { if (actionContext === cleanupContext()) requestSelection(action, selection); },
       cancelTidy: () => { if (tidyState === cleanup.tidy) cancelTidy(); },
