@@ -86,7 +86,6 @@ let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
 let selectionHitCount = -1;
 let selectionSearchPlans: SearchViewState['page']['hits'][number]['plan'][] = [];
-let selectionPage = '';
 const derivedBoard = (vc: ViewContext<Ui>) => boardDerivation.get({
   plans: vc.read?.plans ?? [], live: vc.env.live, filters: vc.ui.filters,
   bound: vc.env.boundSource, locale: resolveLanguage('auto', vc.env.locale), archived: vc.ui.archived,
@@ -120,6 +119,8 @@ const search = new SearchController({
   service: (current) => (frame ? frame.service(current) : { serviceRequest: () => Promise.reject(new Error('Retired read')) }),
   changed: () => frame?.invalidate(),
   visible: () => document.visibilityState !== 'hidden',
+  // A plan a freshness reply shows gone leaves the selection whichever page is shown, with the generation that showed it.
+  gone: (plans) => selection.forget(plans),
 });
 let submits = 0;
 let notices = 0;
@@ -334,7 +335,7 @@ startView<Ui>({
   forgetPlans: (keys, ui, _vc, confirmed, returned) => {
     // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list;
     // an Undo receipt puts it back under a Select all rule (it need not be in the loaded list).
-    if (confirmed?.size) selection.forget([...confirmed]);
+    if (confirmed?.size) selection.forget(confirmed);
     if (returned?.size) selection.returned(returned);
     if (!keys.has(ui.selected ?? '')) return {};
     captures.retire(); reporting.retire(); search.select(null); return { selected: null };
@@ -415,12 +416,6 @@ startView<Ui>({
     if (v) search.membership(env.live);
     // Derive once per list/search page, never walk every plan during an idle paint.
     if (v && (selectionHits !== v.page.hits || selectionHitCount !== v.page.hits.length)) {
-      const page = `${ui.search?.key}:${v.page.number}`;
-      if (selectionPage === page && v.page.checked) {
-        const keys = new Set(v.page.hits.map(h => h.plan.key));
-        selection.forget(selectionSearchPlans.filter(p => !keys.has(p.key)).map(p => p.key));
-      }
-      selectionPage = page;
       selectionHits = v.page.hits;
       selectionHitCount = v.page.hits.length;
       selectionSearchPlans = [...new Map(v.page.hits.map(h => [h.plan.key, h.plan])).values()];

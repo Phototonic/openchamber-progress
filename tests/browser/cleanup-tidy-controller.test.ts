@@ -46,7 +46,7 @@ function liveFeed(config: { projects: LiveProject[]; sessions: LiveSession[]; wo
   };
 }
 const liveSession = (id: string, projectId = 'proj', directory = '/fixture/proj'): LiveSession => ({ id, title: id, projectId, directory, parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null });
-type Opts = { plans?: PlanSummary[]; item?: unknown; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
+type Opts = { plans?: PlanSummary[]; item?: unknown; /** Serve the list in cursor pages of this many plans; one page without it. */ pageSize?: number; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
 function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<any>> = {}, opts: Opts = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
   const focusables = new Map<string, { focused: number; tagName: string; focus(): void; querySelector(): null }>();
@@ -87,14 +87,20 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   let effectiveScope = 'initial';
   let vc!: ViewContext<{ filter: string }>;
   const host = {
-    async serviceRequest(q: { path: string; body?: string }) {
+    async serviceRequest(q: { path: string; body?: string; query?: Record<string, string> }) {
       if (q.path === '/health') {
         // The reply is decided when the request arrives, as at a real service.
         const body = JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) });
         if (healthHolds > 0) { healthHolds--; await new Promise<void>(r => { healthWaiting.push(r); }); }
         return { status: 200, body };
       }
-      if (q.path === '/v1/plans') { lists++; return plansFail ? { status: 500, body: '{"error":"storage"}' } : { status: 200, body: JSON.stringify(plansPage(plans, null, storeId ? { storeId } : {})) }; }
+      if (q.path === '/v1/plans') {
+        lists++;
+        if (plansFail) return { status: 500, body: '{"error":"storage"}' };
+        const from = Number(q.query?.cursor ?? 0), size = opts.pageSize;
+        const page = size ? plans.slice(from, from + size) : plans;
+        return { status: 200, body: JSON.stringify(plansPage(page, size && from + size < plans.length ? String(from + size) : null, storeId ? { storeId } : {})) };
+      }
        if (['/v1/plan/archive', '/v1/plan/restore', '/v1/plan/delete'].includes(q.path)) {
         posts.push(q.path);
         const request = JSON.parse(q.body!);
@@ -153,6 +159,8 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     press(target: unknown) { docListeners.pointerdown({ button: 0, target }); },
     refuse(plan: string) { refused = plan; },
     addPlan(plan: (typeof plans)[number]) { plans.push(plan); },
+    /** Another frame removed the plan from this view: the next list read no longer carries it. */
+    dropPlan(id: string) { const at = plans.findIndex(p => p.id === id); if (at >= 0) plans.splice(at, 1); },
     /** The control painted with this test id; counts the times the controller moved focus to it. */
     focusable(id: string) {
       const node = { focused: 0, tagName: 'BUTTON', focus() { node.focused++; }, querySelector: () => null };
@@ -1430,5 +1438,116 @@ for (const moved of [false, true]) test(`a count delayed by a held control ${mov
     if (moved) f.focusAt(control('search'));
     f.releasePress(); await drain();
     assert.equal(cancel.focused, opened + (moved ? 0 : 1));
+  } finally { f.stop(); }
+});
+
+// Counts from a list read in more than one page, and what the selection learns from a run's receipts.
+const isMap = (v: unknown) => Object.prototype.toString.call(v) === '[object Map]', isSet = (v: unknown) => Object.prototype.toString.call(v) === '[object Set]';
+const plain = (v: unknown) => JSON.parse(JSON.stringify(v));
+const closedPlans = () => ['one', 'two', 'three', 'four'].map(id => summary(id, [], { lifecycle: 'finished' }));
+const SELECT_ALL = (f: Held) => ({ all: true, plans: f.vc.read!.plans, includes: () => true, scope: 'initial' });
+const named = (f: Held, ids: string[]) => ({ all: false, plans: f.vc.read!.plans.filter(p => ids.includes(p.id)), includes: (p: { id: string }) => ids.includes(p.id), scope: 'initial' });
+
+for (const paged of [true, false]) test(`Tidy on a complete list read in ${paged ? 'several pages is qualified on both steps' : 'one page stays exact'}, with no request added`, async () => {
+  const f = frame('page', false, false, true, {}, { plans: closedPlans(), ...(paged ? { pageSize: 2 } : {}) });
+  try {
+    await until(() => !!f.vc?.read);
+    const lists = f.lists;
+    f.vc.requestTidy(); await drain();
+    const c = f.vc.cleanup.tidy?.confirmation;
+    assert.equal(c?.targets.length, 4);
+    assert.equal(c?.unverified, paged ? true : undefined);
+    f.vc.deleteTidy(); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.deleting, true);
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.unverified, paged ? true : undefined, 'the deletion step repeats the line');
+    assert.equal(f.lists, lists, 'no read is sent to produce the count');
+  } finally { f.stop(); }
+});
+for (const action of ['archive', 'delete'] as const) test(`Select all on a complete list read in several pages is qualified (${action}), and its selection count carries no plus`, async () => {
+  const f = frame('page', false, false, true, {}, { plans: closedPlans(), pageSize: 2 });
+  try {
+    await until(() => !!f.vc?.read);
+    const selection = new cleanup.PlanSelection();
+    selection.reconcile('scope', f.vc.read!.plans as never, !!f.vc.read!.truncated); selection.selectAll();
+    assert.equal(selection.incomplete, false, 'no plus on a complete multi-page list');
+    const lists = f.lists;
+    f.vc.requestSelection(action, SELECT_ALL(f) as never); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.unverified, true);
+    assert.equal(f.lists, lists);
+  } finally { f.stop(); }
+});
+test('rows chosen from a complete list read in several pages stay exact', async () => {
+  const f = frame('page', false, false, true, {}, { plans: closedPlans(), pageSize: 2 });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestSelection('archive', named(f, ['one', 'two', 'three']) as never); await drain();
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.targets.length, 3);
+    assert.equal(f.vc.cleanup.tidy?.confirmation?.unverified, undefined);
+  } finally { f.stop(); }
+});
+
+/** A run that leaves 'two' unarchived; another frame removes it from the view before the run's last read. */
+async function partialRun(f: Held, selection: boolean, dropIt: boolean) {
+  await until(() => !!f.vc?.read);
+  f.refuse('two');
+  if (selection) f.vc.requestSelection('archive', named(f, ['one', 'two']) as never); else f.vc.requestTidy();
+  await drain();
+  f.hold(); f.vc.confirmTidy();
+  await until(() => f.posts.length === 1);
+  if (dropIt) f.dropPlan('two');
+  f.release();
+  await until(() => !!f.vc.cleanup.tidy?.result);
+  await until(() => !!f.vc.read && f.vc.read.plans.length === (dropIt ? 3 : 4));
+  assert.deepEqual(f.vc.cleanup.tidy?.result?.remaining.map(t => t.request.plan), ['two']);
+}
+for (const selection of [false, true]) for (const [paged, absent, expected] of [[true, false, undefined], [true, true, true], [false, true, undefined]] as const) {
+  test(`Try again (${selection ? 'selection' : 'Tidy'}) on a list read in ${paged ? 'several pages' : 'one page'} with the named plan ${absent ? 'missing from' : 'among'} the rows is ${expected ? 'qualified' : 'exact'}, with no request added`, async () => {
+    const f = frame('page', false, false, true, {}, { plans: closedPlans(), ...(paged ? { pageSize: 2 } : {}) });
+    try {
+      await partialRun(f, selection, absent);
+      const lists = f.lists;
+      f.vc.retryTidy(); await drain();
+      const c = f.vc.cleanup.tidy?.confirmation;
+      assert.ok(c, 'the recount is shown');
+      assert.deepEqual(c.targets.map(t => t.request.plan), absent ? [] : ['two']);
+      assert.equal(c.unverified, expected);
+      assert.equal(f.lists, lists, 'no request is sent to look for the plan');
+    } finally { f.stop(); }
+  });
+}
+
+// What a run hands the selection: each receipt's cleanup generation, never one read from a loaded row.
+test('a bulk run hands the selection a map of plan to the cleanup generation its receipt returned', async () => {
+  const seen: unknown[] = [], returned: unknown[] = [];
+  const f = frame('page', false, false, true, { forgetPlans: (_keys: Set<string>, _ui: unknown, _vc: unknown, confirmed: unknown, back: unknown) => { seen.push(confirmed); returned.push(back); return {}; } });
+  try {
+    await until(() => !!f.vc?.read);
+    f.vc.requestTidy(); await drain(); f.vc.confirmTidy();
+    await until(() => !!f.vc.cleanup.tidy?.result);
+    const receipts = f.vc.cleanup.tidy!.result!.succeeded.map(t => [t.key, t.request.cleanupRev]);
+    assert.equal(receipts.length, 2);
+    assert.ok(receipts.every(([, rev]) => rev === 1), 'the fixture service answers with the next generation');
+    assert.ok(isMap(seen[0]), 'confirmed receipts travel as a map');
+    assert.deepEqual(plain([...(seen[0] as Map<string, number>)]), receipts);
+    assert.equal(returned[0], undefined);
+    // Undo: the same receipts come back as a set of keys.
+    f.vc.undoTidy();
+    await until(() => seen.length === 2);
+    assert.equal(seen[1], undefined);
+    assert.ok(isSet(returned[1]) && [...returned[1] as Set<string>].length === 2);
+  } finally { f.stop(); }
+});
+test('a single-plan action hands the selection the generation its receipt returned, not the one it started from', async () => {
+  const spy = boardSpy(); const seen: unknown[] = [];
+  const f = frame('page', false, false, true, { ...spy.extra, forgetPlans: (_k: Set<string>, _u: unknown, _v: unknown, confirmed: unknown) => { seen.push(confirmed); return {}; } });
+  try {
+    await until(() => !!f.vc?.read);
+    const plan = f.vc.read!.plans[1];
+    f.vc.requestDelete(plan); await until(() => !!f.vc.cleanup.target);
+    const started = f.vc.cleanup.target!.request.cleanupRev;
+    f.vc.confirmDelete();
+    await until(() => seen.length === 1);
+    assert.ok(isMap(seen[0]), 'confirmed receipts travel as a map');
+    assert.deepEqual(plain([...(seen[0] as Map<string, number>)]), [[plan.key, started + 1]]);
   } finally { f.stop(); }
 });
