@@ -57,7 +57,7 @@ test('departed search results are removed without clearing the other selected pa
   const s = new PlanSelection(), a = plan('a'), b = plan('b');
   s.reconcile('search', [a], true); s.toggle(a);
   s.reconcile('search', [b], true); s.toggle(b);
-  s.forget([a.key]);
+  s.forget(new Map<string, number | null>([[a.key, null]]));
   assert.equal(s.count, 1); assert.equal(s.has(b.key), true);
   assert.equal(s.has(a.key), false);
   s.selectAll(); s.toggle(b);
@@ -96,7 +96,7 @@ test('a receipt-confirmed plan is no longer selected under Select all and does n
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
   const earlier = selection.snapshot().includes;
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   assert.equal(selection.has('a'), false);
   assert.equal(selection.has('b'), true);
   assert.equal(selection.count, 2);
@@ -110,7 +110,7 @@ test('a plan confirmed back in scope after Undo is selected again; an explicit e
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
   selection.toggle(plans[1]);
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   selection.reconcile('scope', [...plans], true);
   assert.equal(selection.has('a'), true, 'the receipt departure is cleared when the plan returns');
   assert.equal(selection.has('b'), false, 'the user exclusion is kept');
@@ -122,13 +122,13 @@ test('a cached, unchecked page cannot clear a receipt departure; a click on a de
   const plans = ['a', 'b'].map(id => plan(id, 'completed'));
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   selection.reconcile('scope', [...plans], true, false);
   assert.equal(selection.has('a'), false, 'no evidence that it returned');
   selection.toggle(plans[0]);
   assert.equal(selection.has('a'), true, 'an unpressed row is chosen by a click');
   assert.equal(selection.snapshot().includes(plans[0]), true, 'not recorded as an exclusion');
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   selection.reconcile('scope', [...plans], true, true);
   assert.equal(selection.has('a'), true, 'a checked page is evidence');
 });
@@ -136,7 +136,7 @@ test('an Undo receipt clears only the departure, not explicit exclusions', () =>
   const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll(); selection.toggle(plans[1]);
-  selection.forget(['a', 'b']);
+  selection.forget(new Map<string, number | null>([['a', null], ['b', null]]));
   selection.returned(['a', 'b']);
   assert.equal(selection.has('a'), true);
   assert.equal(selection.has('b'), false);
@@ -147,7 +147,7 @@ test('a departed row kept in a cached page is not counted as selected', () => {
   const plans = ['a', 'b'].map(id => plan(id, 'completed'));
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   assert.equal(selection.count, 1);
   selection.reconcile('scope', [...plans], true, false);
   assert.equal(selection.count, 1, 'the cached row is known but not selected');
@@ -157,10 +157,10 @@ test('one click selects a row that was both excluded by the user and taken out b
   const selection = new PlanSelection();
   selection.reconcile('scope', plans, true); selection.selectAll();
   selection.toggle(plans[0]);
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   selection.returned(['a']);
   assert.equal(selection.has('a'), false, 'passive handling keeps the exclusion');
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   selection.toggle(plans[0]);
   assert.equal(selection.has('a'), true, 'an explicit click selects it in one step');
 });
@@ -204,7 +204,7 @@ test('a deselected plan stays out at a newer generation, with or without a depar
 test('a plan taken out with no generation to compare is not counted again by a count', () => {
   const selection = new PlanSelection();
   selection.reconcile('scope', [cleaned('a', 1)], true); selection.selectAll();
-  selection.forget(['a']);
+  selection.forget(new Map<string, number | null>([['a', null]]));
   assert.equal(selection.snapshot().includes(cleaned('a', 99)), false);
 });
 test('a later departure keeps the newer generation and one without a generation never ends by a count', () => {
@@ -217,4 +217,29 @@ test('a later departure keeps the newer generation and one without a generation 
   assert.equal(rule(cleaned('a', 4)), false, 'the older reply cannot lower the generation');
   assert.equal(rule(cleaned('a', 6)), true);
   assert.equal(rule(cleaned('b', 99)), false, 'a deleted or vanished plan has no generation to supersede');
+});
+
+test('the row, the count and the plans of a snapshot agree with a count on a departed plan known at a newer generation', () => {
+  const plans = ['a', 'b'].map(id => cleaned(id, 1));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(departures(['a', 3]));
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.count, 1);
+  // A cached page shows the plan at the generation that took it out: still departed.
+  selection.reconcile('scope', [cleaned('a', 3), plans[1]], true, false);
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.count, 1);
+  // A cached page carrying it at a newer generation: the row, the bar count, the snapshot and a scan agree.
+  selection.reconcile('scope', [cleaned('a', 4), plans[1]], true, false);
+  assert.equal(selection.has('a'), true);
+  assert.equal(selection.count, 2);
+  const snapshot = selection.snapshot();
+  assert.deepEqual(snapshot.plans.map(p => p.key).sort(), ['a', 'b']);
+  assert.equal(snapshot.includes(cleaned('a', 4)), true);
+  // A deselected plan still stays out everywhere.
+  selection.toggle(cleaned('a', 4));
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.count, 1);
+  assert.equal(selection.snapshot().includes(cleaned('a', 4)), false);
 });

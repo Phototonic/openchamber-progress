@@ -502,7 +502,8 @@ export class SearchController {
       }
     }
     // A selection held by the frame follows a plan out whichever page is shown, so it hears of every one.
-    if (departures.size) this.host.gone?.(departures);
+    // A selection that fails to follow must not leave the search half updated: the state below is still applied.
+    if (departures.size) { try { this.host.gone?.(departures); } catch (error) { console.error('The selection could not follow plans a freshness reply showed gone.', error); } }
     // Repaint only on a change: an unchanged poll leaves the DOM (focus, scroll, selection) alone.
     // The page shown now is certified only when it is the page asked about and every plan it shows was covered:
     // a search still running can append hits the reply could not have seen.

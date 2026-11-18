@@ -233,12 +233,18 @@ export class PlanSelection {
   private plans: CleanupPlan[] | null = null;
   private fresh = true;
   private selectedCount = 0;
+  /** A departure still holds unless the plan is known at a newer cleanup generation than took it out. */
+  private departedHolds(key: string) {
+    const left = this.departed.get(key);
+    if (left === undefined) return false;
+    return left === null || (this.known.get(key)?.cleanup?.revision ?? 0) <= left;
+  }
   private recount() {
     if (!this.all) { this.selectedCount = this.chosen.size; return; }
     // Only rows the rule actually selects: not user exclusions, not receipt departures kept in a cached page.
     let out = 0;
     for (const k of this.omitted) if (this.known.has(k)) out++;
-    for (const k of this.departed.keys()) if (this.known.has(k) && !this.omitted.has(k)) out++;
+    for (const k of this.departed.keys()) if (this.known.has(k) && !this.omitted.has(k) && this.departedHolds(k)) out++;
     this.selectedCount = this.known.size - out;
   }
   /** `fresh`: the plans are verified membership (a list read, a checked search page), not a cached page. */
@@ -257,7 +263,7 @@ export class PlanSelection {
     this.recount();
     this.version++;
   }
-  has(key: string) { return this.all ? !this.omitted.has(key) && !this.departed.has(key) : this.chosen.has(key); }
+  has(key: string) { return this.all ? !this.omitted.has(key) && !this.departedHolds(key) : this.chosen.has(key); }
   get count() { return this.selectedCount; }
   get incomplete() { return this.all && this.partial; }
   clear() { this.all = false; this.chosen.clear(); this.omitted.clear(); this.departed.clear(); this.selectedCount = 0; this.version++; }
@@ -266,21 +272,21 @@ export class PlanSelection {
     this.known.set(p.key, p);
     // An explicit click on an unpressed departed row selects it at once (also when the user had excluded it);
     // passive receipt handling (forget, returned, reconcile) never touches exclusions.
-    if (this.all && this.departed.delete(p.key)) { this.omitted.delete(p.key); this.recount(); this.version++; return; }
+    if (this.all && this.departedHolds(p.key)) { this.departed.delete(p.key); this.omitted.delete(p.key); this.recount(); this.version++; return; }
+    // A departure that no longer holds shows the row pressed: the click is an ordinary toggle.
+    if (this.all) this.departed.delete(p.key);
     const set = this.all ? this.omitted : this.chosen;
     if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
     this.recount();
     this.version++;
   }
   /**
-   * Plans left the view. A map carries the cleanup generation that took each one out (a receipt's, or the
-   * freshness row that showed it gone); bare keys have none, so a count never takes them back by generation.
+   * Plans left the view, each with the cleanup generation that took it out (a receipt's, or the freshness row
+   * that showed it gone); null when there is none to compare, and a count never takes such a plan back.
    */
-  forget(departures: Iterable<string> | ReadonlyMap<string, number | null>) {
-    // Map by its tag, not instanceof: the page hooks run in other realms.
-    const entries: [string, number | null][] = Object.prototype.toString.call(departures) === '[object Map]' ? [...(departures as ReadonlyMap<string, number | null>)] : [...(departures as Iterable<string>)].map(key => [key, null]);
-    if (!entries.length) return;
-    for (const [key, generation] of entries) {
+  forget(departures: ReadonlyMap<string, number | null>) {
+    if (!departures.size) return;
+    for (const [key, generation] of departures) {
       this.known.delete(key); this.chosen.delete(key);
       // A Select all rule must not keep a departed plan pressed or target it in a later scan.
       if (this.all) {

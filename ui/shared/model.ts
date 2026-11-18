@@ -192,8 +192,9 @@ export interface StoreRead {
   /** More pages exist than this frame loaded. */
   truncated: boolean;
   /**
-   * The list was read in more than one page. Offsets between pages are not a snapshot, so a count taken
-   * from such a list cannot show that no plan crossed a page boundary. Absent: one page, or not recorded.
+   * A second page was available when the list was read (also when the read stopped at its page bound).
+   * Offsets between pages are not a snapshot, so a count taken from such a list cannot show that no plan
+   * crossed a page boundary. Absent: one page, or not recorded.
    */
   multiPage?: boolean;
 }

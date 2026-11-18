@@ -114,7 +114,7 @@ test('a cached search page does not reselect a plan a receipt took out; a checke
   const page = { hits, number: 1, checked: true };
   f.globals.v = { page, criteria: { ...NO_FILTERS } };
   f.paint(); f.selection.mode = true; f.selection.selectAll();
-  f.selection.forget([plans[0].key]);
+  f.selection.forget(new Map<string, number | null>([[plans[0].key, null]]));
   page.checked = false; f.globals.v = { page: { ...page, hits: [...hits] }, criteria: { ...NO_FILTERS } };
   f.paint();
   assert.equal(f.selection.has(plans[0].key), false, 'an unverified cached page is not evidence');
