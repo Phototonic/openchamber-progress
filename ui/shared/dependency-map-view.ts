@@ -120,7 +120,7 @@ export interface DependencyMapView {
  * zoom-out,zoom-level,fit-all,focus-current,pan-left,pan-right,pan-up,pan-down}; one per-frame
  * map-announcer outside the root; plan-view, plan-view-{list,map}. Attribution (S4): card
  * data-{attribution,live}, map-card-who-ID, map-card-live-ID; inspector map-attribution
- * data-{assignment,live} with map-attribution-{assignment,links,reports,live}; map-attribution-help.
+ * data-{assignment,live} with map-attribution-live, present only for proven session activity.
  * Wide board: map-inspector data-placement="over" (hidden without a selection) and map-inspector-close.
  * No data-reading article.
  * These describe semantic facts, not styling or incidental DOM nesting.

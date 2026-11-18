@@ -86,10 +86,15 @@ async function window(s: string, label: string, run: () => Promise<unknown>) {
   const p = await guest(s, 'return w.__stop()');
   const frames = p.frames.sort((a: number, b: number) => a - b);
   const traffic: Record<string, { count: number; bytes: number }> = {};
+  // Inbox work travels two ways: continuation windows on /v1/needs-you and the first window on /v1/plans?needsYou=1.
+  const inbox: Record<string, { needsYouRoute: number; plansFirstWindow: number }> = {};
   for (const r of await evaluate(`qa.replies.slice(${mark})`)) {
     const row = traffic[r.frame + ' ' + r.path] ??= { count: 0, bytes: 0 }; row.count++; row.bytes += r.bytes;
+    const form = inbox[r.frame] ??= { needsYouRoute: 0, plansFirstWindow: 0 };
+    if (r.path === '/v1/needs-you') form.needsYouRoute++;
+    else if (r.path === '/v1/plans' && String(r.query?.needsYou) === '1') form.plansFirstWindow++;
   }
-  const m = { surface: s, label, elapsed: p.elapsed, dom: p.dom, rootReplacements: p.rootReplacements, mapReplacements: p.mapReplacements, longTasks: { count: p.long.length, total: p.long.reduce((a: number, b: number) => a + b, 0), max: Math.max(0, ...p.long) }, frames: { p99: frames[Math.min(frames.length - 1, Math.floor(frames.length * .99))], max: Math.max(...frames) }, traffic };
+  const m = { surface: s, label, elapsed: p.elapsed, dom: p.dom, rootReplacements: p.rootReplacements, mapReplacements: p.mapReplacements, longTasks: { count: p.long.length, total: p.long.reduce((a: number, b: number) => a + b, 0), max: Math.max(0, ...p.long) }, frames: { p99: frames[Math.min(frames.length - 1, Math.floor(frames.length * .99))], max: Math.max(...frames) }, traffic, inbox };
   result.measurements.push(m); save(); console.log(JSON.stringify(m));
 }
 async function searchJourney() {

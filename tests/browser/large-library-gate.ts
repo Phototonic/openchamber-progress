@@ -36,10 +36,31 @@ for (const label of ['idle', 'selection', 'drag', 'wheel-pan', 'key-zoom']) {
   check(`Rail ${label} long tasks`, r => measurement(r, 'panel', label).longTasks.count, 0);
   check(`Rail ${label} p99 frame gap (ms)`, r => measurement(r, 'panel', label).frames.p99, 50);
 }
-const requests = (r: any, route: string) => measurement(r, 'page', 'idle').traffic[`page ${route}`]?.count ?? 0;
+// Idle traffic is divided by the refreshes the window should hold at the product cadence (ui/shared/app.ts
+// REFRESH_MS), never by a request count the same run produced, so doubled or missing polling cannot normalise itself away.
+const REFRESH_MS = 3000;
+const expectedRefreshes = (r: any, surface: string) => Math.max(1, Math.round(measurement(r, surface, 'idle').elapsed / REFRESH_MS));
+const requests = (r: any, surface: string, route: string) => measurement(r, surface, 'idle').traffic[`${surface} ${route}`]?.count ?? 0;
+for (const surface of ['page', 'panel']) {
+  const window = (r: any) => measurement(r, surface, 'idle').elapsed / REFRESH_MS;
+  // /health is read once per refresh: the cadence must be present and no faster than configured (+/- one tick).
+  check(`Idle ${surface} refreshes completed (min)`, r => requests(r, surface, '/health'), Math.floor(window(before)) - 1, true);
+  check(`Idle ${surface} refreshes completed (max)`, r => requests(r, surface, '/health'), Math.ceil(window(before)));
+  check(`Idle ${surface} list reads (at least one per refresh)`, r => requests(r, surface, '/v1/plans'), Math.floor(window(before)) - 1, true);
+}
+// Compare form-split inbox counts only when both artifacts carry them; older artifacts count the /v1/needs-you route alone.
+const inboxSplit = [before, ...after].every(r => measurement(r, 'page', 'idle').inbox?.page);
+const inboxRequests = (r: any) => inboxSplit
+  ? measurement(r, 'page', 'idle').inbox.page.needsYouRoute + measurement(r, 'page', 'idle').inbox.page.plansFirstWindow
+  : requests(r, 'page', '/v1/needs-you');
+const perRefresh = (read: (r: any) => number) => (r: any) => read(r) / expectedRefreshes(r, 'page');
 for (const route of ['/v1/plans', '/health', '/v1/needs-you', '/v1/subagent-runs']) {
-  const perRefresh = (r: any) => requests(r, route) / Math.max(1, requests(r, '/health'));
-  check(`Idle ${route} requests/refresh`, perRefresh, perRefresh(before));
+  const read = perRefresh(r => requests(r, 'page', route));
+  check(`Idle ${route} requests/refresh`, read, read(before));
+}
+{
+  const read = perRefresh(inboxRequests);
+  check(inboxSplit ? 'Idle inbox requests/refresh (/v1/needs-you + /v1/plans?needsYou=1)' : 'Idle inbox requests/refresh (/v1/needs-you only: artifact predates the form split)', read, read(before));
 }
 for (const r of after) if (r.errors?.length) throw Error('Browser errors reported');
 for (const r of after) {

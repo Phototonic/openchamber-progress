@@ -76,6 +76,14 @@ test('opening threshold includes 70%; current-work framing includes direct neigh
   assert.equal(f.c.value.transform.x + x * .8, 375);
 });
 
+test('Focus current work with no current-work target announces the overview fallback', () => {
+  const f = open([task('A', 'done'), task('B', 'done', ['A'])], 330, 540);
+  f.commands.length = 0;
+  f.c.dispatch({ type: 'current' });
+  assert.deepEqual(f.c.value.transform, fitProjection(f.input.layout, f.input.layout.order, f.input.viewport, 16, 1));
+  assert.deepEqual(f.commands.filter(c => c.type === 'announce').map(c => c.type === 'announce' && c.message), [{ kind: 'fit', count: 2 }]);
+});
+
 test('reference 100-task and 980-task plans use current work on rail and board; Fit shows all', () => {
   for (const seed of [arrowMid(), generateLargePlan()]) for (const width of [330, 570, 930, 1478]) {
     const f = open(seed.map(i => ({ ...i, status: i.status ?? 'pending' })), width, width > 600 ? 540 : 300);
