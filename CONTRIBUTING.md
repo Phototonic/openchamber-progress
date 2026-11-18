@@ -127,7 +127,14 @@ SIGTERM, SIGHUP or a closed output pipe (`test:all | head`) stops both lanes and
 running steps had written. Each step runs in its own process group, so the runner stops the groups
 itself: a repeated signal, or a step that has not stopped ten seconds after the first, is killed
 outright and abandoned even if a leftover process still holds its output pipes, and every group
-the runner started is stopped (SIGTERM, then SIGKILL after a short bound) once the steps settle, whether they passed or not, because a leader that exits 0 can leave descendants holding a port, and killed again if the runner itself crashes. An
+the runner started is swept as soon as its leader has exited and its pipes have closed (SIGTERM, a short
+bound, SIGKILL, a short bound, then a probe that finds the group empty), whether the step passed or not,
+because a leader that exits 0 can leave descendants holding a port. A group leaves the record the moment a
+probe finds it empty and is never signalled afterwards, since its id may then belong to an unrelated
+process; every signal is preceded by a fresh probe, and the closing sweep and the exit hook touch only
+groups not yet confirmed empty. Group ids are checked before use (a whole number above 1 that is neither
+the runner nor its parent), and a crash of the runner kills what is still recorded. On Windows `taskkill`
+goes only to a child whose `exit` has not fired. An
 interrupted run exits 128 plus the signal number (130, 143, 129, 141), a failed one 1. A step
 the runner stopped is reported as stopped; one that fails on its own is reported as failed with
 its output, whenever it does so. On Windows steps are not detached and are stopped with

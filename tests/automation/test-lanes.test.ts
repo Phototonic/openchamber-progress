@@ -12,7 +12,17 @@ import * as lanes from '../../scripts/test-lanes.ts';
 const posixOnly = { skip: process.platform === 'win32' && 'process groups and catchable signals are POSIX-only' };
 const moduleUrl = JSON.stringify(pathToFileURL(resolve('scripts/test-lanes.ts')).href);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const killTree = (pid: number) => {
+// The harness's own process group, found once: a recorded pid must never lead to a signal for it.
+const ownGroup = process.platform === 'win32' ? undefined : Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim()) || undefined;
+/** A pid read back from a fixture file, or undefined for anything that is not a whole number above 1 that is
+ * neither the harness, its parent nor its group: an empty file is Number('') === 0, which is the whole group. */
+function safePid(text: string): number | undefined {
+  if (!/^[0-9]+$/.test(text.trim())) return undefined;
+  const pid = Number(text.trim());
+  return Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid && pid !== process.ppid && pid !== ownGroup ? pid : undefined;
+}
+const killTree = (pid: number | undefined) => {
+  if (pid === undefined || safePid(String(pid)) === undefined) return;
   if (process.platform === 'win32') spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' });
   else { try { process.kill(-pid, 'SIGKILL'); } catch { /* not a group leader */ } try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
 };
@@ -37,7 +47,8 @@ const { ROOT, NAME, MODE = '' } = process.env;
 const modes = MODE.split(',');
 const value = key => (modes.find(m => m.startsWith(key + '=')) ?? '').split('=').slice(1).join('=') || undefined;
 if (modes.includes('ignore')) process.on('SIGTERM', () => {});
-fs.writeFileSync(ROOT + '/' + NAME + '.pid', String(process.pid));
+fs.writeFileSync(ROOT + '/' + NAME + '.pid.tmp', String(process.pid));
+fs.renameSync(ROOT + '/' + NAME + '.pid.tmp', ROOT + '/' + NAME + '.pid');
 const again = (suffix, mode, options = {}) => cp.spawn(process.execPath, [__filename], { env: { ...process.env, NAME: NAME + '-' + suffix, MODE: mode }, stdio: ['ignore', 'inherit', 'inherit'], ...options });
 if (modes.includes('grandchild')) again('grandchild', 'ignore,hang');
 if (value('session')) again('session', value('session').replaceAll('+', ','), { detached: true });
@@ -49,10 +60,11 @@ else if (!modes.includes('hang')) process.exit(Number(value('code') ?? 0));
 `);
   const step = (label: string, mode: string) =>
     `{label:${JSON.stringify(label)},command:process.execPath,args:[${JSON.stringify(join(root, 'child.cjs'))}],env:{ROOT:${JSON.stringify(root)},NAME:${JSON.stringify(label)},MODE:${JSON.stringify(mode)}}}`;
-  const pid = (name: string) => (existsSync(join(root, name + '.pid')) ? Number(readFileSync(join(root, name + '.pid'), 'utf8')) : undefined);
+  const pid = (name: string) => (existsSync(join(root, name + '.pid')) ? safePid(readFileSync(join(root, name + '.pid'), 'utf8')) : undefined);
   // Every fixture process records its pid here: stop whatever a failed test left running, then delete the files.
   const dispose = () => {
-    for (const name of readdirSync(root)) if (name.endsWith('.pid')) killTree(Number(readFileSync(join(root, name), 'utf8')));
+    if (!existsSync(root)) return;
+    for (const name of readdirSync(root)) if (name.endsWith('.pid')) killTree(safePid(readFileSync(join(root, name), 'utf8')));
     rmSync(root, { recursive: true, force: true });
   };
   return { root, step, pid, dispose };
@@ -254,6 +266,63 @@ test('a pass whose leftover process holds the pipes is abandoned after the grace
     assert.match(run.output(), /^passed a: one/m);
     assert.match(run.output(), /held its output open/);
   } finally { if (session && alive(session)) process.kill(session, 'SIGKILL'); f.dispose(); }
+});
+
+test('an empty or garbage pid file is ignored by the fixture cleanup and the harness survives', async () => {
+  const f = fixture();
+  const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: process.platform !== 'win32' });
+  try {
+    for (const [name, text] of Object.entries({ empty: '', blank: ' \n', zero: '0', init: '1', word: 'abc', negative: '-5', fraction: '2.5', harness: String(process.pid), parent: String(process.ppid) }))
+      writeFileSync(join(f.root, `${name}.pid`), text);
+    writeFileSync(join(f.root, 'real.pid'), String(sleeper.pid));
+    for (const text of ['', ' ', '0', '1', 'abc', '-5', '2.5', String(process.pid), String(process.ppid)]) assert.equal(safePid(text), undefined, JSON.stringify(text));
+    assert.equal(f.pid('empty'), undefined, 'a half-written file is not pid 0');
+    f.dispose();
+    assert.ok(await until(() => !alive(sleeper.pid!), 5000), 'the recorded fixture process is stopped');
+    assert.ok(alive(process.pid), 'the harness is still here');
+    assert.ok(alive(process.ppid), 'so is its parent');
+  } finally { killTree(sleeper.pid); f.dispose(); }
+});
+
+test('the runner signals only a whole number above 1 that is not itself or its parent, and Windows stops only a child that has not exited', () => {
+  for (const bad of [0, 1, -1, -3, 1.5, NaN, Infinity, '12', null, undefined, process.pid, process.ppid]) assert.equal(lanes.validPid(bad), false, String(bad));
+  assert.equal(lanes.validPid(4242), true);
+  assert.equal(lanes.stopAction('win32', true, 4242, false), undefined, 'an exited PID may belong to someone else now');
+  assert.deepEqual(lanes.stopAction('win32', false, 4242, true), { kind: 'command', command: 'taskkill', args: ['/T', '/F', '/PID', '4242'] });
+  assert.deepEqual(lanes.stopAction('linux', true, 4242, false), { kind: 'group', group: -4242, signal: 'SIGTERM' }, 'POSIX groups are probed before any signal, not skipped here');
+  assert.equal(lanes.stopAction('linux', false, 0, false), undefined);
+  assert.equal(lanes.stopAction('win32', false, process.pid, true), undefined);
+});
+
+test('a group is retired as soon as its step is swept and nothing is sent to it afterwards, even if its id is reused', posixOnly, async () => {
+  const f = fixture();
+  try {
+    const file = join(f.root, 'retire.ts');
+    writeFileSync(file, `import * as lanes from ${moduleUrl};
+const calls: string[] = [];
+const retired = new Set<number>();
+// Once a group answered ESRCH it is retired; any later call to that id stands for an unrelated process that reused it.
+const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+  const group = Math.abs(pid);
+  if (retired.has(group)) { calls.push(group + ' AFTER-RETIRED ' + signal); return; }
+  try { process.kill(pid, signal); calls.push(group + ' ' + signal + ' ok'); }
+  catch (error) { const code = (error as NodeJS.ErrnoException).code; calls.push(group + ' ' + signal + ' ' + code); if (code === 'ESRCH') retired.add(group); throw error; }
+};
+await lanes.runLanes([{name:'a',steps:[${f.step('one', 'code=0')},${f.step('two', 'grandchild')}]}], {graceMs:300,sweepMs:800,kill});
+console.log('CALLS ' + JSON.stringify(calls));`);
+    const run = launch(file);
+    assert.equal(await bounded(run.exited, 20_000), 0, run.output());
+    const calls: string[] = JSON.parse(/CALLS (.*)/.exec(run.output())?.[1] ?? '[]');
+    const one = f.pid('one')!, two = f.pid('two')!;
+    const of = (group: number) => calls.filter(c => c.startsWith(group + ' '));
+    assert.ok(calls.length > 0, 'the runner reports its probes and signals through the injected function');
+    assert.equal(calls.filter(c => c.includes('AFTER-RETIRED')).length, 0, calls.join('; '));
+    assert.deepEqual(of(one), [`${one} 0 ESRCH`], 'an empty group is probed once and retired without a signal');
+    assert.ok(of(two).some(c => c.endsWith('SIGTERM ok')) && of(two).some(c => c.endsWith('SIGKILL ok')), 'a stubborn descendant gets TERM then KILL');
+    assert.equal(of(two).at(-1), `${two} 0 ESRCH`, 'and the group is confirmed empty');
+    assert.ok(calls.findIndex(c => c.startsWith(two + ' ')) > calls.findIndex(c => c.startsWith(one + ' ')) , 'the first step is swept before the next one starts');
+    for (const c of calls) assert.ok(Number(c.split(' ')[0]) > 1, c);
+  } finally { f.dispose(); }
 });
 
 test('steps are stopped with a process group on POSIX and with taskkill /T /F on Windows, and only POSIX detaches them', () => {
