@@ -36,8 +36,10 @@ export function cleanupFeedback(message: CleanupMessage, locale = 'en') {
 
 export interface CleanupTarget {
   key: string; title: string; lifecycle: PlanView['lifecycle']; context: string; request: CleanupRequest;
+  /** Placement facts of the counted plan, so a view can check it is still in scope when the request is sent. */
+  where?: { owner: string; directory: string };
 }
-export type CleanupPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'>;
+export type CleanupPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'> & Partial<Pick<PlanView, 'ownerSessionId' | 'directory'>>;
 export interface CleanupState {
   target: CleanupTarget | null;
   pending: boolean;
@@ -47,7 +49,8 @@ export interface CleanupState {
 }
 export const initialCleanup = (): CleanupState => ({ target: null, pending: false, message: null, error: false });
 export function cleanupTarget(plan: CleanupPlan, storeId: string, context: string): CleanupTarget {
-  return { key: plan.key, title: plan.title, lifecycle: plan.lifecycle, context, request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
+  return { key: plan.key, title: plan.title, lifecycle: plan.lifecycle, context,
+    ...(plan.ownerSessionId !== undefined && plan.directory !== undefined ? { where: { owner: plan.ownerSessionId, directory: plan.directory } } : {}), request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
 }
 export function cleanupClosed(plan: Pick<PlanView, 'lifecycle'>) {
   return ['completed', 'cancelled', 'failed'].includes(plan.lifecycle);
@@ -227,7 +230,11 @@ export class PlanSelection {
   }
   forget(keys: string[]) {
     if (!keys.length) return;
-    for (const key of keys) { this.known.delete(key); this.chosen.delete(key); }
+    for (const key of keys) {
+      this.known.delete(key); this.chosen.delete(key);
+      // A Select all rule must not keep a departed plan pressed or target it in a later scan.
+      if (this.all) this.omitted.add(key);
+    }
     this.recount();
     this.version++;
   }
@@ -260,14 +267,16 @@ export function selectionConfirmation(plans: CleanupPlan[], storeId: string, con
     total: Math.min(eligible.length, TIDY_LIMIT), limited: eligible.length > TIDY_LIMIT }, action, active);
 }
 /** Shared sequential engine: receipt-bound results, no retries, context/Stop checked before each request.
- * Selection explicitly opts into active targets; Tidy never does. */
+ * Selection explicitly opts into active targets; Tidy never does. `admit` is asked right before each
+ * request: a target it refuses is skipped (counted as remaining), never sent. */
 export async function runTidy(host: ServiceHost, action: CleanupAction, targets: CleanupTarget[], current: () => boolean,
-  progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false): Promise<TidyResult> {
+  progress?: (done: number, total: number, confirmed?: CleanupTarget) => void, allowActive = false, admit?: (target: CleanupTarget) => boolean): Promise<TidyResult> {
   const succeeded: CleanupTarget[] = [];
   let attempted = 0;
   for (const target of targets.slice(0, TIDY_LIMIT)) {
     if (!current()) break;
     if (!cleanupClosed(target) && !allowActive) continue;
+    if (admit && !admit(target)) continue;
     attempted++;
     const { active: _active, ...request } = target.request;
     const result = await cleanupCall(host, action, { ...request,

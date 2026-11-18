@@ -90,3 +90,14 @@ test('unsupported active plans do not consume scan targets or prevent Check more
   assert.equal(second.unchecked, false);
   assert.equal(new Set(cursors).size, cursors.length, 'continuation must not recount excluded plans');
 });
+
+test('a receipt-confirmed plan is no longer selected under Select all and does not count', () => {
+  const plans = ['a', 'b', 'c'].map(id => plan(id, 'completed'));
+  const selection = new PlanSelection();
+  selection.reconcile('scope', plans, true); selection.selectAll();
+  selection.forget(['a']);
+  assert.equal(selection.has('a'), false);
+  assert.equal(selection.has('b'), true);
+  assert.equal(selection.count, 2);
+  assert.equal(selection.snapshot().includes(plans[0]), false, 'a later scan does not target it again');
+});

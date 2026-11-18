@@ -17,7 +17,9 @@ assert(start >= 0 && end > start);
 const code = ts.transpileModule(`(()=>{${source.slice(start, end)}})()`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const file = ts.createSourceFile('page.ts', source, ts.ScriptTarget.Latest, true);
-const scope = file.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'selectionScope');
+const fn = (name: string) => file.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name);
+const scope = fn('selectionScope');
+const endWithoutCleanup = fn('endSelectionWithoutCleanup');
 const plans = parsePlansPage(JSON.stringify(plansPage([
   summary('alpha', [], { directory: '/fixture/Alpha', lifecycle: 'finished' }),
   summary('beta', [], { directory: '/fixture/Beta', lifecycle: 'finished' }),
@@ -36,8 +38,8 @@ function frame() {
   const globals = createContext({ vc, ui: vc.ui, read: vc.read, selection, derivedBoard,
     visiblePlans: () => derivedBoard().plans, ownerOf: () => 'fixture', v: null,
     isSearching: () => !!vc.ui.search,
-    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionPage: '' });
-  if (scope) runInContext(ts.transpileModule(scope.getText(file),
+    selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionPage: '', selectionEpoch: 0 });
+  for (const node of [scope, endWithoutCleanup]) if (node) runInContext(ts.transpileModule(node.getText(file),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
   return { vc, selection, derivedBoard, globals,
     paint() { globals.read = vc.read; runInContext(code, globals); } };
@@ -75,11 +77,19 @@ test('Select all counts newly appended hits in the same search page array, dedup
 for (const searching of [false, true]) test(`Select mode ends when the service stops offering cleanup (${searching ? 'search results' : 'browse'})`, () => {
   const f = frame();
   if (searching) { f.vc.ui.search = { key: 'search' }; f.globals.v = { page: { hits: [], number: 1, checked: true }, criteria: { ...NO_FILTERS } }; }
+  const paintTop = () => runInContext('endSelectionWithoutCleanup(vc)', f.globals);
   f.paint(); f.selection.mode = true; f.selection.toggle(plans[0]);
-  f.paint();
+  paintTop(); f.paint();
   assert.equal(f.selection.mode, true, 'capable service keeps the mode');
+  assert.equal(f.globals.selectionEpoch, 0);
   f.vc.health = { planCleanup: undefined };
-  f.paint();
+  paintTop(); f.paint();
   assert.equal(f.selection.mode, false);
   assert.equal(f.selection.count, 0);
+  assert.equal(f.globals.selectionEpoch, 1, 'a pending selection confirmation is retired with the selection');
+});
+test('capability loss is handled before the no-read return, so Archived cannot revive an old selection', () => {
+  const paint = source.slice(source.indexOf('  paint(root, vc) {'));
+  const end = paint.indexOf('endSelectionWithoutCleanup(vc)'), early = paint.indexOf('if (!read) {');
+  assert(end > 0 && early > 0 && end < early);
 });

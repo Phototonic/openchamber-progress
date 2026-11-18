@@ -79,8 +79,8 @@ type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number;
 const boardDerivation = new BoardDerivation();
 const selection = new PlanSelection();
 let selectionEpoch = 0;
-/** Effective board filters at the last read, for the Tidy/selection context. */
-let tidyEffective = '';
+/** The filters the board displayed when a Tidy/selection was last opened (never while one runs or shows its result). */
+let tidyFilters: Filters | null = null;
 function selectionChanged() { selectionEpoch++; frame?.updateUi(() => ({})); }
 let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
@@ -160,6 +160,11 @@ function isSearching(vc: ViewContext<Ui>) {
 function selectionScope(vc: ViewContext<Ui>) {
   return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters,
     isSearching(vc) ? vc.ui.search!.criteria : derivedBoard(vc).filters, vc.ui.search?.key ?? null]);
+}
+/** Without cleanup support the selection bar is gone: leave Select mode and retire what was chosen, also with no read. */
+function endSelectionWithoutCleanup(vc: ViewContext<Ui>) {
+  if (vc.health?.planCleanup === 1 || !selection.mode) return;
+  selection.clear(); selection.mode = false; selectionEpoch++;
 }
 /** The submitted search of this frame identity, when the controller still runs it. */
 const searching = (vc: ViewContext<Ui>): SearchViewState | null => (isSearching(vc) ? search.view(resolveLanguage('auto', vc.env.locale)) : null);
@@ -298,11 +303,16 @@ startView<Ui>({
     }, matching, criteria ? 64 : 50, includes, allowActive);
   },
   // The displayed (effective) filters bind a count and its run, not only the saved ones. They are kept
-  // through the run's own reconciliation, which temporarily clears the read.
+  // while a run is in flight or its result is shown: a live-discovery restart or the run's own
+  // reconciliation reshapes them without the user changing anything, and each request is re-checked below.
   tidyScope: vc => {
-    if (vc.read) tidyEffective = isSearching(vc) ? '' : JSON.stringify(derivedBoard(vc).filters);
-    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyEffective]);
+    if (vc.read && !vc.cleanup.pending && !vc.cleanup.tidy?.result) tidyFilters = isSearching(vc) ? null : derivedBoard(vc).filters;
+    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters]);
   },
+  // Right before each request: the plan must still be placed in the scope the user confirmed (live
+  // placement can change without any plan revision changing). Anything else is skipped.
+  tidyMember: (vc, t) => inPlace(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS,
+    { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }, vc.live, vc.env.boundSource ?? null),
   forgetPlans: (keys, ui, _vc, confirmed) => {
     // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list.
     if (confirmed?.size) selection.forget([...confirmed]);
@@ -351,6 +361,7 @@ startView<Ui>({
     frame = vc;
     captures.beginPaint();
     const { read, failure, ui } = vc;
+    endSelectionWithoutCleanup(vc);
     const env = read ? { ...vc.env, live: derivedBoard(vc).live } : vc.env;
     rowPlaces = read ? derivedBoard(vc).places : new Map();
     rowPlans = new Map(read?.plans.map(p => [p.key, p]) ?? []);
@@ -395,8 +406,6 @@ startView<Ui>({
       selectionSearchPlans = [...new Map(v.page.hits.map(h => [h.plan.key, h.plan])).values()];
     }
     if (!v) selectionPlans = visiblePlans(vc);
-    // Without cleanup support the bar is gone: leave Select mode so rows open again.
-    if (vc.health?.planCleanup !== 1 && selection.mode) { selection.clear(); selection.mode = false; }
     selection.reconcile(selectionScope(vc),
       v ? selectionSearchPlans : selectionPlans!, v ? true : !!read.truncated);
     const empty = !v && !read.plans.length && ui.filters.session === ALL;

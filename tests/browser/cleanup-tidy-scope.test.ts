@@ -82,5 +82,5 @@ test('a truncated browse Tidy follows browse placement for a worktree outside th
 test('a search scan still refuses locations this window cannot classify', async () => {
   const { vc, globals } = outsideRoots();
   vc.ui.search = { criteria: { q: 'x', source: ALL, session: ALL, lifecycle: ALL, status: ALL, project: 'p:gone', worktree: ALL } };
-  await assert.rejects((hook('tidyScan', globals)(vc, 'search') as CleanupScan).more(() => true));
+  await assert.rejects((hook('tidyScan', globals)(vc, 'search') as CleanupScan).more(() => true), { message: 'The selected locations are unavailable.' });
 });
