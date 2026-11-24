@@ -1,5 +1,9 @@
 # Implementation tasks
 
+## Commit conventions
+
+For implementation commits on `feat/178-plan-document-markdown`, apply the `conventional-git` skill. Keep each commit focused on one coherent change and use `<type>(<scope>): <description>` (scope optional). Use a lowercase imperative description without a trailing period and keep the full subject to 70 characters. In the body, record why the change was made and how it was verified. Use a separate `Refs #178` footer for traceability without closing the issue; use a closing keyword only for an authorized change that fulfills the issue. Do not add AI signatures or AI co-author trailers.
+
 ## 1. Shared presentation
 
 - [ ] 1.1 Resolve the implementation checkout before editing: use a source-only branch from current `upstream/dev`, carry only the intended change, and verify that the eventual `dev` diff has no release commits or generated bundles.
