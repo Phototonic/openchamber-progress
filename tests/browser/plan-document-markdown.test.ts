@@ -14,3 +14,14 @@ test('only explicit absolute web destinations are normalized for navigation', ()
     assert.equal(webDocumentUrl(url), null, url);
   }
 });
+
+test('web destinations work in browsers without URL.parse', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(URL, 'parse');
+  Reflect.deleteProperty(URL, 'parse');
+  try {
+    assert.equal(webDocumentUrl('https://example.invalid/notes'), 'https://example.invalid/notes');
+    assert.equal(webDocumentUrl('https://[invalid'), null);
+  } finally {
+    if (descriptor) Object.defineProperty(URL, 'parse', descriptor);
+  }
+});

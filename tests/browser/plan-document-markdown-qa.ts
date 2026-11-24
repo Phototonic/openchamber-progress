@@ -101,12 +101,28 @@ try {
   const socket = ws = new WebSocket(targets.find(t => t.type === 'page')!.webSocketDebuggerUrl);
   await until(() => socket.readyState === WebSocket.OPEN, 'DevTools connection');
   let next = 0;
-  const replies = new Map<number, (msg: any) => void>();
   const send = (method: string, params: object = {}) => new Promise<any>((resolve, reject) => {
     const id = ++next;
-    const timer = setTimeout(() => { replies.delete(id); reject(Error(`DevTools timeout: ${method}`)); }, 4500);
-    replies.set(id, m => { clearTimeout(timer); m.error ? reject(Error(`${method}: ${m.error.message}`)) : resolve(m.result); });
-    socket.send(JSON.stringify({ id, method, params }));
+    const onReply = (event: MessageEvent) => {
+      const m = JSON.parse(String(event.data));
+      if (m.id !== id) return;
+      clearTimeout(timer);
+      socket.removeEventListener('message', onReply);
+      if (m.error) reject(Error(`${method}: ${m.error.message}`));
+      else resolve(m.result);
+    };
+    const timer = setTimeout(() => {
+      socket.removeEventListener('message', onReply);
+      reject(Error(`DevTools timeout: ${method}`));
+    }, 4500);
+    socket.addEventListener('message', onReply);
+    try {
+      socket.send(JSON.stringify({ id, method, params }));
+    } catch (error) {
+      clearTimeout(timer);
+      socket.removeEventListener('message', onReply);
+      reject(error);
+    }
   });
   const origin = `http://127.0.0.1:${fx.port}`;
   const shellPaths = new Set(['/', '/service', '/favicon.ico', ...['page', 'panel'].flatMap(s => [`/ui/${s}/index.html`, `/ui/${s}/main.js`])]);
@@ -114,8 +130,8 @@ try {
   const allowed = (value: string) => { const u = new URL(value); return u.origin === origin && shellPaths.has(u.pathname); };
   socket.onmessage = e => {
     const m = JSON.parse(String(e.data));
-    if (m.id) { const reply = replies.get(m.id); replies.delete(m.id); reply?.(m); }
-    else if (m.method === 'Fetch.requestPaused') {
+    if (m.id) return;
+    if (m.method === 'Fetch.requestPaused') {
       const { requestId, request } = m.params;
       const permitted = allowed(request.url);
       if (!permitted) unexpectedRequests++;
@@ -190,6 +206,8 @@ try {
   for (const s of ['page', 'panel'] as const) {
     surface = s;
     const claim = (label: string, pass: unknown, notes?: unknown) => check(`${s}: ${label}`, pass, notes);
+    // Model older WebViews that support the URL constructor but not URL.parse.
+    assert.equal(await guest(`delete w.URL.parse;return typeof w.URL.parse`), 'undefined');
     await evaluate(`qa.show([${js(s)}],${s === 'page' ? 1000 : 440});qa.theme('light');qa.noDocumentText='missing'`);
     claim('lazy document read', await reads('markdown') === 0);
     await evaluate(`qa.holds.push({path:'/v1/document',frame:${js(s)},plan:'markdown',tag:'loading'})`);

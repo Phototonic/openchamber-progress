@@ -11,8 +11,12 @@ export const isMarkdownDocument = (path: string | undefined) => path?.slice(-3).
 
 export function webDocumentUrl(destination: string): string | null {
   if (!/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
-  const url = URL.parse(destination);
-  return url?.hostname ? url.href : null;
+  try {
+    const url = new URL(destination);
+    return url.hostname ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 const tags = new Set([
