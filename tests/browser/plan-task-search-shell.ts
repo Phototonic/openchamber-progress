@@ -43,7 +43,7 @@ export const PROJECTS = [{ id: 'alpha', name: 'Alpha', directory: '/fixture/main
 
 const script = `
 const light=${javascriptLiteral(LIGHT)},dark=${javascriptLiteral(DARK)},theme=JSON.parse(JSON.stringify(light));
-const frames=${javascriptLiteral(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
+const frames=${javascriptLiteral(FRAMES)}.filter(f=>!window.__documentMarkdown||f!=='status'),frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
 window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${javascriptLiteral(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],preferenceReplies:[],messages:[],errors:[]};
@@ -88,6 +88,7 @@ addEventListener('message',async e=>{
   if(qa.holdPreference&&f==='panel'&&q.op==='get'&&q.key==='rail-plan:M'){qa.holdPreference=false;qa.held.push({tag:'preference',frame:f,path:'storage',go:()=>result({...reply,found:true,value:'source-beta/P-map'})})}
   else if(qa.railPreferences&&f==='panel'&&q.key?.startsWith('rail-plan:')){if(q.op==='set')qa.railPreferences[q.key]=q.value;if(q.op==='delete')delete qa.railPreferences[q.key];result({...reply,...(q.op==='get'&&typeof qa.railPreferences[q.key]==='string'?{found:true,value:qa.railPreferences[q.key]}:{})})}
   else result(reply)}
+ else if(window.__documentMarkdown&&m.type==='open-url'){qa.opened.push({frame:f,url:m.payload.url});result()}
  else if(m.type==='service-request'){
   const q=m.payload,t0=performance.now();qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null,at:t0});
   const failing=qa.fail.find(x=>x.path===q.path&&(!x.frame||x.frame===f));
@@ -105,7 +106,8 @@ addEventListener('message',async e=>{
     if(window.__mapAttribution&&q.path==='/v1/plan'&&reply.status===200){const b=JSON.parse(reply.body);for(const item of b.items.data){if(item.id==='L')delete item.assigneeSessionId;if(q.query.source==='source-beta'&&item.id==='B')item.assigneeSessionId='map-child'}reply.body=JSON.stringify(b)}
     // QT fault injection only: older/missing/unloaded/mismatched child evidence, not Store writes.
     if(q.path==='/v1/subagent-runs'&&reply.status===200&&qa.mapRunFault?.[f]){const b=JSON.parse(reply.body),fault=qa.mapRunFault[f];for(const row of b.data){if(fault==='missing')delete row.latestForChild;if(fault==='unloaded')row.latestForChild=false;if(fault==='childless'){row.childSessionId=null;row.latestForChild=false}if(fault==='other')row.childSessionId='other-child'}reply.body=JSON.stringify(b)}
-   if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
+    if(window.__documentMarkdown&&q.path==='/v1/document'&&reply.status===200&&qa.noDocumentText===q.query?.plan){const b=JSON.parse(reply.body);b.text=null;b.nextCursor=null;reply.body=JSON.stringify(b)}
+    if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
    if(q.path==='/health'&&qa.managedNotReady){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
     if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison||qa.stripGraph)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;if(qa.stripGraph)delete b.planGraph;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
@@ -214,8 +216,9 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-final' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' | 'design-refactor' = 'search', keyboard = mode === 'keyboard-focus', productionMap = mode === 'dependency-map-final', design: { guestRoot?: string; slice?: string } = {}, measure?: { surface: string; allRoutes?: boolean }) {
-  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-final', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'design-refactor'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-final' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' | 'design-refactor' | 'document-markdown' = 'search', keyboard = mode === 'keyboard-focus', productionMap = mode === 'dependency-map-final', design: { guestRoot?: string; slice?: string } = {}, measure?: { surface: string; allRoutes?: boolean }) {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-final', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'design-refactor', 'document-markdown'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+  const isDocument = mode === 'document-markdown';
   const isDesign = mode === 'design-refactor';
   const large = mode === 'large-plan' || mode === 'dependency-map-large';
   const interaction = mode === 'dependency-map-interaction' || mode === 'dependency-map-large' || mode === 'dependency-map-attribution';
@@ -226,13 +229,13 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   const primitiveRoot = isDesign ? mkdtempSync('/tmp/opencode/design-primitives-') : null;
   if (primitiveRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/design-primitives-guest.ts', `${primitiveRoot}/main.js`], { stdio: 'pipe' });
   if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
-  const f = searchFixture(!large && !map && !isDesign);
+  const f = searchFixture(!large && !map && !isDesign && !isDocument);
   const replay = large ? createLargePlanReplay(f) : null;
   const designFixture = isDesign ? seedDesignFixture(f, design.slice === 'board') : null;
-  if (replay) replay.seed(); else if (map) seedMapFixture(f); else if (!isDesign) { seedSearchLibrary(f); seedExtras(f); }
+  if (replay) replay.seed(); else if (map) seedMapFixture(f); else if (!isDesign && !isDocument) { seedSearchLibrary(f); seedExtras(f); }
   let attribution = mode === 'dependency-map-attribution' ? seedMapAttribution(f) : null;
   if (mode === 'keyboard-focus') seedKeyboard(f);
-  const second = searchFixture(!large && !map && !isDesign);
+  const second = searchFixture(!large && !map && !isDesign && !isDocument);
   if (isDesign) seedDesignFixture(second, design.slice === 'board');
   if (map) seedMapFixture(second);
   if (attribution) seedMapAttribution(second);
@@ -249,11 +252,14 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     try {
       if (url.pathname === '/') {
         let page = large || preview || productionMap ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        // Browser QA: only these two sandboxed guests and an intercepted SDK destination.
+        // Same origin permits DOM inspection; this is not a test of native host isolation.
+        if (isDocument) page = page.replace('<script>', '<script>window.__documentMarkdown=true;').replaceAll('<iframe ', '<iframe sandbox="allow-scripts allow-same-origin" ').replace(/<section data-frame="status".*?<\/section>/, '').replace('</body>', '<script>qa.opened=[];</script></body>');
         if (isDesign) page = page.replace('<script>', '<script>window.__largePlan=true;').replace('</body>', `<script>qa.projects=[{id:'harbor-app',name:'harbor-app',directory:'/fixture/harbor-app'},{id:'lighthouse-app',name:'lighthouse-app',directory:'/fixture/lighthouse-app'}];qa.worktrees={'harbor-app':[{directory:'/fixture/harbor-app/release-2-0',name:'release-2-0'}]};qa.show(['page','panel','status'],360);document.querySelector('section[data-frame=page]').style.width='1100px';</script></body>`);
         if (attribution) page = page.replace('<script>', '<script>window.__mapAttribution=true;');
         if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
-        if (measure?.allRoutes) page = page.replace("if(!q.path.startsWith('/v1/search')&&!['/v1/plan','/v1/plan-graph','/v1/subagent-runs','/health','/v1/plans'].includes(q.path))return;", '').replace('const e={frame:f,traffic:', 'const e={query:q.query,frame:f,traffic:');
+        if (measure?.allRoutes || isDocument) page = page.replace("if(!q.path.startsWith('/v1/search')&&!['/v1/plan','/v1/plan-graph','/v1/subagent-runs','/health','/v1/plans'].includes(q.path))return;", '').replace('const e={frame:f,traffic:', 'const e={query:q.query,frame:f,traffic:');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
       }
       else if (primitiveRoot && url.pathname === '/primitives.html') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><meta name="viewport" content="width=device-width"><title>Primitive QA</title><div id="root"></div><script src="/primitives.js"></script></html>'); }
@@ -328,7 +334,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     if (!r.ok) throw new Error(`fixture ${action} failed (${r.status})`);
   }
   return {
-    ...(measure ? { fixture: f } : {}), freshSetup, port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
+    ...(measure || isDocument ? { fixture: f } : {}), freshSetup, port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
     previewHash: previewRoot ? createHash('sha256').update(previewPrefix).update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     mapAttribution: attribution,
