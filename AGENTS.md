@@ -45,3 +45,17 @@ Everything committed or published (files, generated bundles, commit messages, br
 - No raw logs; share only minimal, sanitized excerpts.
 - Review the whole diff and PR metadata for private data before pushing.
 - Keep AI review transcripts out of commits and PRs unless the maintainer asks for them.
+
+## Agent skills
+
+### Issue tracker
+
+Track issues in GitHub Issues for `Phototonic/openchamber-progress`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five standard triage roles. See `docs/agents/triage-labels.md` for label availability.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
