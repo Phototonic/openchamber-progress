@@ -157,8 +157,8 @@ try {
       return y+b.y>=0&&y+b.y<innerHeight&&el.contains(d.elementFromPoint(x,y))?[x+b.x,y+b.y]:null;`), `${surface}: pointer target ${selector}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: xy[0], y: xy[1], button: 'left', clickCount: 1 });
   };
-  const key = async (k: 'Tab' | 'Enter' | 'PageDown') => {
-    const codes = { Tab: 9, Enter: 13, PageDown: 34 };
+  const key = async (k: 'Tab' | 'Enter' | 'PageDown' | 'Escape') => {
+    const codes = { Tab: 9, Enter: 13, PageDown: 34, Escape: 27 };
     for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: codes[k], ...(type === 'keyDown' && k === 'Enter' ? { text: '\r' } : {}) });
   };
   const focus = (selector: string) => guest(`const el=${has(selector)};el.focus();return el===d.activeElement`);
@@ -180,6 +180,7 @@ try {
   await until(() => evaluate(`window.frame?.('page')?.contentDocument?.readyState==='complete' && window.frame?.('panel')?.contentDocument?.readyState==='complete' && frame('panel').contentWindow.location.pathname==='/ui/panel/index.html'`), 'fixture frames');
   await evaluate(`for(const f of document.querySelectorAll('iframe')) f.style.height='970px'`);
   const initialNavigations = navigations;
+  const documentButton = '[data-testid="plan-view-document"] button';
   async function open(id: string) {
     if (surface === 'page') {
       const row = `[data-testid="plan-row-${id}"]`;
@@ -188,11 +189,15 @@ try {
       await evaluate(`qa.context(${js(id)})`);
       await wait(`${has('[data-testid="plan-title"]')}?.textContent?.includes(${js(`Document fixture ${id}`)})`, `${id} rail selected`);
     }
-    await click('[data-testid="more-trigger"]');
-    await click('[data-menu-id="document"]');
+    await wait(`!!${has(documentButton)}`, `${id} plan view`);
+    assert(await focus(documentButton)); await key('Enter');
     await wait(`!!${has(doc(id))}`, `${id} document opened`);
   }
-  const leave = () => click('[data-testid="surface-panel-back"]');
+  const leave = async () => {
+    assert(await focus('[data-testid="surface-panel-back"] button'));
+    await key('Enter');
+    await wait(`!!${has(documentButton)}`, 'Back returns to the plan view');
+  };
   const semantic = () => guest<string[]>(`return [...n.querySelectorAll('h1,h2,strong')].map(el=>el.tagName+':'+el.textContent)`);
   const markState = () => guest<{ checked: boolean; inert: boolean }[]>(`return [...d.querySelectorAll(${js(marks)})].map(el=>({checked:el.checked??(el.getAttribute('aria-checked')==='true'),inert:el.tagName==='INPUT'?el.disabled:el.tabIndex<0}))`);
   const snapshot = () => ({
@@ -213,6 +218,7 @@ try {
     await evaluate(`qa.holds.push({path:'/v1/document',frame:${js(s)},plan:'markdown',tag:'loading'})`);
     // Hold one real response to observe loading; the missing-body case below exercises retry.
     await open('markdown');
+    claim('activation focuses the document heading', await guest(`return d.activeElement===${has('[data-testid="surface-panel-heading"]')}`));
     await wait(`qa.held.some(x=>x.tag==='loading')`, 'held document request');
     claim('loading status, no body', await guest(`return !n&&${has('[data-testid="document-loading"][role="status"] [aria-label="Loading the document"]')}!==null`));
     await evaluate(`qa.release('loading')`);
@@ -267,6 +273,21 @@ try {
     await wait('n?.scrollTop>0', 'keyboard scroll moves document body');
     claim('keyboard reads long body by scrolling its own region', await guest(`return d.activeElement===n&&n.scrollHeight>n.clientHeight`));
     await leave();
+    claim('Back restores focus to the document button', await guest(`return d.activeElement===${has(documentButton)}`));
+    await evaluate(`qa.show([${js(s)}],280)`);
+    await click('[data-testid="plan-view-map"] button');
+    await wait(`${has('[data-testid="plan-view-map"] button')}?.getAttribute('aria-pressed')==='true'`, 'Map selected');
+    claim('Map, List and Document fit in one control group at 280px', await guest(`const group=${has('[data-testid="plan-view"]')};return [...group.children].map(x=>x.dataset.testid).join() === 'plan-view-map,plan-view-list,plan-view-document'&&group.scrollWidth<=group.clientWidth+1&&d.documentElement.scrollWidth<=w.innerWidth+1`));
+    await click('[data-testid="more-trigger"]');
+    claim('More no longer duplicates the document action', await guest(`return !!${has('[data-testid="more-popup"]')}&&!${has('[data-menu-id="document"]')}`));
+    await key('Escape');
+    assert(await focus(documentButton)); await key('Enter');
+    await wait(`d.activeElement===${has('[data-testid="surface-panel-heading"]')}`, 'keyboard opens the document');
+    await key('Escape');
+    await wait(`${has('[data-testid="plan-view-map"] button')}?.getAttribute('aria-pressed')==='true'`, 'Escape restores Map');
+    claim('Escape preserves Map and focuses the document button', await guest(`return d.activeElement===${has(documentButton)}`));
+    await click('[data-testid="plan-view-list"] button');
+    await evaluate(`qa.show([${js(s)}],${s === 'page' ? 1000 : 440})`);
     for (const id of ['literal-txt', 'literal-unknown']) {
       await open(id); await wait('!!n', `${id} literal body`);
       claim(`${id} retains byte-identical literal markup`, await guest(`return n.tagName==='PRE'&&n.textContent===${js(sample)}`));

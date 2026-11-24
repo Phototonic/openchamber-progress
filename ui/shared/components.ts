@@ -614,7 +614,7 @@ export class ProgressShell {
     if (previous && previous !== panel) this.closePanel?.(previous);
   }
   private menu: ReturnType<typeof moreMenu> | null = null;
-  private focus: 'heading' | 'more' | null = null;
+  private focus: 'heading' | 'more' | 'document' | null = null;
   private review: { key: string; revision: number | null } | null = null;
   reset(keepSetup = false) {
     // Same-reading data refreshes (including capture changes) keep Setup usable.
@@ -630,10 +630,15 @@ export class ProgressShell {
     if (key !== this.key) { this.reset(); this.key = key; }
   }
   showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
+  openDocument<U>(vc: ViewContext<U>) {
+    this.setPanel('document'); this.focus = 'heading'; vc.setUi({});
+  }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
-    const target = this.focus === 'heading' ? '[data-testid="surface-panel-heading"]' : this.focus === 'more' ? '[data-testid="more-trigger"]' : null;
+    const target = this.focus && {
+      heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', document: '[data-testid="plan-view-document"] button',
+    }[this.focus];
     this.focus = null;
     if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
   }
@@ -665,7 +670,6 @@ export class ProgressShell {
       items.push({ separator: true });
     }
     if (plan) {
-      add('document', t.document, () => open('document'));
       if (options.board) add('history', t.history, () => open('history'));
       const count = participants(plan, ready).length;
       add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
@@ -734,7 +738,7 @@ export class ProgressShell {
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
     box.setAttribute('aria-label', t[kind]);
-    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = 'more'; vc.setUi({}); };
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = kind === 'document' ? 'document' : 'more'; vc.setUi({}); };
     button(box, 'surface-panel-back', t.back, back, 'ghost');
     const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
     box.append(h, options.renderPanel(kind));
@@ -755,7 +759,7 @@ export function listFilters(reading: ReadingView | null, locale: string) {
   return box;
 }
 
-export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string) {
+export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string, openDocument: () => void) {
   const language = resolveLanguage('auto', locale);
   const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
   const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
@@ -764,6 +768,7 @@ export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | '
     const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
     const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
   }
+  button(box, 'plan-view-document', shellCopy(locale).document, openDocument, 'ghost');
   return box;
 }
 

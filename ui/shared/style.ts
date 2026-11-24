@@ -773,7 +773,7 @@ ${PHONE_CSS}
 .ap-surface-settings{display:flex;justify-content:flex-end}
 .ap-surface-panel{display:flex;flex-direction:column;gap:14px}
 .ap-surface-panel>.ap-h{text-transform:none;letter-spacing:0;font-size:15px}
-.ap-surface-view-switch{display:flex;gap:2px;align-items:center}
+.ap-surface-view-switch{display:flex;flex-wrap:wrap;gap:2px;align-items:center}
 .ap-surface-view-switch button:focus-visible,.ap-more .ap-actions-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
 .ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5}
 .ap-progress-line .ap-seg{order:0}
