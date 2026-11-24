@@ -218,7 +218,7 @@ startView<Ui>({
         if (mode === 'list' && mapShown) { railMap.leave(true); return; }
         if (mode === 'map') railMap.enter(); else railMap.leave();
         chooseView(vc, mode);
-      }, language) : undefined;
+      }, language, () => shell.openDocument(vc)) : undefined;
       if (viewSwitch && !mapShown) root.append(viewSwitch);
       if (plan && mapShown && session) {
         // The map keeps its own header and title; the compact picker stays above it.

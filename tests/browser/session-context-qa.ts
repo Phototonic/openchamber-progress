@@ -56,17 +56,14 @@ evaluate('qa.dark();true'); show('status', 280); shot('status', 'sidebar-empty-d
 show('panel'); shot('panel', 'sidebar-empty', 220);
 
 // Hold rail preference restoration and A detail. A → draft → B drops their authority.
-// Document is now reachable from the menu after complete task detail, so exercise its
-// independent held-read retirement in a second reading instead of bypassing that menu.
+// Exercise the document's independent held-read retirement in a second reading.
 evaluate(`qa.holdStorage=true;qa.hold={surface:'panel',paths:['/v1/plan']};true`); context('A');
 wait('panel', `d.querySelector('[data-testid="plan-P-A"]') && qa.held.some(x=>x.path==='/v1/plan')`);
 context(null); sideState('unscoped-state'); context('B'); sideState('empty-state');
 evaluate('qa.release();true'); sideState('empty-state');
 evaluate(`qa.hold={surface:'panel',paths:['/v1/document']};true`); context('A');
 wait('panel', `d.querySelector('[data-testid="plan-P-A"] .ap-tasks[data-complete]')`);
-click('panel', '[data-testid="plan-actions"] button');
-wait('panel', `d.querySelector('[role="menuitem"][id$="-document"]')`);
-click('panel', '[role="menuitem"][id$="-document"]');
+click('panel', '[data-testid="plan-view-document"] button');
 wait('panel', `qa.held.some(x=>x.path==='/v1/document')`);
 context(null); sideState('unscoped-state'); context('B'); sideState('empty-state');
 evaluate('qa.release();true'); sideState('empty-state');

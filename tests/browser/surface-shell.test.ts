@@ -121,7 +121,7 @@ test('plan menu is shared with closed-plan cleanup and keeps destructive actions
     { id: 'archive', label: 'Archive', run() {} }, { id: 'delete', label: 'Delete', destructive: true, run() {} },
   ]), true);
   const ids = f.menus.at(-1).items.filter((i: any) => !i.separator).map((i: any) => i.id);
-  assert.deepEqual(Array.from(ids), ['document', 'history', 'sessions', 'archive', 'language', 'setup', 'troubleshooting', 'delete']);
+  assert.deepEqual(Array.from(ids), ['history', 'sessions', 'archive', 'language', 'setup', 'troubleshooting', 'delete']);
 });
 
 test('rail More offers the checked quiet filter without a selected plan', () => {
@@ -235,7 +235,10 @@ test('panel state is frame-local and resets on plan or authority changes', () =>
   assert.equal(f.paint(f.plan).opened, false);
 });
 test('shell reconciliation retires another plan panel before view visibility is computed', () => {
-  const f = fixture(); f.paint(f.plan); f.menus.at(-1).onSelect('document');
+  const f = fixture('ru'); f.paint(f.plan);
+  const controls = f.exports.surfaceViewSwitch('list', () => {}, f.vc.env.locale, () => f.shell.openDocument(f.vc));
+  assert.deepEqual(Array.from(controls.children, (node: Element) => node.querySelector('button')?.textContent), ['Карта', 'Список', 'Документ плана']);
+  f.buttons.at(-1).listeners.click();
   f.shell.reconcile(f.vc, f.plan, f.options);
   assert.equal(f.shell.activePanel, 'document', 'a repaint of the same reading keeps its panel');
   f.shell.reconcile(f.vc, { ...f.plan, key: 'source/another-plan' }, f.options);

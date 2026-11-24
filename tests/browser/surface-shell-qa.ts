@@ -114,7 +114,13 @@ try {
     check(`${id}-tab-map`, await guest(surface, `return d.activeElement?.closest('[data-testid]')?.dataset.testid==='plan-view-map'`));
     await key('Tab');
     check(`${id}-tab-list`, await guest(surface, `return d.activeElement?.closest('[data-testid]')?.dataset.testid==='plan-view-list'`));
-    for (const kind of ['document', 'sessions', 'setup', ...(surface === 'page' ? ['history'] : [])]) {
+    await key('Tab');
+    check(`${id}-tab-document`, await guest(surface, `return d.activeElement?.closest('[data-testid]')?.dataset.testid==='plan-view-document' && d.activeElement.textContent===${js(t.document)}`));
+    await click(surface, '[data-testid="plan-view-document"] button');
+    await wait(surface, `!!d.querySelector('[data-testid="surface-panel-document"]')`);
+    await key('Escape');
+    await wait(surface, `d.activeElement?.closest('[data-testid]')?.dataset.testid==='plan-view-document'`);
+    for (const kind of ['sessions', 'setup', ...(surface === 'page' ? ['history'] : [])]) {
       await click(surface, '[data-testid="more-trigger"]');
       await click(surface, `[data-menu-id="${kind}"]`);
       await wait(surface, `!!d.querySelector('[data-testid="surface-panel-${kind}"]')`);
@@ -136,6 +142,7 @@ try {
     await viewport(390);
     const state = mode === 'empty' ? 'empty-state' : mode === 'setup' ? 'setup-needed' : 'state-busy';
     await wait(surface, `w.location.href===${js(url)} && !!d.querySelector('[data-testid="${state}"]') && !!d.querySelector('[data-testid="more-trigger"]')`);
+    check(`${surface}-${mode}-${locale}-no-document-button`, await guest(surface, `return !d.querySelector('[data-testid="plan-view-document"]')`));
     await click(surface, '[data-testid="more-trigger"]');
     for (const id of ['language', 'setup', 'troubleshooting']) check(`${surface}-${mode}-${id}`, await guest(surface, `return !!d.querySelector('[data-menu-id="${id}"]')`));
     await shot(`${surface}-${mode}-${locale}-more`);
@@ -173,8 +180,7 @@ try {
   await click('panel', '[data-testid="plan-selector"] button');
   await click('panel', '[role="option"][id$="/P-second"]');
   await wait('panel', `!!d.querySelector('[data-testid="map-world"]') && d.querySelector('[data-testid="plan-title"]')?.textContent.includes('Второй план')`);
-  await click('panel', '[data-testid="more-trigger"]');
-  await click('panel', '[data-menu-id="document"]');
+  await click('panel', '[data-testid="plan-view-document"] button');
   await wait('panel', `!!d.querySelector('[data-testid="surface-panel-document"]')`);
   await click('panel', '[data-testid="plan-selector"] button');
   await click('panel', '[role="option"][id$="/P-phone"]');
