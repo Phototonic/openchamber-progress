@@ -1416,6 +1416,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       view: { fresh: !failure, captureEnabled: read?.captureEnabled ?? false },
       // Components offer this only for sessions the host currently lists and the verified bound source.
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
+      openDocumentUrl: (url) => { void host.openUrl(url).catch(() => {}); },
     };
     return {
       host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,

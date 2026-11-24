@@ -3,6 +3,7 @@ import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpi
 import type { Loadable, ReadingView, SummaryView, ViewContext } from './app.ts';
 import { languageMessages, resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { deriveDependencies } from './dependency-derivation.ts';
+import { isMarkdownDocument, renderDocumentMarkdown } from './document-markdown.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, formatCount, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
@@ -327,6 +328,7 @@ export interface Env {
   /** The last read succeeded and capture is on; together with an active plan this gates motion. */
   view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
+  openDocumentUrl?: (url: string) => void;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -939,8 +941,8 @@ export function partState(id: string, what: string, value: Loadable<unknown> | n
 }
 
 /**
- * Read-only captured document, fetched on demand. Text only: never parsed as Markdown/HTML,
- * never fetches assets. A retained earlier capture stays readable when the latest read failed.
+ * Read-only captured document, fetched on demand, without loading document assets.
+ * A retained earlier capture stays readable when the latest read failed.
  */
 export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'inline', doc: { get: () => Loadable<DocumentBody> | null; request: () => void }) {
   const ref = plan.document;
@@ -962,12 +964,14 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
     if (!value || value.state !== 'ready') { body.append(partState('document-loading', say('the document', env.locale), value, doc.request, env.locale)); return; }
     const d = value.value;
     if (d.text === null) { body.append(el('p', 'ap-note', say('The captured text is not available.', env.locale))); return; }
-    const pre = testid(el('pre'), 'document-text');
-    pre.tabIndex = 0;
-    pre.dataset.scrollKey = `doc-${plan.key}`;
-    pre.textContent = d.text;
+    const formatted = isMarkdownDocument(d.ref.path);
+    const preview = testid(formatted ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
+    preview.tabIndex = 0;
+    preview.dataset.scrollKey = `doc-${plan.key}`;
+    if (formatted) renderDocumentMarkdown(preview, d.text, env.locale, env.openDocumentUrl);
+    else preview.textContent = d.text;
     if (d.historical) body.append(testid(el('p', 'ap-doc-warn', say('A newer capture was recorded while this loaded. This is the earlier capture.', env.locale)), 'document-historical'));
-    body.append(pre);
+    body.append(preview);
     const note = el('p', 'ap-note');
     if (d.ref.capturedAt) note.append(age(d.ref.capturedAt, env, say(ref.state === 'captured' ? 'Captured ' : 'Last good capture ', env.locale)), document.createTextNode('. '));
     note.append(document.createTextNode(say(ref.state !== 'captured'
