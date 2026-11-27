@@ -166,8 +166,13 @@ try {
   };
   const key = async (k: string, code = k === ' ' ? 'Space' : k) => { const text = k.length === 1 ? k : k === 'Enter' ? '\r' : undefined; await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ' ': 32 }[k] ?? 0, ...(text ? { text } : {}) }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ' ': 32 }[k] ?? 0 }); };
   const focused = () => guest<string | null>(`return d.activeElement?.closest('[data-testid]')?.dataset.testid??null`);
-  const shot = async (name: string) => { await guest(`d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-review"],[data-testid="setup-migration-capture-review"]')?.scrollIntoView({block:'start'});return true`); await frames(); await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); shots.push(`${name}.png`); };
+  const shot = async (name: string, fromTop = false) => { await guest(fromTop ? `frame().contentWindow.scrollTo(0,0);return true` : `d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-review"],[data-testid="setup-migration-capture-review"]')?.scrollIntoView({block:'start'});return true`); await frames(); await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); shots.push(`${name}.png`); };
   const viewport = async (width: number, height: number) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+  const releaseShot = async (name: string, width: number) => {
+    const bottom = await guest<number>(`return d.querySelector('[data-testid="surface-panel-setup"]').getBoundingClientRect().bottom+frame().contentWindow.scrollY`);
+    await viewport(width, Math.max(844, Math.ceil(bottom) + 20));
+    await shot(name, true);
+  };
   const card = (attr: string) => guest<string | null>(`return d.querySelector('[data-testid="setup-migration-progress"]')?.getAttribute(${literal(attr)})??null`);
   const fits = () => guest<{ ok: boolean; overflow: number; offenders: string[] }>(`const w=d.documentElement.clientWidth,bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.right>w+0.5||r.left<-0.5)}).slice(0,5).map(e=>e.dataset.testid||e.className||e.tagName);return {ok:d.scrollingElement.scrollWidth<=w&&!bad.length,overflow:d.scrollingElement.scrollWidth-w,offenders:bad}`);
   const stepCalls = () => log.filter(l => l.path === '/v1/setup/managed-step').length;
@@ -468,6 +473,12 @@ try {
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="paused"]')`, 'fresh paused');
   };
   const waitComplete = (what: string) => wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="complete"]')`, what);
+  const leadBeforeDetails = (action: string) => guest<boolean>(`const q=h=>d.querySelector('[data-testid="'+h+'"]');
+    const heading=q('setup-migration-heading'),warning=q('setup-migration-capture-warning'),button=q(${literal(action)}),details=q('setup-details');
+    return heading.checkVisibility()&&warning.checkVisibility()&&button.checkVisibility()&&!!(heading.compareDocumentPosition(warning)&4)&&
+      !!(warning.compareDocumentPosition(button)&4)&&!!(button.compareDocumentPosition(details)&4)&&
+      !q('setup-recording-state')&&!q('managed-capture-control')&&!details.open&&
+      ['setup-fresh-plan','managed-load-observation','setup-disclosure'].every(h=>details.contains(q(h))&&!q(h).checkVisibility())`);
 
   for (const [L, mode] of [['en', 'light'], ['ru', 'dark'], ['zh-CN', 'light']] as const) {
     // Review → running creation → pause after the store exists (capture off) → resume → complete.
@@ -519,6 +530,7 @@ try {
     await open(L, mode, 390, 844, undefined, true);
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"][data-capture="unknown"]')`, 'complete with unknown recording');
     check(`fresh-${L}:complete-unknown-warning-and-recovery`, await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()&&!!d.querySelector('[data-testid="setup-migration-status"] button')`));
+    check(`fresh-${L}:complete-unknown-leads-before-details`, await leadBeforeDetails('setup-migration-status'));
     await guest(`d.querySelector('[data-testid="setup-migration-status"] button').focus();return true`); await key('Enter');
     await wait(`d.querySelector('[data-testid="setup-migration-status"] button')?.getAttribute('aria-disabled')==='false'`, 'completed recording status checked');
     check(`fresh-${L}:complete-recovery-read-only`, freshEng.requests.at(-1)?.action === 'status');
@@ -699,6 +711,11 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-continue"]')`, 'fresh hide/show continue');
   check('fresh-hide-show:held-reply-retired', freshEng.requests.filter(r => r.action === 'advance').length === 1);
   await shot('fresh-hide-show-continue');
+  for (const size of [1180,390]) {
+    await viewport(size,844);
+    check(`fresh-continue-${size}:lead-before-details`, await leadBeforeDetails('setup-migration-continue'));
+    await releaseShot(`16-setup-continue-${size === 390 ? '390' : 'desktop'}-fixed`,size);
+  }
 
   // An uncertain enable needs a fresh capture decision for exactly that enable.
   await openFresh('en', 'dark', 1280, 900, {}, e => { e.faults.unsettledEnable = true; });
@@ -714,6 +731,13 @@ try {
   await waitComplete('fresh complete after capture decision');
   const reviewed = freshEng.requests.find(r => r.action === 'resume');
   check('fresh-review:reviewed-resume-payload', !!reviewed && 'review' in reviewed && reviewed.version === 2 && reviewed.review?.step === 'enable', reviewed);
+  freshEng.restart();
+  for (const size of [1180,390]) {
+    await open('en','dark',size,844,undefined,true);
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"][data-capture="unknown"]')`, 'finished with recording unconfirmed');
+    check(`fresh-unknown-${size}:lead-before-details`, await leadBeforeDetails('setup-migration-status'));
+    await releaseShot(`17-setup-recording-unconfirmed-${size === 390 ? '390' : 'desktop'}-fixed`,size);
+  }
 
   freshViolations += freshEng.violations.length;
   check('fresh:no-old-routes-version-1-or-shape-violations', oldRoutes.length === 0 && freshViolations === 0, { oldRoutes, freshViolations });

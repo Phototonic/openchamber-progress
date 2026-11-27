@@ -1145,6 +1145,15 @@ later successful managed action clears it. Refused health states (including
 security and managed-binding failures) never render as a normal setup-needed state.
 Verified capture-off remains available here too; retry only rereads status.
 
+The managed status view leads with the current state and the applicable next
+action or recovery guidance. For unverified folders, it does not present a
+configured private store as verified setup. Standing account-access, approval,
+delivery, restart and coverage explanations, normal load observations and
+internal step facts stay in one initially closed native **Details** disclosure
+(`setup-details`, `setup-details-summary`) after the controls. Recording and
+recovery stay outside it, as do loaded-byte mismatch warnings and the failure
+information needed for Retry inspection. Confirmation reviews are unchanged.
+
 Cancel initially owns confirmation focus if the opener still owns focus. Space
 toggles acknowledgement; Enter confirms; Escape/Cancel returns to the opener.
 After a confirmed result, return to that opener or Setup heading if it disappeared;
@@ -1205,12 +1214,13 @@ current paused/failed/stopped state remains visible; internal steps and the last
 finished stage are available in the disclosure. Pending, running, paused, stopped,
 failed, interrupted, capture review and complete are distinct.
 
-Fresh setup always shows a plain recording-state line outside the disclosure.
-While actively running it has no recording warning box, except during a pause
-confirmation. Recording off/unknown is conspicuous on pause, failure, close/reopen
-and completion, with the applicable recovery action (retained recording remains
-unchanged, and can be turned on after reconnection). Migration keeps its existing
-conspicuous warning and ungrouped sequence. Completion does not prove a managed load.
+Fresh setup always states recording outside the disclosure, using a plain line
+while actively running (except during pause confirmation), or a conspicuous
+warning for off/unknown on pause, failure, close/reopen and completion. The
+warning replaces the line rather than repeating it. Applicable recovery actions
+precede Details. Retained recording remains unchanged and can be turned on after
+reconnection. Migration keeps its conspicuous warning and ungrouped sequence.
+Completion does not prove a managed load.
 
 Pause waits for the in-flight step; Stop retains completed work and recovery
 state. Neither undoes work or turns capture back on. Continue, Resume and a fresh
@@ -1234,8 +1244,9 @@ and user-moved focus is never reclaimed. New capture warnings and failures are
 announced once, not on every repaint. EN/RU/zh-CN fresh copy and controls wrap on narrow screens.
 Stable hooks include `setup-fresh-groups`, `setup-fresh-group-{folder,connect,record,check}`
 with `data-state` and `aria-current="step"`, `setup-changes`,
-`setup-changes-summary`, and `setup-recording-state`. The internal-plan hooks
-`setup-fresh-plan` and `setup-fresh-plan-<stage>` remain inside the disclosure;
+`setup-changes-summary` (review), and `setup-recording-state` (plain recording
+line). The internal-plan hooks `setup-fresh-plan` and `setup-fresh-plan-<stage>`
+are inside the applicable disclosure;
 existing mutation and recovery hooks are unchanged.
 
 The rendered synthetic-shell driver `tests/browser/managed-migration-qa.ts --source`

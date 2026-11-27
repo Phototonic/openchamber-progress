@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
 import { shellCopy } from '../../ui/shared/components.ts';
+import { managedCopy } from '../../ui/shared/managed-copy.ts';
 import { startLanguageFixture } from './interface-language-fixture.ts';
 import { startPhoneShell } from './phone-layout-shell.ts';
 import { chromiumPath, launchChromium } from './phone-cdp.ts';
@@ -36,9 +37,9 @@ try {
     if (!ok) throw Error(`Timed out (${surface}): ${condition}; ` + await guest(surface, 'return d.body.innerText.slice(0,600)'));
   };
   let width = 390;
-  const viewport = async (w: number) => {
+  const viewport = async (w: number, height = 844) => {
     width = w;
-    await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: 844, deviceScaleFactor: 1, mobile: w === 390 });
+    await c.send('Emulation.setDeviceMetricsOverride', { width: w, height, deviceScaleFactor: 1, mobile: w === 390 });
     await c.send('Emulation.setTouchEmulationEnabled', { enabled: w === 390 });
   };
   const key = async (key: string, shift = false) => {
@@ -57,8 +58,8 @@ try {
       await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     } else for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
   };
-  const shot = async (name: string) => {
-    const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width, height: 844, scale: 1 } });
+  const shot = async (name: string, height = 844) => {
+    const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width, height, scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64')); screenshots.push(`${name}.png`);
   };
   const back = async (surface: string) => {
@@ -149,25 +150,53 @@ try {
     await key('Escape');
   }
   // A responding refusal sends the user to Setup, which is an observation only.
-  for (const [size, locale] of [[1280, 'en'], [390, 'en'], [390, 'ru'], [390, 'zh-CN']] as const) {
-    const t = shellCopy(locale), id = `panel-setup-refused-${size}-${locale}`;
+  await evaluate(`qa.dark();document.body.style.background='#191b20';true`);
+  for (const surface of ['panel','page']) for (const [size, locale] of [[1180, 'en'], [390, 'en'], [390, 'ru'], [390, 'zh-CN']] as const) {
+    const t = shellCopy(locale), words = managedCopy(locale), id = `${surface}-setup-refused-${size}-${locale}`;
     await viewport(size);
     const mark = await evaluate<number>('qa.requests.length');
-    const url = await evaluate<string>(`qa.mode='setup-refused';qa.seed(undefined);Object.assign(qa.ctx,{locale:${js(locale)},device:{formFactor:${js(size === 390 ? 'phone' : 'desktop')},pointer:${js(size === 390 ? 'coarse' : 'fine')},insets:{top:0,right:0,bottom:0,left:0},keyboard:0}});qa.show('panel',${size});qa.reload('panel');frame('panel').src`);
-    await wait('panel', `w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="state-setup-refused"]')`);
-    const refusal = await guest<string>('panel', `return d.querySelector('[data-testid="state-setup-refused"]').textContent`);
+    const url = await evaluate<string>(`(()=>{const s=${js(surface)};qa.mode='setup-refused';qa.seed(undefined);Object.assign(qa.ctx,{locale:${js(locale)},device:{formFactor:${js(size === 390 ? 'phone' : 'desktop')},pointer:${js(size === 390 ? 'coarse' : 'fine')},insets:{top:0,right:0,bottom:0,left:0},keyboard:0}});qa.show(s,${size});qa.reload(s);return frame(s).src})()`);
+    await wait(surface, `w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="state-setup-refused"]')`);
+    const refusal = await guest<string>(surface, `return d.querySelector('[data-testid="state-setup-refused"]').textContent`);
     check(`${id}-guidance`, refusal.includes(t.more) && refusal.includes(t.setup), refusal);
-    check(`${id}-not-outage-or-empty`, await guest('panel', `return !d.querySelector('[data-testid="state-unavailable"],[data-testid="setup-needed"],[data-testid="empty-state"]')`));
-    check(`${id}-admission-only`, await evaluate(`qa.requests.slice(${mark}).filter(q=>q.surface==='panel').map(q=>q.path).join(',')==='/health,/v1/setup,/health'`));
-    if (locale === 'en') await shot(size === 390 ? 'refusal-390' : 'refusal');
+    check(`${id}-not-outage-or-empty`, await guest(surface, `return !d.querySelector('[data-testid="state-unavailable"],[data-testid="setup-needed"],[data-testid="empty-state"]')`));
+    check(`${id}-admission-only`, await evaluate(`qa.requests.slice(${mark}).filter(q=>q.surface===${js(surface)}).map(q=>q.path).join(',')==='/health,/v1/setup,/health'`));
     const opening = await evaluate<number>('qa.requests.length');
-    await click('panel', '[data-testid="more-trigger"]');
-    await click('panel', '[data-menu-id="setup"]');
-    await wait('panel', `!!d.querySelector('[data-testid="surface-panel-setup"] [data-testid="setup-panel"]') && !d.querySelector('[data-testid="setup-loading"]') &&
-      parent.qa.responses.some(r=>r.request>=${opening} && r.surface==='panel' && r.path==='/v1/setup' && r.status===200)`);
-    check(`${id}-opening-is-read-only`, await evaluate(`qa.requests.slice(${opening}).some(q=>q.surface==='panel' && q.method==='GET' && q.path==='/v1/setup') &&
-      qa.requests.slice(${opening}).filter(q=>q.surface==='panel').every(q=>q.method==='GET')`));
-    if (locale === 'en') await shot(size === 390 ? 'setup-390' : 'setup');
+    await click(surface, '[data-testid="more-trigger"]');
+    await click(surface, '[data-menu-id="setup"]');
+    await wait(surface, `!!d.querySelector('[data-testid="surface-panel-setup"] [data-testid="setup-details"]') &&
+      parent.qa.responses.some(r=>r.request>=${opening} && r.surface===${js(surface)} && r.path==='/v1/setup' && r.status===200)`);
+    const summary = '[data-testid="setup-details-summary"]';
+    const lead = await guest(surface, `const h=d.querySelector('[data-testid="setup-status-heading"]'),details=d.querySelector('[data-testid="setup-details"]');return {
+      title:h.textContent, action:h.nextElementSibling.textContent, before:!!(h.compareDocumentPosition(details)&4),
+      closed:!details.open, loadHidden:!details.querySelector('[data-testid="managed-load-observation"]').checkVisibility()
+    }`);
+    check(`${id}-status-and-action-first`, lead.title === words.unverified && lead.action === words.conflict && lead.before && lead.closed && lead.loadHidden, lead);
+    const name = `${surface === 'panel' ? '21-setup-refusal-rail-open' : '22-setup-refusal-board-open'}-${size === 390 ? '390' : 'desktop'}`;
+    await guest(surface, 'w.scrollTo(0,0);return true');
+    if (locale === 'en' || (locale === 'ru' && surface === 'panel')) await shot(`${name}${locale === 'ru' ? '-ru' : ''}-fixed`);
+    await key('Tab'); // first stop after the focused Setup panel heading is Back or Details
+    if (!await guest(surface, `return d.activeElement===d.querySelector(${js(summary)})`)) await key('Tab');
+    check(`${id}-summary-reached-by-tab`, await guest(surface, `return d.activeElement===d.querySelector(${js(summary)})`));
+    await key('Enter');
+    await wait(surface, `d.querySelector('[data-testid="setup-details"]').open`);
+    const contents = await guest<string>(surface, `return d.querySelector('[data-testid="setup-details"]').innerText`);
+    check(`${id}-details-retain-standing-facts`, [words.configured,words.unknown,words.observation,words.privilege,words.lifecycle,words.reach].every(fact => contents.includes(fact)));
+    const tree = await c.send('Page.getFrameTree');
+    const frameId = tree.frameTree.childFrames.find((f: any) => f.frame.url.includes(`/ui/${surface}/`)).frame.id;
+    const ax = await c.send('Accessibility.getFullAXTree', { frameId });
+    check(`${id}-accessible-details`, ax.nodes.some((n: any) => n.role?.value === 'DisclosureTriangle' && n.name?.value === words.details && n.properties?.some((p: any) => p.name === 'expanded' && p.value.value === true)));
+    check(`${id}-expanded-no-overflow`, await guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
+    if (locale === 'en') {
+      const height = Math.max(844, 20 + await guest<number>(surface, `return Math.ceil(d.querySelector('[data-testid="surface-panel-setup"]').getBoundingClientRect().bottom+w.scrollY)`));
+      await viewport(size, height);
+      await guest(surface, `w.frameElement.style.height='${height}px';w.scrollTo(0,0);return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
+      await shot(`${name}-details-fixed`, height);
+    }
+    await key('Enter');
+    await wait(surface, `!d.querySelector('[data-testid="setup-details"]').open`);
+    check(`${id}-opening-is-read-only`, await evaluate(`qa.requests.slice(${opening}).some(q=>q.surface===${js(surface)} && q.method==='GET' && q.path==='/v1/setup') &&
+      qa.requests.slice(${opening}).filter(q=>q.surface===${js(surface)}).every(q=>q.method==='GET')`));
   }
   check('setup-refusal-server-observed-no-mutations', fixture.requests.length > 0 && fixture.requests.every(q => q.method === 'GET' && ['/health', '/v1/setup'].includes(q.path)), fixture.requests);
   // Older host: explicit disabled language choices, no storage fallback.

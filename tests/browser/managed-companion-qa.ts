@@ -109,18 +109,25 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guestContext('page'),Boolean,'visible board');
       await wait(()=>guest('page','!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")&&!!document.querySelector("[data-testid=empty-state],[data-testid=plan-list-heading],[data-testid=plan-title]")'),Boolean,'board initial read settled');
     };
+    const openSetup=async(surface:'panel'|'page')=>{
+      if(!await guest(surface,'!!document.querySelector("[data-testid=surface-panel-setup]")')){
+        await guestClick(surface,'[data-testid="more-trigger"]');
+        await guestClick(surface,'[data-testid="more-setup"]');
+      }
+      await wait(()=>guest(surface,'!!document.querySelector("[data-testid=setup-details]")'),Boolean,'managed Setup status');
+    };
     const configure=async()=>{
-      await openRail();
+      await openRail();await openSetup('panel');
       await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
         await wait(()=>guest('panel',`(()=>{const d=document;return ${condition}})()`),Boolean,label,180000);
         if(label==='fresh review')await shot('configuration-review');
       }});
-      await openBoard();await guestClick('page','[data-testid="setup-section"] > summary');
-      await wait(()=>guest('page','document.querySelector("[data-testid=setup-section]")?.open'),Boolean,'configured Setup disclosure open');
-      await wait(()=>guest('page','!!document.querySelector("[data-testid=setup-disable]")'),Boolean,'configured Setup facts');await shot('configured');
+      await openBoard();await openSetup('page');
+      await wait(()=>guest('page',`(()=>{const d=document.querySelector('[data-testid="setup-details"]'),b=document.querySelector('[data-testid="setup-disable"] button');return !!b?.checkVisibility()&&!d.open&&!!(b.compareDocumentPosition(d)&4)&&!!d.querySelector('[data-testid="setup-disclosure"]')})()`),Boolean,'configured Setup controls precede closed Details');
+      await shot('configured');
     };
     const selectSession=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText.includes(${literal(title)}))`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText.includes(${literal(title)})&&!!document.querySelector('[data-chat-column="main"] [contenteditable="true"]')`),Boolean,'session chat selected');};
-    const warning=async()=>{await openBoard();if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');await wait(()=>guest('page','!!document.querySelector("[data-testid=managed-integrity-warning]")'),Boolean,'visible integrity warning');await shot('warning');};
+    const warning=async()=>{await openBoard();await openSetup('page');await wait(()=>guest('page','!!document.querySelector("[data-testid=managed-integrity-warning]")?.checkVisibility()'),Boolean,'visible integrity warning');await shot('warning');};
     const setupShot=async(name:string,selector:string)=>{
       // Setup observations are deliberately not polled. After test-side external
       // mutations, a user-equivalent page refresh obtains a new real status read.
@@ -128,8 +135,11 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       // readyState can still describe the OLD document immediately after reload.
       // Wait for this navigation's load event before inspecting the new target.
       await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired'),Boolean,'fresh host page loaded');await openBoard();
-      if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');
-      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');await shot(name);
+      await openSetup('page');
+      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');
+      if(await guest('page',`!!document.querySelector(${literal(selector)})?.closest('[data-testid="setup-details"]:not([open])')`))
+        await guestClick('page','[data-testid="setup-details-summary"]');
+      await shot(name);
     };
     const observedChatDirectories=()=>{
       const paths=new Set<string>(),prefix=`${root}/home/.config/openchamber/chats/`;
