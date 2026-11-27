@@ -62,7 +62,8 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   if(interrupted){
     const {journal}=interrupted;
     validateBeginReplay(request,journal);
-    recoverInitial(env,payload,budget,interrupted);
+    try{recoverInitial(env,payload,budget,interrupted);}
+    catch(error){throw new ManagedStepFailure(error,'prepare',journal);}
     return replayBegin(env,request);
   }
   // An unrelated inspection cannot revoke an exact durable begin receipt. It

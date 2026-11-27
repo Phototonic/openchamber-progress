@@ -274,6 +274,29 @@ test('cold fresh begin already unlinked before worker exit follows ordinary repl
   }finally{await cold?.close();await f.close();}
 });
 
+test('cold begin unlink failure reports the retained checkpoint and allows an exact retry',async()=>{
+  const f=await freshHttpFixture();let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;
+  try{
+    const review=await f.inspect(),begin={version:2,action:'begin',operationId,confirmed:true,expected:review.expected} as const;
+    f.fault({crashStep:'prepare',order:'linked'});assert.equal((await f.step(begin)).status,503);
+    const file=migrationFile(f.env),bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`;
+    f.fault({unlinkCode:'EPERM'});cold=await coldHttp(f.env);
+    const refused=await cold.step(begin);
+    assert.equal(refused.status,503);
+    assert.equal(refused.body.disposition,'refused');
+    assert.deepEqual(refused.body.error,{stage:'prepare',code:'EPERM'});
+    assert.equal(refused.body.progress.operationId,operationId);
+    assert.equal(refused.body.progress.sequence,1);assert.equal(nextAction(refused.body.progress),'continue');
+    assert.equal(fs.statSync(file).nlink,2);assert.equal(fs.statSync(stage).nlink,2);
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.deepEqual(fs.readFileSync(stage),bytes);
+    f.fault({});
+    const replay=await cold.step(begin);
+    assert.equal(replay.status,200);assert.equal(replay.body.disposition,'replayed');assert.equal(replay.body.progress.sequence,1);
+    assert.equal(fs.existsSync(stage),false);assert.equal(fs.statSync(file).nlink,1);
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.equal(fs.existsSync(f.targets.storeRoot),false);
+  }finally{await cold?.close();await f.close();}
+});
+
 for(const kind of ['default','custom','retained-new','retained-reuse'] as const)test(`HTTP fresh ${kind} review, cancellation, lost reply, pause and completion`,async t=>{
   const f=await freshHttpFixture(kind,true);try{
     const before=fs.existsSync(f.database)?fs.readFileSync(f.database):null;

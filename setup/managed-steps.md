@@ -352,7 +352,9 @@ checkpoint and applied begin receipt. Observation grants no Store admission;
 the worker rechecks the request, package, target, both writer slots and deadline
 before unlinking just the sibling. It then rereads the single-link journal
 through the normal owner before any next step. Settlement replaces no bytes and
-adds no sequence or effect. Older builds refuse a retained pair; roll back code
+adds no sequence or effect. A failed settlement of an exact begin retry still
+reports the proven checkpoint with the refusal (`cold begin unlink failure reports
+the retained checkpoint and allows an exact retry`). Older builds refuse a retained pair; roll back code
 only, not state. This does not make directory creation or publication power-loss
 safe. There is no claim file or cleanup sweep.
 
