@@ -1190,19 +1190,21 @@ function migrationCard<U>(vc: Host<U>, driver: SetupStepDriver, p: ManagedSetupS
   card.setAttribute('aria-labelledby', heading.id);
   card.append(heading);
   if (isFreshProgress(p)) card.append(freshGroupList(p.plan, locale, p, driving));
-  if (p.capture.state !== 'on' && (!isFreshProgress(p) ? p.state !== 'complete' : !driving || !!st.confirm || st.pauseAfter)) {
+  const showCaptureWarning = p.capture.state !== 'on' && (!isFreshProgress(p) ? p.state !== 'complete' : !driving || !!st.confirm || st.pauseAfter);
+  const showReadWarning = showCaptureWarning && isFreshProgress(p) && p.state === 'complete' && p.capture.state === 'unknown' && readUnavailable;
+  if (showCaptureWarning) {
     // Running fresh setup uses a plain line; every stopped state retains the warning.
     const warning = testid(el('div'), 'setup-migration-capture-warning');
     warning.dataset.capture = p.capture.state;
     const kept = isFreshProgress(p) && p.state === 'complete' && p.storeMode === 'retain' && p.capture.state === 'off';
     const body = kept ? testid(el('div'), 'setup-fresh-kept') : warning;
     if (kept) warning.append(body);
-    mountBanner(body, { tone: 'warning', ...captureWarning(p, locale, readUnavailable) });
+    mountBanner(body, { tone: 'warning', ...captureWarning(p, locale, showReadWarning) });
     const key = `capture:${p.operationId}:${p.capture.state}`;
     if (announced.has(key)) warning.querySelector('[role]')?.removeAttribute('role'); else announced.add(key);
     card.append(warning);
   }
-  if (isFreshProgress(p)) card.append(testid(el('p', 'ap-note', (p.storeMode === 'retain' || p.state === 'complete') && p.capture.state === 'off'
+  if (isFreshProgress(p) && !showReadWarning) card.append(testid(el('p', 'ap-note', (p.storeMode === 'retain' || p.state === 'complete') && p.capture.state === 'off'
     ? managedFreshCopy(locale).warn.retain.off.title : managedFreshCopy(locale).recording[p.capture.state]), 'setup-recording-state'));
   if (p.state !== 'complete') {
     const step = testid(el('p', 'ap-migration-step', migrationStepText(p, locale)), 'setup-migration-step');

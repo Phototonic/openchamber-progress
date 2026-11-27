@@ -116,6 +116,7 @@ for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: read failure qual
   const f=copy.managedFreshCopy(locale);
   const pendingShown=render(pending,locale,['EBUSY']);
   assert.ok(pendingShown.has('setup-migration-continue'));
+  assert.ok(pendingShown.has('setup-recording-state'));
   assert.ok(!pendingShown.text.includes(f.completedReadUnavailable));
   const complete:ManagedFreshStepProgress={...pending,sequence:8,state:'complete',step:null,lastCompleted:{name:'reconcile',batch:0},recovery:'none'};
   const shown=render(complete,locale,['EACCES']);
@@ -124,12 +125,17 @@ for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: read failure qual
   assert.equal(shown.text.includes(f.partial),false);
   assert.equal(shown.has('setup-migration-resume'),false);
   assert.ok(shown.has('setup-migration-capture-warning'),'completion with unknown recording keeps the warning');
-  assert.ok(shown.has('setup-recording-state'),'recording state remains outside the disclosure');
+  assert.ok(!shown.has('setup-recording-state'),'the warning already explains that recording is unconfirmed');
   assert.ok(shown.has('setup-migration-status'),'completion with unknown recording offers a status check');
   const warning=shown.all.find(n=>n.dataset.testid==='setup-migration-capture-warning');
   assert.ok(shown.nodes(warning).some(n=>n.text===f.completedReadUnavailable));
+  const card=shown.all.find(n=>n.dataset.testid==='setup-migration-progress');
+  const cardNodes=shown.nodes(card);
+  assert.equal(cardNodes.filter(n=>n.text===f.completedReadUnavailable).length,1);
+  assert.ok(!cardNodes.some(n=>n.text===f.recording.unknown));
   assert.ok(!shown.text.includes(f.warn.create.unknown.body),'completion never asks to finish the finished operation');
   const noDiagnostic=render(complete,locale);
+  assert.ok(noDiagnostic.has('setup-recording-state'));
   assert.ok(noDiagnostic.text.includes(f.completedRecording.unknown));
   assert.ok(!noDiagnostic.text.includes(f.completedReadUnavailable));
 });
