@@ -537,7 +537,16 @@ The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber
 publication with compare-before-replacement. Reads reject unsupported state,
 foreign scope, hard links, retained publication stages and old configuration
-locks. Post-write validation rereads the filesystem and reuses no earlier result. These helpers do **not** admit a Store or authorize a saved
+locks. Setup and managed-step status have one separate read-only observation:
+the first no-clobber journal checkpoint, verified against its byte-derived
+staging name and both native link identities. Only an explicit matching step
+request can settle it, after current consent/target checks and acquisition of
+both scope and Store writer slots. A bounded routing hint can find a custom Store
+after restart, but only the fenced worker can authorize unlinking. Settlement
+removes the one verified sibling and rereads through the ordinary reader;
+ordinary admission and all other publication refusals stay in place. See the
+[recovery table and test outcomes](../setup/managed-steps.md#bootstrap-recovery-and-retained-limitations).
+Post-write validation rereads the filesystem and reuses no earlier result. These helpers do **not** admit a Store or authorize a saved
 claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
 Cold progress projection reports capture as unknown unless supplied a fresh
 observation. Both journal families are integrated through the same worker/fence;

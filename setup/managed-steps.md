@@ -322,7 +322,7 @@ Receipt-proven format-1 removal uses the shorter frozen plan defined below; it
 never invents missing removal batches or replays already completed removal.
 
 `prepare` creates only owned private managed metadata and the initial format-2
-journal; no capture, expectation, loader or selector effect. Reuse the unchanged
+journal; no capture, expectation, loader or selector effect. Reuse the existing
 `createManagedBindingDirectory` helper, as the managed-configuration path does,
 then publish the initial journal as a **file** inside the validated managed
 directory using the existing no-clobber private-file publication. There is no
@@ -333,23 +333,28 @@ rather than replacement of foreign bytes.
 
 ### Bootstrap recovery and retained limitations
 
-| Durable state at interruption | Explicit retry behavior |
-| --- | --- |
-| Managed directory absent | Freshly validate the confirmed target, then use existing directory creation. |
-| Valid private managed directory and exact marker; journal absent | Freshly validate the same target and consent, then publish only the initial journal. After restart before a durable request receipt exists, fresh inspection/confirmation may be needed. |
-| Valid managed directory, marker and same-operation journal | Validate the journal and reconcile/replay its durable receipt; never repeat completed effects. |
-| Directory without a valid marker, foreign bytes or any reparse/hard-link anomaly | Refuse with stage `prepare` and `managed-binding-invalid` or the precise allowlisted failure code; never adopt, repair or delete. |
-| Retained publication stage or two-link state after interrupted file publication | Refuse ambiguous/invalid state without automatic cleanup, link adoption or overwriting. |
-| Existing format-1 state | Use its separately specified full same-target inspection/consent and validated upgrade path. |
+| Durable state at interruption | Explicit retry behavior | Named regression outcome |
+| --- | --- | --- |
+| Managed directory absent | Freshly validate the confirmed target, then use exclusive directory creation. | `HTTP prepare crash before metadata publication recovers without other effects` |
+| Valid private managed directory and exact marker; journal and stages absent | Freshly validate the same target and consent, then publish the initial journal. Before a durable receipt exists, restart may require new inspection/confirmation. | `interrupted prepare at marker retains honest bootstrap recovery` |
+| Valid marked directory and single-link same-operation journal | Replay the durable receipt or process the next legal request; never repeat completed effects. | `cold fresh begin already unlinked before worker exit follows ordinary replay` |
+| Proven two-link first journal | Setup and step status observe sequence one without unlinking. An exact begin retry or legal next request can finish the save, then use normal step rules. | `cold migration begin settles only the proven first journal pair`; `cold fresh custom Store Continue needs no begin token and advances only the advertised step` |
+| Proven pair, but authority or target changed, a writer is busy or work budget is exhausted | Refuse without unlinking or executing the next step. | The `cold migration begin` test refuses stale/wrong-family, busy and deadline requests; `cold fresh custom Store Continue` refuses a changed Store claim and stale sequence. |
+| Missing/invalid marker, foreign bytes, unrelated links, a stage alone or old/random stage | Refuse and retain everything for manual diagnosis. A directory path or private permissions alone never establish ownership. | `interrupted prepare at directory retains honest bootstrap recovery`; `initial journal recognizer retains ambiguous links and changed or later records`; `fresh journal retained two-link publication refuses without cleanup` |
+| Later journal replacement, expectation, selector, partial Store state or old private configuration lock | Existing validation and recovery rules only; the first-journal exception does not apply. | `fresh expectation retained two-link publication refuses without cleanup`; `fresh binding retained two-link publication refuses without cleanup`; `fresh target orphan-sidecar refuses without changing retained state`; `missing journal resumes only within a valid marked container; partial or unsafe state is retained` |
+| Existing format-1 state | Use the separate same-target review and validated upgrade path. | `upgrade begin prepares once; cold exact retry uses only its durable receipt` |
 
-Creation is **not crash-proof at every internal boundary**. A crash after directory
-creation but before its marker, or between a publication link and stage unlink,
-can leave a refused partial state. These narrow manual-recovery limitations are
-retained from the existing managed bootstrap in versions 1.2.0 and 1.3.0; this
-release does not add a claim-based recovery mechanism. An empty unmarked final
-directory is never adopted; it is refused. The normal valid-marker/missing-journal
-case is restartable after fresh validation. Tests must distinguish these outcomes
-rather than claim that all bootstrap crashes resume automatically.
+For both format 2 and format 3, only the first **no-clobber** save derives a
+`migration.json.stage-prepare-<sha256>` sibling from the exact saved bytes.
+Matching names are not enough: the names must be the only two links to the same
+private native file in the marked directory, with a strictly validated initial
+checkpoint and applied begin receipt. Observation grants no Store admission;
+the worker rechecks the request, package, target, both writer slots and deadline
+before unlinking just the sibling. It then rereads the single-link journal
+through the normal owner before any next step. Settlement replaces no bytes and
+adds no sequence or effect. Older builds refuse a retained pair; roll back code
+only, not state. This does not make directory creation or publication power-loss
+safe. There is no claim file or cleanup sweep.
 
 On a refused partial bootstrap, stop migration and retain the state for manual
 diagnosis. Follow `docs/setup.md` recovery guidance; do not delete the directory,

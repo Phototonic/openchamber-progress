@@ -94,10 +94,11 @@ export function requirePlatformWriteBoundary(headroomMs=0):void {
 }
 /** A pre-dispatch metadata read may route locks, but never grant authority. The
  * fresh owner must bind its actual Store to an acquired slot before any effect. */
-export function requirePlatformStoreFence(database:string):void {
+export function requirePlatformStoreFence(database:string,dataRoot?:string):void {
   requestBudget?.require();
   const targets=requestBudget?.writerFence?requestBudget.writerFence.targets??[]:writerTargets;
-  if(targets&&!targets.includes(writerTarget('store',path.dirname(database))))
+  if(targets&&(!targets.includes(writerTarget('store',path.dirname(database)))||
+    dataRoot!==undefined&&!targets.includes(writerTarget('scope',dataRoot))))
     throw new PlatformError('managed-step-conflict');
 }
 

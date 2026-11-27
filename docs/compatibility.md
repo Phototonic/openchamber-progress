@@ -539,6 +539,17 @@ restoration permits a fresh read. The existing Windows suite retains explicit-XD
 canonical-alias, junction and hard-link coverage, and checks that roots with an
 existing owner-only ACL keep working with that ACL unchanged.
 
+Portable HTTP tests interrupt the worker after publishing the first managed
+journal link, then verify cold read-only observation, exact retry or Continue,
+and refusal of stale or busy requests. The native `Windows built fresh steps
+(empty-custom)` case instead seeds the two names around a real first checkpoint,
+restarts the isolated built service and checks that Continue leaves one link and
+advances one step, with zero process launches and the same eight-second request
+budget. Native evidence is pending execution in the Windows CI job. The portable
+projection and a Linux skip do not certify NTFS, host delivery or power-loss
+recovery. Other hard-linked state remains refused. See the
+[bootstrap recovery table](../setup/managed-steps.md#bootstrap-recovery-and-retained-limitations).
+
 `Upload sanitized Windows migration trace` uploads `windows-migration-trace` even
 when tests fail. Its JSONL contains only fixed stages, error **classes** (platform,
 filesystem, storage, setup, test or timeout), allowlisted codes, timings, process
