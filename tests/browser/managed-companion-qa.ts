@@ -147,11 +147,23 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guestContext('page'),Boolean,'visible board');
       await wait(()=>guest('page','!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")&&!!document.querySelector("[data-testid=empty-state],[data-testid=plan-list-heading],[data-testid=plan-title]")'),Boolean,'board initial read settled');
     };
+    const moreItem=async(surface:'panel'|'page',item:string)=>{
+      await guestClick(surface,`[data-testid="more-${item}"]`,async()=>{
+        // The shell can replace the transient menu when live progress repaints.
+        // Open only a known closed menu before looking for its actionable row.
+        if(await guest(surface,'document.querySelector("[data-testid=more-trigger]")?.getAttribute("aria-expanded")==="false"'))
+          await guestClick(surface,'[data-testid="more-trigger"]');
+      });
+    };
+    const language=async(surface:'panel'|'page',value:'en'|'ru'|'zh-CN')=>{
+      await guestClick(surface,`[data-testid="more-language-${value}"]:not(:disabled)`,async()=>{
+        if(!await guest(surface,'!!document.querySelector("[data-testid=more-language-back]")?.checkVisibility()'))
+          await moreItem(surface,'language');
+      });
+      await wait(()=>guest(surface,'document.documentElement.lang'),v=>v===value,'rendered interface language');
+    };
     const openSetup=async(surface:'panel'|'page')=>{
-      if(!await guest(surface,'!!document.querySelector("[data-testid=surface-panel-setup]")')){
-        await guestClick(surface,'[data-testid="more-trigger"]');
-        await guestClick(surface,'[data-testid="more-setup"]');
-      }
+      if(!await guest(surface,'!!document.querySelector("[data-testid=surface-panel-setup]")'))await moreItem(surface,'setup');
       await wait(()=>guest(surface,'!!document.querySelector("[data-testid=setup-details]")'),Boolean,'managed Setup status');
     };
     const configure=async()=>{
@@ -275,7 +287,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});await shot('narrow');
       await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
     };
-    return {install,configure,views,park,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
-      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,holdNextServiceReply,events}};
+    return {install,configure,views,park,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,language,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,openSetup,moreItem,guestContext,guestClick,holdNextServiceReply,events}};
   }catch(e){await stop();throw e;}
 }
