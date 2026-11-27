@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    # Source changes land on dev; main receives them through promotion.
+    target-branch: dev
     schedule:
       interval: weekly
     groups:
