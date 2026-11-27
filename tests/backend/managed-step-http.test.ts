@@ -19,6 +19,7 @@ import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/sh
 import {parseSetup} from '../../ui/shared/adapter.ts';
 import {setupCall,readList} from '../../ui/shared/source.ts';
 import {acquireWriterSlots} from '../../service/writer-fence.ts';
+import {writerTarget} from '../../shared/platform.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
 const operationId='11111111-1111-4111-8111-111111111111';
@@ -52,6 +53,13 @@ before(async()=>{
   source=source.replace('    createManagedBindingDirectory(env);',`${crash("'prepare'",'before')}\n    createManagedBindingDirectory(env);`);
   source=source.replace("  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};",`${crash("'prepare'",'after')}\n  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};`);
   fs.writeFileSync(engine,source);
+  const binding=path.join(projection,'shared/managed-binding.ts');source=fs.readFileSync(binding,'utf8');
+  for(const [statement,order] of [['linkSync(stage, file);','linked'],['unlinkSync(stage);','unlinked']] as const){
+    const anchor=`      ${statement}`;
+    assert.ok(source.includes(anchor));
+    source=source.replace(anchor,`${anchor}\n      if(initialJournal){${crash("'prepare'",order)}}`);
+  }
+  fs.writeFileSync(binding,source);
   Controller=(await import(pathToFileURL(path.join(projection,'service/setup-controller.ts')).href)).SetupController;
   serverFactory=(await import(pathToFileURL(path.join(projection,'service/server.ts')).href)).createProgressServer;
   // Route retirement is a native-OS rule, independent of the substituted
@@ -163,6 +171,131 @@ async function freshHttpFixture(kind:'default'|'custom'|'retained-new'|'retained
   const until=async(name:string)=>{let p=await status();while(p.step?.name!==name){const r=await advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;}return p;};
   return {...f,database,step,inspect,begin,status,advance,control,until};
 }
+
+async function coldHttp(env:NodeJS.ProcessEnv) {
+  const child=fork(path.join(projection,'tests/backend/managed-http-server.ts'),[],{execArgv:['--experimental-strip-types'],env,silent:true});
+  const exited=once(child,'exit');
+  const close=async()=>{child.kill('SIGTERM');await exited;};
+  try{
+    const [ready]=await once(child,'message',{signal:AbortSignal.timeout(5000)});
+    const http=async(route:string,body?:unknown)=>{
+      const response=await fetch(`http://127.0.0.1:${ready.port}${route}`,{method:body===undefined?'GET':'POST',
+        headers:{authorization:'Bearer synthetic-http-fixture','content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),
+        signal:AbortSignal.timeout(22_000)});
+      return {status:response.status,body:await response.json()};
+    };
+    return {http,step:(request:ManagedSetupStepRequest)=>http('/v1/setup/managed-step',request),close};
+  }catch(error){await close();throw error;}
+}
+
+test('cold migration begin settles only the proven first journal pair',async()=>{
+  const f=await fixture();let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;
+  try{
+    const review=await f.inspect(),begin={version:1,action:'begin',operationId,confirmed:true,expected:review.expected} as const;
+    const capture=f.capture(),file=migrationFile(f.env);
+    f.fault({crashStep:'prepare',order:'linked'});
+    assert.equal((await f.step(begin)).status,503);
+    f.fault({});cold=await coldHttp(f.env);
+    const bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`,first=fs.statSync(file,{bigint:true});
+    const retained=()=>{
+      for(const name of [file,stage]){
+        const stat=fs.statSync(name,{bigint:true});
+        assert.equal(stat.ino,first.ino);assert.equal(stat.dev,first.dev);assert.equal(stat.nlink,2n);
+        assert.deepEqual(fs.readFileSync(name),bytes);
+      }
+    };
+    retained();
+    // Test the routing-only cold claim before any Setup/step status can cache it.
+    const release=await acquireWriterSlots([writerTarget('store',f.targets.storeRoot)]);
+    try{assert.equal((await cold.step(begin)).body.error.code,'managed-step-port-busy');retained();}finally{await release();}
+    const setup=await cold.http('/v1/setup');
+    assert.equal(setup.status,200);assert.equal(setup.body.configured,false);
+    assert.equal(nextAction(setup.body.delivery.migrationProgress),'continue');
+    const status=await cold.step({version:1,action:'status',operationId});
+    assert.equal(status.status,200);assert.equal(status.body.progress.sequence,1);assert.equal(status.body.progress.capture.state,'unknown');
+    assert.equal((await cold.step({...begin,expected:'d'.repeat(64)})).status,409);
+    assert.equal((await cold.step({...begin,version:2})).status,409);
+    f.fault({clockOffset:15000});
+    assert.equal((await cold.step(begin)).body.error.code,'managed-step-deadline');
+    f.fault({});retained();
+    // Cold again: even without a status hint, acquire the original Store slot.
+    await cold.close();cold=await coldHttp(f.env);
+    const replay=await cold.step(begin);
+    assert.equal(replay.status,200);assert.equal(replay.body.disposition,'replayed');
+    assert.equal(replay.body.progress.sequence,1);assert.equal(replay.body.progress.capture.state,'unknown');
+    const final=fs.statSync(file,{bigint:true});
+    assert.equal(final.ino,first.ino);assert.equal(final.dev,first.dev);assert.equal(final.nlink,1n);
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.equal(fs.existsSync(stage),false);
+    assert.equal(fs.existsSync(path.join(path.dirname(file),'progress-binding.json')),false);
+    assert.equal(fs.readdirSync(f.targets.storeRoot).some(name=>name.startsWith('managed-expectation-')),false);
+    assert.equal(f.capture(),capture);
+  }finally{await cold?.close();await f.close();}
+});
+
+test('cold fresh custom Store Continue needs no begin token and advances only the advertised step',async()=>{
+  const f=await freshHttpFixture();let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;
+  try{
+    f.fault({crashStep:'prepare',order:'linked'});assert.equal((await f.begin()).status,503);
+    f.fault({});cold=await coldHttp(f.env);
+    const file=migrationFile(f.env),bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`;
+    const setup=await cold.http('/v1/setup');assert.equal(setup.status,200);
+    const p=setup.body.delivery.freshProgress as ManagedFreshStepProgress;
+    assert.equal(nextAction(p),'continue');assert.equal(p.sequence,1);assert.equal(setup.body.captureEnabled,null);
+    const observed=await cold.step({version:2,action:'status',operationId});
+    assert.equal(observed.status,200);assert.deepEqual(observed.body.progress,p);
+    assert.equal(fs.statSync(stage).nlink,2);assert.deepEqual(fs.readFileSync(file),bytes);
+    const advance={version:2,action:'advance',operationId:p.operationId,expectedSequence:p.sequence,step:p.step!} as const;
+    assert.equal((await cold.step({...advance,expectedSequence:0})).status,409);
+    fs.mkdirSync(f.targets.storeRoot,{mode:0o700});
+    assert.equal((await cold.step(advance)).status,409,'changed Store claim must refuse before unlink');
+    assert.equal(fs.statSync(stage).nlink,2);assert.deepEqual(fs.readFileSync(stage),bytes);assert.deepEqual(fs.readFileSync(file),bytes);
+    fs.rmdirSync(f.targets.storeRoot);
+    const continued=await cold.step(advance);assert.equal(continued.status,200,JSON.stringify(continued.body.error));
+    assert.equal(continued.body.progress.sequence,2);assert.deepEqual(continued.body.progress.lastCompleted,p.step);
+    assert.ok(fs.statSync(f.targets.storeRoot).isDirectory());assert.equal(fs.existsSync(f.database),false);
+    assert.equal(fs.existsSync(stage),false);assert.equal(fs.statSync(file).nlink,1);
+    assert.equal(fs.existsSync(path.join(f.targets.dataRoot,'openchamber-progress')),false);
+    assert.equal(fs.existsSync(path.join(path.dirname(file),'progress-binding.json')),false);
+  }finally{await cold?.close();await f.close();}
+});
+
+test('cold fresh begin already unlinked before worker exit follows ordinary replay',async()=>{
+  const f=await freshHttpFixture('default');let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;
+  try{
+    const review=await f.inspect(),begin={version:2,action:'begin',operationId,confirmed:true,expected:review.expected} as const;
+    f.fault({crashStep:'prepare',order:'unlinked'});assert.equal((await f.step(begin)).status,503);
+    const file=migrationFile(f.env),bytes=fs.readFileSync(file);
+    assert.equal(fs.statSync(file).nlink,1);assert.equal(fs.existsSync(`${file}.stage-prepare-${digest(bytes)}`),false);
+    assert.equal(fs.existsSync(f.targets.storeRoot),false);
+    f.fault({});cold=await coldHttp(f.env);
+    const replay=await cold.step(begin);assert.equal(replay.status,200);assert.equal(replay.body.disposition,'replayed');
+    assert.equal(replay.body.progress.sequence,1);assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.equal(fs.existsSync(f.targets.storeRoot),false);
+  }finally{await cold?.close();await f.close();}
+});
+
+test('cold begin unlink failure reports the retained checkpoint and allows an exact retry',async()=>{
+  const f=await freshHttpFixture();let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;
+  try{
+    const review=await f.inspect(),begin={version:2,action:'begin',operationId,confirmed:true,expected:review.expected} as const;
+    f.fault({crashStep:'prepare',order:'linked'});assert.equal((await f.step(begin)).status,503);
+    const file=migrationFile(f.env),bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`;
+    f.fault({unlinkCode:'EPERM'});cold=await coldHttp(f.env);
+    const refused=await cold.step(begin);
+    assert.equal(refused.status,503);
+    assert.equal(refused.body.disposition,'refused');
+    assert.deepEqual(refused.body.error,{stage:'prepare',code:'EPERM'});
+    assert.equal(refused.body.progress.operationId,operationId);
+    assert.equal(refused.body.progress.sequence,1);assert.equal(nextAction(refused.body.progress),'continue');
+    assert.equal(fs.statSync(file).nlink,2);assert.equal(fs.statSync(stage).nlink,2);
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.deepEqual(fs.readFileSync(stage),bytes);
+    f.fault({});
+    const replay=await cold.step(begin);
+    assert.equal(replay.status,200);assert.equal(replay.body.disposition,'replayed');assert.equal(replay.body.progress.sequence,1);
+    assert.equal(fs.existsSync(stage),false);assert.equal(fs.statSync(file).nlink,1);
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.equal(fs.existsSync(f.targets.storeRoot),false);
+  }finally{await cold?.close();await f.close();}
+});
 
 for(const kind of ['default','custom','retained-new','retained-reuse'] as const)test(`HTTP fresh ${kind} review, cancellation, lost reply, pause and completion`,async t=>{
   const f=await freshHttpFixture(kind,true);try{

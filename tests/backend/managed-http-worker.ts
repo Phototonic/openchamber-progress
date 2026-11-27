@@ -18,6 +18,14 @@ if(fault.clockOffset){const clock=process.hrtime.bigint;process.hrtime.bigint=()
 // The projection runs the Windows path on a POSIX host: no permission check
 // may start a process, so any attempt fails the request.
 cp.spawnSync=(()=>{throw new Error('no permission check may start a process');}) as unknown as typeof cp.spawnSync;
+if(fault.unlinkCode){
+  const unlink=fs.unlinkSync;
+  Object.defineProperty(fs,'unlinkSync',{value:((file:Parameters<typeof unlink>[0])=>{
+    if(String(file).includes('migration.json.stage-prepare-'))
+      throw Object.assign(new Error('synthetic unlink refusal'),{code:fault.unlinkCode});
+    return unlink(file);
+  }) as typeof fs.unlinkSync});
+}
 if(fault.ownerCode){
   const stat=fs.lstatSync,read=fs.readFileSync;let journalRead=false;
   Object.defineProperty(fs,'readFileSync',{value:((p:any,...args:any[])=>{

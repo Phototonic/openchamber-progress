@@ -12,8 +12,8 @@ import {createManagedBindingDirectory,managedBindingFile,managedExpectationFile}
 import {readManagedStepJournal,readManagedFreshStepJournal,migrationFile,writeMigration} from '../../setup/managed-migration.ts';
 import {inspectManagedStep,inspectManagedFreshStep,type ManagedInspectionSession,type ManagedFreshInspectionSession} from '../../setup/managed-inspection.ts';
 import {beginManagedStep,advanceManagedStep,controlManagedStep} from '../../setup/managed-step-engine.ts';
-import {PlatformRequestBudget,withPlatformRequestBudget} from '../../shared/platform.ts';
-import {Store} from '../../shared/store.ts';
+import {PlatformRequestBudget,withPlatformRequestBudget,writerTarget} from '../../shared/platform.ts';
+import {Store,digest} from '../../shared/store.ts';
 import {observeManagedSetup} from '../../setup/managed-observation.ts';
 import {nextAction} from '../../ui/shared/setup-steps.ts';
 import type {ManagedStepRequest,ManagedFreshStepRequest} from '../../shared/managed-steps.ts';
@@ -229,6 +229,26 @@ for(const publication of ['journal','expectation','binding'] as const)for(const 
     assert.throws(()=>withPlatformRequestBudget(budget,()=>advanceManagedStep(f.env,payload,request,budget,j)));
     assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);assert.deepEqual(fs.readFileSync(stage),stageBytes);
     if(linked)assert.equal(fs.lstatSync(file).nlink,2);
+  }finally{f.cleanup();}
+});
+
+test('a retained first fresh save requires both writer slots and matching package before an explicit control',()=>{
+  const f=freshFixture();try{
+    const p=f.begin().progress,file=migrationFile(f.env),bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`;
+    fs.linkSync(file,stage);
+    const scope=writerTarget('scope',f.roots.dataRoot),store=writerTarget('store',f.storeRoot);
+    const pause={version:2,action:'pause',operationId:p.operationId,expectedSequence:p.sequence} as const;
+    const control=(targets:string[],current=payload)=>{
+      const budget=new PlatformRequestBudget(undefined,{targets});
+      return withPlatformRequestBudget(budget,()=>controlManagedStep(f.env,current,pause,budget));
+    };
+    assert.throws(()=>control([scope]),{code:'managed-step-conflict'});
+    assert.throws(()=>control([store]),{code:'managed-step-conflict'});
+    assert.throws(()=>control([scope,store],{...payload,plugin:'// different synthetic bytes'}),{code:'managed-review-stale'});
+    assert.deepEqual(fs.readFileSync(file),bytes);assert.deepEqual(fs.readFileSync(stage),bytes);assert.equal(fs.statSync(stage).nlink,2);
+    const paused=control([scope,store]);
+    assert.equal(paused.disposition,'applied');assert.equal(paused.progress.sequence,2);assert.equal(paused.progress.state,'paused');
+    assert.equal(fs.existsSync(stage),false);assert.equal(fs.existsSync(f.storeRoot),false);
   }finally{f.cleanup();}
 });
 
