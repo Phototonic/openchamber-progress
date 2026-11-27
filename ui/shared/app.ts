@@ -1729,10 +1729,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A background change must not close a picker the user has open; it paints once the
     // popup closes, including same-session metadata. Navigation and authority/UI
     // changes paint immediately; versions.ctx also includes non-navigation updates.
-    // Reading-owned live popups reconstruct their controls across paints. Unlike an
+    // View-owned live popups (More and Filters) update their controls across paints. Unlike an
     // independent SDK picker, they must not stall freshness/capture/cleanup updates,
     // including while one of their nested SDK selects is expanded.
-    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && [...mount!.querySelectorAll('[aria-haspopup][aria-expanded="true"]')].some(popup => !popup.closest('[data-live-popup]'))) {
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && [...mount!.querySelectorAll('[aria-haspopup][aria-expanded="true"]')].some(popup => !popup.closest('[data-live-popup]') && !popup.closest('.ap-more'))) {
       setTimeout(schedule, 300);
       return;
     }

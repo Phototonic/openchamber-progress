@@ -425,6 +425,13 @@ report, not a UI action.
 
 More uses native buttons with `menu`/`menuitem` roles, roving focus, Up/Down, Home/End, type-ahead, Enter/Space, and Escape returning focus to More. Outside press or focus departure dismisses it. Rows are at least 44 CSS pixels on coarse pointers. Language opens a `menuitemradio` submenu with Automatic (OpenChamber), English, Русский and 简体中文; Left returns to the parent and Escape to More. Unsupported hosts disable manual choices and explain the automatic fallback only inside this submenu. Language storage and failures keep their existing device-only contract.
 
+Refreshes and warnings can repaint the rail and board without closing More or
+its Language submenu. Labels and availability update while the menu stays open.
+Focus stays on the same item if it is still enabled, or moves to the first
+enabled item if not. Choosing an action still dismisses the menu. The menu also
+closes when its trigger is removed or when a selection or authority change
+starts a new reading.
+
 The below-320-pixel default is applied only while a new reading settles, not on later resize or refresh. Shell selection identity is reconciled before Map visibility is computed, so another plan's open panel cannot pause the newly selected plan's Map. The board's browse picker is omitted during search: search results own navigation there. When search or browsing has no selected plan, the held source-wide Needs you inbox remains reachable below the empty/loading reading without another inbox request.
 
 Opening a panel focuses its heading; Back or an unused Escape restores the previous Map or List view and focuses its opener: Plan document for the document panel or More for the other panels. No session switch, report mutation or new poller is introduced. Panels are frame-local and reset with the owning authority/selection. More's board history dot uses the existing device review point and the listed current revision, never a digest read. It appears only for a valid saved older point; absent/unsupported/unreadable storage shows no dot. Device checkpoints refresh on the existing read cadence; explicit review updates the panel's known checkpoint.

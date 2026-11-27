@@ -72,6 +72,50 @@ try {
   await wait('panel', `!!d.querySelector('[data-testid="more-trigger"]')`);
   // Only fixture chrome changes here, never guest styles or control state.
   await evaluate(`document.querySelector('#outside').hidden=true;document.querySelectorAll('section').forEach(n=>n.style.margin='0');qa.context(${js(fixture.session)});true`);
+  const more = '[data-testid="more-trigger"]';
+  const popup = '[data-testid="more-popup"]:not([hidden])';
+  const active = (id: string) => `d.activeElement?.dataset.menuId===${js(id)} && d.activeElement.tabIndex===0`;
+  const appearing = (selector: string) => `!!d.querySelector(${js(selector)})`;
+  const warning = appearing('[data-testid="capture-off"]');
+  for (const surface of ['panel', 'page']) {
+    const size = surface === 'panel' ? 390 : 1280;
+    await viewport(size);
+    await evaluate(`qa.show(${js(surface)},${size});true`);
+    await wait(surface, `${appearing('[data-testid="surface-header"]')} && !${warning} && w.__qaClock.pending.size>0`);
+    await click(surface, more);
+    await key('End');
+    await wait(surface, active('troubleshooting'));
+    await guest(surface, `w.qaMoreRow=d.activeElement;return true`);
+    await evaluate(`qa.mode='recording-off';qa.tick(${js(surface)});true`);
+    await wait(surface, warning); // Prove the warning painted without waiting for More to close.
+    check(`${surface}-more-keeps-focus-through-warning`, await guest(surface, `return ${appearing(popup)} && ${active('troubleshooting')} && d.activeElement===w.qaMoreRow`));
+    await shot(`${surface}-more-after-warning`);
+    await click(surface, '[data-menu-id="language"]');
+    await key('End');
+    await wait(surface, active('language-zh-CN'));
+    await guest(surface, `w.qaMoreRow=d.activeElement;return true`);
+    await wait(surface, `w.__qaClock.pending.size>0`);
+    await evaluate(`qa.mode='plan';qa.tick(${js(surface)});true`);
+    await wait(surface, `!${warning}`);
+    check(`${surface}-language-keeps-focus-through-repaint`, await guest(surface, `return ${appearing(popup)} && ${active('language-zh-CN')} && d.activeElement===w.qaMoreRow`));
+    await evaluate(`qa.ready(${js(surface)},{features:{deviceStorage:false}});true`);
+    await wait(surface, `d.querySelector('[data-menu-id="language-zh-CN"]')?.disabled===true`);
+    const availability = await guest(surface, `return {open:${appearing(popup)},active:d.activeElement?.dataset.menuId,hasFocus:d.hasFocus(),radioDisabled:[...d.querySelectorAll('[role="menuitemradio"]')].every(n=>n.disabled && n.tabIndex===-1)}`);
+    check(`${surface}-language-updates-availability`, availability.open && availability.active === 'language-back' && availability.radioDisabled, availability);
+    await key('Escape');
+    check(`${surface}-repainted-menu-escape`, await guest(surface, `return !${appearing(popup)} && d.activeElement===d.querySelector(${js(more)})`));
+    await evaluate(`qa.ready(${js(surface)},{features:{deviceStorage:true}});true`);
+    await click(surface, more);
+    await click(surface, '[data-testid="plan-title"]');
+    check(`${surface}-repainted-menu-outside-press`, await guest(surface, `return !${appearing(popup)}`));
+    await click(surface, more);
+    await key('Tab');
+    check(`${surface}-repainted-menu-focus-departure`, await guest(surface, `return !${appearing(popup)}`));
+    await click(surface, more);
+    await click(surface, '[data-menu-id="setup"]');
+    await wait(surface, `${appearing('[data-testid="surface-panel-setup"]')} && !${appearing(popup)}`);
+    await back(surface);
+  }
   for (const size of [390, 1280]) for (const locale of ['en', 'ru', 'zh-CN'] as const) for (const theme of ['light', 'dark']) for (const surface of ['panel', 'page']) {
     await viewport(size);
     const id = `${surface}-${size}-${locale}-${theme}`, t = shellCopy(locale);

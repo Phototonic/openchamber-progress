@@ -657,10 +657,11 @@ export class ProgressShell {
   private review: { key: string; revision: number | null } | null = null;
   reset(keepSetup = false) {
     // Same-reading data refreshes (including capture changes) keep Setup usable.
-    // Reconcile still closes it when the account, authority or selection changes.
+    // Reconcile still closes Setup and More if the account, authority or selection changes.
     if (keepSetup && this.panel === 'setup') this.closePanel?.('setup');
-    else { this.key = ''; this.setPanel(null); this.closePanel = undefined; }
-    this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null;
+    else { this.setPanel(null); this.closePanel = undefined; }
+    if (!keepSetup) { this.key = ''; this.menu?.dispose(); this.menu = null; }
+    this.review = null; this.focus = null;
   }
   get activePanel() { return this.panel; }
   /** Reconcile selection before callers decide which view is active, not only during paint. */
@@ -675,6 +676,8 @@ export class ProgressShell {
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
+    if (this.menu && !root.contains(this.menu.root)) { this.menu.dispose(); this.menu = null; }
+    this.menu?.refresh();
     const target = this.focus && {
       heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', document: '[data-testid="plan-view-document"] button',
     }[this.focus];
@@ -691,7 +694,6 @@ export class ProgressShell {
     this.reconcile(vc, plan, options);
     this.closePanel = options.closePanel;
     const key = this.key;
-    this.menu?.dispose();
     const t = shellCopy(vc.env.locale);
     const detail = plan ? vc.detail(plan) : null;
     const cancellation = plan ? vc.cancelPlan(plan) : null;
@@ -740,10 +742,11 @@ export class ProgressShell {
     const newHistory = !!(plan && reviewKey && this.review?.revision !== null && this.review?.revision !== undefined && this.review.revision < plan.revision);
     const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
     const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
-    const menu = this.menu = moreMenu({ label: newHistory ? t.newHistory : t.more, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language });
-    if (newHistory) { const dot = testid(el('span', 'ap-history-dot'), 'more-history-dot'); dot.setAttribute('aria-hidden', 'true'); menu.trigger.append(dot); }
+    const menuOptions: Parameters<typeof moreMenu>[0] = { label: newHistory ? t.newHistory : t.more, newHistory, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language };
+    const menu = this.menu ??= moreMenu(menuOptions);
+    menu.setOptions(menuOptions);
     const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
-    holder.append(menu.root);
+    menu.mount(holder);
     if (plan && vc.reading) MENU_SLOTS.set(vc.reading, {
       plan: plan.key, add: (actions, focusHook) => {
         // Per-plan archive/restore before settings; destructive actions remain last.
@@ -753,7 +756,7 @@ export class ProgressShell {
         if (destructive.length) items.push({ separator: true }, ...destructive.map(a => ({ id: a.id, label: a.label, disabled: a.disabled, destructive: true })));
         for (const action of actions) runs.set(action.id, action.run);
         if (focusHook) holder.dataset.testid = focusHook;
-        menu.update(items);
+        // More refreshes after this paint, once all the action owners have contributed.
       },
     });
     if (plan) {
