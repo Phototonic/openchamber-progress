@@ -1766,6 +1766,16 @@ for format 2, never translating families. Before a fresh journal exists,
 non-null lastCompleted. Before storage exists, capture is unknown, not guessed off.
 Status/restart never continue work; uncertain capture needs the existing single-use
 reviewed-resume protocol and cannot override a later disable through replay.
+Read-only Setup status for a validated complete format-3 journal and its matching
+selected binding compares the Store folder and database against their creation
+checkpoints (or reviewed objects) without the recorded device number. All other
+checks remain, including object presence, kind, path, inode, birth time, live
+link/private-path checks, sidecar safety, logical Store and source identity,
+schema, actual capture, and expectation observation. Verified Setup status updates
+health to ready without a plans read. This changes neither persisted evidence nor
+write authority and cannot establish physical-volume continuity. Unfinished
+journals, missing or conflicting selections, inspection/review, Resume, format-2
+manifest claims and removal receipts do not get this exception.
 See [the detailed step contract](../setup/managed-steps.md) for digests, retries,
 budgets and recovery boundaries.
 

@@ -320,8 +320,16 @@ journal readers refuse format 3, including complete records; use a fresh-capable
 build for recovery, never down-convert or restore a global loader.
 Creation-only sole-source and initial capture-off checks apply while fresh work is
 unfinished, not after terminal completion. A completed store may serve other
-sources; Setup still verifies its selected source, Store identity, schema, private
-objects and actual capture setting.
+sources; Setup still verifies its selected source, logical Store ID, schema, private
+objects and actual capture setting. For a completed format-3 fresh journal with
+its matching selection, read-only status ignores historical device numbers for
+the Store folder and database. This allows a device number to change after reboot
+without reconfiguring Setup. Paths, inode, recorded birth time and live safety
+checks still have to match. Verified means the same logical Store, not proof of
+the same physical volume or latest contents of a snapshot. Setup does not rewrite
+the journal or authorize a write. Unfinished work may still be refused after a
+reboot that renumbers a device; inspection, Resume, migration and removal retain
+their stricter identity checks.
 
 If bootstrap is refused, stop submitting setup actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no

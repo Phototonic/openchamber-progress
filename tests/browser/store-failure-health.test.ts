@@ -130,6 +130,34 @@ test('snapshot admission refusal and proxy errors never authorize plans or creat
   }
 });
 
+test('a responding Setup conflict keeps its diagnostic and never reads plans', async () => {
+  const code = 'managed-migration-conflict';
+  for (const [setupStatus, diagnostic, kind] of [
+    [200, code, 'setup-refused'], [409, code, 'setup-refused'], [503, 'storage', 'unavailable'],
+    [200, 'unexpected-code', 'unavailable'], [200, 'busy', 'busy'], [200, 'corrupt', 'damaged'], [200, 'schema', 'incompatible'],
+  ] as const) {
+    const calls: string[] = [];
+    const r = await source.readList({ serviceRequest: async q => {
+      calls.push(q.path);
+      if (q.path === '/v1/setup') return setupStatus === 200 ? response(setupRead()) : response({ error: diagnostic }, setupStatus);
+      assert.equal(q.path, '/health');
+      return response({ ...failedHealth(diagnostic), state: 'refused' });
+    } }, {});
+    assert.ok(!r.ok);
+    assert.equal(r.failure.kind, kind);
+    assert.equal(r.failure.code, diagnostic);
+    assert.deepEqual(calls, ['/health', '/v1/setup', ...(setupStatus === 200 ? ['/health'] : [])]);
+  }
+  const routes: string[] = [];
+  const proxy = await source.readList({ serviceRequest: async q => {
+    routes.push(q.path);
+    return response({ error: code }, 503);
+  } }, {});
+  assert.ok(!proxy.ok);
+  assert.equal(proxy.failure.kind, 'unavailable', 'an HTTP error outside Setup admission is not a Setup diagnosis');
+  assert.deepEqual(routes, ['/health']);
+});
+
 test('readList classifies health-reported store failures; only /health is called', async () => {
   for (const [code, kind] of [['corrupt', 'damaged'], ['schema', 'incompatible'], ['busy', 'busy'], ['storage', 'unavailable']] as const) {
     const calls: GuestRequest[] = [];
@@ -280,6 +308,23 @@ test('cached data is retained and marked stale-damaged when the store breaks bet
   assert.equal(failure?.kind, 'damaged'); assert.equal(failure?.code, 'corrupt');
   assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
   c.stop();
+});
+
+test('last-good panel data stays stale when the service refuses Setup', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    const lastGood = c.vc.lastGoodAt;
+    assert.ok(lastGood);
+    c.intercept(async (q, next) => q.path === '/health' ? response({ ...failedHealth('managed-migration-conflict'), state: 'refused' }) : next());
+    const mark = c.requests.length;
+    c.vc.retry(); await settle();
+    assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
+    assert.equal(c.vc.lastGoodAt, lastGood);
+    assert.equal(c.vc.failure?.kind, 'setup-refused');
+    assert.equal(c.vc.failure?.code, 'managed-migration-conflict');
+    assert.deepEqual(c.requests.slice(mark).map(q => q.path), ['/health', '/v1/setup', '/health']);
+  } finally { c.stop(); }
 });
 
 test('configured binding failure shows a fresh failure, not the setup form, and stays stale on cached data', async () => {
