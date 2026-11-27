@@ -10,13 +10,13 @@ import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shar
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanActivity, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, parseUserCancelReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
   NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
-import { SEARCH_LIMITS } from '../../shared/progress.ts';
+import { SEARCH_LIMITS, type PlanActivityRequest } from '../../shared/progress.ts';
 import type { InboxWindowView } from './model.ts';
 import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
@@ -452,6 +452,17 @@ export async function readDocument(host: ServiceHost, plan: Pick<PlanView, 'sour
 }
 
 export type HistoryResult = { ok: true; entries: HistoryEntry[]; truncated: boolean } | { ok: false; failure: ReadFailure };
+
+export async function readPlanActivity(host: ServiceHost, r: PlanActivityRequest) {
+  try {
+    const body = await call(host, ROUTES.history, query({ source: r.source, plan: r.plan, through: r.through }));
+    return { ok: true as const, ...parsePlanActivity(body, r) };
+  } catch {
+    // A legacy server's 404 is indistinguishable from a lost plan here. Neither is
+    // authoritative for the list or other parts of the reading.
+    return { ok: false as const };
+  }
+}
 
 /** Read a suffix through the listed revision; keep wire order for transition labels in historyBlock. */
 export async function readHistory(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id' | 'revision'>, maxPages = 5): Promise<HistoryResult> {

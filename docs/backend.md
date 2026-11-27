@@ -1892,6 +1892,23 @@ same bounded bookkeeping budget. A producer lease qualifies restart recovery,
 not activity liveness. The timer performs no native scan for an empty queue;
 ignored cancellation still occupies a physical host slot until settlement.
 
+## Plan activity read
+
+`Store.planActivity` seeks an inclusive range of at most 20 keys on the
+`revisions` primary key, descending, and left-joins `contributions` on
+`(source, plan, revision)` in the same read transaction. It projects metadata,
+not full snapshots or the raw actor. The report clock comes from the
+contribution: an automatic binding can preserve the older plan clock. For
+the fixed user-cancel actor (same predicate as History) or an absent
+contribution, the time comes from the revision snapshot. An absent
+contribution is not a cancellation; a malformed or mismatched contribution
+or a gapped range refuses the window. Contribution input is size-admitted
+before materialization; the normal service response ceiling still applies.
+
+Ordinary History takes its existing offset path without the join. Activity
+reads retained data from archived and capture-disabled plans without writes,
+schema installation, detail traversal, capture bytes or host session reads.
+
 ## Plan graph read
 
 The additive revision-1 `/v1/plan-graph` contract is owned by `Store.planGraph` in one read transaction. It checks store/service binding, current progress revision and cleanup generation and projects only complete recorded graph facts. SQL CASE admission bounds the current snapshot to 8 MiB before driver materialization; invalid or oversized input fails closed. The existing 1 MiB encoded response ceiling remains authoritative, with 413 rather than a graph prefix. No history, contribution or timing scan is used, and reads do not install schema objects or mutate receipts/revisions. Capture-off and read-only legacy stores remain readable. `tests/backend/plan-graph-service.test.ts` covers authenticated real HTTP/SQLite, held replies across actual mutations, cleanup/binding conflicts, staged 1,000-item budgets and separately labelled fault-only input/output failures. See `docs/contracts.md` for the frozen DTO and error semantics.

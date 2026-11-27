@@ -233,6 +233,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
       routes['/v1/plan'].push('delegationIntent');
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
+      const activity = url.pathname === '/v1/history' && url.searchParams.has('through');
+      if (activity) routes['/v1/history'] = ['source', 'plan', 'through'];
       const allowed = routes[url.pathname];
       if (!allowed || [...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) return answer(404,{error:'not-found'});
       if(searchRoute && Buffer.byteLength(url.search)>SEARCH_LIMITS.queryBytes)throw new ProgressError('invalid');
@@ -297,6 +299,12 @@ export function createProgressServer(store: Store | undefined, token: string, un
         return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail),...(overlay?{delegationIntent:overlay}:{})});
       }
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
+      if (activity) {
+        const value = url.searchParams.get('through')!;
+        const through = Number(value);
+        if (!/^\d{1,16}$/.test(value) || !Number.isSafeInteger(through) || through <= 0) throw new ProgressError('invalid');
+        return answer(200, currentStore.planActivity(source, plan, through));
+      }
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
     } catch (e) {
       if(stepRoute)return stepRefusal(managedDiagnostic(e));

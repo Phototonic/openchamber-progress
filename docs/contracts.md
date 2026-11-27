@@ -109,6 +109,26 @@ an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
 
+## Plan activity (additive revision 1)
+
+Authenticated `GET /v1/history?source=S&plan=P&through=N` returns one
+newest-first window of up to 20 consecutive revisions, including `N`. `N` is
+a positive safe integer; this form does not accept `cursor` or `limit`.
+`PlanActivityWindow` identifies protocol/schema 2, activity revision 1, store,
+source binding, source, plan and cleanup generation. `nextThrough` is the
+revision just before the oldest row, or null at revision one. Rows carry the
+recorded time and exactly one of: report attribution and recorded task IDs,
+fixed user cancellation, or unavailable report details. A report with no
+task IDs is distinct from unavailable details.
+
+The service refuses invalid or future boundaries (400), missing plans or
+unsupported query forms (404), gaps and invalid stored records (503), and
+replies over the service's response limit (413). The guest treats those
+failures, mismatched identity and older services' unknown-query rejection
+as unavailable in Activity only, without inferring deletion or switching to
+another read. Without `through`, History and its paging, review digest and
+checkpoints keep their existing contract. Older guests make no activity read.
+
 ## Plan composer handoff revision 1
 
 The candidate requires **OpenChamber >=2.7.1**; the build SDK remains pinned at

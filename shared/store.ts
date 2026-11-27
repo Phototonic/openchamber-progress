@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { GRAPH_LIMITS, graphCheck, graphInteger, graphItems, graphRecord } from './plan-graph.ts';
-import { identifier, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
+import { identifier, type PlanActivityRow, type PlanActivityWindow, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
 import * as runs from './subagent-runs.ts';
 import { installReceiptIndex, receiptIndexInstalled } from './receipt-index.ts';
 import { parseReportRequest, type Request } from './progress.ts';
@@ -25,6 +25,9 @@ import { canonical } from './canonical.ts';
 export { canonical } from './canonical.ts';
 export function digest(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
 const userCancelActor = JSON.stringify(USER_CANCEL_ACTOR);
+function activityTime(value: unknown): value is string {
+  return typeof value === 'string' && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
 /** Presentation-only Windows spelling equivalence; never case-fold directory names. */
 function directoryFilter(value:string|undefined) {return windows?value?.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toUpperCase()):value;}
 function directoryExpression(expression:string) {
@@ -451,6 +454,57 @@ export class Store {
         const attribution: HistoryAttribution = r.user_cancel === 1 ? {actor:'user'} : {};
         return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt,...attribution };
       }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
+    });
+  }
+  planActivity(source: string, plan: string, through: number): PlanActivityWindow {
+    need(identifier(source) && identifier(plan) && Number.isSafeInteger(through) && through > 0);
+    return this.transaction(false, () => {
+      const live = this.db.prepare('SELECT revision FROM plans WHERE source=? AND id=?').get(source, plan);
+      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      need(live && cleanup?.state !== 'deleted', 'not-found');
+      const cleanupRev = cleanup?.generation ?? 0;
+      need(graphInteger(live.revision, 1) && graphInteger(cleanupRev), 'corrupt');
+      need(through <= live.revision);
+      const oldest = Math.max(1, through - LIMITS.pageSize + 1);
+      const revisions = this.db.prepare(`
+        SELECT r.revision, r.actor=? AS user_cancel,
+          CASE WHEN length(json_extract(r.snapshot,'$.reportedAt'))=24 THEN json_extract(r.snapshot,'$.reportedAt') END AS recorded_at,
+          CASE WHEN length(json_extract(r.actor,'$.sessionId'))<=80 THEN json_extract(r.actor,'$.sessionId') END AS reporter,
+          json_extract(r.actor,'$.sourceId')=r.source AS matching_actor_source,
+          json_extract(r.actor,'$.sessionId')=json_extract(r.snapshot,'$.sessionId') AS coordinator,
+          json_extract(r.snapshot,'$.lifecycle')='cancelled' AS cancelled,
+          CASE WHEN json_extract(r.snapshot,'$.id')=r.plan AND json_extract(r.snapshot,'$.sourceId')=r.source
+            AND json_extract(r.snapshot,'$.revision')=r.revision THEN 1 END AS matching_snapshot,
+          c.revision AS contribution_revision,
+          CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS contribution
+        FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+        WHERE r.source=? AND r.plan=? AND r.revision BETWEEN ? AND ?
+        ORDER BY r.revision DESC
+      `).all(userCancelActor, LIMITS.requestBytes, source, plan, oldest, through);
+      need(revisions.length === through - oldest + 1, 'corrupt');
+      const rows = revisions.map((r, i): PlanActivityRow => {
+        const revision = through - i;
+        need(r.revision === revision && r.matching_snapshot === 1, 'corrupt');
+        if (r.user_cancel === 1 || r.contribution_revision === null) {
+          need(r.contribution_revision === null && (r.user_cancel !== 1 || r.cancelled === 1) && activityTime(r.recorded_at), 'corrupt');
+          return { revision, reportedAt: r.recorded_at, kind: r.user_cancel === 1 ? 'user' : 'unavailable' };
+        }
+        need(typeof r.contribution === 'string', 'corrupt');
+        const c: unknown = JSON.parse(r.contribution);
+        need(graphRecord(c) && c.revision === revision && activityTime(c.reportedAt) &&
+          identifier(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.matching_actor_source === 1 &&
+          identifier(c.attributedSessionId) &&
+          (c.mode === 'direct' && c.reporterSessionId === c.attributedSessionId ||
+            c.mode === 'parent-relay' && r.coordinator === 1 && c.reporterSessionId !== c.attributedSessionId) &&
+          Array.isArray(c.itemIds) && c.itemIds.length <= 50 && c.itemIds.every(identifier) &&
+          new Set(c.itemIds).size === c.itemIds.length, 'corrupt');
+        return { revision, reportedAt: c.reportedAt, kind: 'report', mode: c.mode,
+          reporterSessionId: c.reporterSessionId, attributedSessionId: c.attributedSessionId, itemIds: c.itemIds };
+      });
+      const storeId = this.db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()?.store_id;
+      need(identifier(storeId), 'corrupt');
+      return { protocolVersion: VERSION, schemaVersion: VERSION, planActivity: 1,
+        storeId, sourceBinding: { ...this.readBinding }, source, plan, cleanupRev, rows, nextThrough: oldest === 1 ? null : oldest - 1 };
     });
   }
   changeDigest(request: { storeId: string; source: string; plan: string; to: number; after?: number; cleanupRev: number }): ChangeDigest {

@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Open **Activity** below the tasks in a plan's List to page through recorded updates, see who reported or relayed them, and read the task IDs they named. User cancellations are shown separately; History and review markers are unchanged.
+
 ## [1.5.2] - 2026-11-19
 
 Cleanup follow-ups from the 1.5.1 review and a companion system prompt section that stays identical across requests, so it no longer defeats a provider's prompt cache. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.

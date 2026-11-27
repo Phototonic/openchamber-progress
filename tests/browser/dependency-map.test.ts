@@ -187,6 +187,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
     const vc: any = { identity: 'synthetic-identity', session: { id: 'M' }, directory: '/fixture/main',
       ui: { selected: null }, read: { plans: [c.plan, otherPlan], binding: { verified: false }, captureEnabled: true },
       env: { boundSource: null, now: Date.now() }, quiet: { hide: true },
+      planActivity: () => null,
       storage: { get: () => { preferenceReads++; return new Promise<string>(resolve => preferences.push(resolve)); }, set: async () => {} },
       setUi: (patch: unknown) => { vc.ui = { ...vc.ui, ...patch as object }; }, detail: () => null, summary: () => null, document: () => null };
     railSpec.onContext(vc); railSpec.paint(node(), vc); choosePlan(otherPlan.key);
