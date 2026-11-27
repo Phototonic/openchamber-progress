@@ -594,13 +594,39 @@ function resultPages(svc: SearchProxy, b: Backend, onGone?: (departures: Departu
   let n = 0;
   return {
     c, gone, plain: { serviceRequest: svc.serviceRequest }, get changes() { return changes; },
-    async run(q: string) { c.submit(`pages-${++n}`, criteria({ q }), identity, EMPTY_LIVE); await idle(); return c.view()!; },
+    async run(q: string, patch?: Partial<SearchCriteria>) { c.submit(`pages-${++n}`, criteria({ q, ...patch }), identity, EMPTY_LIVE); await idle(); return c.view()!; },
     async more() { c.more(); await idle(); return c.view()!; },
     /** A reused page is shown again: nothing has checked it since. */
     revisit() { c.showPage(-1); c.showPage(1); return c.view()!; },
   };
 }
 const planKeysOf = (c: SearchController) => [...new Map(c.view()!.page.hits.map(h => [h.plan.key, h.plan])).values()];
+
+test('quiet search excludes hits and counts at one cutoff; preference changes wait for explicit refresh', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedWord(b, [0, 759], 760);
+    b.finish(libraryId(759));
+    const p = resultPages(svc, b);
+    const now = Date.parse(b.f.store.get(b.f.alpha.id, libraryId(0))!.reportedAt) + 7 * 86_400_000;
+    let v = await p.run('Zq', { quiet: { hide: true, now } });
+    assert.deepEqual(v.page.hits, []);
+    assert.equal(v.counts.matchedPlans, 0);
+    assert.equal(v.quietExcluded, true);
+    assert.equal(v.exhausted, false, 'hiding matches does not lift the scan budget');
+    v = await p.more();
+    assert.deepEqual(v.page.hits.map(h => h.plan.id), [libraryId(759)]);
+    assert.equal(v.counts.matchedPlans, 1, 'closed work still counts');
+    const reads = svc.count('/v1/search');
+    p.c.quietChanged(false);
+    assert.equal(p.c.view()?.stop, 'retired');
+    assert.deepEqual(p.c.view()?.page.hits, []);
+    assert.equal(svc.count('/v1/search'), reads, 'changing a preference does not run a search');
+    v = await p.run('Zq', { quiet: { hide: false, now } });
+    assert.deepEqual(v.page.hits.map(h => h.plan.id), [libraryId(0)]);
+    assert.equal(v.counts.matchedPlans, 1);
+    assert.ok(svc.log.every(row => row.path !== '/v1/search' || !('quiet' in (row.query ?? {}))));
+  });
+});
 
 test('a freshness reply for one page is never credited to the page that took its place', async () => {
   await withBackend(false, async (b, svc) => {

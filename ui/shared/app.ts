@@ -33,6 +33,7 @@ import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkp
 import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { DeviceViewState } from './device-view-state.ts';
+import { quietCopy, quietDays } from './quiet-plans.ts';
 import { countFacts, type CountFacts } from './incomplete-counts.ts';
 import { COUNT_CSS, IncompleteCounts } from './incomplete-counts-view.ts';
 import { censusFor, type Census } from './census.ts';
@@ -119,6 +120,7 @@ export interface ViewContext<U> {
   live: LiveSnapshot;
   env: Env;
   language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
+  quiet: DeviceViewState['quiet'] & { choose: (hide: boolean) => Promise<boolean>; retry: () => void };
   ui: U;
   setUi: (patch: Partial<U>) => void;
   /** Background data/presentation changed; preserves open pickers and active presses. */
@@ -234,6 +236,7 @@ export interface ViewSpec<U> {
   reconcilePaint?: (previous: HTMLElement, next: HTMLElement) => HTMLElement;
   /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
   refreshed?: (vc: ViewContext<U>) => void;
+  quietChanged?: (vc: ViewContext<U>) => void;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
   beforeUiChange?: (previous: U, next: U) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
@@ -598,7 +601,36 @@ export function startView<U>(spec: ViewSpec<U>) {
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
-  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.data++; schedule(); }) : null;
+  let lastQuietHide = true;
+  let quietClock = '';
+  let quietAnnouncer: HTMLElement | undefined;
+  function announceQuiet() {
+    if (!quietAnnouncer) {
+      quietAnnouncer = document.createElement('p');
+      quietAnnouncer.className = 'ap-sr';
+      quietAnnouncer.setAttribute('role', 'status');
+      mount!.after(quietAnnouncer);
+    }
+    const node = quietAnnouncer;
+    node.textContent = '';
+    requestAnimationFrame(() => { if (!disposed && node.isConnected) node.textContent = quietCopy(language.snapshot().language).changed; });
+  }
+  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => {
+    if (deviceView!.quiet.hide !== lastQuietHide) {
+      lastQuietHide = deviceView!.quiet.hide;
+      if (ctx) spec.quietChanged?.(context());
+    }
+    versions.data++; schedule();
+  }) : null;
+  function refreshQuietClock() {
+    if (!deviceView || !ctx) return;
+    // Compare the classifications, not the clock itself, on the existing refresh path.
+    const now = Date.now();
+    const dayKey = (p: PlanView) => quietDays(p, now);
+    const current = spec.actionPlan?.(context());
+    const key = JSON.stringify([read?.plans.map(dayKey), current && dayKey(current)]);
+    if (quietClock !== key) { quietClock = key; versions.data++; }
+  }
   const incomplete = new IncompleteCounts(() => bump());
   let paintedRuns: RunsPanel | null = null;
   let paintedCensus: Census | null = null;
@@ -947,6 +979,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (setupRefreshDue()) loadSetup();
         failure = null; lastGoodAt = Date.now();
+        refreshQuietClock();
         if (ctx) spec.refreshed?.(context());
         runs?.poll();
         schedule(); plan(REFRESH_MS);
@@ -1026,6 +1059,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (setupRefreshDue()) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
+      refreshQuietClock();
       if (ctx) spec.refreshed?.(context());
       if (authorityChanged && ctx) spec.onContext?.(context());
       // The same visible poll re-reads the eligible sub-agent section; nothing else times it.
@@ -1061,6 +1095,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   /** A captured target as a plan to re-validate: identity, revision and the placement facts the per-target check needs. */
   const remainingPlan = (t: CleanupTarget, vc: ViewContext<U>): CleanupPlan => ({
     key: t.key, title: t.title, lifecycle: t.lifecycle, sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,
+    ...(t.reportedAt === undefined ? {} : { reportedAt: t.reportedAt }),
     ...(t.where ? { ownerSessionId: t.where.owner, directory: t.where.directory } : {}),
     ...(spec.tidyArchived?.(vc) ? { cleanup: { state: 'archived' as const, revision: t.request.cleanupRev } } : {}),
   });
@@ -1421,6 +1456,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,
       get countFacts() { return countFacts(this.read, this.inbox, paintedRuns, paintedCensus); },
       failure, lastGoodAt, live: live.snapshot, env, ui,
+      quiet: { ...(deviceView?.quiet ?? { hide: true, supported: false, error: null, saving: false }),
+        choose: async (hide) => {
+          if (disposed || document.visibilityState === 'hidden' || !deviceView || hide === deviceView.quiet.hide) return false;
+          const saved = await deviceView.setQuiet(hide);
+          if (saved && !disposed) announceQuiet();
+          return saved;
+        },
+        retry: () => { if (ctx) void deviceView?.refresh(ctx.features?.deviceStorage === true); } },
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;

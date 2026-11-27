@@ -2,7 +2,7 @@
 // coverage, grouped results and explicit actions. Untrusted titles land through textContent only.
 import { mountSearchField, mountSpinner, type SelectOption } from '@openchamber/sdk/ui';
 import { mountLiveSelect } from './live-select.ts';
-import { button, el, emptyBlock, failureCopy, glyph, planLocation, testid, type Env } from './components.ts';
+import { button, el, emptyBlock, failureCopy, glyph, planLocation, quietAge, testid, type Env } from './components.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { icon } from './primitives.ts';
 import { formatCount } from './format.ts';
@@ -352,12 +352,13 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   Object.assign(head.dataset, { source: g.plan.sourceId, plan: g.plan.id, kind: 'plan' });
   if (h.selected?.key === g.plan.key && !h.selected.item) head.setAttribute('aria-current', 'true');
   head.append(el('span', 'ap-hit-title', g.plan.title), el('span', 'ap-hit-meta', hitMeta(g.plan, env)));
+  const quiet = quietAge(g.plan, env); if (quiet) head.append(quiet);
   const notes: string[] = [];
   if (g.continued) notes.push(copy.continued);
   if (g.planOnly) notes.push(copy.planMatch);
   if (g.changed) notes.push(copy.changed);
   if (notes.length) head.append(el('span', 'ap-hit-note', notes.join(' · ')));
-  head.setAttribute('aria-label', h.selection ? g.plan.title : `${copy.openPlan}: ${g.plan.title}`);
+  head.setAttribute('aria-label', `${h.selection ? g.plan.title : `${copy.openPlan}: ${g.plan.title}`}${quiet ? ` · ${quiet.textContent}` : ''}`);
   if (h.selection) head.setAttribute('aria-pressed', String(h.selection.has(g.plan.key)));
   head.addEventListener('click', () => {
     if (h.selection) { if (head.isConnected) h.selection.toggle(g.plan); }
@@ -400,7 +401,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   return section;
 }
 
-export interface ActionHooks { more: () => void; retry: () => void; refresh: () => void; page: (delta: -1 | 1) => void; removeLocation: (part: LocationPart) => void; clearAll: () => void }
+export interface ActionHooks { more: () => void; retry: () => void; refresh: () => void; page: (delta: -1 | 1) => void; removeLocation: (part: LocationPart) => void; clearAll: () => void; quietEmpty?: () => HTMLElement }
 
 /** Grouped results for the shown page, with explicit continuation and recovery actions. */
 export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & ActionHooks) {
@@ -442,7 +443,7 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
   if (!shown) {
     if (v.exhausted && !v.stop) {
       const certain = !v.coverage.gapped && !(narrowed(v.criteria) && v.discoveryIncomplete);
-      nav.append(emptyBlock('search-empty', certain ? copy.noMatch : copy.uncertain, copy.tryOther));
+      nav.append(v.quietExcluded && h.quietEmpty ? h.quietEmpty() : emptyBlock('search-empty', certain ? copy.noMatch : copy.uncertain, copy.tryOther));
     } else if (v.stop === 'paused' || v.stop === 'hidden') {
       nav.append(testid(el('p', 'ap-note', copy.noneYet), 'search-none-yet'));
     }

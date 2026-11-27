@@ -17,6 +17,8 @@ import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/depe
 import { warningLine } from '../shared/primitives.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
 import { railPlanKey as storeKey } from '../shared/plan-selection.ts';
+import { admitsQuiet, quietDays, quietLabel } from '../shared/quiet-plans.ts';
+import { quietEmpty } from '../shared/components.ts';
 
 const messages = {
   en: { heading: 'Agent progress', noSession: 'No session selected', openProgress: 'Open a session to see its progress.', setup: 'Agent Progress is not set up yet', connect: 'Connect it to OpenCode to start showing plans.', capture: 'Recording is off; new progress isn’t saved.', openPlan: 'Open a session to see its plan.', noPlan: 'No plan yet', appears: 'When an agent in this session shares its plan, it shows up here.', about: 'About this plan', contribution: (name: string) => `Helps with ${name}’s plan`, details: 'Details', truncated: 'Some counts may be incomplete.', watched: 'Live sessions watched', helping: 'helping · ' },
@@ -187,6 +189,7 @@ startView<Ui>({
     if (reload) root.append(reload);
     if (!read.captureEnabled) root.append(testid(warningLine(t.capture), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
+    const choices = scope.kind === 'none' ? [] : scope.plans.filter(p => admitsQuiet(p, vc.quiet.hide, env.now));
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
     const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
     const runRequest = shown && session ? runClaim(read, session, shown) : null;
@@ -194,19 +197,19 @@ startView<Ui>({
     if (scope.kind === 'none') {
       if (surface(root, vc, null)) return;
       root.append(emptyBlock('unscoped-state', t.noSession, t.openPlan));
-    } else if (!scope.plans.length) {
+    } else if (!choices.length) {
       if (surface(root, vc, null)) return;
-      root.append(emptyBlock('empty-state', t.noPlan, t.appears));
+      root.append(scope.plans.length ? quietEmpty(vc) : emptyBlock('empty-state', t.noPlan, t.appears));
     } else {
       const generation = selectionGeneration;
-      const plan = pickPlan(scope.plans, vc.ui.selected);
+      const plan = pickPlan(choices, vc.ui.selected);
       // The title is the picker (several plans): built fresh each paint, so it carries this paint's choice guard.
-      const choose = plan && scope.plans.length > 1 ? (standalone = false) => picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, standalone, (key) => {
+      const choose = plan && choices.length > 1 ? (standalone = false) => picker(choices, plan, scope.kind === 'session' ? scope.sessionId : null, standalone, (key) => {
         if (generation !== selectionGeneration) return;
         selectionGeneration++; // a manual choice also retires a pending preference restore
         vc.setUi({ selected: key });
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
-      }, language) : null;
+      }, language, env.now) : null;
       // Plan view: List / Map, first (also with one plan), like the board's tabs above its detail.
       // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
       // activation records the explicit choice (including re-pressing the provisional List).
@@ -281,7 +284,7 @@ function pinnedScope(vc: ViewContext<Ui>, language: InterfaceLanguage) {
 function current(vc: ViewContext<Ui>) {
   if (!vc.read) return null;
   const scope = contextScope(vc.read.plans, vc.session?.id, vc.directory);
-  return scope.kind === 'none' ? null : pickPlan(scope.plans, vc.ui.selected);
+  return scope.kind === 'none' ? null : pickPlan(scope.plans.filter(p => admitsQuiet(p, vc.quiet.hide, vc.env.now)), vc.ui.selected);
 }
 
 function hooks(vc: ViewContext<Ui>, plan: PlanView) {
@@ -294,13 +297,14 @@ function hooks(vc: ViewContext<Ui>, plan: PlanView) {
 }
 
 /** The title-picker: every scoped plan with its done/total or lifecycle, and the helping role. */
-function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void, language: InterfaceLanguage) {
+function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void, language: InterfaceLanguage, now: number) {
   return planPicker({
     title: current.title, index: plans.indexOf(current) + 1, count: plans.length, incomplete: frame?.read?.truncated, value: current.key, standalone, locale: language,
     options: plans.map((p) => {
       const s = summarize(p);
       const role = sessionId && p.ownerSessionId !== sessionId ? messages[language].helping : '';
-      return { id: p.key, label: p.title, hint: `${role}${p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : '—') : lifecycleLabel(p.lifecycle, language)}` };
+      const days = quietDays(p, now);
+      return { id: p.key, label: p.title, hint: `${role}${p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : '—') : lifecycleLabel(p.lifecycle, language)}${days === null ? '' : ` · ${quietLabel(days, language)}`}` };
     }),
     onChange,
   });

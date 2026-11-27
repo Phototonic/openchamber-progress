@@ -33,6 +33,8 @@ import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '..
 import { CompactInbox, hiddenInboxAction, inboxCopy, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
 import { InboxPartition, partitionInbox, planInboxComplete, scopeInbox } from '../shared/inbox.ts';
+import { quietAge, quietCheck, quietEmpty, quietNotice } from '../shared/components.ts';
+import { admitsQuiet, quietCopy, quietDays, quietLabel } from '../shared/quiet-plans.ts';
 
 type Tab = 'progress' | 'document' | 'history' | 'map';
 const messages = {
@@ -86,10 +88,12 @@ let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
 let selectionHitCount = -1;
 let selectionSearchPlans: SearchViewState['page']['hits'][number]['plan'][] = [];
+const quietKeys = (vc: ViewContext<Ui>) => (vc.quiet.hide ? vc.read?.plans.filter(p => !admitsQuiet(p, true, vc.env.now)).map(p => p.key) : undefined) ?? [];
 const derivedBoard = (vc: ViewContext<Ui>) => boardDerivation.get({
   plans: vc.read?.plans ?? [], live: vc.env.live, filters: vc.ui.filters,
   bound: vc.env.boundSource, locale: resolveLanguage('auto', vc.env.locale), archived: vc.ui.archived,
   reading: JSON.stringify([vc.identity, vc.ctx.connection?.account, vc.ui.search?.key, [...vc.env.unverifiedSources]]),
+  excluded: new Set(quietKeys(vc)),
 });
 const visiblePlans = (vc: ViewContext<Ui>) => vc.read ? derivedBoard(vc).plans : [];
 let rowInbox: ReturnType<typeof partitionInbox> = new Map();
@@ -159,7 +163,7 @@ function isSearching(vc: ViewContext<Ui>) {
 }
 /** A Select all rule belongs to the displayed scope, not a stale location choice. */
 function selectionScope(vc: ViewContext<Ui>) {
-  return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters,
+  return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters, vc.quiet.hide, isSearching(vc) ? null : quietKeys(vc),
     isSearching(vc) ? vc.ui.search!.criteria : derivedBoard(vc).filters, vc.ui.search?.key ?? null]);
 }
 /**
@@ -203,7 +207,7 @@ function selectedPlan(vc: ViewContext<Ui>) {
 /** The board's own reading scope (filters or search run; never the host session). */
 function readingScope(vc: ViewContext<Ui>) {
   const v = searching(vc);
-  return v ? `board-search:${v.run}` : `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}`;
+  return v ? `board-search:${v.run}:${vc.quiet.hide}` : `board:${JSON.stringify([vc.ui.archived, vc.ui.filters, vc.quiet.hide])}`;
 }
 /** Fourth tab: the dependency map of the selected plan. View as list returns to Progress in this frame. */
 const viewChoice = new DefaultViewChoice();
@@ -288,6 +292,12 @@ startView<Ui>({
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
+  quietChanged: vc => {
+    search.quietChanged(vc.quiet.hide);
+    boardEpoch++;
+    pendingTask = null; heldPlan = null; openedHit = null;
+    vc.setUi(vc.ui.search ? { selected: null, reveal: 0 } : {});
+  },
   tidyPlans: visiblePlans,
   selectionScope,
   tidyArchived: vc => vc.ui.archived,
@@ -296,6 +306,7 @@ startView<Ui>({
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
     const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
+    const quiet = criteria?.quiet ?? { hide: vc.quiet.hide, now: vc.env.now };
     const matching = !!criteria || Object.values(filters).some(v => v !== ALL);
     const identity = vc.read!;
     const bound = vc.env.boundSource ?? null;
@@ -318,20 +329,25 @@ startView<Ui>({
       return named ? await named(cursor) : searchRead ? await searchRead(cursor) : await readCleanupListPage(host,
         { ...pageListScope(filters), archived: vc.ui.archived ? 'only' : 'exclude' }, cursor, identity, continuation);
       // The scan applies the scope itself, after it has dropped an overlap row's earlier target.
-    }, matching, criteria ? 64 : 50, includes, allowActive, p => scopeAdmits(filters, !!criteria, live, bound, p));
+    }, matching, criteria ? 64 : 50, includes, allowActive, p =>
+      admitsQuiet({ lifecycle: p.lifecycle, reportedAt: p.reportedAt ?? '' }, quiet.hide, quiet.now) &&
+      scopeAdmits(filters, !!criteria, live, bound, p));
   },
   // The displayed (effective) filters bind a count and its run, not only the saved ones. They are kept
   // while a run is in flight or its result is shown: a live-discovery restart or the run's own
   // reconciliation reshapes them without the user changing anything, and each request is re-checked below.
   tidyScope: vc => {
     if (vc.read && !vc.cleanup.pending && !vc.cleanup.tidy?.result) tidyFilters = isSearching(vc) ? null : derivedBoard(vc).filters;
-    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters]);
+    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters, vc.quiet.hide,
+      isSearching(vc) ? null : quietKeys(vc)]);
   },
   // Right before each request: the plan must still be placed in the scope the user confirmed (live
   // placement can change without any plan revision changing). Anything else is skipped.
   // The same predicate as the count (scopeAdmits), asked again with the live data as it is now.
-  tidyMember: (vc, t) => scopeAdmits(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS, isSearching(vc), vc.live, vc.env.boundSource ?? null,
-    { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }),
+  tidyMember: (vc, t) => admitsQuiet({ lifecycle: t.lifecycle, reportedAt: t.reportedAt ?? '' }, vc.quiet.hide,
+    (isSearching(vc) ? vc.ui.search?.criteria.quiet?.now : undefined) ?? vc.env.now)
+    && scopeAdmits(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS, isSearching(vc), vc.live, vc.env.boundSource ?? null,
+      { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }),
   forgetPlans: (keys, ui, _vc, confirmed, returned) => {
     // A receipt, not a failed or unsent target, removes a plan from a selection held across a partial list;
     // an Undo receipt puts it back under a Select all rule (it need not be in the loaded list).
@@ -478,7 +494,7 @@ startView<Ui>({
     const detail = testid(el('section', 'ap-detail'), 'plan-detail');
     detail.setAttribute('aria-label', t.detail);
     if (plan) detailPane(detail, vc, plan, filters.session);
-    else detail.append(emptyBlock('filtered-empty', t.noMatch, t.chooseLocation));
+    else detail.append(derivedBoard(vc).quietExcluded ? quietEmpty(vc) : emptyBlock('filtered-empty', t.noMatch, t.chooseLocation));
     board.append(detail);
     root.append(board);
 
@@ -558,6 +574,7 @@ function endSearch() {
 function runSearch(vc: ViewContext<Ui>, criteria: SearchCriteria) {
   if (!vc.read || vc.health?.planTaskSearch !== 1) return;
   if (!searchable(criteria)) { vc.setUi({ problem: { kind: 'empty' } }); return; }
+  criteria = { ...criteria, quiet: { hide: vc.quiet.hide, now: vc.env.now } };
   const owner = ownerOf(vc);
   const key = JSON.stringify([owner, criteriaKey(criteria), ++submits]);
   // The recent set survives runs (bounded); the selection being left joins it.
@@ -651,6 +668,13 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
     board.filtersOpen = open; boardFocus = focus ? { to: focus } : null; frame?.updateUi(() => ({}));
   };
   const area = testid(el('section', 'ap-search-area'), capable ? 'search' : 'board-bar');
+  if (b.filtersOpen) {
+    const options = el('div', 'ap-stack');
+    if (locations) options.append(locations);
+    options.append(quietCheck(vc));
+    const notice = quietNotice(vc); if (notice) options.append(notice);
+    locations = options;
+  }
   area.setAttribute('aria-label', capable ? copy(vc.env.locale).search : copy(vc.env.locale).filter);
   area.append(boardBar({
     current: () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch,
@@ -706,6 +730,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
     selected: openedHit && openedHit.key === ui.selected ? openedHit : null,
     openPlan: (hit) => openHit(vc, v, hit, null),
     openTask: (hit) => openHit(vc, v, hit, hit.task),
+    quietEmpty: () => quietEmpty(vc),
     more: () => { toRegion(vc, 'updated'); search.more(); },
     retry: () => { toRegion(vc, 'resumed'); if (v.blocked) runSearch(vc, c); else search.more(); },
     refresh: () => runSearch(vc, c),
@@ -877,7 +902,10 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
   const t = copy(vc.env.locale);
   const claim = () => reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
   const plans = visiblePlans(vc);
-  const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, incomplete: vc.read?.truncated, value: plan.key, locale: vc.env.locale, options: plans.map(p => ({ id: p.key, label: p.title })), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
+  const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, incomplete: vc.read?.truncated, value: plan.key, locale: vc.env.locale, options: plans.map(p => {
+    const days = quietDays(p, vc.env.now);
+    return { id: p.key, label: p.title, ...(days === null ? {} : { hint: quietLabel(days, vc.env.locale) }) };
+  }), onChange: selected => vc.setUi({ selected, reveal: ++reveals }) }) : null;
   if (picker) picker.classList.add('ap-board-picker');
   return shell.paint(root, vc, plan, {
     board: true, scope: readingScope(vc), picker,
@@ -945,7 +973,7 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   const key = `rows:${label}:${plans[0]?.key ?? ''}`;
   const signature = JSON.stringify([plans, selected && plans.includes(selected) ? selected.key : null, env.locale, env.boundSource, [...env.unverifiedSources],
     plans.map(p => [rowPlaces.get(p.key), trusted(p, env) ? coverageFor(p.ownerSessionId, p.directory, env.live) : null]),
-    selection.mode, selection.mode ? [selection.version, frame?.cleanup.pending] : 0]);
+    plans.map(p => quietDays(p, env.now)), selection.mode, selection.mode ? [selection.version, frame?.cleanup.pending] : 0]);
   const cached = rowCache.get(key);
   if (cached?.signature === signature && cached.holder.isConnected) {
     const placeholder = cached.holder.cloneNode(false) as HTMLElement;
@@ -967,6 +995,7 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
       const mark = el('span', 'ap-selection-mark', selection.has(p.key) ? '✓' : '');
       mark.setAttribute('aria-hidden', 'true');
       row.append(mark, el('span', '', p.title));
+      const quiet = quietAge(p, env); if (quiet) row.append(quiet);
       row.addEventListener('click', () => { if (row.isConnected && boardEpoch === epoch) { selection.toggle(p); selectionChanged(); } });
       holder.append(row);
     }
@@ -1001,6 +1030,7 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
     paintRowAttention(row, p, env.locale);
     const main = row.querySelector<HTMLElement>('.oc-sdk-row-main');
     if (!main) return;
+    const quiet = quietAge(p, env); if (quiet) main.append(quiet);
     const s = summarize(p);
     const bar = segmentedBar(s, '');
     if (bar) {

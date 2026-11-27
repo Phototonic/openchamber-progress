@@ -19,6 +19,7 @@ import { RefreshGate } from './refresh.ts';
 import { readSearchState, readSearchWindow, type InboxDemand, type InboxFirst, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { formatCount } from './format.ts';
+import { admitsQuiet } from './quiet-plans.ts';
 
 export type SearchStatus = { kind: 'identity' | 'retired' | 'membership' | 'changed' | 'conflict' | 'failed' }
   | { kind: 'blocked'; reason: Exclude<ScopeState, 'ok'> }
@@ -91,6 +92,7 @@ export const SEARCH_TOKENS = 16;
 export const STATE_KEYS = 50;
 
 export interface SearchCriteria {
+  quiet?: { hide: boolean; now: number };
   q: string;
   source: string;
   lifecycle: Lifecycle | typeof ALL;
@@ -117,7 +119,7 @@ export function queryProblem(q: string, locale = 'en'): string | null {
 export const searchable = (c: Pick<SearchCriteria, 'q' | 'source' | 'lifecycle' | 'status'>) => tokens(c.q).length > 0 || c.source !== ALL || c.lifecycle !== ALL || c.status !== ALL;
 export const narrowed = (c: Pick<SearchCriteria, 'project' | 'worktree'>) => c.project !== ALL || c.worktree !== ALL;
 /** Criteria identity (names are presentation only). */
-export const criteriaKey = (c: SearchCriteria) => JSON.stringify([c.q.trim(), c.source, c.lifecycle, c.status, c.project, c.worktree, c.session, c.archived]);
+export const criteriaKey = (c: SearchCriteria) => JSON.stringify([c.q.trim(), c.source, c.lifecycle, c.status, c.project, c.worktree, c.session, c.archived, c.quiet?.hide]);
 
 /** Detached copy: the live workspace mutates its maps in place. */
 export function freezeLive(live: LiveSnapshot): LiveSnapshot {
@@ -206,6 +208,7 @@ export type SearchStop = 'paused' | 'failed' | 'hidden' | 'conflict' | 'identity
 export type SearchPhase = 'loading' | 'ready' | 'blocked';
 export interface SearchGroup { plan: SearchPlanView; continued: boolean; planOnly: boolean; changed: boolean; hits: SearchHitView[] }
 export interface SearchViewState {
+  quietExcluded?: true;
   /** Bumps when the run (traversal) is replaced: retained DOM state belongs to one run. */
   run: number;
   criteria: SearchCriteria;
@@ -236,6 +239,7 @@ export interface SearchViewState {
 }
 
 interface Run {
+  quietExcluded?: true;
   id: number;
   key: string;
   criteria: SearchCriteria;
@@ -352,6 +356,18 @@ export class SearchController {
 
   /** Back to ordinary browsing (Clear all, mode switch, identity reset): nothing of the run survives. */
   clear() { this.gate.retire(); this.run = null; this.host.changed(); }
+
+  /** Keep the submitted terms and explicit Refresh search, but discard the old scope's hits. */
+  quietChanged(hide: boolean) {
+    const r = this.run;
+    if (!r || r.criteria.quiet?.hide === hide) return;
+    this.retire();
+    r.blocked = null; r.blockedParts = [];
+    r.pages = [[]]; r.view = 0; r.firstPage = 1; r.buffer = []; r.selected = null;
+    r.quietExcluded = undefined;
+    r.matchedPlans = 0; r.matchingTasks = 0; r.checked = false;
+    this.host.changed();
+  }
 
   /**
    * Retires the run's async work and continuation authority, keeping what is shown as explicitly
@@ -532,6 +548,7 @@ export class SearchController {
     return {
       run: r.id, criteria: r.criteria, phase: r.blocked ? 'blocked' : r.busy && !r.windows ? 'loading' : 'ready', blocked: r.blocked, blockedParts: r.blockedParts,
       busy: r.busy, stop: r.stop, failure: r.failure, exhausted: r.exhausted && !r.buffer.length,
+      ...(r.quietExcluded ? { quietExcluded: true as const } : {}),
       counts: { matchedPlans: r.matchedPlans, matchingTasks: r.matchingTasks }, countsCurrent: r.countsCurrent,
       coverage: { gapped: r.gapped, skippedRecords: r.skippedRecords, reasons: [...r.reasons] }, windows: r.windows,
       // A page that shows no plan has nothing to check; derived from the hits each time, never stored.
@@ -611,6 +628,7 @@ export class SearchController {
         // Only verified-source plans are placed by their live owner session, so only their owners count.
         if (narrowed(r.criteria) && r.owners !== 'all' && trustedPlan(hit.plan, bound)) { r.owners.add(hit.plan.ownerSessionId); if (r.owners.size > OWNER_LIMIT) r.owners = 'all'; }
         if (!inPlace(r.criteria, hit.plan, r.frozen, bound)) continue;
+        if (r.criteria.quiet && !admitsQuiet(hit.plan, r.criteria.quiet.hide, r.criteria.quiet.now)) { r.quietExcluded = true; continue; }
         if (hit.classified) { r.matchedPlans += 1; r.matchingTasks += hit.classified.matchingTasks; }
         if (page.length < SEARCH_PAGE) page.push(hit); else r.buffer.push(hit);
       }

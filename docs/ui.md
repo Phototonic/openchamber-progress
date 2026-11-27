@@ -372,7 +372,28 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 ### More menu and panel integration
 
-`ProgressShell` in `components.ts` owns the rail/board header, legend, secondary navigation and exactly one More trigger. Group order: copy progress/handoff; Plan document, History (board), Sessions; applicable archive/hidden actions; Language, Setup, Troubleshooting; destructive closed-plan deletion last. `offerPlanActions` still registers per-plan cleanup actions, including from Map and every panel; confirmation stays outside the menu. `menuActions` is the mount for hidden items, not a second menu. Neither surface's More menu has a bulk cleanup entry; Tidy lives beside search and Filters on the full page only. The entry files name the Needs-you, roster and incomplete-indicator mounts after the view; the map owner owns only the map host and its tools.
+`ProgressShell` in `components.ts` owns the rail/board header, legend, secondary navigation and exactly one More trigger. Group order: copy progress/handoff; Plan document, History (board), Sessions; applicable archive/hidden actions and the rail's checked quiet-plan filter; Language, Setup, Troubleshooting; destructive closed-plan deletion last. `offerPlanActions` still registers per-plan cleanup actions, including from Map and every panel; confirmation stays outside the menu. `menuActions` is the mount for hidden items, not a second menu. Neither surface's More menu has a bulk cleanup entry; Tidy lives beside search and Filters on the full page only. The entry files name the Needs-you, roster and incomplete-indicator mounts after the view; the map owner owns only the map host and its tools.
+
+### Plans with no recent reports
+
+Active plans are quiet after seven full 24-hour days since their stored report,
+by the browser clock. Invalid and future times do not qualify. Where shown,
+quiet plans say **No reports for N days**, with an absolute report time on the
+label. This describes a recorded timestamp, not actual activity or an outcome.
+The existing visible refresh reevaluates age without another service read.
+
+**Hide plans with no reports for 7 days** is on initially. It is in rail More
+(even without a selected plan) and board Filters, and applies to their choices
+and plan lists, but not to Work Status or Needs you. When a saved rail plan is
+hidden, the displayed choice falls back without replacing the saved one.
+If filtering leaves no browse choices, **Show all plans** disables only this
+filter. Partial list coverage remains qualified.
+
+The board applies the same predicate to search hits and counts before accepting
+them, using one cutoff per traversal. Changing the preference retires the search
+reading and offers **Refresh search**, without running a new search. Select all
+and bounded cleanup counts use the displayed scope; changing that scope retires
+its confirmation. Tidy still targets only eligible closed plans.
 
 More uses native buttons with `menu`/`menuitem` roles, roving focus, Up/Down, Home/End, type-ahead, Enter/Space, and Escape returning focus to More. Outside press or focus departure dismisses it. Rows are at least 44 CSS pixels on coarse pointers. Language opens a `menuitemradio` submenu with Automatic (OpenChamber), English, Русский and 简体中文; Left returns to the parent and Escape to More. Unsupported hosts disable manual choices and explain the automatic fallback only inside this submenu. Language storage and failures keep their existing device-only contract.
 
@@ -863,7 +884,7 @@ plan, task and blocker-details report revision. New details make it return;
 unrelated plan reports do not. The expanded inbox and More show the hidden count
 and a way to show/unhide items.
 
-`device-view-state.ts` stores exactly three versioned view fields in SDK device
+`device-view-state.ts` stores three view fields in `progress-view.v1` in SDK device
 storage: hidden identities (200 maximum, oldest dropped, stale identities pruned
 after a complete traversal), rail/board expansion, and one indicator-dismissal
 identity per surface for the incomplete-count owner. No browser fallback,
@@ -874,6 +895,12 @@ Other frames converge on their existing refresh. People sharing a browser
 profile/runtime/installation share these choices; this is not per-person or
 cross-device isolation. All other inbox scope, opened-item and hidden-list
 disclosures remain frame-local.
+
+The quiet filter uses a separate SDK device record `quiet-plans.v1` (`{v:1,hide:boolean}`),
+so older frames can still read the original record. Saves are confirmed before
+the choice changes. A read failure uses the enabled default, explains it and
+offers retry without repairing the record. A failed save keeps the previous
+choice. On hosts without device storage, the choice lasts only in the open frame.
 
 QA hooks: `needs-you-inbox` (`data-availability`), `needs-you-heading`,
 `needs-you-count` (`data-count`, `data-exact`), `needs-you-row` (`data-task`,

@@ -389,8 +389,9 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
 
 /** Surface-owned More menu. Native rows, roving focus, type-ahead and a radio submenu.
  * It owns no reads or persistence; the caller supplies the device-language controller. */
+export type MoreMenuItem = MenuItem | { id: string; label: string; checked: boolean; disabled?: boolean; destructive?: boolean };
 export function moreMenu(options: {
-  label: string; items: MenuItem[]; onSelect: (id: string) => void;
+  label: string; items: MoreMenuItem[]; onSelect: (id: string) => void;
   languageLabel: string; automatic: string; unsupported: string; languageStatus?: string;
   language: { preference: string; supported: boolean; pending: boolean; choose: (value: 'auto' | 'en' | 'ru' | 'zh-CN') => void };
 }) {
@@ -447,7 +448,8 @@ export function moreMenu(options: {
       const b = row(item.id, item.label, () => {
         if (item.id === 'language') { submenu = true; paint(); focus(0); }
         else { close(true); options.onSelect(item.id); }
-      }, item.disabled);
+      }, item.disabled, 'checked' in item ? item.checked : undefined);
+      if ('checked' in item) { b.dataset.testid = item.id; b.setAttribute('role', 'menuitemcheckbox'); }
       if (item.id === 'language') b.setAttribute('aria-haspopup', 'menu');
       if (item.destructive) b.dataset.destructive = '';
     }
@@ -470,7 +472,7 @@ export function moreMenu(options: {
       if (match) focus(all.indexOf(match));
     }
   });
-  return { root, trigger, update: (next: MenuItem[]) => { items = next; if (!popup.hidden) paint(); }, dispose: () => close() };
+  return { root, trigger, update: (next: MoreMenuItem[]) => { items = next; if (!popup.hidden) paint(); }, dispose: () => close() };
 }
 
 /** `neutral`: a muted ⓘ mark, for a qualification that is routine rather than a warning. */

@@ -17,6 +17,8 @@ import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 import type { DeviceView, IntentRefusal } from './model.ts';
 import { currentIntent, type CurrentIntent } from './intent.ts';
+import { quietCopy, quietDays, quietLabel } from './quiet-plans.ts';
+import type { MoreMenuItem } from './primitives.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -370,6 +372,42 @@ export function age(iso: string, env: Env, prefix = '') {
   return t;
 }
 
+export function quietAge(plan: Pick<PlanView, 'lifecycle' | 'reportedAt'>, env: Env) {
+  const days = quietDays(plan, env.now);
+  if (days === null) return null;
+  const node = testid(el('time', 'ap-note', quietLabel(days, env.locale)), 'quiet-plan-age');
+  node.dateTime = plan.reportedAt;
+  node.title = absoluteTime(plan.reportedAt, env.locale);
+  return node;
+}
+
+export function quietNotice<U>(vc: ViewContext<U>) {
+  const t = quietCopy(vc.env.locale), q = vc.quiet;
+  const text = q.saving ? t.saving : q.error ? t[q.error] : !q.supported ? t.unsupported : '';
+  if (!text) return null;
+  const box = testid(el('div', 'ap-note'), 'quiet-filter-note');
+  const status = el('span', '', text); status.setAttribute('role', 'status'); box.append(status);
+  if (q.error === 'read' && !q.saving) button(box, 'quiet-filter-retry', t.retry, q.retry, 'ghost');
+  return box;
+}
+
+export function quietEmpty<U>(vc: ViewContext<U>) {
+  const t = quietCopy(vc.env.locale);
+  const box = testid(el('div', 'ap-panel'), 'quiet-plans-empty');
+  box.append(el('p', '', t.empty));
+  button(box, 'quiet-show-all', t.show, () => { void vc.quiet.choose(false); }, 'outline', vc.quiet.saving);
+  return box;
+}
+
+export function quietCheck<U>(vc: ViewContext<U>) {
+  const label = el('label', 'ap-row');
+  const control = testid(el('input'), 'quiet-plan-filter');
+  control.type = 'checkbox'; control.checked = vc.quiet.hide; control.disabled = vc.quiet.saving;
+  control.addEventListener('change', () => { const choice = control.checked; control.checked = vc.quiet.hide; void vc.quiet.choose(choice); });
+  label.append(control, el('span', '', quietCopy(vc.env.locale).filter));
+  return label;
+}
+
 const elapsedLabelText = (kind: string | undefined, ms: number, locale = 'en') => {
   const text = elapsedText(ms, locale);
   return text === null ? say('time unknown', locale) : kind === 'lower-bound' ? `${text}+` : text;
@@ -649,7 +687,7 @@ export class ProgressShell {
     const t = shellCopy(vc.env.locale);
     const detail = plan ? vc.detail(plan) : null;
     const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
-    const items: MenuItem[] = [], runs = new Map<string, () => void>();
+    const items: MoreMenuItem[] = [], runs = new Map<string, () => void>();
     const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
     const open = (kind: SurfacePanel) => {
       if (this.key !== key) return;
@@ -673,6 +711,10 @@ export class ProgressShell {
     const menuActions = [...(options.menuActions ?? [])];
     for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
     if (menuActions.length) items.push({ separator: true });
+    if (!options.board) {
+      items.push({ id: 'quiet-plan-filter', label: quietCopy(vc.env.locale).filter, checked: vc.quiet.hide, disabled: vc.quiet.saving });
+      runs.set('quiet-plan-filter', () => { if (this.key === key) void vc.quiet.choose(!vc.quiet.hide); });
+    }
     add('language', t.language + ' ›', () => {});
     add('setup', t.setup, () => open('setup'));
     add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
@@ -715,7 +757,9 @@ export class ProgressShell {
         meta.append(el('span', '', planLocation(plan, vc.live, vc.env.boundSource, vc.env.locale)), el('span', '', say('Main session', vc.env.locale)));
         const nav = navButton(plan, plan.ownerSessionId, coverageFor(plan.ownerSessionId, plan.directory, vc.live), vc.env); if (nav) meta.append(nav);
       }
-      if (plan.lifecycle === 'active' && Date.now() - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
+      const quiet = quietAge(plan, vc.env);
+      if (quiet) meta.append(quiet);
+      else if (plan.lifecycle === 'active' && vc.env.now - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
       if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
       if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
       root.append(head);
@@ -728,6 +772,7 @@ export class ProgressShell {
       root.append(legend);
       if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
     } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
+    if (!options.board) { const notice = quietNotice(vc); if (notice) root.append(notice); }
     if (!this.panel) return false;
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
