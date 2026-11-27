@@ -45,7 +45,8 @@
   },
   "dependencies": {
     "@openchamber/sdk": "2.7.1",
-    "@opencode/plugin": "2.1.4"
+    "@opencode/plugin": "2.1.4",
+    "markdown-it": "15.0.3"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

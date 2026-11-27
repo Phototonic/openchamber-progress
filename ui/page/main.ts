@@ -812,7 +812,7 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     if (mode === 'list' && ui.tab === 'map') { boardMap.leave(true); return; }
     if (mode === 'map') boardMap.enter(); else boardMap.leave();
     chooseTab(vc, mode === 'list' ? 'progress' : 'map');
-  }, env.locale);
+  }, env.locale, () => shell.openDocument(vc));
   if (ui.tab !== 'map') detail.append(viewSwitch);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.

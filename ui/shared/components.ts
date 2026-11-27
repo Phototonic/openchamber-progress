@@ -3,6 +3,7 @@ import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpi
 import type { Loadable, ReadingView, SummaryView, ViewContext } from './app.ts';
 import { languageMessages, resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { deriveDependencies } from './dependency-derivation.ts';
+import { isMarkdownDocument, renderDocumentMarkdown } from './document-markdown.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, formatCount, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
@@ -330,6 +331,7 @@ export interface Env {
   /** The last read succeeded and capture is on; together with an active plan this gates motion. */
   view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
+  openDocumentUrl?: (url: string) => void;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -651,7 +653,7 @@ export class ProgressShell {
     if (previous && previous !== panel) this.closePanel?.(previous);
   }
   private menu: ReturnType<typeof moreMenu> | null = null;
-  private focus: 'heading' | 'more' | null = null;
+  private focus: 'heading' | 'more' | 'document' | null = null;
   private review: { key: string; revision: number | null } | null = null;
   reset(keepSetup = false) {
     // Same-reading data refreshes (including capture changes) keep Setup usable.
@@ -667,10 +669,15 @@ export class ProgressShell {
     if (key !== this.key) { this.reset(); this.key = key; }
   }
   showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
+  openDocument<U>(vc: ViewContext<U>) {
+    this.setPanel('document'); this.focus = 'heading'; vc.setUi({});
+  }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
-    const target = this.focus === 'heading' ? '[data-testid="surface-panel-heading"]' : this.focus === 'more' ? '[data-testid="more-trigger"]' : null;
+    const target = this.focus && {
+      heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', document: '[data-testid="plan-view-document"] button',
+    }[this.focus];
     this.focus = null;
     if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
   }
@@ -703,7 +710,6 @@ export class ProgressShell {
       items.push({ separator: true });
     }
     if (plan) {
-      add('document', t.document, () => open('document'));
       if (options.board) add('history', t.history, () => open('history'));
       const count = participants(plan, ready).length;
       add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
@@ -801,7 +807,7 @@ export class ProgressShell {
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
     box.setAttribute('aria-label', t[kind]);
-    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = 'more'; vc.setUi({}); };
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = kind === 'document' ? 'document' : 'more'; vc.setUi({}); };
     button(box, 'surface-panel-back', t.back, back, 'ghost');
     const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
     box.append(h, options.renderPanel(kind));
@@ -822,7 +828,7 @@ export function listFilters(reading: ReadingView | null, locale: string) {
   return box;
 }
 
-export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string) {
+export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string, openDocument: () => void) {
   const language = resolveLanguage('auto', locale);
   const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
   const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
@@ -831,6 +837,7 @@ export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | '
     const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
     const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
   }
+  button(box, 'plan-view-document', shellCopy(locale).document, openDocument, 'ghost');
   return box;
 }
 
@@ -1008,8 +1015,8 @@ export function partState(id: string, what: string, value: Loadable<unknown> | n
 }
 
 /**
- * Read-only captured document, fetched on demand. Text only: never parsed as Markdown/HTML,
- * never fetches assets. A retained earlier capture stays readable when the latest read failed.
+ * Read-only captured document, fetched on demand, without loading document assets.
+ * A retained earlier capture stays readable when the latest read failed.
  */
 export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'inline', doc: { get: () => Loadable<DocumentBody> | null; request: () => void }) {
   const ref = plan.document;
@@ -1031,12 +1038,14 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
     if (!value || value.state !== 'ready') { body.append(partState('document-loading', say('the document', env.locale), value, doc.request, env.locale)); return; }
     const d = value.value;
     if (d.text === null) { body.append(el('p', 'ap-note', say('The captured text is not available.', env.locale))); return; }
-    const pre = testid(el('pre'), 'document-text');
-    pre.tabIndex = 0;
-    pre.dataset.scrollKey = `doc-${plan.key}`;
-    pre.textContent = d.text;
+    const formatted = isMarkdownDocument(d.ref.path);
+    const preview = testid(formatted ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
+    preview.tabIndex = 0;
+    preview.dataset.scrollKey = `doc-${plan.key}`;
+    if (formatted) renderDocumentMarkdown(preview, d.text, env.locale, env.openDocumentUrl);
+    else preview.textContent = d.text;
     if (d.historical) body.append(testid(el('p', 'ap-doc-warn', say('A newer capture was recorded while this loaded. This is the earlier capture.', env.locale)), 'document-historical'));
-    body.append(pre);
+    body.append(preview);
     const note = el('p', 'ap-note');
     if (d.ref.capturedAt) note.append(age(d.ref.capturedAt, env, say(ref.state === 'captured' ? 'Captured ' : 'Last good capture ', env.locale)), document.createTextNode('. '));
     note.append(document.createTextNode(say(ref.state !== 'captured'
