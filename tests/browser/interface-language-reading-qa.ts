@@ -104,8 +104,8 @@ try {
   };
   const openView = async (id: 'document' | 'history' | 'progress' | 'map') => {
     await back();
-    if (id === 'document' || id === 'history') await openMore(id);
-    else await click(`[data-testid="plan-view-${id === 'progress' ? 'list' : 'map'}"] button`);
+    if (id === 'history') await openMore(id);
+    else await click(`[data-testid="plan-view-${id === 'progress' ? 'list' : id}"] button`);
   };
   const openPlan = async (id: string) => { await back(); await click(`[data-testid="plan-row-${id}"]`); await wait(condition(`d.querySelector('[data-testid="plan-row-${id}"]')?.getAttribute('aria-selected')==='true'`), 'selected plan'); };
   await send('Runtime.enable'); await send('Page.enable'); await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
