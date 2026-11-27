@@ -4,8 +4,8 @@
 
 ## 2. Read a revision window
 
-- [ ] 2.1 Implement the metadata-only indexed Store read and authenticated History query form, preserving the plain history route. Explain row/time provenance and bounds in `docs/backend.md`.
-- [ ] 2.2 Exercise actual HTTP against a disposable SQLite store: two assigned children, direct and relayed reports, multi-item and empty contributions, a cancellation and reopen, adjacent windows, malformed input and a missing plan or gap. Compare with the stored rows and confirm the read makes no writes.
+- [x] 2.1 Implement the metadata-only indexed Store read and authenticated History query form, preserving the plain history route. Explain row/time provenance and bounds in `docs/backend.md`.
+- [x] 2.2 Exercise actual HTTP against a disposable SQLite store: two assigned children, direct and relayed reports, multi-item and empty contributions, a cancellation and reopen, adjacent windows, malformed input and a missing plan or gap. Compare with the stored rows and confirm the read makes no writes.
 
 ## 3. Read and show activity on demand
 
