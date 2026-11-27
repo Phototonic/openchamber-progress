@@ -220,6 +220,40 @@ for(const after of [false,true])test(`fresh prepare interrupted ${after?'after':
   }finally{f.cleanup();}
 });
 
+test('fresh prepare publishes without a retained stage when birthtime follows ctime',t=>{
+  const f=freshFixture();try{
+    const session=f.review(),file=migrationFile(f.env),stagePrefix=`${file}.stage-prepare-`;
+    const {openSync,fstatSync,lstatSync}=fs;
+    let stageFd:number|undefined;
+    // Keep real filesystem identity; model ctime ticks using write/link state
+    // so the regression doesn't depend on the native filesystem clock.
+    const fallback=(stat:fs.BigIntStats)=>{
+      stat.birthtimeNs=stat.ctimeNs=stat.size===0n?1n:1n+stat.nlink;
+      return stat;
+    };
+    const open=t.mock.method(fs,'openSync',((name,...args)=>{
+      const fd=openSync(name,...args);
+      if(String(name).startsWith(stagePrefix))stageFd=fd;
+      return fd;
+    }) as typeof openSync);
+    const fstat=t.mock.method(fs,'fstatSync',((fd,options)=>{
+      const stat=fstatSync(fd,options);
+      return fd===stageFd&&options?.bigint?fallback(stat as fs.BigIntStats):stat;
+    }) as typeof fstatSync);
+    const lstat=t.mock.method(fs,'lstatSync',((name,options)=>{
+      const stat=lstatSync(name,options);
+      return stat&&options?.bigint&&String(name).startsWith(stagePrefix)?fallback(stat as fs.BigIntStats):stat;
+    }) as typeof lstatSync);
+    syncBuiltinESMExports();
+    try{assert.equal(f.begin(session).disposition,'applied');}
+    finally{lstat.mock.restore();fstat.mock.restore();open.mock.restore();syncBuiltinESMExports();}
+    assert.equal(f.journal().migration.sequence,1);
+    assert.equal(fs.lstatSync(file).nlink,1);
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(),['.ownership.json','migration.json']);
+    assert.equal(fs.existsSync(f.storeRoot),false);
+  }finally{f.cleanup();}
+});
+
 for(const publication of ['journal','expectation','binding'] as const)for(const linked of [false,true])test(`fresh ${publication} retained ${linked?'two-link':'stage'} publication refuses without cleanup`,()=>{
   const f=freshFixture();try{
     f.begin();if(publication!=='journal')f.until(publication==='expectation'?'register-source':'enable');
