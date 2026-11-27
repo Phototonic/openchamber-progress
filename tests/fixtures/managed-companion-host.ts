@@ -6,12 +6,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { networkInterfaces } from 'node:os';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { OpenCode } from '@opencode/client';
 import { isolatedEnvironment } from './managed.ts';
-import { managedBindingFile, readManagedBinding, managedExpectationFile } from '../../shared/managed-binding.ts';
+import { managedBindingFile, readManagedBinding, managedExpectationFile, readManagedExpectation } from '../../shared/managed-binding.ts';
 import { Store } from '../../shared/store.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
+import { migrationFile } from '../../setup/managed-migration.ts';
+import { parseManagedFreshStepJournal } from '../../setup/managed-step-journal.ts';
+import { MANAGED_INSPECTION_STEPS, MANAGED_MIGRATION_STEPS, MANAGED_STEP_LIMITS, MANAGED_STEP_ROUTE, type ManagedStepRequest, type ManagedStepResponse } from '../../shared/managed-steps.ts';
 import { managedBrowser } from '../browser/managed-companion-qa.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
 import { reportingSessionsJourney } from './reporting-sessions-journey.ts';
@@ -118,8 +121,21 @@ if(arg('--server-worker')) {
       const r=await fetch(`http://127.0.0.1:${info.port}/api/location/reload?${new URLSearchParams({'location[directory]':location.directory})}`,{method:'POST',headers:{...headers,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(15000)});if(!r.ok){const body=await r.json().catch(()=>({}));write('reload-failure',{status:r.status,type:typeof body.type==='string'?body.type:null,message:typeof body.message==='string'?body.message.replaceAll(root,'<fixture>').split('\n')[0].slice(0,256):null});}assert.ok(r.ok,`explicit owned location reload status-${r.status}`);await r.arrayBuffer();
     };
     const api=async(method:string,route:string,body?:unknown)=>{const r=await fetch(url+route,{method,headers:{'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});assert.ok(r.ok,'owned host request');const text=await r.text();return text?JSON.parse(text):null;};
-    const service=async(route:string,body?:unknown)=>{const r=await api('POST',`/api/guests/${id}/service/request`,{method:body===undefined?'GET':'POST',path:route,...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,body:JSON.parse(r.body)};};
-    const action=async(name:string)=>{const review=await service('/v1/setup/managed-inspect',{});assert.equal(review.status,200);return service(`/v1/setup/${name}`,{confirmed:true,expected:review.body.delivery.review.expected});};
+    const service=async(route:string,body?:unknown,method=body===undefined?'GET':'POST')=>{const r=await api('POST',`/api/guests/${id}/service/request`,{method,path:route,...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,body:JSON.parse(r.body)};};
+    const step=async(request:ManagedStepRequest)=>{
+      const reply=await service(MANAGED_STEP_ROUTE,request);
+      const body:ManagedStepResponse=reply.body;assert.equal(body.version,1);
+      return {...reply,body};
+    };
+    const inspectMigration=async()=>{
+      let cursor:string|undefined;
+      for(const _ of MANAGED_INSPECTION_STEPS){
+        const reply=await step(cursor?{version:1,action:'inspect',cursor}:{version:1,action:'inspect'});
+        if(reply.status!==200||reply.body.inspection?.state==='complete')return reply;
+        assert.equal(reply.body.inspection?.state,'incomplete');cursor=reply.body.inspection.cursor;
+      }
+      throw new Error('migration inspection did not complete');
+    };
     const prompt=async(sessionID:string,step?:unknown)=>{if(step)fs.writeFileSync(`${root}/step.json`,JSON.stringify(step));await client.session.prompt({sessionID,text:'Run the synthetic local fixture.'},{signal:AbortSignal.timeout(15000)});await client.session.wait({sessionID},{signal:AbortSignal.timeout(20000)});};
     const session=(title:string,permissions:any[]=[{action:'*',resource:'*',effect:'allow'}])=>client.session.create({location,agent:'build',title,model:{providerID:'managed-fixture',id:'script'},permissions});
     await wait(inventory,v=>v.data.some(p=>p.id==='managed-fixture-observer'&&p.state.status==='active'),'scripted observer active');check('no-credentials',(await client.credential.list()).length===0);
@@ -224,17 +240,30 @@ if(arg('--server-worker')) {
     phase='restricted-child';const child=await client.session.create({location,parentID:main.id,agent:'build',title:'Restricted child',model:{providerID:'managed-fixture',id:'script'},permissions:[{action:'*',resource:'*',effect:'allow'},{action:'agent_progress_report',resource:'*',effect:'deny'}]});
     await prompt(child.id);const restricted=records().filter(e=>e.type==='context'&&e.session===child.id);check('restricted-child-no-authority',restricted.length>0&&restricted.every(e=>!e.reportTool&&e.guidance===0));
     phase='disable';
+    // Unmount browser consumers before re-enable: their first data admissions
+    // can compete for the same writer fence as the fixture's explicit read.
+    await browser.park();
     await api('PUT',`/api/guests/${id}/enabled`,{enabled:false});await absent();
     const start=records().length;await prompt(main.id);check('disabled-guidance-retired',records().slice(start).filter(e=>e.type==='outgoing').every(e=>!e.reportTool&&e.guidance===0));
     phase='reenable';await api('PUT',`/api/guests/${id}/enabled`,{enabled:true});await active();
     await prompt(main.id,{name:'agent_progress_report',input:{op:'revise',plan:'P-managed',oid:'reenabled',rev:2,title:'Managed acceptance plan'}});check('reenabled-later-revision',store.get(b.source.id,'P-managed')?.revision===3);
     write('lifecycle',{disableRetired:true,reenabledRevision:3,historyRetained:true,gracefulCancellationGuaranteed:false});
-    phase='same-version-integrity-warning';const original=fs.readFileSync(`${extension}/build/companion/index.js`);fs.appendFileSync(`${extension}/build/companion/index.js`,'\n// Synthetic same-version integrity fixture\n');
-    // Keep the service generation/baseline running while loading changed native bytes.
+    phase='same-version-integrity-warning';
+    // Re-enable can start a new service generation. Its first data read, not
+    // GET /v1/setup or native plugin inventory, establishes the package baseline.
+    const admission=await service('/v1/plans');
+    assert.equal(admission.status,200,`admit service before changing companion bytes (HTTP ${admission.status}, ${admission.body.error??'no code'})`);
+    const baseline=readManagedExpectation(b);assert.ok(baseline);
+    check('integrity-baseline-matches',(await service('/v1/setup')).body.delivery.observation==='matching');
+    const original=fs.readFileSync(`${extension}/build/companion/index.js`);
+    fs.appendFileSync(`${extension}/build/companion/index.js`,'\n// Synthetic same-version integrity fixture\n');
     await reload();await active();
     await prompt(main.id,{name:'agent_progress_report',input:{op:'revise',plan:'P-managed',oid:'warning-report',rev:3,title:'Managed acceptance plan'}});
-    const warning=await service('/v1/setup');check('integrity-warns-and-reports',warning.body.delivery.observation==='different'&&store.get(b.source.id,'P-managed')?.revision===4);
-    await browser.warning();write('integrity',{sameVersion:true,observation:warning.body.delivery.observation,authorizedRevision:4,warningOnly:true});fs.writeFileSync(`${extension}/build/companion/index.js`,original);
+    check('integrity-report-committed',store.get(b.source.id,'P-managed')?.revision===4);
+    const warning=await wait(()=>service('/v1/setup'),r=>r.status===200&&r.body.delivery.observation==='different','changed companion load observed');
+    check('integrity-warns-and-reports',warning.body.delivery.expectedVersion===baseline.version&&readManagedExpectation(b)?.fingerprint===baseline.fingerprint);
+    await browser.setupShot('warning','[data-testid="surface-panel-setup"] [data-testid="managed-integrity-warning"]');
+    write('integrity',{sameVersion:true,observation:warning.body.delivery.observation,authorizedRevision:4,warningOnly:true});fs.writeFileSync(`${extension}/build/companion/index.js`,original);
     phase='plain-terminal-reach';const plainEnv:NodeJS.ProcessEnv={...env,OPENCODE_PASSWORD:'synthetic-plain-only'};delete plainEnv.OPENCODE_CONFIG;delete plainEnv.OPENCODE_CONFIG_CONTENT;
     plain=spawn(binary,['serve','--hostname','127.0.0.1','--port','18768'],{cwd:`${root}/project`,env:plainEnv,stdio:'ignore'});remember(plain.pid!);
     const plainClient=OpenCode.make({baseUrl:'http://127.0.0.1:18768',headers:{authorization:`Basic ${Buffer.from('opencode:synthetic-plain-only').toString('base64')}`}});
@@ -244,6 +273,14 @@ if(arg('--server-worker')) {
     const retained=new Store(b.database,{readOnly:true});try{check('removed-read-only-history',retained.history(b.source.id,'P-managed').data.length===4);}finally{retained.close();}
     check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));check('no-uncaught-browser-exceptions',browser.console().exceptions===0);
     phase='legacy-coexistence-and-migration';
+    // Project a pre-stepped managed selection for this separate scenario. A
+    // completed fresh journal plus subsequently added legacy files is a conflict,
+    // not a migratable starting state. Keep the same selected Store and history.
+    const freshJournal=migrationFile(env);
+    // Read the fixture-owned journal itself, not concurrently changing SQLite
+    // sidecars: this is a fixture projection, not product admission.
+    assert.equal(parseManagedFreshStepJournal(fs.readFileSync(freshJournal)).migration.state,'complete');
+    fs.unlinkSync(freshJournal);
     const targets={configRoot:b.source.configRoot,dataRoot:b.source.dataRoot,storeRoot:path.dirname(b.database),confirmed:true};
     const payload={plugin:original.toString(),guidance:fs.readFileSync(`${extension}/build/companion/SKILL.md`,'utf8'),removal:fs.readFileSync(`${extension}/build/setup/main.js`,'utf8'),version:JSON.parse(fs.readFileSync(`${extension}/package.json`,'utf8')).version};
     const register=async()=>{await api('POST','/api/guests',{path:extension});const rows=await api('GET','/api/guests');await api('PUT',`/api/guests/${id}/capabilities`,{granted:rows.guests.find((g:any)=>g.id===id).capabilities.requested});};
@@ -256,28 +293,47 @@ if(arg('--server-worker')) {
     const legacyRoot=`${targets.configRoot}/plugins/agent-progress`,ownership=`${legacyRoot}/.ownership.json`,ownedBytes=fs.readFileSync(ownership);
     fs.writeFileSync(ownership,'modified synthetic ownership');
     try{
-      check('modified-ownership-refused',(await action('managed-migrate')).status===409&&(await service('/v1/setup')).body.delivery.migration==='conflict');
-      check('conflict-enable-refused',(await action('managed-enable')).status===409);
+      check('modified-ownership-refused',(await inspectMigration()).status===409);
+      check('conflict-enable-refused',(await service('/v1/capture/enable',undefined,'POST')).status===409);
       await browser.setupShot('conflict-capture-off-review-available','[data-testid="setup-disable"]');
-      check('conflict-confirmed-capture-off',(await action('managed-disable')).status===200&&(await service('/v1/setup')).body.captureEnabled===false);
+      check('conflict-confirmed-capture-off',(await service('/v1/capture/disable',undefined,'POST')).status===200&&(await service('/v1/setup')).body.captureEnabled===false);
       check('modified-files-not-repaired',fs.readFileSync(ownership,'utf8')==='modified synthetic ownership');
     }finally{fs.writeFileSync(ownership,ownedBytes);}
     lifecycle('remove-capture',targets);
     const otherTargets={...targets,storeRoot:`${root}/other-store`};lifecycle('install',otherTargets,payload);
     const other=new Store(`${root}/other-store/progress.sqlite`,{readOnly:true});const otherBefore=other.list().captureEnabled;other.close();const selectorBefore=fs.readFileSync(managedBindingFile(env)),otherOwned=fs.readFileSync(ownership);
-    check('different-store-refused',(await action('managed-migrate')).status===409);
+    check('different-store-refused',(await inspectMigration()).status===409);
     check('different-store-selection-preserved',fs.readFileSync(managedBindingFile(env)).equals(selectorBefore)&&fs.readFileSync(ownership).equals(otherOwned));
     const otherAfter=new Store(`${root}/other-store/progress.sqlite`,{readOnly:true});try{check('different-store-capture-preserved',otherAfter.list().captureEnabled===otherBefore);}finally{otherAfter.close();}
     lifecycle('remove-capture',otherTargets);lifecycle('install',targets,payload);await reload();
     // Corrupt only fixture-owned expectation metadata. Feasibility must now fail
     // before disabling capture or removing verified legacy discovery.
     // Restore the exact known fixture bytes as explicit test-side operator recovery.
-    const expectationFile=managedExpectationFile(b),expectationBytes=fs.readFileSync(expectationFile),captureBefore=(await service('/v1/setup')).body.captureEnabled;let partial:{status:number;body:any};
+    const reviewed=await inspectMigration();assert.equal(reviewed.status,200);
+    const inspection=reviewed.body.inspection;assert.equal(inspection?.state,'complete');
+    const operationId=randomUUID();
+    const began=await step({version:1,action:'begin',operationId,confirmed:true,expected:inspection.review.expected});
+    assert.equal(began.status,200,began.body.error?.code);assert.ok(began.body.progress);
+    const advance=(progress:NonNullable<ManagedStepResponse['progress']>)=>{
+      assert.ok(progress.step);
+      return step({version:1,action:'advance',operationId,expectedSequence:progress.sequence,step:progress.step});
+    };
+    const prepared=began.body.progress;assert.equal(prepared.step?.name,'expectation');
+    store=new Store(b.database,{readOnly:true});
+    const expectationFile=managedExpectationFile(b),expectationBytes=fs.readFileSync(expectationFile),captureBefore=store.list().captureEnabled;
+    let partial:Awaited<ReturnType<typeof advance>>;
     fs.writeFileSync(expectationFile,'invalid synthetic expectation');
-    try{partial=await action('managed-migrate');}finally{fs.writeFileSync(expectationFile,expectationBytes);}
-    check('expectation-preflight-preserves-legacy',[409,503].includes(partial.status)&&(await service('/v1/setup')).body.delivery.migration==='available'&&(await service('/v1/setup')).body.captureEnabled===captureBefore&&fs.existsSync(legacyRoot));
-    await browser.setupShot('migration-preflight','[data-testid="setup-migrate"]');
-    const switched=await action('managed-migrate');check('same-target-explicit-retry',switched.status===200&&switched.body.delivery.migration==='complete');
+    try{partial=await advance(prepared);}finally{fs.writeFileSync(expectationFile,expectationBytes);}
+    const afterRefusal=await step({version:1,action:'status',operationId});
+    check('expectation-preflight-preserves-legacy',partial.status===409&&partial.body.error?.code==='managed-migration-conflict'&&afterRefusal.body.progress?.sequence===prepared.sequence&&store.list().captureEnabled===captureBefore&&fs.existsSync(legacyRoot));
+    store.close();store=undefined;
+    await browser.setupShot('migration-preflight','[data-testid="setup-migration-progress"]');
+    let progress=prepared;
+    for(let remaining=MANAGED_MIGRATION_STEPS.length+MANAGED_STEP_LIMITS.claimPaths;progress.state!=='complete'&&remaining>0;remaining--){
+      const advanced=await advance(progress);assert.equal(advanced.status,200,advanced.body.error?.code);assert.ok(advanced.body.progress);
+      progress=advanced.body.progress;
+    }
+    check('same-target-explicit-retry',progress.state==='complete'&&(await service('/v1/setup')).body.delivery.migration==='complete');
     const selected=readManagedBinding(env);assert.ok(selected);check('migration-retains-store-source',selected.storeId===b.storeId&&selected.source.id===b.source.id&&!fs.existsSync(legacyRoot));
     await reload();await active();await prompt(main.id,{name:'agent_progress_report',input:{op:'revise',plan:'P-managed',oid:'migrated',rev:4,title:'Managed acceptance plan'}});
     const migratedRead=new Store(selected.database,{readOnly:true});try{check('migration-retains-history',migratedRead.get(b.source.id,'P-managed')?.revision===5&&migratedRead.get(b.source.id,'P-legacy')?.revision===1);}finally{migratedRead.close();}

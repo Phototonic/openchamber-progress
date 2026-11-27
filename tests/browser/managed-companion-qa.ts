@@ -127,11 +127,16 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await shot('configured');
     };
     const selectSession=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText.includes(${literal(title)}))`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText.includes(${literal(title)})&&!!document.querySelector('[data-chat-column="main"] [contenteditable="true"]')`),Boolean,'session chat selected');};
-    const warning=async()=>{await openBoard();await openSetup('page');await wait(()=>guest('page','!!document.querySelector("[data-testid=managed-integrity-warning]")?.checkVisibility()'),Boolean,'visible integrity warning');await shot('warning');};
+    const park=async()=>{
+      const navigation=events.length;
+      await send('Page.navigate',{url:'about:blank'});
+      await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired')&&await evaluate('location.href==="about:blank"'),Boolean,'host page unloaded');
+    };
     const setupShot=async(name:string,selector:string)=>{
       // Setup observations are deliberately not polled. After test-side external
       // mutations, a user-equivalent page refresh obtains a new real status read.
-      const navigation=events.length;await send('Page.reload');
+      const navigation=events.length;
+      if(await evaluate('location.href==="about:blank"'))await send('Page.navigate',{url});else await send('Page.reload');
       // readyState can still describe the OLD document immediately after reload.
       // Wait for this navigation's load event before inspecting the new target.
       await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired'),Boolean,'fresh host page loaded');await openBoard();
@@ -139,6 +144,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');
       if(await guest('page',`!!document.querySelector(${literal(selector)})?.closest('[data-testid="setup-details"]:not([open])')`))
         await guestClick('page','[data-testid="setup-details-summary"]');
+      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})?.checkVisibility()`),Boolean,'visible Setup state');
       await shot(name);
     };
     const observedChatDirectories=()=>{
@@ -221,7 +227,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});await shot('narrow');
       await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
     };
-    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+    return {install,configure,views,park,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
       nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,holdNextServiceReply,events}};
   }catch(e){await stop();throw e;}
 }
