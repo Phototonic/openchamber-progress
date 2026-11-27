@@ -33,5 +33,7 @@ export function pageFunction(name: string, globals: Record<string, unknown>) {
 /** Supply the same filter to extracted page hooks as the production module uses. */
 export function pageQuietFilter(globals: Record<string, unknown>) {
   globals.admitsQuiet = admitsQuiet;
+  globals.search ??= { quietRefreshRequired: false };
   pageFunction('quietKeys', globals);
+  pageFunction('bulkCleanupAvailable', globals);
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CleanupScan, tidyConfirmation } from '../../ui/shared/cleanup.ts';
 import { BoardDerivation, ALL, NO_FILTERS, pageListScope } from '../../ui/shared/scope.ts';
-import { freezeLive, inPlace, scopeAvailability } from '../../ui/shared/search.ts';
+import { freezeLive, inPlace, scopeAvailability, SearchController } from '../../ui/shared/search.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC, S } from './fixtures.ts';
@@ -109,6 +109,49 @@ test('Select all and the send guard exclude quiet active plans without changing 
   vc.quiet.hide = false;
   assert.deepEqual((await scan(() => true).more(() => true))?.targets.map(t => t.request.plan), ['shown', 'older']);
   assert.deepEqual((await scan().more(() => true))?.targets.map(t => t.request.plan), ['older'], 'Tidy is still closed-only');
+});
+
+test('changing the quiet filter retires bulk search cleanup until a fresh submission', async () => {
+  const { vc, plans, globals } = outsideRoots();
+  const active = plans[0];
+  active.reportedAt = '2026-04-20T12:00:00.000Z';
+  const boundary = Date.parse(active.reportedAt) + 7 * 86_400_000;
+  let scans = 0;
+  const search = new SearchController({ visible: () => false, changed() {}, service: vc.service });
+  globals.search = search;
+  globals.cleanupSearchReader = () => async () => { scans++; return { plans: [active], visited: 1, nextCursor: null }; };
+  const scan = () => hook('tidyScan', globals)(vc, 'search', () => true) as CleanupScan | null;
+  const guard = hook('tidyMember', { ...globals, NO_FILTERS, tidyFilters: null });
+  const requestTarget = target(vc, globals, active);
+  const submit = (hide: boolean, now: number) => {
+    const criteria = { q: 'shown', project: ALL, worktree: ALL, source: ALL, session: ALL, lifecycle: ALL, status: ALL, archived: false, quiet: { hide, now } };
+    vc.ui.search = { criteria };
+    search.submit(`scope-${now}`, criteria, { storeId: vc.read.storeId, binding: vc.read.binding }, vc.live);
+  };
+  try {
+    vc.quiet.hide = false;
+    vc.env.now = boundary - 1;
+    submit(false, vc.env.now);
+    assert.equal(guard(vc, requestTarget), true);
+    vc.env.now = boundary;
+    vc.quiet.hide = true;
+    search.quietChanged(true);
+    assert.equal((globals.bulkCleanupAvailable as (vc: unknown) => boolean)(vc), false);
+    const retiredScan = scan();
+    const retiredTargets = await retiredScan?.more(() => true);
+    assert.deepEqual({ scans, targets: retiredTargets?.targets.map(t => t.request.plan) ?? [], admitted: guard(vc, requestTarget) },
+      { scans: 0, targets: [], admitted: false }, 'retired criteria cannot count or send a bulk target');
+    vc.quiet.hide = false;
+    search.quietChanged(false);
+    assert.equal(scan(), null, 'changing the preference back does not revive the retired traversal');
+    vc.quiet.hide = true;
+    search.quietChanged(true);
+    submit(true, vc.env.now);
+    assert.equal((globals.bulkCleanupAvailable as (vc: unknown) => boolean)(vc), true);
+    assert.deepEqual((await scan()!.more(() => true))?.targets, []);
+    assert.equal(scans, 1, 'explicit refresh re-enables counting with the new cutoff');
+    assert.equal(guard(vc, requestTarget), false);
+  } finally { search.dispose(); }
 });
 test('a named plan that stopped matching the search is not offered, whatever its new revision', async () => {
   const { vc, globals } = outsideRoots();

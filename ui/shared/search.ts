@@ -239,6 +239,7 @@ export interface SearchViewState {
 }
 
 interface Run {
+  quietRefreshRequired?: true;
   quietExcluded?: true;
   id: number;
   key: string;
@@ -327,6 +328,7 @@ export class SearchController {
   /** Identity of the current run, or null without one. */
   get key() { return this.run?.key ?? null; }
   get active() { return this.run !== null; }
+  get quietRefreshRequired() { return this.run?.quietRefreshRequired === true; }
   /** Read-transport overlap is bounded by the gate (one retired plus one current window). */
   get inFlight() { return this.gate.inFlight; }
 
@@ -361,6 +363,7 @@ export class SearchController {
   quietChanged(hide: boolean) {
     const r = this.run;
     if (!r || r.criteria.quiet?.hide === hide) return;
+    r.quietRefreshRequired = true;
     this.retire();
     r.blocked = null; r.blockedParts = [];
     r.pages = [[]]; r.view = 0; r.firstPage = 1; r.buffer = []; r.selected = null;

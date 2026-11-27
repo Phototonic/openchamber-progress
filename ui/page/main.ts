@@ -163,6 +163,10 @@ function isSearching(vc: ViewContext<Ui>) {
   const s = vc.ui.search;
   return !!s && !!vc.read && vc.health?.planTaskSearch === 1 && s.owner === ownerOf(vc) && search.key === s.key;
 }
+/** A retained search offers Refresh search, not a scope for bulk actions. */
+function bulkCleanupAvailable(vc: ViewContext<Ui>) {
+  return !isSearching(vc) || !search.quietRefreshRequired;
+}
 /** A Select all rule belongs to the displayed scope, not a stale location choice. */
 function selectionScope(vc: ViewContext<Ui>) {
   return JSON.stringify([ownerOf(vc), vc.ui.archived, vc.ui.filters, vc.quiet.hide, isSearching(vc) ? null : quietKeys(vc),
@@ -312,9 +316,11 @@ startView<Ui>({
   },
   tidyPlans: visiblePlans,
   selectionScope,
+  bulkCleanupAvailable,
   tidyArchived: vc => vc.ui.archived,
   tidyMatching: vc => isSearching(vc) || Object.values(derivedBoard(vc).filters).some(v => v !== ALL),
   tidyScan: (vc, key, includes, allowActive = true, known) => {
+    if (!bulkCleanupAvailable(vc)) return null;
     const criteria = isSearching(vc) ? vc.ui.search!.criteria : null;
     if (!criteria && !vc.read?.truncated) return null;
     const live = freezeLive(vc.live), filters = criteria ?? derivedBoard(vc).filters;
@@ -351,12 +357,12 @@ startView<Ui>({
   tidyScope: vc => {
     if (vc.read && !vc.cleanup.pending && !vc.cleanup.tidy?.result) tidyFilters = isSearching(vc) ? null : derivedBoard(vc).filters;
     return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters, vc.quiet.hide,
-      isSearching(vc) ? null : quietKeys(vc)]);
+      isSearching(vc) ? search.quietRefreshRequired : quietKeys(vc)]);
   },
   // Right before each request: the plan must still be placed in the scope the user confirmed (live
   // placement can change without any plan revision changing). Anything else is skipped.
   // The same predicate as the count (scopeAdmits), asked again with the live data as it is now.
-  tidyMember: (vc, t) => admitsQuiet({ lifecycle: t.lifecycle, reportedAt: t.reportedAt ?? '' }, vc.quiet.hide,
+  tidyMember: (vc, t) => bulkCleanupAvailable(vc) && admitsQuiet({ lifecycle: t.lifecycle, reportedAt: t.reportedAt ?? '' }, vc.quiet.hide,
     (isSearching(vc) ? vc.ui.search?.criteria.quiet?.now : undefined) ?? vc.env.now)
     && scopeAdmits(isSearching(vc) ? vc.ui.search!.criteria : tidyFilters ?? NO_FILTERS, isSearching(vc), vc.live, vc.env.boundSource ?? null,
       { ownerSessionId: t.where?.owner ?? '', directory: t.where?.directory ?? '', sourceId: t.request.source }),
@@ -693,7 +699,7 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
   area.append(boardBar({
     current: () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch,
     modes, locations, active, open: b.filtersOpen, setOpen,
-    tidy: vc.health?.planCleanup === 1 && vc.read ? { label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure } : null,
+    tidy: vc.health?.planCleanup === 1 && vc.read && bulkCleanupAvailable(vc) ? { label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure } : null,
     scope: capable ? scopeLine(submitted, vc.ui.archived, vc.env.locale) : null,
     search: capable ? {
       text: () => draftText(vc), setText: (q) => setText(vc, q),
@@ -709,7 +715,7 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
       submitted, problem: vc.ui.problem ? (vc.ui.problem.kind === 'query' ? queryProblem(vc.ui.problem.q, vc.env.locale) : copy(vc.env.locale).emptyQuery) : null, sources: vc.read?.sources ?? [], archived: vc.ui.archived,
     } : null,
   }, vc.env.locale));
-  if (vc.health?.planCleanup === 1 && vc.read) {
+  if (vc.health?.planCleanup === 1 && vc.read && bulkCleanupAvailable(vc)) {
     const scope = selectionScope(vc);
     const current = () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch;
     area.querySelector('.ap-board-bar')?.append(selectionBar(selection, vc.env.locale, vc.ui.archived,

@@ -393,7 +393,9 @@ The board applies the same predicate to search hits and counts before accepting
 them, using one cutoff per traversal. Changing the preference retires the search
 reading and offers **Refresh search**, without running a new search. Select all
 and bounded cleanup counts use the displayed scope; changing that scope retires
-its confirmation. Tidy still targets only eligible closed plans.
+its confirmation. Bulk cleanup is unavailable for that retired search until
+it is explicitly refreshed or replaced, even if the preference is changed back.
+Tidy still targets only eligible closed plans.
 
 ### Finish a plan as cancelled
 

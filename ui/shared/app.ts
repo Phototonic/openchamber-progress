@@ -258,6 +258,7 @@ export interface ViewSpec<U> {
   tidyScope?: (vc: ViewContext<U>) => string;
   /** Whether a counted target is still in the view's scope right now; asked before each cleanup request. */
   tidyMember?: (vc: ViewContext<U>, target: CleanupTarget) => boolean;
+  bulkCleanupAvailable?: (vc: ViewContext<U>) => boolean;
   /** `confirmed`: keys whose cleanup receipt succeeded, each with the cleanup generation the receipt returned; given only when a cleanup action ended. */
   forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlyMap<string, number>, returned?: ReadonlySet<string>) => Partial<U>;
   /**
@@ -1137,6 +1138,7 @@ export function startView<U>(spec: ViewSpec<U>) {
    */
   function requestTidy(remaining?: CleanupTarget[]) {
     if (cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
+    if (spec.bulkCleanupAvailable?.(context()) === false) return;
     cleanup.tidy?.scan?.cancel();
     // A shown result no longer pins the scope: this request is bound to the scope displayed now.
     if (cleanup.tidy?.result) cleanup = initialCleanup();
@@ -1157,6 +1159,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   function requestSelection(action: 'archive' | 'restore' | 'delete', selection: SelectionRequest) {
     if (spec.surface !== 'page' || cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
     const vc = context();
+    if (spec.bulkCleanupAvailable?.(vc) === false) return;
     if (selection.scope !== undefined && spec.selectionScope?.(vc) !== selection.scope) return;
     cleanup.tidy?.scan?.cancel();
     if (cleanup.tidy?.result) cleanup = initialCleanup();
