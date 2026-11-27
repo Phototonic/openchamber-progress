@@ -10,10 +10,10 @@ markdown.normalizeLink = url => url;
 export const isMarkdownDocument = (path: string | undefined) => path?.slice(-3).toLowerCase() === '.md';
 
 export function webDocumentUrl(destination: string): string | null {
-  if (!/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
+  if (destination.length > 2048 || !/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
   try {
     const url = new URL(destination);
-    return url.hostname ? url.href : null;
+    return url.hostname && !url.username && !url.password ? url.href : null;
   } catch {
     return null;
   }
@@ -37,6 +37,7 @@ function linkNode(url: string, open: (url: string) => void) {
   const link = document.createElement('a');
   // The guest sandbox cannot open tabs; only explicit activation asks the host to navigate.
   link.setAttribute('role', 'link');
+  link.title = url;
   link.tabIndex = 0;
   link.addEventListener('click', event => { if (event.isTrusted && event.button === 0) open(url); });
   link.addEventListener('keydown', event => {
@@ -45,14 +46,16 @@ function linkNode(url: string, open: (url: string) => void) {
   return link;
 }
 
-function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLanguage, open?: (url: string) => void, skip = 0) {
+type LinkActions = { open: (url: string) => void; resolve: (destination: string) => string | null };
+
+function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLanguage, links?: LinkActions, skip = 0) {
   const stack = [root];
   for (const [index, token] of tokens.entries()) {
     const parent = stack.at(-1)!;
     if (token.nesting === -1) { stack.pop(); continue; }
     if (token.nesting === 1) {
-      const destination = token.type === 'link_open' && open ? webDocumentUrl(String(token.attrGet('href') ?? '')) : null;
-      const node = destination && open ? linkNode(destination, open)
+      const destination = token.type === 'link_open' ? links?.resolve(String(token.attrGet('href') ?? '')) : null;
+      const node = destination && links ? linkNode(destination, links.open)
         : !token.hidden && tags.has(token.tag) ? document.createElement(token.tag) : null;
       if (node) {
         if (token.type === 'ordered_list_open') {
@@ -79,8 +82,8 @@ function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLangu
           check.setAttribute('aria-label', checkLabels[locale]);
           parent.closest('li')?.classList.add('ap-doc-task');
           parent.append(check);
-          appendTokens(parent, children, locale, open, marker[0].length);
-        } else appendTokens(parent, children, locale, open);
+          appendTokens(parent, children, locale, links, marker[0].length);
+        } else appendTokens(parent, children, locale, links);
         break;
       }
       case 'text': parent.append(token.content.slice(index === 0 ? skip : 0)); break;
@@ -102,5 +105,13 @@ function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLangu
 }
 
 export function renderDocumentMarkdown(root: HTMLElement, text: string, locale: InterfaceLanguage, open?: (url: string) => void) {
-  appendTokens(root, markdown.parse(text, {}), locale, open);
+  const resolved = new Map<string, string | null>();
+  const links = open && { open, resolve(destination: string) {
+    const cached = resolved.get(destination);
+    if (cached !== undefined) return cached;
+    const url = webDocumentUrl(destination);
+    resolved.set(destination, url);
+    return url;
+  } };
+  appendTokens(root, markdown.parse(text, {}), locale, links);
 }

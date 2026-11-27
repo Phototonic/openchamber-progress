@@ -88,7 +88,15 @@ addEventListener('message',async e=>{
   if(qa.holdPreference&&f==='panel'&&q.op==='get'&&q.key==='rail-plan:M'){qa.holdPreference=false;qa.held.push({tag:'preference',frame:f,path:'storage',go:()=>result({...reply,found:true,value:'source-beta/P-map'})})}
   else if(qa.railPreferences&&f==='panel'&&q.key?.startsWith('rail-plan:')){if(q.op==='set')qa.railPreferences[q.key]=q.value;if(q.op==='delete')delete qa.railPreferences[q.key];result({...reply,...(q.op==='get'&&typeof qa.railPreferences[q.key]==='string'?{found:true,value:qa.railPreferences[q.key]}:{})})}
   else result(reply)}
- else if(window.__documentMarkdown&&m.type==='open-url'){qa.opened.push({frame:f,url:m.payload.url});result()}
+ else if(window.__documentMarkdown&&m.type==='open-url'){qa.opened.push({frame:f,url:m.payload.url});if(qa.rejectDocumentLink)fail('HOST_REJECTED','Fixture rejected the link.');else result()}
+ else if(window.__documentMarkdown&&m.type==='toast'){
+  const {kind,message}=m.payload;qa.toasts.push({frame:f,kind,message});
+  // Synthetic host toast, outside the guest frame; the guest only sends the SDK request.
+  document.querySelector('[data-qa-toast]')?.remove();
+  const toast=document.createElement('div');toast.dataset.qaToast=kind;toast.setAttribute('role','alert');toast.textContent=message;
+  Object.assign(toast.style,{position:'fixed',zIndex:'10',right:'12px',bottom:'12px',maxWidth:'calc(100vw - 48px)',padding:'12px',border:'1px solid '+theme.tokens.errorText,borderRadius:'6px',background:theme.tokens.elevated,color:theme.tokens.errorText});
+  document.body.append(toast);result();
+ }
  else if(m.type==='service-request'){
   const q=m.payload,t0=performance.now();qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null,at:t0});
   const failing=qa.fail.find(x=>x.path===q.path&&(!x.frame||x.frame===f));
@@ -254,7 +262,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         let page = large || preview || productionMap ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
         // Browser QA: only these two sandboxed guests and an intercepted SDK destination.
         // Same origin permits DOM inspection; this is not a test of native host isolation.
-        if (isDocument) page = page.replace('<script>', '<script>window.__documentMarkdown=true;').replaceAll('<iframe ', '<iframe sandbox="allow-scripts allow-same-origin" ').replace(/<section data-frame="status".*?<\/section>/, '').replace('</body>', '<script>qa.opened=[];</script></body>');
+        if (isDocument) page = page.replace('<script>', '<script>window.__documentMarkdown=true;').replaceAll('<iframe ', '<iframe sandbox="allow-scripts allow-same-origin" ').replace(/<section data-frame="status".*?<\/section>/, '').replace('</body>', '<script>qa.opened=[];qa.toasts=[];</script></body>');
         if (isDesign) page = page.replace('<script>', '<script>window.__largePlan=true;').replace('</body>', `<script>qa.projects=[{id:'harbor-app',name:'harbor-app',directory:'/fixture/harbor-app'},{id:'lighthouse-app',name:'lighthouse-app',directory:'/fixture/lighthouse-app'}];qa.worktrees={'harbor-app':[{directory:'/fixture/harbor-app/release-2-0',name:'release-2-0'}]};qa.show(['page','panel','status'],360);document.querySelector('section[data-frame=page]').style.width='1100px';</script></body>`);
         if (attribution) page = page.replace('<script>', '<script>window.__mapAttribution=true;');
         if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');

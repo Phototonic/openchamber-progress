@@ -25,3 +25,12 @@ test('web destinations work in browsers without URL.parse', () => {
     if (descriptor) Object.defineProperty(URL, 'parse', descriptor);
   }
 });
+
+test('web destinations reject oversized and userinfo URLs', () => {
+  const prefix = 'https://example.invalid/';
+  const atLimit = prefix + 'x'.repeat(2048 - prefix.length);
+  assert.equal(webDocumentUrl(atLimit), atLimit);
+  assert.equal(webDocumentUrl(atLimit + 'x'), null);
+  assert.equal(webDocumentUrl('https://example.invalid@other.invalid/'), null);
+  assert.equal(webDocumentUrl('https://:pass@other.invalid/'), null);
+});

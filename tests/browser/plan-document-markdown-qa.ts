@@ -24,13 +24,17 @@ const extra = `
 
 [image]: https://document.invalid/reference.png
 
-[Secure example](${url[0]}) [Plain example](${url[1]})
+[Secure example](HTTPS://DOCUMENT.INVALID/secure) [Plain example](${url[1]})
 
 [Relative label](/qa-document-page) [Protocol label](//document.invalid/protocol) [Fragment label](#qa-document) [Mail label](mailto:sample@example.invalid) [Invalid label](https://[invalid)
+
+[Userinfo label](https://document.invalid@other.invalid/)
 
 Reflow${'LongWord'.repeat(38)}
 `;
 const longText = '\n' + 'A recorded paragraph with enough lines to scroll.\n\n'.repeat(335) + 'Earlier capture end.\n';
+const largeReferenceUses = 21_000;
+const largeReferenceCapture = `[ref]: https://document.invalid/${'x'.repeat(130 * 1024)}\n\n${'[ref] '.repeat(largeReferenceUses)}\n`;
 const output = process.argv[2];
 if (!output) throw Error('Pass a disposable artifact directory.');
 const binary = chromiumPath();
@@ -55,7 +59,7 @@ try {
     f.store.apply({ op: 'bind', plan, source, confirm: options.confirm ?? false, rev: f.store.get(fx.source, plan)!.revision, oid: oid(plan) }, { ...f.actor, sessionId: plan }, cap);
   }
   const seed = (id: string) => f.seedPlan(id, `Document fixture ${id}`, [{ id: 'T', title: 'Reported work is independent', kind: 'task', status: 'pending' }], { ...f.actor, sessionId: id });
-  for (const id of ['markdown', 'literal-txt', 'literal-unknown', 'missing', 'denied', 'race-page', 'race-panel', 'comparison']) seed(id);
+  for (const id of ['markdown', 'literal-txt', 'literal-unknown', 'missing', 'denied', 'race-page', 'race-panel', 'comparison', 'large-reference']) seed(id);
   await report('markdown', 'MD', sample + extra + longText);
   writeFileSync(file('MD'), live);
   await report('literal-txt', 'txt', sample, { confirm: true });
@@ -63,6 +67,7 @@ try {
   await report('missing', 'missing.md', sample);
   await report('denied', 'denied.md', sample);
   await report('denied', 'denied.md', live, { denied: true });
+  await report('large-reference', 'large-reference.md', largeReferenceCapture);
   for (const s of ['page', 'panel']) await report(`race-${s}`, `${s}.md`, sample + longText);
   await report('comparison', 'before.md', sample);
   const compareBefore = f.store.get(fx.source, 'comparison')!.document.captureId;
@@ -210,6 +215,7 @@ try {
 
   for (const s of ['page', 'panel'] as const) {
     surface = s;
+    const opensBeforeRender = (await opened()).length;
     const claim = (label: string, pass: unknown, notes?: unknown) => check(`${s}: ${label}`, pass, notes);
     // Model older WebViews that support the URL constructor but not URL.parse.
     assert.equal(await guest(`delete w.URL.parse;return typeof w.URL.parse`), 'undefined');
@@ -233,10 +239,11 @@ try {
       const states = await markState();
       const markerOk = JSON.stringify(states) === '[{"checked":true,"inert":true},{"checked":false,"inert":true}]';
       claim('checked and unchecked inert list marks', markerOk && await guest(`return [...d.querySelectorAll(${js(marks)})].every(el=>el.closest('li'))`), states);
-      claim('no activation during render', (await opened()).length === (s === 'page' ? 0 : 2) && unexpectedRequests === 0 && navigations === initialNavigations);
+      claim('no activation during render', (await opened()).length === opensBeforeRender && unexpectedRequests === 0 && navigations === initialNavigations);
       claim('benign HTML is inert; four images are alt text only', await guest(`return !n.querySelector('aside,#qa-raw-aside,img,svg,picture,[src],[srcset]')&&['Remote example','Relative example','Embedded example','Reference example'].every(t=>n.textContent.includes(t))`));
       const links = await guest<string[]>(`return [...n.querySelectorAll('a,[role="link"],button,[href]')].filter(el=>el.matches('a[role="link"][tabindex="0"]:not([href])')).map(el=>el.textContent)`);
-      claim('only the approved link labels are actionable', JSON.stringify(links) === '["Secure example","Plain example"]' && await guest(`return n.querySelectorAll('a,[role="link"],button,[href],[tabindex="0"]').length===2&&['Relative label','Protocol label','Fragment label','Mail label','Invalid label'].every(t=>n.textContent.includes(t))`), links);
+      claim('only the approved link labels are actionable', JSON.stringify(links) === '["Secure example","Plain example"]' && await guest(`return n.querySelectorAll('a,[role="link"],button,[href],[tabindex="0"]').length===2&&['Relative label','Protocol label','Fragment label','Mail label','Invalid label','Userinfo label'].every(t=>n.textContent.includes(t))`), links);
+      claim('link titles expose normalized destinations', JSON.stringify(await guest(`return [...n.querySelectorAll(${js(link)})].map(el=>el.title)`)) === JSON.stringify(url));
       if (markerOk) {
         for (let i = 0; i < 2; i++) await click(marks, i);
         // They must not acquire focus, nor take a Tab stop between the body and its first link.
@@ -265,6 +272,24 @@ try {
           claim(`${label} ${theme} reflows and text has 4.5:1 contrast`, box.fits && box.minimum >= 4.5 && (theme === 'dark' ? Number(box.background.split(',')[0]) < 100 : Number(box.background.split(',')[0]) > 190), box);
           await shot(`${s}-${label}-${theme}`, doc('markdown'));
         }
+      }
+      if (s === 'page') {
+        for (const width of [1180, 390]) {
+          await send('Emulation.setDeviceMetricsOverride', { width, height: 1060, deviceScaleFactor: 1, mobile: false });
+          await evaluate(`qa.show(['page'],${width});frame('page').closest('section').style.margin='0';qa.theme('light');qa.rejectDocumentLink=true`);
+          assert.equal(await guest(`return w.innerWidth`), width);
+          await shot(`page-${width}-document`, doc('markdown'));
+          const expected = { frame: s, kind: 'error', message: 'Could not open this link.' };
+          const count = await evaluate<number>('qa.toasts.length');
+          await click(link);
+          const toast = await until(() => evaluate<typeof expected | null>(`qa.toasts[${count}]??null`), 'host open failure toast');
+          assert.deepEqual(toast, expected);
+          claim(`host rejection shows an error toast at ${width}px`, await evaluate(`document.querySelector('[data-qa-toast]')?.textContent===${js(expected.message)}`));
+          await shot(`page-${width}-link-failure`, doc('markdown'));
+          await evaluate(`document.querySelector('[data-qa-toast]').remove();qa.rejectDocumentLink=false`);
+        }
+        await evaluate(`frame('page').closest('section').style.margin=''`);
+        await send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 1060, deviceScaleFactor: 1, mobile: false });
       }
     }
     assert(await focus(body));
@@ -310,6 +335,16 @@ try {
   check('both surfaces render the same formatted semantics', signatures.length === 2 && signatures[0].length > 0 && JSON.stringify(signatures[0]) === JSON.stringify(signatures[1]));
   check('viewing and attempt to toggle made no progress write', await evaluate(`qa.requests.every(q=>q.method==='GET')`));
   check('viewing and attempt to toggle kept file, captures and reported tasks unchanged', JSON.stringify(before) === JSON.stringify(snapshot()));
+
+  surface = 'page';
+  await evaluate(`qa.show(['page'],1000)`);
+  const started = performance.now();
+  await open('large-reference');
+  await wait('!!n', 'near-limit capture with repeated reference');
+  const elapsed = Math.round(performance.now() - started);
+  check('near-limit capture with repeated oversized destination stays responsive',
+    elapsed < 2500 && await guest(`return !n.querySelector('a,[role="link"]')&&n.textContent.trim()===${js('ref ')}.repeat(${largeReferenceUses}).trim()`), { elapsed });
+  await leave();
 
   for (const s of ['page', 'panel'] as const) {
     surface = s;
