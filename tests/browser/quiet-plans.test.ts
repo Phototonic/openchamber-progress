@@ -3,6 +3,36 @@ import { test } from 'node:test';
 import { DEVICE_VIEW_KEY, DeviceViewState, QUIET_VIEW_RECORD } from '../../ui/shared/device-view-state.ts';
 import { admitsQuiet, quietDays, quietLabel } from '../../ui/shared/quiet-plans.ts';
 import type { LanguageStorageValue } from '../../ui/shared/language.ts';
+import { BoardDerivation, NO_FILTERS } from '../../ui/shared/scope.ts';
+import { EMPTY_LIVE } from '../../ui/shared/live.ts';
+import { parsePlansPage } from '../../ui/shared/adapter.ts';
+import { plansPage, SRC, summary } from './fixtures.ts';
+import { pageFunction } from './page-hooks.ts';
+
+test('the board list leaves a quiet-filter empty state to the detail pane', () => {
+  const plans = parsePlansPage(JSON.stringify(plansPage([summary('sample', [])]))).data;
+  assert.equal(plans.length, 1);
+  const derive = new BoardDerivation();
+  const input = { plans, live: EMPTY_LIVE, filters: NO_FILTERS, bound: SRC, locale: 'en' as const, archived: false, reading: 'fixture' };
+  const tags: string[] = [];
+  const globals = {
+    frame: {},
+    derivedBoard: () => derive.get({ ...input, excluded: new Set([plans[0]!.key]) }),
+    copy: () => ({ plans: 'Plans', listEmpty: 'No matching plans' }),
+    el: () => ({ dataset: {}, setAttribute() {}, append() {} }),
+    testid: <T>(node: T, id: string) => { tags.push(id); return node; },
+    planList: undefined as unknown as (plans: unknown[], selected: null, env: { locale: string }, onSelect: () => void, archived: boolean, board: { key: string }) => void,
+  };
+  pageFunction('planList', globals);
+  const paintList = () => {
+    tags.length = 0;
+    globals.planList(globals.derivedBoard().plans, null, { locale: 'en' }, () => {}, false, { key: 'fixture' });
+    return tags.includes('list-empty');
+  };
+  assert.equal(paintList(), false, 'the generic note must not compete with the quiet-filter message');
+  globals.derivedBoard = () => derive.get({ ...input, plans: [], filters: { ...NO_FILTERS, session: 'fixture-session' } });
+  assert.equal(paintList(), true, 'keep the generic note when the quiet filter is not the cause');
+});
 
 test('quiet classification uses whole elapsed days, re-evaluated at the supplied clock', () => {
   const day = 86_400_000;

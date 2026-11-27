@@ -1102,7 +1102,7 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   const heading = testid(el('h2', 'ap-region-h', t.plans), 'plan-list-heading');
   heading.tabIndex = -1;
   wrap.append(heading);
-  const groups = derivedBoard(frame!).groups;
+  const { groups, quietExcluded } = derivedBoard(frame!);
   const boardKey = b.key;
   wrap.dataset.boardReading = boardKey;
   let index = 0;
@@ -1143,7 +1143,7 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
     }
     wrap.append(section);
   }
-  if (!plans.length) wrap.append(testid(el('p', 'ap-note', t.listEmpty), 'list-empty'));
+  if (!plans.length && !quietExcluded) wrap.append(testid(el('p', 'ap-note', t.listEmpty), 'list-empty'));
   return wrap;
 }
 

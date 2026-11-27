@@ -386,8 +386,9 @@ The existing visible refresh reevaluates age without another service read.
 (even without a selected plan) and board Filters, and applies to their choices
 and plan lists, but not to Work Status or Needs you. When a saved rail plan is
 hidden, the displayed choice falls back without replacing the saved one.
-If filtering leaves no browse choices, **Show all plans** disables only this
-filter. Partial list coverage remains qualified.
+If this filter leaves no browse choices, the rail and board show only
+**No plans match this filter.** with **Show all plans**, which disables only
+this filter. Partial list coverage remains qualified.
 
 The board applies the same predicate to search hits and counts before accepting
 them, using one cutoff per traversal. Changing the preference retires the search
