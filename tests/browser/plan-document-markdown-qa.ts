@@ -33,8 +33,13 @@ const extra = `
 Reflow${'LongWord'.repeat(38)}
 `;
 const longText = '\n' + 'A recorded paragraph with enough lines to scroll.\n\n'.repeat(335) + 'Earlier capture end.\n';
-const largeReferenceUses = 21_000;
-const largeReferenceCapture = `[ref]: https://document.invalid/${'x'.repeat(130 * 1024)}\n\n${'[ref] '.repeat(largeReferenceUses)}\n`;
+// Keep the captured bytes near the file limit without exceeding the formatted token budget.
+const largeReferenceUses = 10_000;
+const largeReferenceCapture = `[ref]: https://document.invalid/${'x'.repeat(195 * 1024)}\n\n${'[ref] '.repeat(largeReferenceUses)}\n`;
+const taskRow = '| Task | Area | Owner | Priority | Status | Result | Change | Review | Release | Notes |\n';
+const taskTable = taskRow + '| --- '.repeat(10) + '|\n' + taskRow.repeat(32);
+const denseCapture = '# Recorded tasks\n\n' + (taskTable + '\n').repeat(48);
+const guideCapture = new TextDecoder().decode(readFileSync(new URL('../../docs/ui.md', import.meta.url)).subarray(0, 256 * 1024), { stream: true });
 const output = process.argv[2];
 if (!output) throw Error('Pass a disposable artifact directory.');
 const binary = chromiumPath();
@@ -59,7 +64,7 @@ try {
     f.store.apply({ op: 'bind', plan, source, confirm: options.confirm ?? false, rev: f.store.get(fx.source, plan)!.revision, oid: oid(plan) }, { ...f.actor, sessionId: plan }, cap);
   }
   const seed = (id: string) => f.seedPlan(id, `Document fixture ${id}`, [{ id: 'T', title: 'Reported work is independent', kind: 'task', status: 'pending' }], { ...f.actor, sessionId: id });
-  for (const id of ['markdown', 'literal-txt', 'literal-unknown', 'missing', 'denied', 'race-page', 'race-panel', 'comparison', 'large-reference']) seed(id);
+  for (const id of ['markdown', 'literal-txt', 'literal-unknown', 'missing', 'denied', 'race-page', 'race-panel', 'comparison', 'large-reference', 'dense', 'guide']) seed(id);
   await report('markdown', 'MD', sample + extra + longText);
   writeFileSync(file('MD'), live);
   await report('literal-txt', 'txt', sample, { confirm: true });
@@ -68,6 +73,8 @@ try {
   await report('denied', 'denied.md', sample);
   await report('denied', 'denied.md', live, { denied: true });
   await report('large-reference', 'large-reference.md', largeReferenceCapture);
+  await report('dense', 'dense.md', denseCapture);
+  await report('guide', 'guide.md', guideCapture);
   for (const s of ['page', 'panel']) await report(`race-${s}`, `${s}.md`, sample + longText);
   await report('comparison', 'before.md', sample);
   const compareBefore = f.store.get(fx.source, 'comparison')!.document.captureId;
@@ -345,6 +352,26 @@ try {
   check('near-limit capture with repeated oversized destination stays responsive',
     elapsed < 2500 && await guest(`return !n.querySelector('a,[role="link"]')&&n.textContent.trim()===${js('ref ')}.repeat(${largeReferenceUses}).trim()`), { elapsed });
   await leave();
+
+  await open('guide');
+  await wait('!!n', 'near-limit guide capture');
+  check('near-limit real guide renders as Markdown', await guest(`return n.querySelector('h1')?.textContent==='Progress views'&&!!n.querySelector('ul li')`));
+  await leave();
+
+  for (const s of ['page', 'panel'] as const) {
+    surface = s;
+    await evaluate(`qa.show([${js(s)}],${s === 'page' ? 1000 : 440})`);
+    const start = performance.now();
+    await open('dense');
+    await wait('!!n', 'dense captured tables');
+    const elapsed = Math.round(performance.now() - start);
+    const preview = await guest(`const walker=d.createTreeWalker(n,0xffffffff);let nodes=0;while(walker.nextNode())nodes++;
+      return {nodes,literal:n.tagName==='PRE'&&n.textContent===${js(denseCapture)},focusable:n.tabIndex===0}`);
+    check(`${s}: dense Markdown stays readable as the complete literal capture`,
+      preview.literal && preview.focusable && preview.nodes === 1, { elapsed, ...preview });
+    if (preview.literal) await shot(`${s}-markdown-literal-fallback`, body);
+    await leave();
+  }
 
   for (const s of ['page', 'panel'] as const) {
     surface = s;

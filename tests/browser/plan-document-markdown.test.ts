@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { isMarkdownDocument, webDocumentUrl } from '../../ui/shared/document-markdown.ts';
+import { isMarkdownDocument, parseDocumentMarkdown, webDocumentUrl } from '../../ui/shared/document-markdown.ts';
 
 test('only the final Markdown suffix selects formatted document reading', () => {
   for (const path of ['/fixture/plan.md', 'C:\\fixture\\plan.MD']) assert.equal(isMarkdownDocument(path), true);
   for (const path of [undefined, '/fixture/.md/plan', '/fixture/plan.md.txt', '/fixture/plan']) assert.equal(isMarkdownDocument(path), false);
+});
+
+test('block and inline tokens share a fresh budget for each document', () => {
+  const headings = '# Task\n\n'.repeat(9_000);
+  const inline = '**Ready** '.repeat(6_000);
+  assert.ok(parseDocumentMarkdown(headings));
+  assert.ok(parseDocumentMarkdown(inline));
+  assert.equal(parseDocumentMarkdown(headings + inline), null);
+  assert.equal(parseDocumentMarkdown('# Next document')?.[0].tag, 'h1');
+});
+
+test('a near-limit real guide still parses as formatted Markdown', () => {
+  const bytes = readFileSync(new URL('../../docs/ui.md', import.meta.url)).subarray(0, 256 * 1024);
+  assert.ok(bytes.length >= 200 * 1024);
+  const text = new TextDecoder().decode(bytes, { stream: true });
+  const tokens = parseDocumentMarkdown(text);
+  assert.ok(tokens);
+  assert.equal(tokens[0].type, 'heading_open');
+  assert.ok(tokens.some(token => token.type === 'list_item_open'));
 });
 
 test('only explicit absolute web destinations are normalized for navigation', () => {

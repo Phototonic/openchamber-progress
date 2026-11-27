@@ -1,4 +1,4 @@
-import MarkdownIt, { type Token } from 'markdown-it';
+import MarkdownIt, { type Env, type StateBlock, type StateInline, type Token } from 'markdown-it';
 import type { InterfaceLanguage } from './i18n.ts';
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
@@ -7,7 +7,44 @@ const markdown = new MarkdownIt({ html: false, linkify: false });
 markdown.validateLink = () => true;
 markdown.normalizeLink = url => url;
 
+// Count before allocation: a single table rule can emit many tokens before it returns.
+// Block, inline and nested image parses share the same per-document environment.
+// Leave headroom above a capture-limit plan with headings, checklists and ordinary tables.
+const maxTokens = 48_000;
+const remainingTokens = Symbol('document token budget');
+const budgetExceeded = new Error('Document Markdown token budget exceeded');
+function spendToken(env: Env) {
+  const remaining = env[remainingTokens] as number;
+  if (remaining <= 0) throw budgetExceeded;
+  env[remainingTokens] = remaining - 1;
+}
+markdown.block.State = class extends markdown.block.State {
+  override push(...args: Parameters<StateBlock['push']>) {
+    spendToken(this.env);
+    return super.push(...args);
+  }
+};
+markdown.inline.State = class extends markdown.inline.State {
+  override push(...args: Parameters<StateInline['push']>) {
+    spendToken(this.env);
+    return super.push(...args);
+  }
+  override pushPending() {
+    spendToken(this.env);
+    return super.pushPending();
+  }
+};
+
 export const isMarkdownDocument = (path: string | undefined) => path?.slice(-3).toLowerCase() === '.md';
+
+export function parseDocumentMarkdown(text: string): Token[] | null {
+  try {
+    return markdown.parse(text, { [remainingTokens]: maxTokens });
+  } catch (error) {
+    if (error === budgetExceeded) return null;
+    throw error;
+  }
+}
 
 export function webDocumentUrl(destination: string): string | null {
   if (destination.length > 2048 || !/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
@@ -104,7 +141,7 @@ function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLangu
   }
 }
 
-export function renderDocumentMarkdown(root: HTMLElement, text: string, locale: InterfaceLanguage, open?: (url: string) => void) {
+export function renderDocumentMarkdown(root: HTMLElement, tokens: Token[], locale: InterfaceLanguage, open?: (url: string) => void) {
   const resolved = new Map<string, string | null>();
   const links = open && { open, resolve(destination: string) {
     const cached = resolved.get(destination);
@@ -113,5 +150,5 @@ export function renderDocumentMarkdown(root: HTMLElement, text: string, locale: 
     resolved.set(destination, url);
     return url;
   } };
-  appendTokens(root, markdown.parse(text, {}), locale, links);
+  appendTokens(root, tokens, locale, links);
 }
