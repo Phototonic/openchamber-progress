@@ -274,6 +274,7 @@ const freshEn = {
   groups: { folder: 'Create a private progress folder', existing: 'Use your existing progress folder', connect: 'Connect it to OpenCode', record: 'Turn on recording', check: 'Check that it works' },
   recording: { on: 'Recording is on.', off: 'Recording is not on yet.', unknown: 'Recording is not confirmed yet.' },
   completedRecording: { off: 'Turn on recording in Setup if you want agents to save progress.', unknown: 'Check the recording setting again before relying on saved progress.' },
+  completedReadUnavailable: 'Setup couldn’t read the progress folder’s current status. Check again before relying on saved progress.',
   groupStates: { pending: 'Not started', running: 'In progress', paused: 'Paused', abandoned: 'Stopped', failed: 'Failed', complete: 'Done' },
   stages: {
     prepare: 'Preparing setup', 'store-directory': 'Creating the store folder', 'create-store': 'Creating the progress store',
@@ -337,6 +338,7 @@ const freshRu: typeof freshEn = {
   groups: { folder: 'Создать приватную папку прогресса', existing: 'Использовать существующую папку прогресса', connect: 'Подключить её к OpenCode', record: 'Включить запись', check: 'Проверить, что всё работает' },
   recording: { on: 'Запись включена.', off: 'Запись ещё не включена.', unknown: 'Запись пока не подтверждена.' },
   completedRecording: { off: 'Включите запись в настройке, если хотите сохранять прогресс агентов.', unknown: 'Проверьте запись ещё раз, прежде чем полагаться на сохранение прогресса.' },
+  completedReadUnavailable: 'Не удалось прочитать текущее состояние папки прогресса. Проверьте его ещё раз, прежде чем полагаться на сохранение прогресса.',
   groupStates: { pending: 'Не начато', running: 'Выполняется', paused: 'Приостановлено', abandoned: 'Остановлено', failed: 'Ошибка', complete: 'Готово' },
   stages: {
     prepare: 'Подготовка настройки', 'store-directory': 'Создание папки хранилища', 'create-store': 'Создание хранилища прогресса',
@@ -400,6 +402,7 @@ const freshZh: typeof freshEn = {
   groups: { folder: '创建私有进度文件夹', existing: '使用现有进度文件夹', connect: '将其连接到 OpenCode', record: '开启记录', check: '检查是否正常工作' },
   recording: { on: '记录已开启。', off: '记录尚未开启。', unknown: '记录尚未确认。' },
   completedRecording: { off: '如果需要保存智能体的进度，请在设置中开启记录。', unknown: '请再次检查记录设置，然后再依赖进度保存。' },
+  completedReadUnavailable: '设置暂时无法读取进度文件夹的当前状态。请重新检查，再依赖进度保存。',
   groupStates: { pending: '尚未开始', running: '进行中', paused: '已暂停', abandoned: '已停止', failed: '失败', complete: '已完成' },
   stages: {
     prepare: '准备设置', 'store-directory': '创建存储文件夹', 'create-store': '创建进度存储',

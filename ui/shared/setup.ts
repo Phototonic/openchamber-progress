@@ -921,7 +921,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (driver && !freshRefused) {
     const review = stepReviewCard(vc, driver);
     if (review) { wrap.append(review); return wrap; }
-    if (progress) wrap.append(migrationCard(vc, driver, progress));
+    if (progress) wrap.append(migrationCard(vc, driver, progress, progress === d.freshProgress && info.diagnostics.length > 0));
     else if (driver.state.busy === 'run' || driver.state.busy === 'control') wrap.append(startingCard(vc, driver));
     else stepOutcome(wrap, driver, null, vc.env.locale);
     if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
@@ -1139,12 +1139,12 @@ function stepButton(row: Element, id: string, label: string, run: () => void, va
 
 /** Capture warning wording: migration says "finish the switch"; fresh says whether a new store starts
  * off or a retained store keeps its own setting. */
-function captureWarning(p: ManagedSetupStepProgress, locale: string) {
+function captureWarning(p: ManagedSetupStepProgress, locale: string, readUnavailable: boolean) {
   const state = p.capture.state === 'off' ? 'off' : 'unknown';
   if (isFreshProgress(p)) {
     const f = managedFreshCopy(locale), warning = f.warn[p.storeMode][state];
     return p.state === 'complete' && !(p.storeMode === 'retain' && state === 'off')
-      ? { title: warning.title, body: f.completedRecording[state] } : warning;
+      ? { title: warning.title, body: state === 'unknown' && readUnavailable ? f.completedReadUnavailable : f.completedRecording[state] } : warning;
   }
   const t = managedFamilyStepCopy('migration', locale);
   return state === 'off' ? { title: t.warnOff, body: t.warnOffBody } : { title: t.warnUnknown, body: t.warnUnknownBody };
@@ -1174,7 +1174,7 @@ function setupDisclosure(locale: string) {
   return details;
 }
 
-function migrationCard<U>(vc: Host<U>, driver: SetupStepDriver, p: ManagedSetupStepProgress) {
+function migrationCard<U>(vc: Host<U>, driver: SetupStepDriver, p: ManagedSetupStepProgress, readUnavailable = false) {
   const locale = vc.env.locale;
   const family = progressFamily(p);
   const t = managedFamilyStepCopy(family, locale);
@@ -1190,19 +1190,21 @@ function migrationCard<U>(vc: Host<U>, driver: SetupStepDriver, p: ManagedSetupS
   card.setAttribute('aria-labelledby', heading.id);
   card.append(heading);
   if (isFreshProgress(p)) card.append(freshGroupList(p.plan, locale, p, driving));
-  if (p.capture.state !== 'on' && (!isFreshProgress(p) ? p.state !== 'complete' : !driving || !!st.confirm || st.pauseAfter)) {
+  const showCaptureWarning = p.capture.state !== 'on' && (!isFreshProgress(p) ? p.state !== 'complete' : !driving || !!st.confirm || st.pauseAfter);
+  const showReadWarning = showCaptureWarning && isFreshProgress(p) && p.state === 'complete' && p.capture.state === 'unknown' && readUnavailable;
+  if (showCaptureWarning) {
     // Running fresh setup uses a plain line; every stopped state retains the warning.
     const warning = testid(el('div'), 'setup-migration-capture-warning');
     warning.dataset.capture = p.capture.state;
     const kept = isFreshProgress(p) && p.state === 'complete' && p.storeMode === 'retain' && p.capture.state === 'off';
     const body = kept ? testid(el('div'), 'setup-fresh-kept') : warning;
     if (kept) warning.append(body);
-    mountBanner(body, { tone: 'warning', ...captureWarning(p, locale) });
+    mountBanner(body, { tone: 'warning', ...captureWarning(p, locale, showReadWarning) });
     const key = `capture:${p.operationId}:${p.capture.state}`;
     if (announced.has(key)) warning.querySelector('[role]')?.removeAttribute('role'); else announced.add(key);
     card.append(warning);
   }
-  if (isFreshProgress(p)) card.append(testid(el('p', 'ap-note', (p.storeMode === 'retain' || p.state === 'complete') && p.capture.state === 'off'
+  if (isFreshProgress(p) && !showReadWarning) card.append(testid(el('p', 'ap-note', (p.storeMode === 'retain' || p.state === 'complete') && p.capture.state === 'off'
     ? managedFreshCopy(locale).warn.retain.off.title : managedFreshCopy(locale).recording[p.capture.state]), 'setup-recording-state'));
   if (p.state !== 'complete') {
     const step = testid(el('p', 'ap-migration-step', migrationStepText(p, locale)), 'setup-migration-step');

@@ -124,8 +124,9 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   }catch(error){
     unavailable.diagnostics=[observationDiagnostic(error)];
     if(journal?.migration.format===3&&journal.migration.created.database===null&&journal.migration.state!=='complete'){
-      // Only uncheckpointed creation lacks the evidence for a Resume card.
-      // Later read failures retain pending/complete progress with unknown capture.
+      // Without a database creation checkpoint, an unfinished create or retain
+      // operation hides progress on read failure. Checkpointed or complete
+      // operations keep their progress but show capture as unknown.
       unavailable.delivery!.migration='unavailable';
       delete unavailable.delivery!.freshProgress;
     }

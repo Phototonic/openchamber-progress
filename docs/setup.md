@@ -53,7 +53,7 @@ database starts with capture off; only the later reviewed enable step turns it o
 Reconnecting valid retained storage reuses its identities, history and capture
 setting, with no enable/disable step. A matching verified source is reused;
 otherwise the review discloses a new source registered only after expectation.
-Reconnecting a retained matching source may replace an older expectation for the
+Reconnecting a retained matching source may replace a different expectation for the
 same Store/source/install identity with the explicitly reviewed package. Its
 expectation step freezes and compares the prior bytes before atomic replacement.
 Foreign or invalid metadata still refuses. Once that step completes, changed
@@ -294,9 +294,11 @@ its exact creation intent, frozen identity, supported schema and initial off sta
 Creation reconciliation also requires absent sidecars, even when the database
 exists; this does not forbid normal WAL sidecars after its creation checkpoint.
 If Store observation fails on an unfinished format-3 operation with no database
-creation checkpoint, ordinary status reports unavailable for manual diagnosis,
+creation checkpoint (including retained storage), ordinary status reports unavailable for manual diagnosis,
 without a Resume action. Checkpointed and complete operations instead retain their
 pending or complete progress with unknown capture and the read diagnostic attached.
+The finished Setup card explains when the progress folder’s status could not be read
+and offers a fresh status check.
 Status retains the fresh-setup presentation family even when no usable progress can
 be shown. Any partial folder is retained, never deleted, reused or repaired to force
 continuation. A damaged expectation is a state conflict
