@@ -84,8 +84,11 @@ export function createManagedBindingDirectory(env: NodeJS.ProcessEnv = process.e
   managedBindingFile(env);
   return file;
 }
+function sameInode(a:BigIntStats,b:BigIntStats|undefined):b is BigIntStats {
+  return !!b&&b.isFile()&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;
+}
 function sameFile(a:BigIntStats,b:BigIntStats|undefined) {
-  return b?.isFile()&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino&&a.birthtimeNs===b.birthtimeNs;
+  return sameInode(a,b)&&a.birthtimeNs===b.birthtimeNs;
 }
 function stableFile(a:BigIntStats,b:BigIntStats|undefined) {
   return sameFile(a,b)&&!!b&&a.size===b.size&&a.nlink===b.nlink&&a.mode===b.mode&&
@@ -128,21 +131,30 @@ export function publishPrivateJson(file: string, value: unknown, replace = false
   const bytes=JSON.stringify(value);
   need(!initialJournal||!replace);
   const stage=initialJournal?initialJournalStage(file,bytes):`${file}.stage-${randomUUID()}`;
+  const fd=openSync(stage,'wx',0o600);
   let created:BigIntStats|undefined;
   let failed=false;
   try {
-    const fd=openSync(stage,'wx',0o600);
-    try {created=fstatSync(fd,{bigint:true});writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
-    need(sameFile(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
+    // The open descriptor pins the inode until cleanup. Birthtime can be
+    // ctime on some runtimes, and our own write and link can change it.
+    created=fstatSync(fd,{bigint:true});
+    writeFileSync(fd,bytes);
+    fsyncSync(fd);
+    need(sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
     if (replace) renameSync(stage, file);
     else {
       linkSync(stage, file);
-      need(sameFile(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
+      need(sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
       unlinkSync(stage);
     }
+    created=undefined; // Publication already consumed the stage name.
     syncDirectory(path.dirname(file));
   } catch(e) {failed=true;throw e;} finally {
-    try{if(created&&sameFile(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})))unlinkSync(stage);}catch(e){if(!failed)throw e;}
+    try {
+      try {
+        if(created&&sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})))unlinkSync(stage);
+      } finally {closeSync(fd);}
+    } catch(e) {if(!failed)throw e;}
   }
 }
 

@@ -346,6 +346,10 @@ rather than replacement of foreign bytes.
 
 For both format 2 and format 3, only the first **no-clobber** save derives a
 `migration.json.stage-prepare-<sha256>` sibling from the exact saved bytes.
+During publication, the exclusive open descriptor pins the staging inode while
+Setup checks the stage's device and inode: a runtime may report change time as
+birth time, and writing or linking the stage can change that value. Read-only
+recovery still checks timestamps for stability.
 Matching names are not enough: the names must be the only two links to the same
 private native file in the marked directory, with a strictly validated initial
 checkpoint and applied begin receipt. Observation grants no Store admission;
