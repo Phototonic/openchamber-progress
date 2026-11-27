@@ -55,7 +55,7 @@ CREATE TABLE contributions(source TEXT NOT NULL, plan TEXT NOT NULL, revision IN
 PRAGMA user_version=2;`;
 type StoredPlan = PlanState & { boundCanonicalPath?: string };
 export interface MentionCandidate { plan: PlanSummary; verified: boolean; locality:number }
-export type MentionDetailPage = Envelope & PlanRead & { assembly?: { itemCount:number } };
+export type MentionDetailPage = Envelope & PlanRead & { assembly?: { itemCount:number; userCancelRevisions:number[] } };
 export interface MentionSearchRead {
   binding: {sourceId:string|null;verified:boolean}; candidates: MentionCandidate[]; limited: boolean;
   work: {planSlots:number;sessionSlots:number;inputBytes:number};
@@ -419,14 +419,33 @@ export class Store {
     return this.transaction(false, () => {
       if(snapshotBytes!==undefined){const row=this.db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?').get(source,id);need(row,'not-found');need(Number(row.bytes)<=snapshotBytes,'storage');}
       need(Number.isSafeInteger(page) && page >= 0); const p = this.raw(source,id); need(p, 'not-found');
-      const start = page * LIMITS.pageSize; const rows = this.db.prepare(`SELECT ${snapshotBytes===undefined?'payload':'CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload'} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source,id,LIMITS.pageSize+1,start);
-      if(snapshotBytes!==undefined)need(rows.every(r=>typeof r.payload==='string'),'storage');
-      return { ...this.metadata(), ...(snapshotBytes===undefined?{}:{assembly:{itemCount:p.items.length}}), plan: this.summary(p), links: p.links,
+      const start = page * LIMITS.pageSize;
+      // Mention pages cover revision slots, not just reports. Verify cancellations
+      // in the same transaction using the fixed actor marker, not a missing report.
+      const rows = snapshotBytes===undefined
+        ? this.db.prepare('SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,LIMITS.pageSize+1,start)
+        : this.db.prepare(`
+            SELECT r.revision, r.actor=? AS user_cancel, c.revision AS contribution_revision,
+              CASE WHEN length(CAST(c.payload AS BLOB))<=16384 THEN c.payload END AS payload
+            FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+            WHERE r.source=? AND r.plan=? AND r.revision>? ORDER BY r.revision LIMIT ?
+          `).all(userCancelActor,source,id,start,LIMITS.pageSize+1);
+      if(snapshotBytes!==undefined)for(const [i,r] of rows.entries()){
+        need(r.revision===start+i+1,'conflict');
+        if(r.user_cancel===1)need(r.contribution_revision===null,'conflict');
+        else {need(r.contribution_revision!==null,'conflict');need(typeof r.payload==='string','storage');}
+      }
+      const contributions:Contribution[]=[],userCancelRevisions:number[]=[];
+      for(const r of rows.slice(0,LIMITS.pageSize)){
+        if(r.user_cancel===1)userCancelRevisions.push(Number(r.revision));
+        else contributions.push(JSON.parse(String(r.payload)) as Contribution);
+      }
+      return { ...this.metadata(), ...(snapshotBytes===undefined?{}:{assembly:{itemCount:p.items.length,userCancelRevisions}}), plan: this.summary(p), links: p.links,
         items: { data: p.items.slice(start,start+LIMITS.pageSize).map(i => {
           const { blocker, ...item } = i;
           return p.lifecycle === 'active' && i.kind === 'task' && i.status === 'blocked' && validBlockerAnnotation(blocker,p.revision) ? { ...item,blocker } : item;
         }), nextCursor: p.items.length > start+LIMITS.pageSize ? String(page+1) : null },
-        contributions: { data: rows.slice(0,LIMITS.pageSize).map(r => JSON.parse(String(r.payload)) as Contribution), nextCursor: rows.length > LIMITS.pageSize ? String(page+1) : null },
+        contributions: { data: contributions, nextCursor: rows.length > LIMITS.pageSize ? String(page+1) : null },
       };
     });
   }

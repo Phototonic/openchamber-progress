@@ -56,6 +56,39 @@ test('authenticated POST reads: strict requests, fixed errors, source-qualified 
   const unavailable=await serve();try{assert.equal((await search(unavailable)).status,503);assert.equal((await resolve(unavailable)).status,503);}finally{await unavailable.stop();}
 });
 
+test('composer resolves a user-cancelled plan and its later reports, but refuses an unexplained contribution gap',async()=>{
+  const f=mentionFixture();f.seed('P','Cancel fixture');
+  f.apply('P',{op:'change',changes:[{id:'T',status:'done'}]});
+  const s=await serve(f.store);
+  try{
+    const cancel=async(rev:number)=>{
+      const response=await s.request('/v1/plan/cancel',{
+        storeId:f.storeId,binding:{sourceId:f.alpha.id,verified:true},source:f.alpha.id,plan:'P',rev,cleanupRev:0,oid:`cancel-${rev}`,confirmed:true,
+      });
+      assert.equal(response.status,200);assert.equal((await response.json()).rev,rev+1);
+    };
+    await cancel(2);
+    const {items}=await (await search(s,'Cancel fixture')).json();
+    assert.deepEqual(items.map((row:{id:string})=>row.id),['source-alpha/P']);
+    const select=async()=>{const response=await resolve(s,items[0].id);return {status:response.status,...await response.json()};};
+    const cancelled=await select();
+    f.apply('P',{op:'revise',title:'Reopened fixture',reopen:true});
+    f.apply('P',{op:'change',changes:[{id:'T',status:'working'}]});
+    const reported=await select();
+    assert.deepEqual([cancelled.status,reported.status],[200,200],'selection after cancellation and after reopening');
+    assert.match(cancelled.text,/Revision: 3\b/);
+    assert.match(reported.text,/Revision: 5\b/);
+
+    // The second page starts with a cancellation and includes a later report.
+    for(let n=6;n<=20;n++)f.apply('P',{op:'change',changes:[{id:'T',status:n%2?'working':'done'}]});
+    await cancel(20);
+    f.apply('P',{op:'revise',title:'Reopened again',reopen:true});
+    const paged=await select();assert.equal(paged.status,200);assert.match(paged.text,/Revision: 22\b/);
+    f.store.db.prepare('DELETE FROM contributions WHERE source=? AND plan=? AND revision=?').run(f.alpha.id,'P',2);
+    assert.deepEqual(await select(),{status:409,error:'conflict'});
+  }finally{await s.stop();f.cleanup();}
+});
+
 test('ranking: exact directory, unambiguous bound-source project, other locations; active then report then binary key',async()=>{
   const f=mentionFixture();const fixed='2026-01-01T00:00:00.000Z';
   f.seed('A','Rank',f.actor);f.seed('B','Rank',f.actor);f.apply('B',{op:'finish',outcome:'cancelled'});

@@ -241,9 +241,12 @@ unambiguous verified bound-source directory records establish project locality.
 Resolve permits **120 pages per attempt, three revision restarts, 16 MiB cumulative
 detail and an 8-second cooperative deadline**, checked between awaited pages.
 Store, binding, source/key, revision, cleanup and complete items/contributions
-must agree. Missing/archived/deleted or incomplete targets refuse. No document,
-history or timing reads, schema changes, cache, new Store lifetime or mutation are
-introduced. Background actions reuse existing guest scoped-list/detail readers.
+must agree. Mention detail pages seek revision keys and left-join contributions;
+only the fixed server-authored user-cancel marker accounts for a revision
+without a contribution. Unexplained gaps still refuse, including after reopening.
+Missing/archived/deleted or incomplete targets refuse. Resolve does not read
+historical snapshots, documents or timing data. Background actions reuse existing
+guest scoped-list/detail readers.
 
 Focused proof (synthetic SQLite and real authenticated HTTP):
 
