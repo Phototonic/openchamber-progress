@@ -56,6 +56,9 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       }return null;
     };
     const guest=async<T=any>(surface:string,expression:string):Promise<T|null>=>{const context=await guestContext(surface);return context?evaluate<T>(expression,context.id,context.sessionId):null;};
+    const serviceRequest=(m:any):{path?:string;method?:string}|undefined=>{
+      try{return JSON.parse(m.params.request.postData??'{}');}catch{return undefined;}
+    };
     // Hold an actual completed host response, without fabricating SDK data.
     // Other requests keep flowing so a context switch is independently observable.
     const holdNextServiceReply=async(route:string)=>{
@@ -63,13 +66,48 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       let held:any,released=false;const errors:Error[]=[];
       const resume=(m:any)=>send('Fetch.continueResponse',{requestId:m.params.requestId},m.sessionId).catch(e=>errors.push(e));
       servicePause=m=>{
-        let request:any;try{request=JSON.parse(m.params.request.postData??'{}');}catch{}
+        const request=serviceRequest(m);
         if(!held&&request?.path===route)held=m;else void resume(m);
       };
       await send('Fetch.enable',{patterns:[{urlPattern:'*/api/guests/agent-progress-probe/service/request',requestStage:'Response'}]});
       return {
         wait:()=>wait(async()=>!!held,Boolean,'real host service reply held'),
         release:async()=>{if(released)return;released=true;if(held)await resume(held);await send('Fetch.disable');servicePause=undefined;assert.equal(errors.length,0,'response barrier transport');},
+      };
+    };
+    const setupStatusBarrier=async()=>{
+      assert.equal(servicePause,undefined,'only one service barrier at a time');
+      const inFlight=new Set<string>(),held:any[]=[],errors:Error[]=[];
+      let hold=false,closing=false;
+      const resume=(m:any,track=false)=>send('Fetch.continueRequest',{requestId:m.params.requestId,...(track?{interceptResponse:true}:{})},m.sessionId);
+      servicePause=m=>{
+        const {requestId,responseStatusCode,responseErrorReason}=m.params;
+        if(responseStatusCode!==undefined||responseErrorReason!==undefined){
+          inFlight.delete(requestId);
+          void send('Fetch.continueResponse',{requestId},m.sessionId).catch(e=>errors.push(e));
+          return;
+        }
+        const request=serviceRequest(m);
+        if(closing||request?.method!=='GET'||request.path!=='/v1/setup'){void resume(m).catch(e=>errors.push(e));return;}
+        if(hold){held.push(m);return;}
+        inFlight.add(requestId);
+        void resume(m,true).catch(e=>errors.push(e));
+      };
+      await send('Fetch.enable',{patterns:[{urlPattern:'*/api/guests/agent-progress-probe/service/request',requestStage:'Request'}]});
+      return {
+        settle:async()=>{
+          // A real response is emitted only after the Setup worker releases
+          // its slot. Let all existing reads settle; no new passive status
+          // read may take that slot before the explicit review and confirmation.
+          hold=true;
+          await wait(async()=>{assert.equal(errors.length,0,'Setup status barrier transport');return inFlight.size===0;},Boolean,'in-flight Setup status settled');
+        },
+        release:async()=>{
+          closing=true;
+          try{await Promise.all(held.map(m=>resume(m)));}
+          finally{await send('Fetch.disable');servicePause=undefined;}
+          assert.equal(errors.length,0,'Setup status barrier transport');
+        },
       };
     };
     const guestClick=async(surface:string,selector:string,beforeProbe?:()=>Promise<void>)=>{
@@ -117,11 +155,18 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guest(surface,'!!document.querySelector("[data-testid=setup-details]")'),Boolean,'managed Setup status');
     };
     const configure=async()=>{
-      await openRail();await openSetup('panel');
-      await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
-        await wait(()=>guest('panel',`(()=>{const d=document;return ${condition}})()`),Boolean,label,180000);
-        if(label==='fresh review')await shot('configuration-review');
-      }});
+      const barrier=await setupStatusBarrier();
+      try {
+        await openRail();await openSetup('panel');await barrier.settle();
+        await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
+          await wait(async()=>{
+            const state=await guest<{ready:boolean;refusal?:string}>('panel',`(()=>{const d=document;return {ready:${condition},refusal:d.querySelector('[data-testid="setup-migration-failure"]')?.dataset.code}})()`);
+            assert.ok(!state?.refusal,`${label} refused: ${state?.refusal}`);
+            return state?.ready;
+          },Boolean,label,180000);
+          if(label==='fresh review')await shot('configuration-review');
+        }});
+      } finally {await barrier.release();}
       await openBoard();await openSetup('page');
       await wait(()=>guest('page',`(()=>{const d=document.querySelector('[data-testid="setup-details"]'),b=document.querySelector('[data-testid="setup-disable"] button');return !!b?.checkVisibility()&&!d.open&&!!(b.compareDocumentPosition(d)&4)&&!!d.querySelector('[data-testid="setup-disclosure"]')})()`),Boolean,'configured Setup controls precede closed Details');
       await shot('configured');
