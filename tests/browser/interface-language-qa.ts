@@ -8,6 +8,7 @@ import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
 import { LANGUAGE_KEY, USER_TASK_TITLE, startLanguageFixture } from './interface-language-fixture.ts';
 import { chromiumPath, launchChromium } from './phone-cdp.ts';
 import { internalCopy } from './interface-copy.ts';
+import { managedCopy } from '../../ui/shared/managed-copy.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const destination = arg('--artifacts');
@@ -118,15 +119,16 @@ try {
           await openMore(s); await click(s, '[data-testid="more-setup"]');
           await wait(inFrame(s, `!!d.querySelector('[data-testid="setup-storeRoot"] input')`), `${s}:fresh Setup form`);
           await scan(s, `${language}:fresh Setup form`);
+          check(`${s}:${language}:Setup action precedes closed Details`, await guest(s, `const action=d.querySelector('[data-testid="setup-inspect"]'),details=d.querySelector('[data-testid="setup-details"]');return !!(action.compareDocumentPosition(details)&4)&&!details.open`));
           await shot(s, `${s}-setup-${language}-390`);
-          await guest(s, `d.querySelector('[data-testid="setup-changes"] > summary').focus();`);
+          await guest(s, `d.querySelector('[data-testid="setup-details-summary"]').focus();`);
           await key('Enter');
-          check(`${s}:${language}:Setup disclosure opens with keyboard`, await guest(s, `return d.querySelector('[data-testid="setup-changes"]').open`));
+          check(`${s}:${language}:Setup disclosure opens with keyboard`, await guest(s, `return d.querySelector('[data-testid="setup-details"]').open`));
           const tree = await c.send('Page.getFrameTree');
           const setupFrame = tree.frameTree.childFrames.find((n: any) => n.frame.url.includes(`/ui/${s}/`));
           const setupAx = await c.send('Accessibility.getFullAXTree', { frameId: setupFrame.frame.id });
-          check(`${s}:${language}:Setup disclosure has an accessible expanded name`, setupAx.nodes.some((n: any) => n.role?.value === 'DisclosureTriangle' && n.name?.value && n.properties?.some((p: any) => p.name === 'expanded' && p.value.value === true)));
-          check(`${s}:${language}:recording stays outside disclosure`, await guest(s, `return !d.querySelector('[data-testid="managed-capture-control"]').closest('[data-testid="setup-changes"]')`));
+          check(`${s}:${language}:Setup disclosure has an accessible expanded name`, setupAx.nodes.some((n: any) => n.role?.value === 'DisclosureTriangle' && n.name?.value === managedCopy(language).details && n.properties?.some((p: any) => p.name === 'expanded' && p.value.value === true)));
+          check(`${s}:${language}:recording stays outside disclosure`, await guest(s, `return !d.querySelector('[data-testid="managed-capture-control"]').closest('[data-testid="setup-details"]')`));
           await key('Enter');
           await click(s, '[data-testid="surface-panel-back"] button');
         }

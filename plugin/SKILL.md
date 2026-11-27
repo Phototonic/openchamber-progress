@@ -59,9 +59,9 @@ completion from turn outcomes, idle state or report age.
 
 Closed plans require explicit coordinator `revise`/`commit` with `reopen=true`.
 If a plan you were reporting returns `closed` while in progress or on a reopen,
-or a plan you started returns `not-found`, the user archived or deleted it; stop
-reporting to it, do not retry, and don't recreate it unless the user specifically
-asks for it. A reopen refused with `conflict` or `stage-incomplete` is recoverable:
+or a plan you started returns `not-found`, the user may have cancelled, archived
+or deleted it. Stop reporting to it; do not retry, reopen or recreate it unless
+the user specifically asks. A reopen refused with `conflict` or `stage-incomplete` is recoverable:
 read the plan and retry at its current revision. For a staged commit, if every
 chunk already staged is valid for the current revision and intended layout, stage
 only the missing chunks under that same upload ID; otherwise stage the whole

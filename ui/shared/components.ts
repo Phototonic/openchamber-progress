@@ -3,12 +3,13 @@ import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpi
 import type { Loadable, ReadingView, SummaryView, ViewContext } from './app.ts';
 import { languageMessages, resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { deriveDependencies } from './dependency-derivation.ts';
+import { isMarkdownDocument, renderDocumentMarkdown } from './document-markdown.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, formatCount, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
 import {
   ALL_PARTICIPANTS, documentStateText, elapsedAt, jumpTargets, lifecycleLabel, nextJump, participantIndex, participants, relationsOf, showsLiveness, statusLabel, summarize, summaryText, taskProjection,
-  type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
+  type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanActivityView, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
 import { icon, infoDisclosure, moreMenu, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
 import { CheckpointStore } from './change-digest-checkpoint.ts';
@@ -17,6 +18,9 @@ import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 import type { DeviceView, IntentRefusal } from './model.ts';
 import { currentIntent, type CurrentIntent } from './intent.ts';
+import { quietCopy, quietDays, quietLabel } from './quiet-plans.ts';
+import type { MoreMenuItem } from './primitives.ts';
+import { cancelCopy } from './plan-user-cancel.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -327,6 +331,7 @@ export interface Env {
   /** The last read succeeded and capture is on; together with an active plan this gates motion. */
   view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
+  openDocumentUrl?: (url: string) => void;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -368,6 +373,42 @@ export function age(iso: string, env: Env, prefix = '') {
   t.title = absoluteTime(iso, env.locale);
   t.textContent = `${prefix}${relativeAge(iso, env.now, env.locale)}`;
   return t;
+}
+
+export function quietAge(plan: Pick<PlanView, 'lifecycle' | 'reportedAt'>, env: Env) {
+  const days = quietDays(plan, env.now);
+  if (days === null) return null;
+  const node = testid(el('time', 'ap-note', quietLabel(days, env.locale)), 'quiet-plan-age');
+  node.dateTime = plan.reportedAt;
+  node.title = absoluteTime(plan.reportedAt, env.locale);
+  return node;
+}
+
+export function quietNotice<U>(vc: ViewContext<U>) {
+  const t = quietCopy(vc.env.locale), q = vc.quiet;
+  const text = q.saving ? t.saving : q.error ? t[q.error] : !q.supported ? t.unsupported : '';
+  if (!text) return null;
+  const box = testid(el('div', 'ap-note'), 'quiet-filter-note');
+  const status = el('span', '', text); status.setAttribute('role', 'status'); box.append(status);
+  if (q.error === 'read' && !q.saving) button(box, 'quiet-filter-retry', t.retry, q.retry, 'ghost');
+  return box;
+}
+
+export function quietEmpty<U>(vc: ViewContext<U>) {
+  const t = quietCopy(vc.env.locale);
+  const box = testid(el('div', 'ap-panel'), 'quiet-plans-empty');
+  box.append(el('p', '', t.empty));
+  button(box, 'quiet-show-all', t.show, () => { void vc.quiet.choose(false); }, 'outline', vc.quiet.saving);
+  return box;
+}
+
+export function quietCheck<U>(vc: ViewContext<U>) {
+  const label = el('label', 'ap-row');
+  const control = testid(el('input'), 'quiet-plan-filter');
+  control.type = 'checkbox'; control.checked = vc.quiet.hide; control.disabled = vc.quiet.saving;
+  control.addEventListener('change', () => { const choice = control.checked; control.checked = vc.quiet.hide; void vc.quiet.choose(choice); });
+  label.append(control, el('span', '', quietCopy(vc.env.locale).filter));
+  return label;
 }
 
 const elapsedLabelText = (kind: string | undefined, ms: number, locale = 'en') => {
@@ -612,14 +653,15 @@ export class ProgressShell {
     if (previous && previous !== panel) this.closePanel?.(previous);
   }
   private menu: ReturnType<typeof moreMenu> | null = null;
-  private focus: 'heading' | 'more' | null = null;
+  private focus: 'heading' | 'more' | 'document' | null = null;
   private review: { key: string; revision: number | null } | null = null;
   reset(keepSetup = false) {
     // Same-reading data refreshes (including capture changes) keep Setup usable.
-    // Reconcile still closes it when the account, authority or selection changes.
+    // Reconcile still closes Setup and More if the account, authority or selection changes.
     if (keepSetup && this.panel === 'setup') this.closePanel?.('setup');
-    else { this.key = ''; this.setPanel(null); this.closePanel = undefined; }
-    this.menu?.dispose(); this.menu = null; this.review = null; this.focus = null;
+    else { this.setPanel(null); this.closePanel = undefined; }
+    if (!keepSetup) { this.key = ''; this.menu?.dispose(); this.menu = null; }
+    this.review = null; this.focus = null;
   }
   get activePanel() { return this.panel; }
   /** Reconcile selection before callers decide which view is active, not only during paint. */
@@ -628,10 +670,17 @@ export class ProgressShell {
     if (key !== this.key) { this.reset(); this.key = key; }
   }
   showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
+  openDocument<U>(vc: ViewContext<U>) {
+    this.setPanel('document'); this.focus = 'heading'; vc.setUi({});
+  }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
-    const target = this.focus === 'heading' ? '[data-testid="surface-panel-heading"]' : this.focus === 'more' ? '[data-testid="more-trigger"]' : null;
+    if (this.menu && !root.contains(this.menu.root)) { this.menu.dispose(); this.menu = null; }
+    this.menu?.refresh();
+    const target = this.focus && {
+      heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', document: '[data-testid="plan-view-document"] button',
+    }[this.focus];
     this.focus = null;
     if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
   }
@@ -645,11 +694,11 @@ export class ProgressShell {
     this.reconcile(vc, plan, options);
     this.closePanel = options.closePanel;
     const key = this.key;
-    this.menu?.dispose();
     const t = shellCopy(vc.env.locale);
     const detail = plan ? vc.detail(plan) : null;
+    const cancellation = plan ? vc.cancelPlan(plan) : null;
     const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
-    const items: MenuItem[] = [], runs = new Map<string, () => void>();
+    const items: MoreMenuItem[] = [], runs = new Map<string, () => void>();
     const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
     const open = (kind: SurfacePanel) => {
       if (this.key !== key) return;
@@ -663,7 +712,6 @@ export class ProgressShell {
       items.push({ separator: true });
     }
     if (plan) {
-      add('document', t.document, () => open('document'));
       if (options.board) add('history', t.history, () => open('history'));
       const count = participants(plan, ready).length;
       add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
@@ -672,7 +720,12 @@ export class ProgressShell {
     // Hidden-items owner supplies applicable actions here; bulk cleanup is board-only.
     const menuActions = [...(options.menuActions ?? [])];
     for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
+    if (cancellation?.eligible && !cancellation.confirmation) add('finish-cancelled', cancelCopy(vc.env.locale).action, cancellation.open);
     if (menuActions.length) items.push({ separator: true });
+    if (!options.board) {
+      items.push({ id: 'quiet-plan-filter', label: quietCopy(vc.env.locale).filter, checked: vc.quiet.hide, disabled: vc.quiet.saving });
+      runs.set('quiet-plan-filter', () => { if (this.key === key) void vc.quiet.choose(!vc.quiet.hide); });
+    }
     add('language', t.language + ' ›', () => {});
     add('setup', t.setup, () => open('setup'));
     add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
@@ -689,10 +742,11 @@ export class ProgressShell {
     const newHistory = !!(plan && reviewKey && this.review?.revision !== null && this.review?.revision !== undefined && this.review.revision < plan.revision);
     const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
     const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
-    const menu = this.menu = moreMenu({ label: newHistory ? t.newHistory : t.more, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language });
-    if (newHistory) { const dot = testid(el('span', 'ap-history-dot'), 'more-history-dot'); dot.setAttribute('aria-hidden', 'true'); menu.trigger.append(dot); }
+    const menuOptions: Parameters<typeof moreMenu>[0] = { label: newHistory ? t.newHistory : t.more, newHistory, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language };
+    const menu = this.menu ??= moreMenu(menuOptions);
+    menu.setOptions(menuOptions);
     const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
-    holder.append(menu.root);
+    menu.mount(holder);
     if (plan && vc.reading) MENU_SLOTS.set(vc.reading, {
       plan: plan.key, add: (actions, focusHook) => {
         // Per-plan archive/restore before settings; destructive actions remain last.
@@ -702,7 +756,7 @@ export class ProgressShell {
         if (destructive.length) items.push({ separator: true }, ...destructive.map(a => ({ id: a.id, label: a.label, disabled: a.disabled, destructive: true })));
         for (const action of actions) runs.set(action.id, action.run);
         if (focusHook) holder.dataset.testid = focusHook;
-        menu.update(items);
+        // More refreshes after this paint, once all the action owners have contributed.
       },
     });
     if (plan) {
@@ -715,7 +769,9 @@ export class ProgressShell {
         meta.append(el('span', '', planLocation(plan, vc.live, vc.env.boundSource, vc.env.locale)), el('span', '', say('Main session', vc.env.locale)));
         const nav = navButton(plan, plan.ownerSessionId, coverageFor(plan.ownerSessionId, plan.directory, vc.live), vc.env); if (nav) meta.append(nav);
       }
-      if (plan.lifecycle === 'active' && Date.now() - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
+      const quiet = quietAge(plan, vc.env);
+      if (quiet) meta.append(quiet);
+      else if (plan.lifecycle === 'active' && vc.env.now - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
       if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
       if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
       root.append(head);
@@ -728,11 +784,33 @@ export class ProgressShell {
       root.append(legend);
       if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
     } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
+    if (!options.board) { const notice = quietNotice(vc); if (notice) root.append(notice); }
+    const confirmation = cancellation?.confirmation;
+    if (confirmation) {
+      const copy = cancelCopy(vc.env.locale);
+      const box = testid(el('section', 'ap-panel'), 'plan-cancel-confirmation');
+      const heading = el('h3', 'ap-h', copy.heading(confirmation.title));
+      heading.id = 'ap-plan-cancel-heading';
+      box.setAttribute('aria-labelledby', heading.id);
+      box.append(heading, el('p', '', copy.explain));
+      const actions = el('div', 'ap-row');
+      button(actions, 'plan-cancel-keep', copy.keep, confirmation.keep, 'outline', confirmation.pending);
+      button(actions, 'plan-cancel-confirm', copy.action, () => { void confirmation.confirm(); }, 'destructive', confirmation.pending);
+      box.append(actions);
+      if (confirmation.pending) {
+        const status = el('p', 'ap-note', copy.pending);
+        status.setAttribute('role', 'status'); box.append(status);
+      }
+      box.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !confirmation.pending) { e.preventDefault(); e.stopPropagation(); confirmation.keep(); }
+      });
+      root.append(box);
+    }
     if (!this.panel) return false;
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
     box.setAttribute('aria-label', t[kind]);
-    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = 'more'; vc.setUi({}); };
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = kind === 'document' ? 'document' : 'more'; vc.setUi({}); };
     button(box, 'surface-panel-back', t.back, back, 'ghost');
     const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
     box.append(h, options.renderPanel(kind));
@@ -753,7 +831,7 @@ export function listFilters(reading: ReadingView | null, locale: string) {
   return box;
 }
 
-export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string) {
+export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string, openDocument: () => void) {
   const language = resolveLanguage('auto', locale);
   const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
   const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
@@ -762,6 +840,7 @@ export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | '
     const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
     const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
   }
+  button(box, 'plan-view-document', shellCopy(locale).document, openDocument, 'ghost');
   return box;
 }
 
@@ -939,8 +1018,8 @@ export function partState(id: string, what: string, value: Loadable<unknown> | n
 }
 
 /**
- * Read-only captured document, fetched on demand. Text only: never parsed as Markdown/HTML,
- * never fetches assets. A retained earlier capture stays readable when the latest read failed.
+ * Read-only captured document, fetched on demand, without loading document assets.
+ * A retained earlier capture stays readable when the latest read failed.
  */
 export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'inline', doc: { get: () => Loadable<DocumentBody> | null; request: () => void }) {
   const ref = plan.document;
@@ -962,12 +1041,14 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
     if (!value || value.state !== 'ready') { body.append(partState('document-loading', say('the document', env.locale), value, doc.request, env.locale)); return; }
     const d = value.value;
     if (d.text === null) { body.append(el('p', 'ap-note', say('The captured text is not available.', env.locale))); return; }
-    const pre = testid(el('pre'), 'document-text');
-    pre.tabIndex = 0;
-    pre.dataset.scrollKey = `doc-${plan.key}`;
-    pre.textContent = d.text;
+    const formatted = isMarkdownDocument(d.ref.path);
+    const preview = testid(formatted ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
+    preview.tabIndex = 0;
+    preview.dataset.scrollKey = `doc-${plan.key}`;
+    if (formatted) renderDocumentMarkdown(preview, d.text, env.locale, env.openDocumentUrl);
+    else preview.textContent = d.text;
     if (d.historical) body.append(testid(el('p', 'ap-doc-warn', say('A newer capture was recorded while this loaded. This is the earlier capture.', env.locale)), 'document-historical'));
-    body.append(pre);
+    body.append(preview);
     const note = el('p', 'ap-note');
     if (d.ref.capturedAt) note.append(age(d.ref.capturedAt, env, say(ref.state === 'captured' ? 'Captured ' : 'Last good capture ', env.locale)), document.createTextNode('. '));
     note.append(document.createTextNode(say(ref.state !== 'captured'
@@ -1119,6 +1200,7 @@ const INVALID_COPY: Record<InvalidReason, CopyKey> = {
 
 export interface DetailHooks {
   detail: Loadable<PlanDetail> | null;
+  activity?: PlanActivityView | null;
   summary?: SummaryView | null;
   retryDetail?: () => void;
   document: { get: () => Loadable<DocumentBody> | null; request: () => void };
@@ -1427,7 +1509,7 @@ function rowFacts(p: Paint, row: ProgressRow) {
   const lines: { text: string; report?: string; blocker?: string }[] = [];
   const b = item.status === 'blocked' && item.reportedBlocker?.state === 'reported' ? item.reportedBlocker : null;
   const reports = reportsFor(item.id, p.detail.contributions);
-  const describe = (mode: string, reporter: string, attributed: string) => say(mode === 'parent-relay' ? 'reported by {reporter} for {attributed}' : 'reported directly by {reporter}', locale, { reporter: p.label(reporter), attributed: p.label(attributed) });
+  const describe = (mode: string, reporter: string, attributed: string) => reportPhrase(mode, reporter, attributed, p.label, locale);
   let joined = false;
   if (b) {
     const same = reports.find((r) => r.mode === b.mode && r.reporterSessionId === b.reporterSessionId && r.attributedSessionId === b.attributedSessionId);
@@ -1874,6 +1956,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     tasks.append(tasksHeading(env.locale), partState('detail-loading', say('tasks', env.locale), hooks.detail?.state === 'error' ? hooks.detail : null, hooks.retryDetail, env.locale));
     root.append(tasks);
   }
+  if (hooks.activity) root.append(planActivityBlock(plan, hooks.activity, env));
   // One compact session row; the Sessions panel holds every participant.
   if (!options.shell && !(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
   if (options.document === 'inline') root.append(documentBlock(plan, env, 'inline', hooks.document));
@@ -1925,6 +2008,106 @@ function summaryBlock(view: SummaryView, locale: InterfaceLanguage) {
   return section;
 }
 
+function revisionNumber(n: number, locale: InterfaceLanguage) {
+  return el('span', 'ap-history-rev', say('Revision {n}', locale, { n: String(n) }));
+}
+function revisionTime(iso: string, env: Env, absolute = false) {
+  const time = age(iso, env);
+  if (absolute) { delete time.dataset.age; time.textContent = time.title; }
+  return time;
+}
+function userCancellation(locale: InterfaceLanguage) { return el('span', 'ap-muted', cancelCopy(locale).history); }
+function reportPhrase(mode: string, reporter: string, attributed: string, label: (id: string) => string, locale: InterfaceLanguage) {
+  return say(mode === 'parent-relay' ? 'reported by {reporter} for {attributed}' : 'reported directly by {reporter}', locale, {
+    reporter: label(reporter), attributed: label(attributed),
+  });
+}
+
+const ACTIVITY_EN = {
+  title: 'Activity', older: 'Older updates', newer: 'Newer updates', coordinator: 'Coordinator', child: 'Sub-agent',
+  loading: 'Loading activity…', failed: 'Activity is unavailable.', noIds: 'No task IDs reported',
+  unavailable: 'Report details unavailable', newReports: 'New updates are available. Close and reopen Activity to see them.',
+  taskIds: (ids: string) => `Task IDs: ${ids}`, range: (newest: number, oldest: number) => `Showing updates ${oldest}–${newest}`,
+};
+const ACTIVITY_COPY: Record<InterfaceLanguage, typeof ACTIVITY_EN> = {
+  en: ACTIVITY_EN,
+  ru: {
+    title: 'Активность', older: 'Более ранние обновления', newer: 'Более поздние обновления', coordinator: 'Координатор', child: 'Субагент',
+    loading: 'Загрузка обновлений…', failed: 'Не удалось загрузить обновления.', noIds: 'Идентификаторы задач не указаны',
+    unavailable: 'Сведения об отчёте недоступны', newReports: 'Есть новые обновления. Закройте и снова откройте раздел «Активность», чтобы увидеть их.',
+    taskIds: ids => `Идентификаторы задач: ${ids}`, range: (newest, oldest) => `Показаны обновления ${oldest}–${newest}`,
+  },
+  'zh-CN': {
+    title: '活动', older: '较早的更新', newer: '较新的更新', coordinator: '协调者', child: '子代理',
+    loading: '正在加载活动…', failed: '无法加载活动。', noIds: '未报告任务 ID',
+    unavailable: '报告详情不可用', newReports: '有新的更新。请关闭并重新打开“活动”查看。',
+    taskIds: ids => `任务 ID：${ids}`, range: (newest, oldest) => `显示第 ${oldest}–${newest} 次更新`,
+  },
+};
+
+export function planActivityBlock(plan: PlanView, view: PlanActivityView, env: Env) {
+  const { locale } = env, t = ACTIVITY_COPY[locale], state = view.value;
+  const expanded = state.state !== 'closed';
+  const section = testid(el('section', 'ap-activity ap-section'), 'plan-activity');
+  const heading = el('h3', 'ap-h');
+  const toggle = testid(el('button', 'ap-activity-toggle', t.title), 'activity-toggle');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.setAttribute('aria-controls', 'ap-activity-body');
+  toggle.addEventListener('click', () => view.act(expanded ? 'close' : 'open'));
+  heading.append(toggle);
+  const body = el('div', 'ap-activity-body');
+  body.id = 'ap-activity-body';
+  body.hidden = !expanded;
+  section.append(heading, body);
+  if (!expanded) return section;
+
+  const status = el('p', 'ap-note', state.state === 'loading' ? t.loading : state.state === 'failure' ? t.failed
+    : t.range(state.through, state.rows.at(-1)!.revision));
+  status.id = 'ap-activity-status';
+  status.setAttribute('role', 'status');
+  body.append(status);
+  if (plan.revision > state.pin) body.append(el('p', 'ap-note', t.newReports));
+  const controls = el('div', 'ap-activity-controls');
+  const pageButton = (action: 'newer' | 'older', name: string, enabled: boolean) => {
+    const b = testid(el('button', 'ap-activity-button', name), `activity-${action}`);
+    b.type = 'button';
+    b.setAttribute('aria-disabled', String(!enabled));
+    b.setAttribute('aria-describedby', status.id);
+    // Keep keyboard focus at the same control as its page is replaced, including
+    // at the first/last page where the control becomes unavailable.
+    b.addEventListener('click', () => { if (enabled) view.act(action); });
+    controls.append(b);
+  };
+  pageButton('newer', t.newer, state.state === 'ready' && state.through < state.pin);
+  pageButton('older', t.older, state.state === 'ready' && state.nextThrough !== null);
+  if (state.state === 'failure') {
+    const retry = testid(el('button', 'ap-activity-button', say('Try again', locale)), 'activity-retry');
+    retry.type = 'button';
+    retry.addEventListener('click', () => { toggle.focus({ preventScroll: true }); view.act('retry'); });
+    controls.append(retry);
+  }
+  body.append(controls);
+  if (state.state === 'ready') {
+    const rows = el('ul', 'ap-history');
+    const label = recordedLabel(plan, env);
+    for (const row of state.rows) {
+      const li = testid(el('li', 'ap-history-row'), `activity-revision-${row.revision}`);
+      li.append(revisionNumber(row.revision, locale), revisionTime(row.reportedAt, env, true));
+      if (row.kind === 'user') li.append(userCancellation(locale));
+      else if (row.kind === 'unavailable') li.append(el('span', 'ap-muted', t.unavailable));
+      else {
+        const who = row.reporterSessionId === plan.ownerSessionId ? t.coordinator : t.child;
+        li.append(el('span', 'ap-activity-report', `${who} · ${reportPhrase(row.mode, row.reporterSessionId, row.attributedSessionId, label, locale)}`));
+        li.append(el('span', 'ap-activity-report ap-muted', row.itemIds.length ? t.taskIds(row.itemIds.join(', ')) : t.noIds));
+      }
+      rows.append(li);
+    }
+    body.append(rows);
+  }
+  return section;
+}
+
 export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null, env: Env) {
   const section = testid(el('section', 'ap-section'), `history-${plan.id}`);
   section.append(el('h3', 'ap-h', say('Revisions', env.locale)));
@@ -1935,9 +2118,9 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);
-    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: String(e.revision) })), el('span', 'ap-muted', kind(i)));
-    if (e.lifecycle !== 'active') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
-    li.append(age(e.reportedAt, env));
+    li.append(revisionNumber(e.revision, env.locale), e.actor === 'user' ? userCancellation(env.locale) : el('span', 'ap-muted', kind(i)));
+    if (e.lifecycle !== 'active' && e.actor !== 'user') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
+    li.append(revisionTime(e.reportedAt, env));
     ul.append(li);
   }
   section.append(ul);
@@ -2028,6 +2211,7 @@ export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: st
   invalid: { title: 'Progress could not be read', body: 'The progress service sent a reply this view could not use.' },
   'not-found': { title: 'That plan is no longer available', body: 'Choose another plan.' },
   'setup-lost': { title: 'Progress setup can’t be read right now', body: 'Check Setup; nothing was changed or deleted.' },
+  'setup-refused': { title: 'Progress couldn’t verify this setup', body: 'Open More → Setup to see what needs attention.' },
 };
 const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
   en: FAILURE_COPY,
@@ -2042,6 +2226,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
     'not-found': { title: 'Этот план больше недоступен', body: 'Выберите другой план.' },
     'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Проверьте настройку; ничего не изменено и не удалено.' },
+    'setup-refused': { title: 'Не удалось проверить настройку прогресса', body: 'Откройте «Ещё» → «Настройка», чтобы узнать причину.' },
   },
   'zh-CN': {
     'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
@@ -2054,6 +2239,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
     'not-found': { title: '该计划已不再可用', body: '请选择其他计划。' },
     'setup-lost': { title: '暂时无法读取进度设置', body: '请检查设置，未更改或删除任何内容。' },
+    'setup-refused': { title: '无法验证进度设置', body: '请打开「更多」→「设置」查看原因。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];

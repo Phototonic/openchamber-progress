@@ -56,6 +56,9 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       }return null;
     };
     const guest=async<T=any>(surface:string,expression:string):Promise<T|null>=>{const context=await guestContext(surface);return context?evaluate<T>(expression,context.id,context.sessionId):null;};
+    const serviceRequest=(m:any):{path?:string;method?:string}|undefined=>{
+      try{return JSON.parse(m.params.request.postData??'{}');}catch{return undefined;}
+    };
     // Hold an actual completed host response, without fabricating SDK data.
     // Other requests keep flowing so a context switch is independently observable.
     const holdNextServiceReply=async(route:string)=>{
@@ -63,13 +66,48 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       let held:any,released=false;const errors:Error[]=[];
       const resume=(m:any)=>send('Fetch.continueResponse',{requestId:m.params.requestId},m.sessionId).catch(e=>errors.push(e));
       servicePause=m=>{
-        let request:any;try{request=JSON.parse(m.params.request.postData??'{}');}catch{}
+        const request=serviceRequest(m);
         if(!held&&request?.path===route)held=m;else void resume(m);
       };
       await send('Fetch.enable',{patterns:[{urlPattern:'*/api/guests/agent-progress-probe/service/request',requestStage:'Response'}]});
       return {
         wait:()=>wait(async()=>!!held,Boolean,'real host service reply held'),
         release:async()=>{if(released)return;released=true;if(held)await resume(held);await send('Fetch.disable');servicePause=undefined;assert.equal(errors.length,0,'response barrier transport');},
+      };
+    };
+    const setupStatusBarrier=async()=>{
+      assert.equal(servicePause,undefined,'only one service barrier at a time');
+      const inFlight=new Set<string>(),held:any[]=[],errors:Error[]=[];
+      let hold=false,closing=false;
+      const resume=(m:any,track=false)=>send('Fetch.continueRequest',{requestId:m.params.requestId,...(track?{interceptResponse:true}:{})},m.sessionId);
+      servicePause=m=>{
+        const {requestId,responseStatusCode,responseErrorReason}=m.params;
+        if(responseStatusCode!==undefined||responseErrorReason!==undefined){
+          inFlight.delete(requestId);
+          void send('Fetch.continueResponse',{requestId},m.sessionId).catch(e=>errors.push(e));
+          return;
+        }
+        const request=serviceRequest(m);
+        if(closing||request?.method!=='GET'||request.path!=='/v1/setup'){void resume(m).catch(e=>errors.push(e));return;}
+        if(hold){held.push(m);return;}
+        inFlight.add(requestId);
+        void resume(m,true).catch(e=>errors.push(e));
+      };
+      await send('Fetch.enable',{patterns:[{urlPattern:'*/api/guests/agent-progress-probe/service/request',requestStage:'Request'}]});
+      return {
+        settle:async()=>{
+          // A real response is emitted only after the Setup worker releases
+          // its slot. Let all existing reads settle; no new passive status
+          // read may take that slot while the explicit Setup operations run.
+          hold=true;
+          await wait(async()=>{assert.equal(errors.length,0,'Setup status barrier transport');return inFlight.size===0;},Boolean,'in-flight Setup status settled');
+        },
+        release:async()=>{
+          closing=true;
+          try{await Promise.all(held.map(m=>resume(m)));}
+          finally{await send('Fetch.disable');servicePause=undefined;}
+          assert.equal(errors.length,0,'Setup status barrier transport');
+        },
       };
     };
     const guestClick=async(surface:string,selector:string,beforeProbe?:()=>Promise<void>)=>{
@@ -109,27 +147,65 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guestContext('page'),Boolean,'visible board');
       await wait(()=>guest('page','!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")&&!!document.querySelector("[data-testid=empty-state],[data-testid=plan-list-heading],[data-testid=plan-title]")'),Boolean,'board initial read settled');
     };
+    const moreItem=async(surface:'panel'|'page',item:string)=>{
+      await guestClick(surface,`[data-testid="more-${item}"]`,async()=>{
+        // The shell can replace the transient menu when live progress repaints.
+        // Open only a known closed menu before looking for its actionable row.
+        if(await guest(surface,'document.querySelector("[data-testid=more-trigger]")?.getAttribute("aria-expanded")==="false"'))
+          await guestClick(surface,'[data-testid="more-trigger"]');
+      });
+    };
+    const language=async(surface:'panel'|'page',value:'en'|'ru'|'zh-CN')=>{
+      await guestClick(surface,`[data-testid="more-language-${value}"]:not(:disabled)`,async()=>{
+        if(!await guest(surface,'!!document.querySelector("[data-testid=more-language-back]")?.checkVisibility()'))
+          await moreItem(surface,'language');
+      });
+      await wait(()=>guest(surface,'document.documentElement.lang'),v=>v===value,'rendered interface language');
+    };
+    const openSetup=async(surface:'panel'|'page')=>{
+      if(!await guest(surface,'!!document.querySelector("[data-testid=surface-panel-setup]")'))await moreItem(surface,'setup');
+      await wait(()=>guest(surface,'!!document.querySelector("[data-testid=setup-details]")'),Boolean,'managed Setup status');
+    };
     const configure=async()=>{
-      await openRail();
-      await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
-        await wait(()=>guest('panel',`(()=>{const d=document;return ${condition}})()`),Boolean,label,180000);
-        if(label==='fresh review')await shot('configuration-review');
-      }});
-      await openBoard();await guestClick('page','[data-testid="setup-section"] > summary');
-      await wait(()=>guest('page','document.querySelector("[data-testid=setup-section]")?.open'),Boolean,'configured Setup disclosure open');
-      await wait(()=>guest('page','!!document.querySelector("[data-testid=setup-disable]")'),Boolean,'configured Setup facts');await shot('configured');
+      const barrier=await setupStatusBarrier();
+      try {
+        await openRail();await openSetup('panel');await barrier.settle();
+        await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
+          await wait(async()=>{
+            const state=await guest<{ready:boolean;refusal?:string}>('panel',`(()=>{const d=document;return {ready:${condition},refusal:d.querySelector('[data-testid="setup-migration-failure"]')?.dataset.code}})()`);
+            assert.ok(!state?.refusal,`${label} refused: ${state?.refusal}`);
+            return state?.ready;
+          },Boolean,label,180000);
+          if(label==='fresh review')await shot('configuration-review');
+        }});
+      } finally {await barrier.release();}
+      await openBoard();await openSetup('page');
+      await wait(()=>guest('page',`(()=>{const d=document.querySelector('[data-testid="setup-details"]'),b=document.querySelector('[data-testid="setup-disable"] button');return !!b?.checkVisibility()&&!d.open&&!!(b.compareDocumentPosition(d)&4)&&!!d.querySelector('[data-testid="setup-disclosure"]')})()`),Boolean,'configured Setup controls precede closed Details');
+      await shot('configured');
     };
     const selectSession=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText.includes(${literal(title)}))`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText.includes(${literal(title)})&&!!document.querySelector('[data-chat-column="main"] [contenteditable="true"]')`),Boolean,'session chat selected');};
-    const warning=async()=>{await openBoard();if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');await wait(()=>guest('page','!!document.querySelector("[data-testid=managed-integrity-warning]")'),Boolean,'visible integrity warning');await shot('warning');};
-    const setupShot=async(name:string,selector:string)=>{
-      // Setup observations are deliberately not polled. After test-side external
-      // mutations, a user-equivalent page refresh obtains a new real status read.
-      const navigation=events.length;await send('Page.reload');
+    const park=async()=>{
+      const navigation=events.length;
+      await send('Page.navigate',{url:'about:blank'});
+      await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired')&&await evaluate('location.href==="about:blank"'),Boolean,'host page unloaded');
+    };
+    const setupShot=async(name:string,selector:string,beforeSetup?:string)=>{
+      // After test-side external mutations, a user-equivalent page refresh
+      // obtains a new status read rather than waiting for the guest's refresh.
+      const navigation=events.length;
+      if(await evaluate('location.href==="about:blank"'))await send('Page.navigate',{url});else await send('Page.reload');
       // readyState can still describe the OLD document immediately after reload.
       // Wait for this navigation's load event before inspecting the new target.
       await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired'),Boolean,'fresh host page loaded');await openBoard();
-      if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');
-      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');await shot(name);
+      // A newly painted board state can replace the transient More menu. For
+      // the integrity shot, wait for the board warning before opening Setup.
+      if(beforeSetup)await wait(()=>guest('page',`!!document.querySelector(${literal(beforeSetup)})?.checkVisibility()`),Boolean,'expected board state before Setup');
+      await openSetup('page');
+      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');
+      if(await guest('page',`!!document.querySelector(${literal(selector)})?.closest('[data-testid="setup-details"]:not([open])')`))
+        await guestClick('page','[data-testid="setup-details-summary"]');
+      await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})?.checkVisibility()`),Boolean,'visible Setup state');
+      await shot(name);
     };
     const observedChatDirectories=()=>{
       const paths=new Set<string>(),prefix=`${root}/home/.config/openchamber/chats/`;
@@ -211,7 +287,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});await shot('narrow');
       await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
     };
-    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
-      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,holdNextServiceReply,events}};
+    return {install,configure,views,park,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,language,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,openSetup,moreItem,guestContext,guestClick,holdNextServiceReply,setupStatusBarrier,events}};
   }catch(e){await stop();throw e;}
 }

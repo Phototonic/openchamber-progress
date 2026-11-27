@@ -25,14 +25,17 @@ import { cleanupClosed, cleanupEligible, cleanupMatches, cleanupTarget, initialC
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, projectFor, type LiveSnapshot } from './live.ts';
 import { progressItem, progressTargetState, progressTargetRead, type ProgressItem, type ProgressContextState } from './session-context.ts';
-import type { DocumentBody, HealthView, HistoryEntry, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DocumentBody, HealthView, HistoryEntry, PlanActivityState, PlanActivityView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
+import { LIMITS, type PlanActivityRequest } from '../../shared/progress.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, userCancelCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readPlanActivity, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { DeviceViewState } from './device-view-state.ts';
+import { quietCopy, quietDays } from './quiet-plans.ts';
+import { cancelCopy, cancelPin, PlanUserCancel } from './plan-user-cancel.ts';
 import { countFacts, type CountFacts } from './incomplete-counts.ts';
 import { COUNT_CSS, IncompleteCounts } from './incomplete-counts-view.ts';
 import { censusFor, type Census } from './census.ts';
@@ -50,6 +53,7 @@ const APP_EN = {
   loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
   copyFailed: 'Clipboard unavailable. Select and copy the preview text below.',
   sessionFailed: 'That session could not be opened here.',
+  documentLinkFailed: 'Could not open this link.',
   nearbyFocus: 'The row you were on is no longer shown, so focus moved to a nearby row.',
   removedFocus: (tasks: boolean) => `The task you were on was removed, so focus moved to ${tasks ? 'Tasks' : 'its group'}.`,
   focusSuffix: (notice: string, name: string) => `${notice}, so focus moved to ${name}.`,
@@ -58,6 +62,7 @@ const APP_RU: typeof APP_EN = {
   loading: 'Загрузка полного плана…', copying: 'Копирование…', copied: 'Markdown скопирован.',
   copyFailed: 'Буфер обмена недоступен. Выделите и скопируйте текст сводки ниже.',
   sessionFailed: 'Не удалось открыть эту сессию здесь.',
+  documentLinkFailed: 'Не удалось открыть ссылку.',
   nearbyFocus: 'Строка больше не отображается, поэтому фокус перемещён на соседнюю строку.',
   removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
   focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
@@ -66,6 +71,7 @@ const APP_ZH: typeof APP_EN = {
   loading: '正在加载完整计划…', copying: '正在复制…', copied: '已复制 Markdown。',
   copyFailed: '剪贴板不可用，请选择并复制下方预览文本。',
   sessionFailed: '无法在此处打开该会话。',
+  documentLinkFailed: '无法打开此链接。',
   nearbyFocus: '原先所在行已不再显示，焦点已移到附近的行。',
   removedFocus: (tasks) => `原来所在的任务已移除，焦点已移至${tasks ? '任务' : '其分组'}。`,
   focusSuffix: (notice, name) => `${notice}，因此焦点已移至${name}。`,
@@ -119,6 +125,8 @@ export interface ViewContext<U> {
   live: LiveSnapshot;
   env: Env;
   language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
+  quiet: DeviceViewState['quiet'] & { choose: (hide: boolean) => Promise<boolean>; retry: () => void };
+  cancelPlan: (plan: PlanView) => ReturnType<PlanUserCancel['view']> | null;
   ui: U;
   setUi: (patch: Partial<U>) => void;
   /** Background data/presentation changed; preserves open pickers and active presses. */
@@ -132,9 +140,11 @@ export interface ViewContext<U> {
   requestDocument: (plan: PlanView) => void;
   history: (plan: PlanView) => Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null;
   requestHistory: (plan: PlanView) => void;
+  /** Claim only when painting the selected plan's List. No claim retires the visit. */
+  planActivity: (plan: PlanView) => PlanActivityView | null;
   setup: Loadable<SetupView> | null;
   requestSetup: () => void;
-  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string) => Promise<SetupResult>;
+  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string, current?: () => boolean) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
   cleanup: CleanupState;
@@ -234,6 +244,10 @@ export interface ViewSpec<U> {
   reconcilePaint?: (previous: HTMLElement, next: HTMLElement) => HTMLElement;
   /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
   refreshed?: (vc: ViewContext<U>) => void;
+  quietChanged?: (vc: ViewContext<U>) => void;
+  quietSamples?: (vc: ViewContext<U>) => Pick<PlanView, 'lifecycle' | 'reportedAt'>[];
+  /** A surface with held previews can refuse an older projection after observing a newer pin. */
+  cancelCandidate?: (vc: ViewContext<U>) => PlanView | null;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
   beforeUiChange?: (previous: U, next: U) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
@@ -250,6 +264,7 @@ export interface ViewSpec<U> {
   tidyScope?: (vc: ViewContext<U>) => string;
   /** Whether a counted target is still in the view's scope right now; asked before each cleanup request. */
   tidyMember?: (vc: ViewContext<U>, target: CleanupTarget) => boolean;
+  bulkCleanupAvailable?: (vc: ViewContext<U>) => boolean;
   /** `confirmed`: keys whose cleanup receipt succeeded, each with the cleanup generation the receipt returned; given only when a cleanup action ended. */
   forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>, confirmed?: ReadonlyMap<string, number>, returned?: ReadonlySet<string>) => Partial<U>;
   /**
@@ -598,7 +613,36 @@ export function startView<U>(spec: ViewSpec<U>) {
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
-  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => { versions.data++; schedule(); }) : null;
+  let lastQuietHide = true;
+  let quietClock = '';
+  let quietAnnouncer: HTMLElement | undefined;
+  function announceQuiet() {
+    if (!quietAnnouncer) {
+      quietAnnouncer = document.createElement('p');
+      quietAnnouncer.className = 'ap-sr';
+      quietAnnouncer.setAttribute('role', 'status');
+      mount!.after(quietAnnouncer);
+    }
+    const node = quietAnnouncer;
+    node.textContent = '';
+    requestAnimationFrame(() => { if (!disposed && node.isConnected) node.textContent = quietCopy(language.snapshot().language).changed; });
+  }
+  const deviceView = spec.needsYou ? new DeviceViewState(host.storage, () => {
+    if (deviceView!.quiet.hide !== lastQuietHide) {
+      lastQuietHide = deviceView!.quiet.hide;
+      if (ctx) spec.quietChanged?.(context());
+    }
+    versions.data++; schedule();
+  }, spec.surface !== 'status') : null;
+  function refreshQuietClock() {
+    if (!deviceView || !ctx || spec.surface === 'status') return;
+    // Compare the classifications, not the clock itself, on the existing refresh path.
+    const now = Date.now();
+    const dayKey = (p: Pick<PlanView, 'lifecycle' | 'reportedAt'>) => quietDays(p, now);
+    const vc = context(), current = spec.actionPlan?.(vc);
+    const key = JSON.stringify([read?.plans.map(dayKey), current && dayKey(current), spec.quietSamples?.(vc).map(dayKey)]);
+    if (quietClock !== key) { quietClock = key; versions.data++; }
+  }
   const incomplete = new IncompleteCounts(() => bump());
   let paintedRuns: RunsPanel | null = null;
   let paintedCensus: Census | null = null;
@@ -769,14 +813,56 @@ export function startView<U>(spec: ViewSpec<U>) {
   // (A frame document belongs to one host server; a runtime switch reloads the frame.)
   const memoryKey = (key: string) => `${ctx?.connection?.account ?? ''}|${identity}#${key}`;
 
+  type ActivityVisit = { key: string; revision: number; value: PlanActivityState };
+  let activity: ActivityVisit | null = null;
+  let activityClaimed = false;
+  function claimActivity(vc: ViewContext<U>, p: PlanView): PlanActivityView | null {
+    const target = spec.reading?.(vc), r = vc.read;
+    if (!r || target?.plan !== p.key || document.visibilityState === 'hidden') return null;
+    const request = { storeId: r.storeId, binding: r.binding, source: p.sourceId, plan: p.id, cleanupRev: p.cleanup?.revision ?? 0 };
+    const key = JSON.stringify([ctx?.connection?.account ?? '', identity, target.scope, p.key, request.cleanupRev]);
+    if (activity?.key !== key) activity = { key, revision: p.revision, value: { state: 'closed' } };
+    const visit = activity;
+    visit.revision = p.revision;
+    activityClaimed = true;
+    const live = () => !disposed && activity === visit && document.visibilityState !== 'hidden';
+    const repaint = () => { versions.ui++; schedule(); };
+    return { value: visit.value, act: action => {
+      if (!live()) return;
+      const state = visit.value;
+      if (action === 'close') { visit.value = { state: 'closed' }; repaint(); return; }
+      let through: number, pin: number;
+      if (state.state === 'closed') {
+        if (action !== 'open') return;
+        through = pin = visit.revision;
+      } else {
+        pin = state.pin;
+        if (action === 'retry' && state.state === 'failure') through = state.through;
+        else if (action === 'older' && state.state === 'ready' && state.nextThrough !== null) through = state.nextThrough;
+        else if (action === 'newer' && state.state === 'ready' && state.through < pin) through = Math.min(pin, state.through + LIMITS.pageSize);
+        else return;
+      }
+      const pending = visit.value = { state: 'loading', pin, through };
+      const current = () => live() && visit.value === pending;
+      repaint();
+      void readPlanActivity(guardedHost(current), { ...request, through } satisfies PlanActivityRequest).then(result => {
+        if (!current()) return;
+        visit.value = result.ok ? { state: 'ready', pin, through, rows: result.rows, nextThrough: result.nextThrough }
+          : { state: 'failure', pin, through };
+        repaint();
+      });
+    } };
+  }
+
   const bump = () => { versions.data++; schedule(); };
   const retireParts = () => {
+    activity = null;
     cacheGeneration++; detailQueue = Promise.resolve();
     if (preview) preview = freshPreview(preview.binding, preview.mode);
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key); else if (value.refreshing) details.set(key, { ...value, refreshing: undefined });
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
-  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); inbox?.retire('reset'); spec.retire?.('reset'); };
+  const resetCaches = () => { cancellation?.retire(); retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); inbox?.retire('reset'); spec.retire?.('reset'); };
   /**
    * Hide boundary: in-flight detail reads are retired, so a held reply released while hidden
    * issues no continuation page and paints nothing; becoming visible reads them again. Completed
@@ -807,13 +893,12 @@ export function startView<U>(spec: ViewSpec<U>) {
   };
 
   /**
-   * Cleanup support is what the service last said, whichever list is shown: `latest` (the health reply
-   * accepted last) decides both facts, in either direction. `base` is returned itself when they agree.
+   * Plan action support is what the service last said, whichever list is shown.
    */
   const AFTER_CLEANUP_FACTS = new Set(['planChangeDigests', 'planTaskSearch', 'documentCaptureComparison', 'subagentRuns', 'needsYouInbox', 'delegationIntent']);
   const withCleanupFacts = (base: HealthView, latest: HealthView | null): HealthView => {
-    if (!latest || base.planCleanup === latest.planCleanup && base.planCleanupActive === latest.planCleanupActive) return base;
-    const { planCleanup: _support, planCleanupActive: _active, ...rest } = base;
+    if (!latest || base.planCleanup === latest.planCleanup && base.planCleanupActive === latest.planCleanupActive && base.planUserCancel === latest.planUserCancel) return base;
+    const { planCleanup: _support, planCleanupActive: _active, planUserCancel: _cancel, ...rest } = base;
     // Same key order as a parsed reply (adapter.ts), so the signature of this health equals that of the next identical reply.
     const merged: Record<string, unknown> = {};
     let placed = false;
@@ -822,6 +907,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       placed = true;
       if (latest.planCleanup === 1) merged.planCleanup = 1;
       if (latest.planCleanupActive === 1) merged.planCleanupActive = 1;
+      if (latest.planUserCancel === 1) merged.planUserCancel = 1;
     };
     for (const [name, value] of Object.entries(rest)) { if (AFTER_CLEANUP_FACTS.has(name)) place(); merged[name] = value; }
     place();
@@ -874,6 +960,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!cleanupBusy && cleanup.tidy?.result && Object.keys(patch).length) cleanup = initialCleanup();
     const next = { ...ui, ...patch }; spec.beforeUiChange?.(ui, next);
     ui = next; versions.ui++; schedule();
+    cancellation?.sync();
     // Retire synchronously, including while busy: away → back before a paint or
     // receipt must never revive the captured state object used by current().
     if (cleanup.tidy && cleanup.tidy.context !== tidyContext()) cleanup = { ...initialCleanup(), pending: cleanupBusy };
@@ -942,11 +1029,13 @@ export function startView<U>(spec: ViewSpec<U>) {
         }
         // Counts as a successful refresh: a failed detail is retried once, as after a list read.
         listReads++;
+        if (cancellation?.afterRefresh()) versions.data++;
         refreshDetails(generation);
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (setupRefreshDue()) loadSetup();
         failure = null; lastGoodAt = Date.now();
+        refreshQuietClock();
         if (ctx) spec.refreshed?.(context());
         runs?.poll();
         schedule(); plan(REFRESH_MS);
@@ -960,7 +1049,10 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
+    const listHost = guardedHost(() => generation === gate.current);
+    let result = await readList({ serviceRequest: (request) => request.path === '/v1/setup'
+      ? trackSetup(setupReads, setupActions, () => listHost.serviceRequest(request))
+      : listHost.serviceRequest(request) }, scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (item.kind === 'target' && scope && result.ok) {
       const validated = result.read && progressTargetRead(result.read);
@@ -1016,6 +1108,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
+      if (cancellation?.afterRefresh()) versions.data++;
       refreshDetails(generation);
       // A failed waiting-delegation refresh is retried on the same terms.
       if ([...details.values()].some((d) => d.value.state === 'error' || d.tokenRead !== undefined)) versions.data++;
@@ -1026,6 +1119,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (setupRefreshDue()) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
+      refreshQuietClock();
       if (ctx) spec.refreshed?.(context());
       if (authorityChanged && ctx) spec.onContext?.(context());
       // The same visible poll re-reads the eligible sub-agent section; nothing else times it.
@@ -1056,11 +1150,36 @@ export function startView<U>(spec: ViewSpec<U>) {
   const retry = () => { if (timer) clearTimeout(timer); gate.request(); };
 
   const cleanupContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, session?.id ?? null, directory, scopeKey(currentScope())]);
+  const pinContext = (vc: ViewContext<U>) => JSON.stringify([contextGeneration, cleanupContext(), vc.quiet.hide, spec.reading?.(vc)?.scope]);
+  const cancellation = spec.surface === 'status' ? null : new PlanUserCancel({
+    pin: () => {
+      if (disposed || !ctx || failure || document.visibilityState === 'hidden' || cleanupBusy) return null;
+      const vc = context();
+      const candidate = spec.cancelCandidate ? spec.cancelCandidate(vc) : spec.actionPlan?.(vc) ?? null;
+      return cancelPin(pinContext(vc), vc.health, vc.read, candidate);
+    },
+    send: (request, structuralRev) => userCancelCall(host, request, structuralRev),
+    operation: () => crypto.randomUUID(),
+    refreshSerial: () => listReads,
+    changed: focus => {
+      if (disposed) return;
+      if (focus) askFocus(focus === 'keep' ? 'plan-cancel-keep' : 'more-trigger');
+      versions.ui++; schedule();
+    },
+    settled: result => {
+      void host.toast({ kind: result === 'success' ? 'success' : 'error', message: cancelCopy(language.snapshot().language)[result] }).catch(() => {});
+      if (result !== 'success') return;
+      gate.retire(); resetCaches(); clearReading();
+      read = null; readScope = ''; readSig = ''; failure = null;
+      versions.data++; schedule(); retry();
+    },
+  });
   // Board bulk actions follow its own filters, not host-session notifications.
   const tidyContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface === 'page' ? null : session?.id ?? null, scopeKey(currentScope()), spec.tidyScope?.(context())]);
   /** A captured target as a plan to re-validate: identity, revision and the placement facts the per-target check needs. */
   const remainingPlan = (t: CleanupTarget, vc: ViewContext<U>): CleanupPlan => ({
     key: t.key, title: t.title, lifecycle: t.lifecycle, sourceId: t.request.source, id: t.request.plan, revision: t.request.rev,
+    ...(t.reportedAt === undefined ? {} : { reportedAt: t.reportedAt }),
     ...(t.where ? { ownerSessionId: t.where.owner, directory: t.where.directory } : {}),
     ...(spec.tidyArchived?.(vc) ? { cleanup: { state: 'archived' as const, revision: t.request.cleanupRev } } : {}),
   });
@@ -1070,6 +1189,7 @@ export function startView<U>(spec: ViewSpec<U>) {
    */
   function requestTidy(remaining?: CleanupTarget[]) {
     if (cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
+    if (spec.bulkCleanupAvailable?.(context()) === false) return;
     cleanup.tidy?.scan?.cancel();
     // A shown result no longer pins the scope: this request is bound to the scope displayed now.
     if (cleanup.tidy?.result) cleanup = initialCleanup();
@@ -1090,6 +1210,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   function requestSelection(action: 'archive' | 'restore' | 'delete', selection: SelectionRequest) {
     if (spec.surface !== 'page' || cleanupBusy || failure || !read || readScope !== scopeKey(currentScope()) || health?.planCleanup !== 1) return;
     const vc = context();
+    if (spec.bulkCleanupAvailable?.(vc) === false) return;
     if (selection.scope !== undefined && spec.selectionScope?.(vc) !== selection.scope) return;
     cleanup.tidy?.scan?.cancel();
     if (cleanup.tidy?.result) cleanup = initialCleanup();
@@ -1353,21 +1474,30 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   let setupSerial = 0;
   let setupNeedsRefresh = false;
+  const setupReads = new Set<Promise<unknown>>();
+  const setupActions = new Set<Promise<unknown>>();
+  // Only this frame's requests participate. Wait once for already pending work; the host
+  // bounds each request. The service still decides whether its worker is available.
+  function trackSetup<T>(own: Set<Promise<unknown>>, other: Set<Promise<unknown>>, send: () => Promise<T>) {
+    const pending = other.size ? Promise.allSettled(other).then(send) : send();
+    own.add(pending);
+    return pending.finally(() => { own.delete(pending); });
+  }
   // Reuse the visible list/freshness cadence. Managed activation is observational
   // (activation remains unknown), so legacy reload-required alone is insufficient.
   function setupRefreshDue() {
-    return !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
+    return setupNeedsRefresh || !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
       setup.value.delivery?.kind === 'managed' && setup.value.delivery.configuration === 'configured');
   }
   function loadSetup() {
     if (disposed) return;
-    if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
+    if (document.visibilityState === 'hidden' || setupActions.size) { setupNeedsRefresh=true; return; }
     setupNeedsRefresh=false;
     const serial = ++setupSerial;
     const current = cleanupContext();
     const generation = contextGeneration;
     setup = setup && setup.state === 'ready' ? setup : { state: 'loading' };
-    void setupCall(host, null).then((r) => {
+    void trackSetup(setupReads, setupActions, () => setupCall(host, null)).then((r) => {
       if (disposed || serial !== setupSerial || current !== cleanupContext() || generation !== contextGeneration) return;
       if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
       const next: Loadable<SetupView> = r.ok ? { state: 'ready', value: r.setup } : { state: 'error', failure: r.failure ?? { kind: 'unavailable', code: r.code, message: r.code } };
@@ -1416,11 +1546,24 @@ export function startView<U>(spec: ViewSpec<U>) {
       view: { fresh: !failure, captureEnabled: read?.captureEnabled ?? false },
       // Components offer this only for sessions the host currently lists and the verified bound source.
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
+      openDocumentUrl: (url) => { void host.openUrl(url).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].documentLinkFailed }).catch(() => {})); },
     };
-    return {
+    const view: ViewContext<U> = {
       host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,
       get countFacts() { return countFacts(this.read, this.inbox, paintedRuns, paintedCensus); },
       failure, lastGoodAt, live: live.snapshot, env, ui,
+      quiet: { ...(deviceView?.quiet ?? { hide: true, supported: false, error: null, saving: false }),
+        choose: async (hide) => {
+          if (disposed || document.visibilityState === 'hidden' || !deviceView || hide === deviceView.quiet.hide) return false;
+          const saved = await deviceView.setQuiet(hide);
+          if (saved && !disposed) announceQuiet();
+          return saved;
+        },
+        retry: () => { if (ctx) void deviceView?.refresh(ctx.features?.deviceStorage === true); } },
+      cancelPlan: plan => {
+        const pin = cancellation && cancelPin(pinContext(view), view.health, view.read, plan);
+        return pin && cancellation ? cancellation.view(pin) : null;
+      },
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1470,18 +1613,23 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         bump();
       },
+      planActivity: (p) => claimActivity(view, p),
       setup, requestSetup: loadSetup,
-      runSetup: async (action, targets, confirmed, expected) => {
+      runSetup: async (action, targets, confirmed, expected, currentVisit = () => true) => {
         ++setupSerial;
         const current = cleanupContext();
         const generation = contextGeneration;
         // Either negotiated step family also provides the bodyless, freshly validated capture controls.
         const delivery = setup?.state === 'ready' ? setup.value.delivery : undefined;
         const capability = delivery?.managedMigrationSteps === 1 || delivery?.managedFreshSteps === 1 ? 1 : undefined;
-        const r = await setupCall(host, action, targets, confirmed, expected, capability);
-        if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
+        const active = () => !disposed && current === cleanupContext() && generation === contextGeneration && document.visibilityState !== 'hidden';
+        const retired = { ok: false, code: 'context-changed' } as const;
+        const r = await trackSetup(setupActions, setupReads, () => active() && currentVisit()
+          ? setupCall(host, action, targets, confirmed, expected, capability)
+          : Promise.resolve(retired));
+        if (!active() || r === retired) {
           if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
-          return {ok:false,code:'context-changed'};
+          return retired;
         }
         if (r.ok && action !== 'inspect' && action !== 'managed-inspect') { ++setupSerial; setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
         // A refused action may mean the installation changed: re-read setup once, so the update
@@ -1536,7 +1684,15 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         return digests.claim({ identity: digestIdentity(p, read), plan: p, capable: health?.planChangeDigests === 1, fresh: !failure });
       },
-      service: (current) => guardedHost(current),
+      service: (current) => {
+        const generation = contextGeneration, owner = cleanupContext();
+        const regular = guardedHost(current);
+        const setupStep = guardedHost(() => current() && generation === contextGeneration &&
+          owner === cleanupContext() && document.visibilityState !== 'hidden');
+        return { serviceRequest: request => request.path === '/v1/setup/managed-step'
+          ? trackSetup(setupActions, setupReads, () => setupStep.serviceRequest(request))
+          : regular.serviceRequest(request) };
+      },
       detailPlan: (p) => { const c = details.get(p.key)?.result; return c?.ok && c.plan.key === p.key ? c.plan : null; },
       detailResult: (p) => {
         const c = details.get(p.key), generation = cacheGeneration;
@@ -1557,12 +1713,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       inbox: inbox && read && identity && readScope === scopeKey(currentScope()) ? inbox.panel() : null,
     };
+    return view;
   }
 
   // A detail refresh may paint a loading gap before rebuilding the same task preview.
   let taskSelection: { reading: Reading | null; item: string | undefined; generation: string | undefined; value: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'; top: number } | null = null;
   function render() {
     if (!ctx || disposed) return;
+    cancellation?.sync();
     const key = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
     if (key === paintedKey) return;
     // Replacing a pressed control suppresses its native click. Defer only background
@@ -1571,10 +1729,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A background change must not close a picker the user has open; it paints once the
     // popup closes, including same-session metadata. Navigation and authority/UI
     // changes paint immediately; versions.ctx also includes non-navigation updates.
-    // Reading-owned live popups reconstruct their controls across paints. Unlike an
+    // View-owned live popups (More and Filters) update their controls across paints. Unlike an
     // independent SDK picker, they must not stall freshness/capture/cleanup updates,
     // including while one of their nested SDK selects is expanded.
-    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && [...mount!.querySelectorAll('[aria-haspopup][aria-expanded="true"]')].some(popup => !popup.closest('[data-live-popup]'))) {
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && [...mount!.querySelectorAll('[aria-haspopup][aria-expanded="true"]')].some(popup => !popup.closest('[data-live-popup]') && !popup.closest('.ap-more'))) {
       setTimeout(schedule, 300);
       return;
     }
@@ -1643,6 +1801,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
       vc.reading = readingView();
     }
+    // Only take follow-ups whose state is reflected in this paint. A reveal requested
+    // by afterPaint can clear filters, but its callback must wait for the next List.
+    const readingFollowUps = reading?.then.splice(0) ?? [];
 
     let root = el('main', 'ap');
     root.dataset.surface = spec.surface;
@@ -1651,7 +1812,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     digests?.beginPaint(); runs?.beginPaint();
     beginInfoPaint(root);
     paintedRuns = null; paintedCensus = null; paintedRunScope = '';
+    activityClaimed = false;
     spec.paint(root, vc);
+    if (!activityClaimed) activity = null;
     if (spec.surface !== 'status' && !root.querySelector('.ap-surface-panel')) {
       incomplete.paint(root, {
         facts: vc.countFacts, store: vc.read?.storeId ?? '',
@@ -1799,8 +1962,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (keep) retainParts(keep);
     spec.afterPaint?.(root, vc);
     paintedReading = reading;
-    // One-shot follow-ups of this reading's own state change (e.g. reveal a task once filters clear).
-    for (const then of reading?.then.splice(0) ?? []) then(root);
+    for (const then of readingFollowUps) then(root);
     planLabels();
     paintedLanguage = language.snapshot().language;
     paintedLanguageSignature = languageSignature;
@@ -2007,6 +2169,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       retireSetupSteps();
       setupNeedsRefresh = true;
       language.hidden();
+      cancellation?.retire();
+      if (activity) { activity = null; versions.ui++; schedule(); }
       html.dataset.apHidden = '';
       digests?.hidden();
       runs?.hidden();
@@ -2022,6 +2186,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;
+    activity = null;
+    cancellation?.retire();
     retireSetupSteps();
     language.dispose();
     digests?.dispose();

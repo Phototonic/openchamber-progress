@@ -9,15 +9,9 @@ import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts
 
 export async function reportingSessionsJourney(o:{root:string;binding:Binding;store:Store;client:ReturnType<typeof OpenCode.make>;location:{directory:string};browser:Awaited<ReturnType<typeof managedBrowser>>;api:(method:string,route:string,body?:unknown)=>Promise<any>}) {
   const {root,binding,store,client,location,browser,api}=o;
-  const {wait,click,text,key,send,evaluate,openRail,guestClick}=browser.nativeControls;
+  const {wait,click,text,key,send,evaluate,openRail,guestClick,moreItem}=browser.nativeControls;
   const checks:string[]=[],check=(name:string,value:boolean)=>{assert.ok(value,name);checks.push(name);fs.writeFileSync(`${root}/journey-checks.json`,JSON.stringify(checks));};
-  const language=async(value:'en'|'ru')=>{
-    await guestClick('panel','[data-testid="interface-language"] button');
-    await guestClick('panel',`[role="option"][id$="-${value}"]`,async()=>{
-      if(await browser.guest('panel','document.querySelector("[data-testid=interface-language] button")?.getAttribute("aria-expanded")==="false"'))await guestClick('panel','[data-testid="interface-language"] button');
-    });
-    await wait(()=>browser.guest('panel','document.documentElement.lang'),v=>v===value,'rendered interface language');
-  };
+  const language=(value:'en'|'ru')=>browser.language('panel',value);
   const jobs:Record<string,unknown>={},seen=new Set<string>();let generation=0;
   const create=(title:string)=>client.session.create({location,agent:'build',title,model:{providerID:'managed-fixture',id:'script'},permissions:[{action:'*',resource:'*',effect:'allow'}]});
   const a=await create('Reporting coordinator'),b=await create('Other chat'),empty=await create('No reported plan');
@@ -52,13 +46,15 @@ export async function reportingSessionsJourney(o:{root:string;binding:Binding;st
   await wait(reading,v=>v?.source===binding.source.id&&v.rev===String(rev()),'current source-qualified rail');await browser.shot('rail-working');
   await guestClick('panel','[data-testid="item-task-a"] summary');
   await wait(()=>browser.guest('panel','!!document.querySelector("[data-report=direct]")'),Boolean,'rendered direct child attribution');
-  await guestClick('panel','[data-testid="sessions-more"]');
-  await wait(()=>browser.guest('panel','!!document.querySelector("[data-testid=session-host-agent]")&&!!document.querySelector("[data-testid=session-host-link]")'),Boolean,'host-labelled optional metadata');
-  check('literal-host-link',!!await browser.guest('panel','[...document.querySelectorAll("[data-testid=session-host-link]")].some(e=>e.textContent.includes("<b>Synthetic linked issue</b>")&&!e.querySelector("b,a"))'));
-  const headings=()=>browser.guest<string[]>('panel','[...document.querySelectorAll("[data-testid=plan-panel-sessions] h2,[data-testid=plan-panel-sessions] h3")].map(e=>e.textContent)');
+  await moreItem('panel','sessions');
+  const sessions='[data-testid="surface-panel-sessions"]';
+  const sessionNodes=(selector:string)=>literal(`${sessions} ${selector}`);
+  await wait(()=>browser.guest('panel',`!!document.querySelector(${sessionNodes('[data-testid=session-host-agent]')})?.checkVisibility()&&!!document.querySelector(${sessionNodes('[data-testid=session-host-link]')})?.checkVisibility()`),Boolean,'host-labelled optional metadata');
+  check('literal-host-link',!!await browser.guest('panel',`[...document.querySelectorAll(${sessionNodes('[data-testid=session-host-link]')})].some(e=>e.textContent.includes("<b>Synthetic linked issue</b>")&&!e.querySelector("b,a"))`));
+  const headings=()=>browser.guest<string[]>('panel',`[...document.querySelectorAll(${literal(`${sessions} :is(h2,h3)`)})].map(e=>e.textContent)`);
   assert.deepEqual(await headings(),['Sessions']);await browser.shot('sessions-heading');
   await language('ru');assert.deepEqual(await headings(),['Сессии']);await browser.shot('sessions-heading-ru');await language('en');
-  await guestClick('panel','[data-testid="plan-panel-sessions-close"] button');
+  await guestClick('panel',`${sessions} [data-testid="surface-panel-back"] button`);
   check('working-reports-direct',detail().contributions.data.filter(c=>c.itemIds.length).every(c=>c.mode==='direct'&&children.includes(c.reporterSessionId)&&c.reporterSessionId===c.attributedSessionId));
   const stale=rev();
   for(const [i,child] of children.entries()){
@@ -72,14 +68,22 @@ export async function reportingSessionsJourney(o:{root:string;binding:Binding;st
   assert.equal((await report({op:'change',plan,oid:'stale-child',rev:stale,changes:[{id:'task-a',status:'working'}]},children[0])).error,'conflict');
   check('final-statuses',JSON.stringify(detail().items.data.map(t=>t.status))===JSON.stringify(['done','blocked','pending']));
   await wait(reading,v=>v?.rev===String(rev()),'final rail revision');await browser.shot('rail-final');
-  await guestClick('panel','[data-testid="plan-view-map"]');
+  await guestClick('panel','[data-testid="plan-view-map"] button');
   await guestClick('panel','[data-testid="map-card-task-b"]');
-  await wait(()=>browser.guest('panel','!!document.querySelector("[data-testid=map-attribution-reports]")'),Boolean,'map direct reports');
+  const inspector='[data-testid="map-inspector"][data-selected="task-b"]';
+  await wait(()=>browser.guest('panel',`!!document.querySelector(${literal(inspector)})?.checkVisibility()`),Boolean,'task-b map inspector selected');
   // Keep the stacked rail inspector inside the actual capture, not clipped below the map.
   await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1800,deviceScaleFactor:1,mobile:false});
-  await wait(()=>browser.guest('panel','(()=>{const e=document.querySelector("[data-testid=map-attribution-reports]"),r=e?.getBoundingClientRect();return !!r&&r.top>=0&&r.bottom<=innerHeight})()'),Boolean,'map attribution fits the visible guest');
-  await browser.guest('panel','new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await browser.shot('map-attribution');await send('Emulation.clearDeviceMetricsOverride');
-  await guestClick('panel','[data-testid="plan-view-list"]');
+  await wait(()=>browser.guest('panel',`(()=>{const r=document.querySelector(${literal(inspector)})?.getBoundingClientRect();return !!r&&r.top>=0&&r.bottom<=innerHeight})()`),Boolean,'map inspector fits the visible guest');
+  await browser.guest('panel','new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await browser.shot('map-task');await send('Emulation.clearDeviceMetricsOverride');
+  await moreItem('panel','troubleshooting');
+  const troubleshooting='[data-testid="surface-panel-troubleshooting"]';
+  await guestClick('panel',`${troubleshooting} [data-testid="advanced-details"] > summary`);
+  // The map now keeps only live activity; the full recorded attribution is in this disclosure.
+  await wait(()=>browser.guest('panel',`[...document.querySelectorAll(${literal(`${troubleshooting} [data-testid="advanced-report-authorship"] dd`)})].some(e=>e.checkVisibility()&&e.textContent.includes(' · direct · ')&&e.textContent.includes(' · task-b · '))`),Boolean,'visible task-b direct report provenance');
+  await browser.shot('report-authorship');
+  await guestClick('panel',`${troubleshooting} [data-testid="surface-panel-back"] button`);
+  await guestClick('panel','[data-testid="plan-view-list"] button');
   const actions=async(title:string,action:string)=>{
     fs.writeFileSync(`${root}/journey-stage.json`,JSON.stringify({phase:'session-menu',title,action}));
     const row=`[...document.querySelectorAll('[data-session-row-box]')].find(e=>e.checkVisibility()&&e.querySelector('[data-session-row-main]')?.textContent.includes(${literal(title)}))`;
@@ -136,12 +140,12 @@ export async function reportingSessionsJourney(o:{root:string;binding:Binding;st
   }
   check('existing-background-actions',true);
   await actions('Reporting coordinator','Open Agent Progress');
-  await guestClick('panel','[data-testid="plan-view-map"]');
+  await guestClick('panel','[data-testid="plan-view-map"] button');
   check('map-control-focus',!!await browser.guest('panel','document.activeElement?.closest("[data-testid=plan-view-map]")!==null'));
   await key('Tab');check('tab-enters-map',!!await browser.guest('panel','document.activeElement!==document.body'));
   await key('Enter');await key('Escape');
   check('map-keyboard-enter-escape',true);
-  await guestClick('panel','[data-testid="plan-view-list"]');
+  await guestClick('panel','[data-testid="plan-view-list"] button');
   await language('ru');await browser.shot('session-action-ru');await language('en');check('russian-rendered',true);
   const background=()=>browser.guest('panel','getComputedStyle(document.body).backgroundColor');const light=await background();
   await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'},{name:'prefers-color-scheme',value:'dark'}]});

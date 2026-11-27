@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PLANS, startPreviewFixture, type Fault } from './preview-summaries-fixture.ts';
-import { progressInput } from './progress-qa.ts';
+import { boardInput } from './board-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -115,8 +115,28 @@ try {
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames(); };
   const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
-  const progressUi = progressInput({ guest, wait, click, key });
-  const scope = (s: string) => (s === 'page' ? '[data-testid="plan-detail"] ' : 'article.ap-plan ');
+  const more = '[data-testid="more-trigger"]';
+  const item = (id: string) => `[role="menuitem"][data-menu-id="${id}"]`;
+  const activeItem = (id: string) => `d.activeElement?.matches('${item(id)}')`;
+  const progressUi = {
+    async action(s: string, id: string) {
+      await wait(s, `!!d.querySelector('${more}')`);
+      await click(s, more);
+      await wait(s, `!!d.querySelector('${item(id)}')?.getClientRects().length`, `More: ${id}`);
+      await click(s, item(id));
+      await wait(s, `!d.querySelector('[role="menu"]:not([hidden])')`);
+    },
+    async list(s: string, identity?: { id: string; source: string }) {
+      if (identity) {
+        const { id, source } = identity;
+        await wait(s, `d.querySelector('[data-testid="plan-${id}"][data-source="${source}"]')||JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]').slice(5,7).join('/')==='${source}/${id}'`);
+      }
+      const list = '[data-testid="plan-view-list"] button';
+      await wait(s, `d.querySelector('${list}')`);
+      await click(s, list);
+    },
+  };
+  const scope = (s: string) => (s === 'page' ? '[data-testid="plan-detail"] ' : '');
   const hook = (s: string, id: string) => `${scope(s)}[data-testid="${id}"]`;
   const has = (s: string, id: string) => `!!d.querySelector('${hook(s, id)}')`;
   const text = (s: string) => guest<string | null>(s, `return d.querySelector('${hook(s, 'summary-text')}')?.value??null`);
@@ -151,7 +171,13 @@ try {
   /** Bounded wait until no forwarded service request is still awaiting its reply. */
   const flightDone = async () => { if (!(await evaluate<boolean>(`new Promise(r=>{const end=Date.now()+5000;const t=()=>qa.flight===0?r(true):Date.now()>end?r(false):setTimeout(t,40);t()})`))) throw new Error('service requests did not quiesce'); };
   const row = (id: string) => `[data-testid="plan-row-${id}"][data-source="source-fixture"]`;
-  const selectBoard = async (id: string) => { await click('page', row(id)); await progressUi.list('page',{id,source:'source-fixture'}); await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="plan-${id}"]')&&${has('page', 'plan-actions')}`, `board selects ${id}`); };
+  const board = boardInput({ guest, wait, click });
+  const selectBoard = async (id: string) => {
+    await board.revealPlan(row(id));
+    await click('page', row(id));
+    await progressUi.list('page', { id, source: 'source-fixture' });
+    await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="plan-${id}"]')&&${has('page', 'plan-actions')}`, `board selects ${id}`);
+  };
 
   /** Open a preview with a real click, assert exact formatter text and copy it with a real click. */
   async function openAndCopy(s: string, mode: 'progress' | 'handoff', plan: string, label: string) {
@@ -232,7 +258,7 @@ try {
   await show('panel', 280);
   await wait('panel', `${has('panel', 'plan-actions')}&&getComputedStyle(d.body).backgroundColor!=='rgb(250, 250, 250)'`, 'dark rail');
   await quiet('S3:keyboard', async () => {
-    const active = () => guest<string>('panel', `return d.activeElement?.closest('[data-testid]')?.dataset.testid??d.activeElement?.tagName??''`);
+    const active = () => guest<string>('panel', `return d.activeElement?.matches('${more}')?'plan-actions':d.activeElement?.closest('[data-testid]')?.dataset.testid??d.activeElement?.tagName??''`);
     await guest('panel', `w.focus();d.activeElement?.blur?.();d.querySelector('article.ap-plan').scrollIntoView({block:'start'});return true`);
     let steps = 0;
     while ((await active()) !== 'plan-actions' && steps < 40) { await key('Tab'); steps++; }
@@ -240,11 +266,11 @@ try {
     const ring = () => guest<boolean>('panel', `const n=d.activeElement,cs=getComputedStyle(n);return n.matches(':focus-visible')&&(cs.boxShadow!=='none'||cs.outlineStyle!=='none')`);
     check('S3:focus-visible-progress', await ring());
     await key('Enter');
-    await wait('panel', `d.querySelector('[role="menu"]')`, 'Plan actions opened by Enter');
+    await wait('panel', `d.querySelector('[role="menu"]:not([hidden])')`, 'More opened by Enter');
     await key('Home');
-    await wait('panel', `d.activeElement?.getAttribute('role')==='menu'&&d.activeElement.getAttribute('aria-activedescendant')?.endsWith('-summary-progress')`);
+    await wait('panel', activeItem('summary-progress'));
     await key('ArrowDown');
-    check('S3:arrow-reaches-handoff', await guest('panel', `return d.activeElement?.getAttribute('role')==='menu'&&d.activeElement.getAttribute('aria-activedescendant')?.endsWith('-summary-handoff')`));
+    check('S3:arrow-reaches-handoff', await guest('panel', `return ${activeItem('summary-handoff')}`));
     await key('Home');
     await key('Enter');
     const expected = (await fx.expected('P-summary', 'progress'))!;
@@ -270,7 +296,7 @@ try {
     await wait('panel', `!${has('panel', 'summary-preview')}&&!!d.activeElement?.closest('[data-testid="plan-actions"]')`, 'Close returns focus');
     results.push({ id: 'S3:close-returns-focus', pass: true, facts: ['Enter on Close returns focus to Plan actions'] });
     await key(' ');
-    await wait('panel', `d.querySelector('[role="menu"]')`);
+    await wait('panel', `d.querySelector('[role="menu"]:not([hidden])')`);
     await key('Home'); await key('ArrowDown'); await key(' ');
     const handoffText = (await fx.expected('P-summary', 'handoff'))!;
     await wait('panel', showsText('panel', handoffText), 'Space opens handoff preview');
@@ -446,6 +472,7 @@ try {
   await progressUi.action('page', 'cleanup-archive');
   await wait('page', `d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-archive')}')`, 'archived via UI');
   await wait('page', `!d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-archive"]')&&!d.querySelector('[data-testid="summary-preview"]')`, 'removed selection retires preview');
+  await board.openFilters();
   await click('page', '[data-testid="cleanup-archived"] button');
   await wait('page', `d.querySelector('${row('P-archive')}')`, 'archived list');
   await selectBoard('P-archive');
@@ -454,6 +481,7 @@ try {
   await shot('page', 'archived-handoff', '[data-testid="plan-detail"]');
   await progressUi.action('page', 'cleanup-restore');
   await wait('page', `!d.querySelector('${row('P-archive')}')`, 'restored out of archived list');
+  await board.openFilters();
   await click('page', '[data-testid="cleanup-visible"] button');
   await wait('page', `d.querySelector('${row('P-archive')}')`);
   await selectBoard('P-archive');

@@ -4,6 +4,14 @@ import type { InboxRowView } from './model.ts';
 export type ViewSurface = 'panel' | 'page';
 export const HIDDEN_ITEM_LIMIT = 200;
 export const DEVICE_VIEW_KEY = 'progress-view.v1';
+export const QUIET_VIEW_RECORD = 'quiet-plans.v1';
+const DEVICE = { scope: 'device' } as const;
+function parseQuiet(value: LanguageStorageValue | undefined): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join() !== 'hide,v' || value.v !== 1 || typeof value.hide !== 'boolean') throw Error('read');
+  return value.hide;
+}
 export interface DeviceViewRecord {
   v: 1;
   hidden: string[];
@@ -41,10 +49,15 @@ export class DeviceViewState {
   private busy = false;
   private idle: Promise<void> = Promise.resolve();
   private epoch = 0;
+  private quietHide = true;
+  private quietError: 'read' | 'write' | null = null;
+  private quietSaving = false;
+  get quiet() { return { hide: this.quietHide, supported: this.supported, error: this.quietError, saving: this.quietSaving }; }
   error: 'read' | 'write' | null = null;
   private storage: LanguageStorage;
   private changed: () => void;
-  constructor(storage: LanguageStorage, changed: () => void) { this.storage = storage; this.changed = changed; }
+  private quietEnabled: boolean;
+  constructor(storage: LanguageStorage, changed: () => void, quietEnabled = true) { this.storage = storage; this.changed = changed; this.quietEnabled = quietEnabled; }
   get canHide() { return this.supported && this.loaded && this.error !== 'read'; }
   get pending() { return this.busy; }
   hidden(key: string) { return this.record.hidden.includes(key); }
@@ -53,19 +66,48 @@ export class DeviceViewState {
   expanded(surface: ViewSurface) { return this.record.expanded[surface] ?? surface === 'page'; }
   dismissed(surface: ViewSurface, identity: string) { return this.record.dismissed[surface] === identity; }
   async refresh(supported: boolean) {
-    const before = JSON.stringify([this.record, this.loaded, this.error, this.supported]);
-    if (this.supported !== supported) { this.epoch++; this.supported = supported; this.loaded = false; this.record = empty(); this.error = null; }
-    if (!supported || this.busy) return;
+    const snapshot = () => JSON.stringify([this.record, this.loaded, this.error, this.quiet]);
+    const before = snapshot();
+    if (this.supported !== supported) {
+      this.epoch++; this.supported = supported; this.loaded = false; this.record = empty(); this.error = null;
+      this.quietHide = true; this.quietError = null;
+    }
+    if (!supported || this.busy) { if (snapshot() !== before) this.changed(); return; }
     const epoch = this.epoch;
     this.busy = true;
     let release!: () => void;
     this.idle = new Promise<void>(resolve => { release = resolve; });
     try {
-      const next = parse(await this.storage.get(DEVICE_VIEW_KEY, { scope: 'device' }));
-      if (epoch !== this.epoch) return;
-      this.record = next; this.loaded = true; this.error = null;
-    } catch { if (epoch === this.epoch) { this.record = empty(); this.error = 'read'; this.loaded = false; } }
-    finally { this.busy = false; release(); if (JSON.stringify([this.record, this.loaded, this.error, this.supported]) !== before) this.changed(); }
+      await Promise.all([
+        Promise.resolve().then(() => this.storage.get(DEVICE_VIEW_KEY, DEVICE)).then(value => {
+          const next = parse(value);
+          if (epoch === this.epoch) { this.record = next; this.loaded = true; this.error = null; }
+        }).catch(() => { if (epoch === this.epoch) { this.record = empty(); this.error = 'read'; this.loaded = false; } }),
+        this.quietEnabled ? Promise.resolve().then(() => this.storage.get(QUIET_VIEW_RECORD, DEVICE)).then(value => {
+          const next = parseQuiet(value);
+          if (epoch === this.epoch) { this.quietHide = next; this.quietError = null; }
+        }).catch(() => { if (epoch === this.epoch) { this.quietHide = true; this.quietError = 'read'; } }) : undefined,
+      ]);
+    } finally { this.busy = false; release(); if (snapshot() !== before) this.changed(); }
+  }
+  async setQuiet(hide: boolean): Promise<boolean> {
+    if (!this.quietEnabled || this.quietSaving) return false;
+    if (!this.supported) { this.quietHide = hide; this.changed(); return true; }
+    const epoch = this.epoch;
+    this.quietSaving = true; this.changed();
+    try {
+      while (this.busy) await this.idle;
+      if (epoch !== this.epoch) return false;
+      this.busy = true;
+      let release!: () => void;
+      this.idle = new Promise<void>(resolve => { release = resolve; });
+      try {
+        await this.storage.set(QUIET_VIEW_RECORD, { v: 1, hide }, DEVICE);
+        if (epoch !== this.epoch) return false;
+        this.quietHide = hide; this.quietError = null; return true;
+      } catch { if (epoch === this.epoch) this.quietError = 'write'; return false; }
+      finally { this.busy = false; release(); }
+    } finally { this.quietSaving = false; this.changed(); }
   }
   private async update(edit: (record: DeviceViewRecord) => void): Promise<boolean> {
     while (this.busy) await this.idle;

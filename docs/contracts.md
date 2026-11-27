@@ -1,5 +1,37 @@
 # Production contract v2
 
+## Quiet plans and user cancellation (additive revision 1)
+
+Quiet labels and hiding use only the active plan's valid stored `reportedAt`:
+seven elapsed 24-hour days by the viewer clock, rounded down for display.
+Invalid and future times never hide a plan. Silence is not a lifecycle outcome
+or an observation about running work. Filtering is rail/board presentation only.
+
+Ready `health.planUserCancel:1` advertises authenticated, query-free
+`POST /v1/plan/cancel`. Use strict UTF-8 JSON (16,384 bytes maximum), exactly
+`{storeId,binding:{sourceId,verified},source,plan,rev,cleanupRev,oid,confirmed:true}`,
+with standard identifiers and safe integers (`rev >= 1`, `cleanupRev >= 0`).
+Unknown fields, including actors, task changes and outcomes, are refused.
+Protocol and schema remain 2; agent inputs and session identity are unchanged.
+
+The authenticated host proxy may cancel one visible active plan in its current
+verified bound source, only with recording enabled and matching review pins.
+Success is `{storeId,sourceBinding,source,plan,oid,rev,structuralRev,lifecycle:"cancelled",actor:"user",reportedAt}`.
+It advances one ordinary revision at service time, preserving tasks, coordinator,
+structure and captured history. The server authors `{kind:"user",action:"cancel"}`
+in the revision, with no session contribution. History may project `actor:"user"`;
+this denotes the authorized action, not a named person. Reopening still requires
+the coordinator's explicit `revise` or staged `commit` with `reopen:true`.
+
+Errors have fixed codes only: `invalid` 400, `unauthorized` 401, `not-found` 404,
+`method-not-allowed` 405, `request-too-large` 413, `binding`, `conflict`, `closed`,
+`disabled`, `source-unverified` or `operation-reused` 409, and `busy`, `corrupt`,
+`schema` or `storage` 503.
+Replies are JSON, no-store and nosniff. Identical admitted replays return the
+original receipt, even after reopening; they never cancel again. Changed inputs
+and agent/user operation-ID reuse refuse. Authority and archive/delete fences
+apply before replay. Older services must not receive cancellation requests.
+
 ## Reporting health observations
 
 Managed delivery, last loaded-byte observation, stored capture control, selected
@@ -76,6 +108,26 @@ Changes to shared contract files (`shared/progress.ts`, `docs/contracts.md`) req
 an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
+
+## Plan activity (additive revision 1)
+
+Authenticated `GET /v1/history?source=S&plan=P&through=N` returns one
+newest-first window of up to 20 consecutive revisions, including `N`. `N` is
+a positive safe integer; this form does not accept `cursor` or `limit`.
+`PlanActivityWindow` identifies protocol/schema 2, activity revision 1, store,
+source binding, source, plan and cleanup generation. `nextThrough` is the
+revision just before the oldest row, or null at revision one. Rows carry the
+recorded time and exactly one of: report attribution and recorded task IDs,
+fixed user cancellation, or unavailable report details. A report with no
+task IDs is distinct from unavailable details.
+
+The service refuses invalid or future boundaries (400), missing plans or
+unsupported query forms (404), gaps and invalid stored records (503), and
+replies over the service's response limit (413). The guest treats those
+failures, mismatched identity and older services' unknown-query rejection
+as unavailable in Activity only, without inferring deletion or switching to
+another read. Without `through`, History and its paging, review digest and
+checkpoints keep their existing contract. Older guests make no activity read.
 
 ## Plan composer handoff revision 1
 
@@ -640,8 +692,16 @@ incomplete adds no cleared line, and an incomplete read with no refusal still
 delivers the existing omission text, which is not a refusal and does not open the
 cleared-line gate. It counts as the last refusal delivered, so the same refusal
 returning is delivered again, and it is delivered again when that refusal is still
-in the request with its note and the cleared line's carrier is not. A capsule that becomes empty gets no cleared line: the capsule
-already says to read current state first.
+in the request with its note and the cleared line's carrier is not. The exception
+to unchanged replay is a successful, complete read for the same verified child,
+store and source that finds no eligible assignments and omits none. The companion
+retires all remembered child capsules, including those on absent carriers. If any
+would have been replayed, it replaces the most recently delivered one still present
+with `Agent Progress note: the earlier assignment note is no longer current.`
+Other notes, the original messages, the stored conversation and past requests are
+unchanged. A skipped, failed, incomplete or abridged lookup does not retire a
+capsule. The outgoing message prefix changes from the first removed capsule,
+so cache reuse and thinking bound to the old prefix are not guaranteed there.
 
 Every path that removes the section (capture off, report tool unavailable, source
 unverified, caller lookup failed, an epoch change, disposal, a failure in the hook)
@@ -858,7 +918,9 @@ except the bounded mention POST reads specified above:
   to avoid mixed document versions. Historical capture returns historical-capture
   diagnostic, not a current-checklist claim. Unicode-character cursor; no files.
 - `/v1/history?source=ID&plan=ID&cursor=0&limit=20`: envelope/page of
-  `{revision,structuralRevision,lifecycle,reportedAt}`. No full snapshot per row.
+  `{revision,structuralRevision,lifecycle,reportedAt,actor?}`. `actor:"user"`
+  is present only for confirmed user cancellation; no raw actor or full snapshot
+  is exposed.
   Rows are oldest-first; cursor is a row offset, not a revision. Committed plan
   revisions start at 1 and append one retained row per revision atomically;
   staging/replay create no revision, archive/restore preserve history, and
@@ -1566,7 +1628,15 @@ DocumentRef distinguishes unbound/captured/denied/missing/moved/oversized/non-te
 unavailable/changed-during-read. Last valid capture stays referenced on failure,
 never relabeled current. checklistSynchronized marks a confirmed matching
 checklist/capture; currentFile=not-rechecked honestly describes between-report
-coverage. Body text is fetched only on demand and rendered as untrusted plain text.
+coverage. Body text is fetched only on demand. The sidebar and board format it
+as read-only Markdown only when the returned capture path ends in `.md`
+(case-insensitive); other or missing paths retain literal text. Checklist marks
+are non-operable. HTML is inert and images show only alt text, with no asset
+loads. Only explicit activation of a valid absolute HTTP(S) link hands its URL
+to the host to open outside the progress surface. Destinations longer than 2,048
+characters or with user information show only their label; actionable links expose the
+normalized destination in their title. Capture comparison remains
+literal; neither view reads the live file or changes task progress.
 capturedAt records when the bound document was captured and can be older;
 checklistSynchronized is the current-match guarantee, not the capture timestamp.
 Show the last successful capture time separately from the last check time. Reports
@@ -1615,6 +1685,7 @@ interface ManagedDelivery {
   managedFreshSteps?: 1;
   migrationProgress?: ManagedStepProgress; // wire 1 only
   freshProgress?: ManagedFreshStepProgress; // wire 2 only
+  defaultStoreRoot?: string; // advisory, fresh unconfigured GET only
   review?: {
     expected: string;
     targets: { configRoot: string; dataRoot: string; storeRoot: string };
@@ -1630,6 +1701,13 @@ conditional watched-file versus restart-dependent fallback copy. `verified`
 describes validated explicit source selection, not a service-side proof of the
 active OpenCode runtime. The companion independently verifies its actual scope.
 `reportingIdentity` remains absent until the Store/source association verifies.
+
+When no selected binding, setup journal or legacy installation is present,
+fresh unconfigured `GET /v1/setup` can show `delivery.defaultStoreRoot`: the same
+`<dataRoot>/openchamber-progress` path that fresh inspection proposes for an empty
+choice. Status does not inspect or create that folder. The hint does not imply
+verified scope, usable storage or consent, and a blank form still omits `storeRoot`
+from the inspection request. Guests do not guess a path when the hint is absent.
 
 Both consumers use `managedBindingFile` / `readManagedBinding` in
 `shared/managed-binding.ts`. The only descriptor is
@@ -1696,6 +1774,16 @@ for format 2, never translating families. Before a fresh journal exists,
 non-null lastCompleted. Before storage exists, capture is unknown, not guessed off.
 Status/restart never continue work; uncertain capture needs the existing single-use
 reviewed-resume protocol and cannot override a later disable through replay.
+Read-only Setup status for a validated complete format-3 journal and its matching
+selected binding compares the Store folder and database against their creation
+checkpoints (or reviewed objects) without the recorded device number. All other
+checks remain, including object presence, kind, path, inode, birth time, live
+link/private-path checks, sidecar safety, logical Store and source identity,
+schema, actual capture, and expectation observation. Verified Setup status updates
+health to ready without a plans read. This changes neither persisted evidence nor
+write authority and cannot establish physical-volume continuity. Unfinished
+journals, missing or conflicting selections, inspection/review, Resume, format-2
+manifest claims and removal receipts do not get this exception.
 See [the detailed step contract](../setup/managed-steps.md) for digests, retries,
 budgets and recovery boundaries.
 
@@ -2033,9 +2121,9 @@ below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The inline and packaged skill explain that `closed` while a reported plan was
-in progress or on a reopen, or `not-found` for a plan the agent started, means
-the user archived or deleted it: stop reporting, do not retry, and do not recreate
-it (including under another identifier) unless the user specifically asks. A
+in progress or on a reopen, or `not-found` for a plan the agent started, may mean
+the user cancelled, archived or deleted it: stop reporting, and do not retry,
+reopen or recreate it (including under another identifier) unless the user specifically asks. A
 reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
 and is not user cleanup: read the plan and retry at its current revision. A
 commit reads only its own upload ID and needs exactly the intended chunk set at the current revision:

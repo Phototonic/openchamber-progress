@@ -59,3 +59,18 @@ test('all board inputs retire the previous derivation, including mutations of li
   input = { ...input, archived: true }; changed();
   input = { ...input, reading: 'search-run' }; changed();
 });
+
+test('quiet exclusions do not widen a location filter or reset its choices', () => {
+  const derive = new BoardDerivation();
+  const input = { plans, live: snapshot(), filters: { ...NO_FILTERS, project: 'p:a', worktree: 'w:/fixture/a' },
+    bound: 's', locale: 'en' as const, archived: false, reading: 'quiet' };
+  const original = derive.get(input);
+  assert.equal(original.select(null)?.key, 's/one');
+  const filtered = derive.get({ ...input, excluded: new Set(['s/one']) });
+  assert.deepEqual(filtered.filters, original.filters);
+  assert.deepEqual(filtered.options(), original.options());
+  assert.equal(filtered.quietExcluded, true);
+  assert.equal(filtered.select('s/one')?.key, 's/two', 'fall back inside the same project without hiding closed work');
+  assert.deepEqual(filtered.groups.flatMap(g => g.plans.map(p => p.key)), ['s/two']);
+  assert.equal(derive.get(input).select('s/one')?.key, 's/one');
+});

@@ -2,7 +2,8 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
-import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
+import { PLAN_USER_CANCEL, PLAN_USER_CANCEL_MAX_BYTES, type UserCancelReceipt, type UserCancelRequest } from '../../shared/user-cancel.ts';
+import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanActivityRequest, type PlanActivityRow, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import { parseManagedFreshStepProgress, parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
@@ -58,8 +59,9 @@ export function parseHealth(body: string): HealthView & { planComposerHandoff?: 
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
+  const userCancel: Pick<HealthView, 'planUserCancel'> = v.ready && v.planUserCancel === PLAN_USER_CANCEL ? { planUserCancel: PLAN_USER_CANCEL } : {};
   const state = v.state === 'starting' || v.state === 'unconfigured' || v.state === 'ready' || v.state === 'refused' ? v.state : undefined;
-  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}), ...userCancel, ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
 }
 
 /**
@@ -503,9 +505,41 @@ export function parseHistoryPage(body: string) {
     envelope: parseEnvelope(v),
     ...page(v, (x): HistoryEntry => {
       check(isRec(x) && isInt(x.revision) && isStr(x.reportedAt), 'History has an unreadable revision.');
-      return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt };
+      return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt, ...(x.lifecycle === 'cancelled' && x.actor === 'user' ? { actor: 'user' } : {}) };
     }, 'History'),
   };
+}
+
+/** GET /v1/history with an inclusive revision boundary, never an offset. */
+export function parsePlanActivity(body: string, r: PlanActivityRequest) {
+  const v: unknown = JSON.parse(body);
+  const invalid = 'The plan activity window is unreadable.';
+  check(isRec(v), invalid);
+  versions(v);
+  const b = v.sourceBinding;
+  check(v.planActivity === 1 && v.storeId === r.storeId && isRec(b) &&
+    b.sourceId === r.binding.sourceId && b.verified === r.binding.verified &&
+    v.source === r.source && v.plan === r.plan && v.cleanupRev === r.cleanupRev, invalid);
+  const count = Math.min(r.through, LIMITS.pageSize);
+  const nextThrough = r.through > count ? r.through - count : null;
+  check(isRevision(r.through) && v.nextThrough === nextThrough && Array.isArray(v.rows) && v.rows.length === count, invalid);
+  const rows = v.rows.map((row, i): PlanActivityRow => {
+    check(isRec(row) && row.revision === r.through - i && isIso(row.reportedAt) &&
+      row.reportedAt.length === 24 && new Date(row.reportedAt).toISOString() === row.reportedAt, invalid);
+    const common = { revision: row.revision, reportedAt: row.reportedAt };
+    if (row.kind === 'user' || row.kind === 'unavailable') {
+      check(Object.keys(row).length === 3, invalid);
+      return { ...common, kind: row.kind };
+    }
+    check(row.kind === 'report' && Object.keys(row).length === 7 && identifier(row.reporterSessionId) &&
+      identifier(row.attributedSessionId) && (row.mode === 'direct' && row.reporterSessionId === row.attributedSessionId ||
+        row.mode === 'parent-relay' && row.reporterSessionId !== row.attributedSessionId) &&
+      Array.isArray(row.itemIds) && row.itemIds.length <= 50 && row.itemIds.every(identifier) &&
+      new Set(row.itemIds).size === row.itemIds.length, invalid);
+    return { ...common, kind: 'report', mode: row.mode, reporterSessionId: row.reporterSessionId,
+      attributedSessionId: row.attributedSessionId, itemIds: row.itemIds };
+  });
+  return { rows, nextThrough };
 }
 
 const FACETS: readonly DigestFacet[] = ['added', 'removed', 'revised', 'completed', 'reopened', 'blocked', 'unblocked', 'skipped', 'unskipped'];
@@ -738,6 +772,10 @@ export function parseSetup(body: string): SetupView {
   const freshProgress = hasFreshProgress ? parseManagedFreshStepProgress(d.freshProgress) : undefined;
   check(!hasFreshProgress || (fresh && !!freshProgress), 'Setup fresh progress is unreadable.');
   check(!(hasProgress && hasFreshProgress), 'Setup progress is ambiguous.');
+  const defaultStoreRoot = fresh && !v.configured && d.configuration === 'unconfigured' && d.migration === 'none'
+    && !hasProgress && !hasFreshProgress && !review && isStr(d.defaultStoreRoot)
+    && d.defaultStoreRoot.length <= 4096 && /^(?:\/|[A-Za-z]:[\\/])/.test(d.defaultStoreRoot) && !d.defaultStoreRoot.includes('\0')
+    ? d.defaultStoreRoot : null;
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -753,7 +791,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}), ...(fresh ? {managedFreshSteps:1} : {}), ...(freshProgress ? {freshProgress} : {}), ...(d.planKind==='fresh'?{planKind:'fresh'}:{}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}), ...(fresh ? {managedFreshSteps:1} : {}), ...(freshProgress ? {freshProgress} : {}), ...(defaultStoreRoot ? {defaultStoreRoot} : {}), ...(d.planKind==='fresh'?{planKind:'fresh'}:{}) } as SetupView['delivery'] } : {}),
     ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
@@ -783,6 +821,18 @@ export function parseCleanupReceipt(body: string, request: CleanupRequest, actio
   const state = action === 'archive' ? 'archived' : action === 'restore' ? 'visible' : 'deleted';
   check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan && v.oid === request.oid && isRec(v.cleanup) && v.cleanup.state === state && v.cleanup.revision === request.cleanupRev + 1, 'The cleanup receipt does not match this action.');
   return { state, revision: request.cleanupRev + 1 };
+}
+
+export function parseUserCancelReceipt(body: string, request: UserCancelRequest, structuralRev: number): UserCancelReceipt {
+  check(body.length <= PLAN_USER_CANCEL_MAX_BYTES && new TextEncoder().encode(body).length <= PLAN_USER_CANCEL_MAX_BYTES, 'The cancellation receipt is too large.');
+  const v: unknown = JSON.parse(body);
+  check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan &&
+    v.oid === request.oid && isInt(v.rev) && v.rev === request.rev + 1 && v.structuralRev === structuralRev &&
+    v.lifecycle === 'cancelled' && v.actor === 'user' && isoInstant(v.reportedAt) &&
+    isRec(v.sourceBinding) && v.sourceBinding.sourceId === request.binding.sourceId && v.sourceBinding.verified === request.binding.verified,
+  'The cancellation receipt does not match this action.');
+  return { storeId: request.storeId, source: request.source, plan: request.plan, oid: request.oid,
+    sourceBinding: { ...request.binding }, rev: v.rev, structuralRev, actor: 'user', lifecycle: 'cancelled', reportedAt: v.reportedAt };
 }
 
 /**

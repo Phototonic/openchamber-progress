@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
 import { Store, storageError, digest, canonical } from '../shared/store.ts';
 import { ProgressError, MANAGED_ACTION_CODES, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState, type ManagedActionStage } from '../shared/progress.ts';
-import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation } from '../shared/managed-binding.ts';
+import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation, managedDefaultStoreRoot } from '../shared/managed-binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
 import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
@@ -341,7 +341,7 @@ export class SetupController {
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
     if(this.expectedDescriptor!==null&&(!b||digest(readFileSync(file))!==this.expectedDescriptor))throw new ManagedBindingError('managed-binding-modified');
     const retained=b??record?.binding??legacy?.binding;
-    const selected=managedPath(storeRoot??(retained?path.dirname(retained.database):path.join(roots.dataRoot,'openchamber-progress')),true);
+    const selected=managedPath(storeRoot??(retained?path.dirname(retained.database):managedDefaultStoreRoot(roots.dataRoot)),true);
     if([roots.configRoot,roots.dataRoot,path.dirname(file)].includes(selected))throw new SetupError('managed-selection-conflict');
     const targets={...roots,storeRoot:selected,confirmed:true};
     if(retained&&path.dirname(retained.database)!==selected)throw new SetupError(legacy||record?'managed-migration-conflict':'managed-selection-conflict');

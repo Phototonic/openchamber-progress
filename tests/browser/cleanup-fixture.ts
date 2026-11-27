@@ -3,7 +3,9 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { launchCleanupService } from '../fixtures/cleanup-service.ts';
+import { createGuestAssets } from './source-guests.ts';
 
+const assets = createGuestAssets({ source: process.argv.includes('--source') });
 const fixtures = [await launchCleanupService(true), await launchCleanupService(true, false)];
 function seedFinishedSession() { for (const f of fixtures) {
   const actor = { ...f.actor, sessionId: 'F' };
@@ -35,7 +37,11 @@ addEventListener('message',async e=>{
   if(q.method==='POST'&&qa.fail){const mode=qa.fail;qa.fail=null;if(mode==='network'){send(s,{type:'result',id:m.id,ok:false,code:'HOST_UNAVAILABLE',error:'Fixture network unavailable'});return;}result({status:503,body:JSON.stringify({error:'busy'})});return;}
   try{const reply=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})}).then(r=>r.json());
    if(q.path==='/health'&&qa.old){const body=JSON.parse(reply.body);delete body.planCleanup;reply.body=JSON.stringify(body)}
-   qa.responses.push({surface:s,path:q.path,status:reply.status});
+   qa.responses.push({surface:s,path:q.path,status:reply.status,storeId:q.path==='/v1/plans'&&reply.status===200?JSON.parse(reply.body).storeId:undefined});
+   // This archive reaches the real service; only its reply is lost.
+   if(s==='page'&&q.path==='/v1/plan/archive'&&JSON.parse(q.body).plan===qa.loseArchiveReply&&reply.status===200){
+    qa.loseArchiveReply=null;send(s,{type:'result',id:m.id,ok:false,code:'HOST_UNAVAILABLE',error:'Fixture lost the archive reply'});return;
+   }
    if(qa.hold&&qa.hold.surface===s&&(qa.hold.path===q.path||qa.hold.paths?.includes(q.path))){qa.held.push(()=>result(reply));}else result(reply);
   }catch{qa.errors.push('fixture proxy failed');send(s,{type:'result',id:m.id,ok:false,code:'HOST_UNAVAILABLE',error:'Fixture proxy unavailable'})}
  }else{if(m.type==='resize'&&s==='status'&&m.payload.height>0)f.style.height=m.payload.height+'px';if(m.id)result()}
@@ -48,7 +54,7 @@ const server = createServer(async (req, res) => {
       res.setHeader('content-type', 'text/html; charset=utf-8');
       res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Progress cleanup QA</title><style>html,body{margin:0;background:#fafafa;color:#202124;font:14px system-ui}section{margin:16px;width:900px}h1{font-size:14px;margin:0 0 10px}iframe{display:block;width:100%;height:680px;border:0}section[data-surface=panel]{width:360px;display:none}section[data-surface=status]{width:280px;display:none}</style></head><body><script>${script}</script>${['page', 'panel', 'status'].map(s => `<section data-surface="${s}"><h1>Agent progress · ${s}</h1><iframe data-surface="${s}" title="${s}" src="/ui/${s}/index.html"></iframe></section>`).join('')}</body></html>`);
     } else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) {
-      res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(`.${url.pathname}`));
+      res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(assets.read(url.pathname));
     } else if (url.pathname === '/service' && req.method === 'POST') {
       let body = ''; for await (const part of req) body += part;
       const { request: q, store } = JSON.parse(body); const f = fixtures[store === 1 ? 1 : 0];
@@ -68,6 +74,12 @@ const server = createServer(async (req, res) => {
       const counts = Object.fromEntries(['plans', 'revisions', 'contributions', 'captures', 'chunks', 'receipts'].map(table => [table, f.store.db.prepare(`SELECT count(*) AS n FROM ${table} WHERE source=? AND ${table === 'plans' ? 'id' : 'plan'}=?`).get(source, plan)!.n]));
       const state = saved ? f.store.detail(source, plan).plan : null;
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ exists: !!saved, lifecycle: saved?.lifecycle, revision: saved?.revision, cleanup: state?.cleanup ?? null, counts, sourceUnchanged: readFileSync(f.documentPath, 'utf8') === '# Sample plan\n- [x] Example\n', otherSourceExists: !!f.store.get('source-other', 'P-done'), activeExists: !!f.store.get(source, 'P-active'), otherExists: !!f.store.get(source, 'P-other'), history: saved ? f.store.history(source, plan).data : null, document: saved ? f.store.document(source, plan).text : null }));
+    } else if (url.pathname === '/archive-elsewhere' && req.method === 'POST') {
+      const plan = url.searchParams.get('plan') ?? '';
+      if (!/^P-page-\d{2}$/.test(plan)) { res.statusCode = 400; res.end('{}'); return; }
+      const f = fixtures[0], p = f.store.detail('source-fixture', plan).plan;
+      const reply = await f.request('/v1/plan/archive', f.body(plan, p.cleanup?.revision ?? 0, crypto.randomUUID(), p.revision));
+      res.statusCode = reply.status; res.end(await reply.text());
     } else if (url.pathname === '/conflict' && req.method === 'POST') {
       const f = fixtures[0], p = f.store.detail('source-fixture', 'P-other').plan;
       for (const [action, n] of [['archive', 0], ['restore', 1]] as const) {
@@ -79,4 +91,4 @@ const server = createServer(async (req, res) => {
   } catch { res.statusCode = 500; res.end('{"error":"fixture-failed"}'); }
 });
 server.listen(47851, '127.0.0.1', () => console.log(JSON.stringify({ ready: true, host: 'http://127.0.0.1:47851', built: true, stores: 2 })));
-process.on('SIGTERM', async () => { server.close(); server.closeAllConnections(); await Promise.all(fixtures.map(f => f.stop())); });
+process.on('SIGTERM', async () => { server.close(); server.closeAllConnections(); assets.dispose(); await Promise.all(fixtures.map(f => f.stop())); });

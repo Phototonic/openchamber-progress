@@ -9,6 +9,7 @@ const fenceTests = new Set([
   'managed-migration.test.ts',
   'managed-request-worker.test.ts',
   'managed-step-http.test.ts',
+  'plan-user-cancel-service.test.ts',
   'production-service.test.ts',
   'service-lifecycle.test.ts',
   'setup-paths.test.ts',

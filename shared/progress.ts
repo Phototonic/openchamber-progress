@@ -44,6 +44,19 @@ export interface PlanSummary { id: string; sourceId: string; title: string; sess
 export interface PlanState extends Omit<PlanSummary, 'counts' | 'working' | 'mainSessionKind'> { items: Item[]; links: { sessionId: string; itemIds: string[] }[] }
 export interface Envelope { protocolVersion: 2; schemaVersion: 2; storeId: string; sources: Source[]; sourceBinding: { sourceId: string | null; verified: boolean }; captureEnabled: boolean; coverage: 'recorded-only'; diagnostics: string[] }
 export interface Page<T> { data: T[]; nextCursor: string | null }
+/** Plan activity, additive read revision 1. Protocol/schema remain 2. */
+export type PlanActivityRow = { revision: number; reportedAt: string } & (
+  { kind: 'report'; mode: Contribution['mode']; reporterSessionId: string; attributedSessionId: string; itemIds: string[] }
+  | { kind: 'user' }
+  | { kind: 'unavailable' }
+);
+export interface PlanActivityWindow {
+  protocolVersion: 2; schemaVersion: 2; planActivity: 1; storeId: string; sourceBinding: Envelope['sourceBinding'];
+  source: string; plan: string; cleanupRev: number; rows: PlanActivityRow[]; nextThrough: number | null;
+}
+export interface PlanActivityRequest {
+  storeId: string; binding: Envelope['sourceBinding']; source: string; plan: string; cleanupRev: number; through: number;
+}
 /** Additive v2 search contract revision 1. No schema or report-tool change. */
 export const SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 } as const;
 export interface SearchOptions { q?: string; source?: string; session?: string; lifecycle?: Lifecycle; status?: Status; archived?: 'exclude' | 'only'; limit?: number; cursor?: string }
@@ -150,6 +163,8 @@ export interface ManagedDelivery {
   migrationProgress?: import('./managed-steps.ts').ManagedStepProgress;
   managedFreshSteps?: 1;
   freshProgress?: import('./managed-steps.ts').ManagedFreshStepProgress;
+  /** Advisory default on fresh, unconfigured status; not inspected or selected. */
+  defaultStoreRoot?: string;
   /** Presentation family, including refused partial setup without usable progress. Not authority. */
   planKind?: 'fresh';
   configuration: 'unconfigured' | 'configured' | 'invalid';

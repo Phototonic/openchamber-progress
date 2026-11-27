@@ -63,9 +63,12 @@ let capable = true;
 // recorded, because the step client must never use them.
 let fresh = false, freshCapable = true;
 let freshEng = freshEngine({ inspectPages: 2 });
+const defaultFolder = `${freshEng.review.targets.dataRoot}/openchamber-progress`;
 const oldRoutes: string[] = [];
 let captureControl: boolean | null = null;
 let freshRefusal: string | null = null;
+let holdSetupRead: Promise<void> | null = null;
+let foreignSetupBusy = false;
 const log: { method: string; path: string; action?: string; version?: number; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
@@ -77,7 +80,8 @@ function setupRead() {
       configured: published, verified: published, installed: false, captureEnabled: captureControl ?? (!p ? null : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
       targets: published ? freshEng.review.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
       delivery: { kind: 'managed', revision: 1, planKind:'fresh', configuration: published ? 'configured' : 'unconfigured', migration: !p ? 'none' : done ? 'complete' : 'pending', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0',
-        managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}) },
+        managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}),
+        ...(freshCapable && !p ? {defaultStoreRoot:defaultFolder} : {}) },
       ...(freshRefusal?{diagnostics:[freshRefusal],captureEnabled:null,
         delivery:{kind:'managed',revision:1,planKind:'fresh',configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null,managedMigrationSteps:1,managedFreshSteps:1}}:{}),
     };
@@ -102,7 +106,10 @@ const server = createServer(async (req, res) => {
       const entry: typeof log[number] = { method: q.method, path: q.path, at: Date.now() }; log.push(entry);
       const json = (status: number, value: unknown) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(value) })); };
       if (q.path === '/health') return json(200, health);
-      if (q.path === '/v1/setup' && q.method === 'GET') return json(200, setupRead());
+      if (q.path === '/v1/setup' && q.method === 'GET') {
+        if (holdSetupRead) await holdSetupRead;
+        return json(200, setupRead());
+      }
       if (q.path === '/v1/capture/disable' || q.path === '/v1/capture/enable') {
         if (q.method !== 'POST' || q.body !== undefined) return json(400, { error: 'body-not-allowed' });
         captureControl = q.path.endsWith('/enable');
@@ -116,9 +123,16 @@ const server = createServer(async (req, res) => {
         if (!capable) return json(404, { error: 'not-found' });
         const sent = JSON.parse(q.body ?? '{}');
         entry.action = sent.action; entry.version = sent.version;
+        if (holdSetupRead || foreignSetupBusy) return json(503, {version: 2, disposition: 'refused', progress: null, inspection: null,
+          error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}});
         // Version 2 reaches the fresh responder only when advertised; it records any shape violation.
         if (fresh && sent.version !== 2) oldRoutes.push('version-1-step');
         if (sent.version === 2 && !(fresh && freshCapable)) return json(404, { error: 'not-found' });
+        if (sent.version === 2 && sent.action === 'inspect' && !sent.cursor && !freshEng.observeSetup()) {
+          if (sent.storeRoot === '/directory') return json(409, {version:2,disposition:'refused',progress:null,inspection:null,
+            error:{stage:'store',code:'managed-migration-conflict'},accounting:{securitySpawns:0,elapsedMs:0}});
+          freshEng.review.targets.storeRoot = sent.storeRoot ?? defaultFolder;
+        }
         const result = await (sent.version === 2 ? freshEng : engine).request(q.body ?? '{}');
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(result === 'drop' ? { drop: true } : result));
@@ -166,8 +180,13 @@ try {
   };
   const key = async (k: string, code = k === ' ' ? 'Space' : k) => { const text = k.length === 1 ? k : k === 'Enter' ? '\r' : undefined; await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ' ': 32 }[k] ?? 0, ...(text ? { text } : {}) }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ' ': 32 }[k] ?? 0 }); };
   const focused = () => guest<string | null>(`return d.activeElement?.closest('[data-testid]')?.dataset.testid??null`);
-  const shot = async (name: string) => { await guest(`d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-review"],[data-testid="setup-migration-capture-review"]')?.scrollIntoView({block:'start'});return true`); await frames(); await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); shots.push(`${name}.png`); };
+  const shot = async (name: string, fromTop = false) => { await guest(fromTop ? `frame().contentWindow.scrollTo(0,0);return true` : `d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-review"],[data-testid="setup-migration-capture-review"]')?.scrollIntoView({block:'start'});return true`); await frames(); await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); shots.push(`${name}.png`); };
   const viewport = async (width: number, height: number) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+  const releaseShot = async (name: string, width: number) => {
+    const bottom = await guest<number>(`return d.querySelector('[data-testid="surface-panel-setup"]').getBoundingClientRect().bottom+frame().contentWindow.scrollY`);
+    await viewport(width, Math.max(844, Math.ceil(bottom) + 20));
+    await shot(name, true);
+  };
   const card = (attr: string) => guest<string | null>(`return d.querySelector('[data-testid="setup-migration-progress"]')?.getAttribute(${literal(attr)})??null`);
   const fits = () => guest<{ ok: boolean; overflow: number; offenders: string[] }>(`const w=d.documentElement.clientWidth,bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.right>w+0.5||r.left<-0.5)}).slice(0,5).map(e=>e.dataset.testid||e.className||e.tagName);return {ok:d.scrollingElement.scrollWidth<=w&&!bad.length,overflow:d.scrollingElement.scrollWidth-w,offenders:bad}`);
   const stepCalls = () => log.filter(l => l.path === '/v1/setup/managed-step').length;
@@ -452,6 +471,67 @@ try {
     await click('[data-testid="setup-inspect"] button');
     await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'fresh review');
   };
+  const folderInput = '[data-testid="setup-storeRoot"] input';
+  const enterFolder = async (value:string) => {
+    await click(folderInput);
+    await guest(`d.querySelector(${literal(folderInput)}).select();return true`);
+    await send('Input.insertText',{text:value});
+  };
+  for (const [width, form] of [[1180,'desktop'],[390,'390']] as const) {
+    await openFresh('en','dark',width,844);
+    check(`folder-${form}:read-only-recommendation`, await guest(`return d.querySelector(${literal(folderInput)}).value==='' &&
+      d.querySelector('[data-testid="setup-default-folder"] code')?.textContent===${literal(defaultFolder)}`) && freshPosts().length===0);
+    await releaseShot(`25-setup-folder-empty-${form}`,width);
+    await enterFolder('my-progress');
+    check(`folder-${form}:relative-hint`, await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent.includes('full (absolute)') &&
+      d.querySelector(${literal(folderInput)}).getAttribute('aria-invalid')==='true'`));
+    await click('[data-testid="setup-inspect"] button');
+    check(`folder-${form}:relative-not-sent`, freshPosts().length===0 && (await fits()).ok, await fits());
+    await releaseShot(`26-setup-folder-relative-${form}`,width);
+  }
+  await enterFolder('/');
+  check('folder:root-advice', await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent.includes('root of a drive or filesystem')`) && freshPosts().length===0);
+  await enterFolder('/directory');
+  check('folder:absolute-passes-client', await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent === ''`));
+  await click('[data-testid="setup-inspect"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-migration-conflict"]')`, 'folder service refusal');
+  check('folder:service-refusal-guidance', await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('Choose another private folder')`) &&
+    freshPosts().length===1 && freshPosts()[0].action==='inspect' && !freshEng.observeSetup());
+  await releaseShot('27-setup-folder-refused-390',390);
+  const customFolder = '/fixture/custom progress';
+  await enterFolder(customFolder);
+  await startFresh();
+  check('folder:custom-inspection-unchanged', freshEng.requests.some(r => r.action==='inspect' && 'storeRoot' in r && r.storeRoot===customFolder) &&
+    freshEng.review.targets.storeRoot===customFolder && freshPosts().every(r=>r.action==='inspect') && !freshEng.observeSetup());
+
+  await openFresh('ru','dark',390,844);
+  check('folder-ru:localized-and-fits', await guest(`return d.querySelector('[data-testid="setup-default-folder"]').textContent.includes('Рекомендуемая папка')`) && (await fits()).ok);
+  await releaseShot('25-setup-folder-empty-390-ru',390);
+
+  await openFresh('en', 'dark', 390, 844, { inspectPages: 1 });
+  await click('[data-testid="surface-panel-back"] button');
+  let releaseStatus!: () => void;
+  const readAt = log.length;
+  holdSetupRead = new Promise<void>(resolve => { releaseStatus = resolve; });
+  try {
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
+    await click('[data-testid="setup-inspect"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-inspecting"]')`, 'review waiting for the panel status read');
+    check('fresh:review-waits-for-own-read', log.slice(readAt).some(r => r.path === '/v1/setup') && stepCalls() === 0);
+    await shot('24-setup-review-checking-390', true);
+  } finally { holdSetupRead = null; releaseStatus(); }
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'review opens without a second click');
+  check('fresh:review-sent-once-after-read', stepCalls() === 1 && await focused() === 'setup-cancel');
+
+  await openFresh('en', 'light', 1280, 900);
+  foreignSetupBusy = true;
+  try {
+    await click('[data-testid="setup-inspect"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-step-unsettled"]')`, 'foreign worker refusal');
+    check('fresh:foreign-refusal-copy-and-no-retry', stepCalls() === 1 && await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('Waiting for another setup action')`));
+  } finally { foreignSetupBusy = false; }
+
   /** Text that is cut off inside the Setup panel: overflowing buttons, or hidden/ellipsis overflow on text. */
   const clipped = () => guest<{ ok: boolean; offenders: string[] }>(`const win=frame().contentWindow;const bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();if(r.width<=2||r.height<=2||!e.checkVisibility())return false;const cs=win.getComputedStyle(e);const text=[...e.childNodes].some(n=>n.nodeType===3&&n.textContent.trim());const cut=/(hidden|clip)/.test(cs.overflowX)||cs.textOverflow==='ellipsis';return (e.tagName==='BUTTON'||(text&&cut))&&e.scrollWidth>e.clientWidth+1}).slice(0,5).map(e=>e.closest('[data-testid]')?.dataset.testid||e.className||e.tagName);return {ok:!bad.length,offenders:bad}`);
   const fitsAll = async () => { const a = await fits(), b = await clipped(); return { ok: a.ok && b.ok, overflow: a.overflow, offenders: a.offenders, clipped: b.offenders }; };
@@ -468,6 +548,12 @@ try {
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="paused"]')`, 'fresh paused');
   };
   const waitComplete = (what: string) => wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="complete"]')`, what);
+  const leadBeforeDetails = (action: string) => guest<boolean>(`const q=h=>d.querySelector('[data-testid="'+h+'"]');
+    const heading=q('setup-migration-heading'),warning=q('setup-migration-capture-warning'),button=q(${literal(action)}),details=q('setup-details');
+    return heading.checkVisibility()&&warning.checkVisibility()&&button.checkVisibility()&&!!(heading.compareDocumentPosition(warning)&4)&&
+      !!(warning.compareDocumentPosition(button)&4)&&!!(button.compareDocumentPosition(details)&4)&&
+      !q('setup-recording-state')&&!q('managed-capture-control')&&!details.open&&
+      ['setup-fresh-plan','managed-load-observation','setup-disclosure'].every(h=>details.contains(q(h))&&!q(h).checkVisibility())`);
 
   for (const [L, mode] of [['en', 'light'], ['ru', 'dark'], ['zh-CN', 'light']] as const) {
     // Review → running creation → pause after the store exists (capture off) → resume → complete.
@@ -519,6 +605,7 @@ try {
     await open(L, mode, 390, 844, undefined, true);
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"][data-capture="unknown"]')`, 'complete with unknown recording');
     check(`fresh-${L}:complete-unknown-warning-and-recovery`, await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()&&!!d.querySelector('[data-testid="setup-migration-status"] button')`));
+    check(`fresh-${L}:complete-unknown-leads-before-details`, await leadBeforeDetails('setup-migration-status'));
     await guest(`d.querySelector('[data-testid="setup-migration-status"] button').focus();return true`); await key('Enter');
     await wait(`d.querySelector('[data-testid="setup-migration-status"] button')?.getAttribute('aria-disabled')==='false'`, 'completed recording status checked');
     check(`fresh-${L}:complete-recovery-read-only`, freshEng.requests.at(-1)?.action === 'status');
@@ -699,6 +786,11 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-continue"]')`, 'fresh hide/show continue');
   check('fresh-hide-show:held-reply-retired', freshEng.requests.filter(r => r.action === 'advance').length === 1);
   await shot('fresh-hide-show-continue');
+  for (const size of [1180,390]) {
+    await viewport(size,844);
+    check(`fresh-continue-${size}:lead-before-details`, await leadBeforeDetails('setup-migration-continue'));
+    await releaseShot(`16-setup-continue-${size === 390 ? '390' : 'desktop'}-fixed`,size);
+  }
 
   // An uncertain enable needs a fresh capture decision for exactly that enable.
   await openFresh('en', 'dark', 1280, 900, {}, e => { e.faults.unsettledEnable = true; });
@@ -714,6 +806,13 @@ try {
   await waitComplete('fresh complete after capture decision');
   const reviewed = freshEng.requests.find(r => r.action === 'resume');
   check('fresh-review:reviewed-resume-payload', !!reviewed && 'review' in reviewed && reviewed.version === 2 && reviewed.review?.step === 'enable', reviewed);
+  freshEng.restart();
+  for (const size of [1180,390]) {
+    await open('en','dark',size,844,undefined,true);
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"][data-capture="unknown"]')`, 'finished with recording unconfirmed');
+    check(`fresh-unknown-${size}:lead-before-details`, await leadBeforeDetails('setup-migration-status'));
+    await releaseShot(`17-setup-recording-unconfirmed-${size === 390 ? '390' : 'desktop'}-fixed`,size);
+  }
 
   freshViolations += freshEng.violations.length;
   check('fresh:no-old-routes-version-1-or-shape-violations', oldRoutes.length === 0 && freshViolations === 0, { oldRoutes, freshViolations });

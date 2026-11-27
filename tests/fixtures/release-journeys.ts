@@ -6,7 +6,7 @@ import type { reportingSessionsJourney } from './reporting-sessions-journey.ts';
 
 export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourney>[0]) {
   const {root,binding,store,client,location,browser}=o;
-  const {wait,openRail,openBoard,guestClick,holdNextServiceReply,send,evaluate}=browser.nativeControls;
+  const {wait,openRail,openBoard,openSetup,guestClick,holdNextServiceReply,send,evaluate}=browser.nativeControls;
   const checks:string[]=[];
   const check=(id:string,ok:boolean)=>{assert.ok(ok,id);checks.push(id);fs.writeFileSync(`${root}/release-checks.json`,JSON.stringify(checks));};
   const stage=(phase:string)=>fs.writeFileSync(`${root}/journey-stage.json`,JSON.stringify({phase}));
@@ -30,11 +30,6 @@ export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourn
   const intent=async(state:string,hook?:string)=>{
     await wait(reading,v=>v?.source===binding.source.id&&v.revision===String(rev())&&v.delegation===state,`release intent ${state}`);
     if(hook)await wait(()=>browser.guest('panel',`!!document.querySelector('${planNode} [data-testid="${hook}"]')`),Boolean,hook);
-  };
-  const language=async(surface:string,value:'en'|'ru'|'zh-CN')=>{
-    await guestClick(surface,'[data-testid="interface-language"] button');
-    await guestClick(surface,`[role="option"][id$="-${value}"]`);
-    await wait(()=>browser.guest(surface,'document.documentElement.lang'),v=>v===value,'release interface language');
   };
   stage('release-pending-cancelled');
   await report({op:'start',plan,oid:'release-start',rev:0,title:'Release synthetic plan',items:['task-a','task-b','task-c'].map(id=>({id,title:id,kind:'task'}))});
@@ -83,27 +78,43 @@ export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourn
   check('real-atomic-finish-replay',JSON.stringify(await report(finish))===JSON.stringify(receipt)&&store.get(binding.source.id,finishPlan)!.revision===3);
   stage('release-source-wide-inbox');
   await report({op:'start',plan:'release-decisions',oid:'decisions',rev:0,title:'Source-wide review',items:['review-one','review-two','review-three'].map(id=>({id,title:id,kind:'task',status:'blocked',blocker:{category:id==='review-two'?'review':'decision',reason:'Synthetic choice required',nextAction:'Choose a synthetic format'}}))},b.id);
+  await guestClick('panel','[data-testid="needs-you-other-plans"] button');
   await wait(()=>browser.guest('panel','document.querySelector("[data-testid=needs-you-count]")?.getAttribute("data-count")'),v=>v==='3','three source-wide inbox tasks');
   check('source-wide-inbox-three-outside-current-session',true);await browser.shot('release-inbox');
   for(const locale of ['ru','zh-CN'] as const){
-    await language('panel',locale);
+    await browser.language('panel',locale);
     await wait(()=>browser.guest('panel','document.querySelector("[data-testid=needs-you-heading]")?.textContent'),v=>!!v?.includes(locale==='ru'?'Нужно ваше участие':'需要你'),'translated inbox heading');
     await browser.shot(`release-inbox-${locale}`);check(`inbox-${locale}`,true);
   }
-  await guestClick('panel','[data-testid="needs-you-row"] button');
-  await wait(()=>browser.guest('panel','!!document.querySelector("[data-testid=needs-you-reading-heading]")'),Boolean,'inbox source-wide reading');
-  await wait(()=>browser.guest('panel',`document.querySelector('[data-testid="plan-release-decisions"]')?.dataset.source===${javascriptLiteral(binding.source.id)}&&!!document.querySelector('[data-testid="item-review-one"][data-nav-target]')`),Boolean,'source-qualified canonical task reveal');
+  const inboxRow='[data-testid="needs-you-row"][data-plan="release-decisions"][data-task="review-one"]';
+  const openRow=`${inboxRow} > button`;
+  await guestClick('panel',openRow);
+  await guestClick('panel',`${inboxRow} [data-testid="needs-you-open-session"] button`);
+  await wait(()=>evaluate('document.querySelector("[data-session-row-box][aria-current=page]")?.innerText.includes("Release inbox reviewer")'),Boolean,'inbox action opens the reported session');
+  const requestedPlan='[data-testid="plan-release-decisions"]';
+  await wait(()=>browser.guest('panel',`document.querySelector(${javascriptLiteral(requestedPlan)})?.dataset.source===${javascriptLiteral(binding.source.id)}&&!!document.querySelector(${javascriptLiteral(`${requestedPlan} [data-testid="item-review-one"]`)})`),Boolean,'source-qualified reviewer plan and task available');
+  if(await browser.guest('panel','document.querySelector("[data-testid=needs-you-toggle]")?.getAttribute("aria-expanded")==="false"'))
+    await guestClick('panel','[data-testid="needs-you-toggle"]');
+  // The rail reveals the current plan's canonical task, then restores focus
+  // to the expanded inbox row. Observe the actual transient reveal focus.
+  await browser.guest('panel',`(()=>{delete window.fixtureTaskReveal;
+    function reveal(e){const target=e.target,plan=target?.closest(${javascriptLiteral(requestedPlan)});
+      if(target?.matches('[data-testid="item-review-one"][data-nav-target]')&&plan?.dataset.source===${javascriptLiteral(binding.source.id)}){
+        window.fixtureTaskReveal=true;document.removeEventListener('focusin',reveal);
+      }}
+    document.addEventListener('focusin',reveal);return true})()`);
+  await guestClick('panel',openRow);
+  await wait(()=>browser.guest('panel',`window.fixtureTaskReveal===true&&document.querySelector(${javascriptLiteral(openRow)})?.getAttribute('aria-expanded')==='true'`),Boolean,'source-qualified canonical task reveal');
   check('task-reveal-source-qualified',true);
   await browser.shot('release-task-reveal-zh-CN');
   await openBoard();
-  await language('page','zh-CN');
-  if(!await browser.guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');
-  await wait(()=>browser.guest('page','!!document.querySelector("[data-testid=setup-disable]")'),Boolean,'Chinese configured Setup');
+  await browser.language('page','zh-CN');
+  await openSetup('page');
+  await wait(()=>browser.guest('page','!!document.querySelector("[data-testid=surface-panel-setup] [data-testid=setup-disable] button")?.checkVisibility()'),Boolean,'Chinese configured Setup');
   check('setup-zh-CN',!!await browser.guest('page','document.documentElement.lang==="zh-CN"&&!!document.querySelector("[data-testid=setup-panel]")'));
   await browser.shot('release-setup-zh-CN');
   stage('release-session-held-reply');
   await browser.selectSession('Release coordinator');await openRail();
-  if(await browser.guest('panel','!!document.querySelector("[data-testid=needs-you-back]")'))await guestClick('panel','[data-testid="needs-you-back"]');
   await wait(reading,v=>v?.source===binding.source.id,'coordinator before held reply');
   const hold=await holdNextServiceReply('/v1/plans');
   try{
