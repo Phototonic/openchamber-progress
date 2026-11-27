@@ -5,6 +5,7 @@ import { parseHealth, parseHistoryPage, parsePlansPage } from '../../ui/shared/a
 import { cancelPin, PlanUserCancel, type CancelPin, type CancelResult } from '../../ui/shared/plan-user-cancel.ts';
 import { userCancelCall } from '../../ui/shared/source.ts';
 import { P1, plansPage } from './fixtures.ts';
+import { pageHook } from './page-hooks.ts';
 
 const iso = '2026-04-22T00:00:00.000Z';
 const healthBody = { protocolVersion: 2, schemaVersion: 2, ok: true, ready: true, planUserCancel: 1 };
@@ -29,6 +30,22 @@ test('only the ready capability and a fresh eligible plan yield a cancellation p
   assert.equal(cancelPin('scope', health, read, { ...plan, sourceId: 'other' }), null);
   assert.equal(cancelPin('scope', health, read, { ...plan, lifecycle: 'cancelled' }), null);
   assert.equal(cancelPin('scope', health, read, { ...plan, cleanup: { state: 'archived', revision: 4 } }), null);
+});
+
+test('a held board search preview stops being actionable as soon as its pins change', () => {
+  let head = plan, searching = true;
+  const candidate = pageHook('cancelCandidate', {
+    selectedPlan: () => plan, isSearching: () => searching, search: { selectedPlan: () => head },
+  });
+  assert.equal(candidate({}), plan);
+  head = { ...plan, revision: plan.revision + 1 };
+  assert.equal(candidate({}), null);
+  head = { ...plan, cleanup: { ...plan.cleanup, revision: plan.cleanup.revision + 1 } };
+  assert.equal(candidate({}), null);
+  head = { ...plan, key: 'source/another' };
+  assert.equal(candidate({}), null);
+  searching = false;
+  assert.equal(candidate({}), plan);
 });
 
 test('the UI sends one fixed confirmed DTO and distinguishes validated success, refusal and uncertainty', async () => {

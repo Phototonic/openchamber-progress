@@ -294,6 +294,15 @@ startView<Ui>({
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
+  cancelCandidate: vc => {
+    const plan = selectedPlan(vc);
+    if (!plan || !isSearching(vc)) return plan;
+    // Search may keep old detail painted while it loads the new portion. That
+    // held title/body cannot confirm a lifecycle write at either revision.
+    const current = search.selectedPlan();
+    return current?.key === plan.key && current.revision === plan.revision
+      && (current.cleanup?.revision ?? 0) === (plan.cleanup?.revision ?? 0) ? plan : null;
+  },
   quietSamples: vc => searching(vc)?.page.groups.map(g => g.plan) ?? [],
   quietChanged: vc => {
     search.quietChanged(vc.quiet.hide);

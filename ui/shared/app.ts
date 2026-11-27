@@ -240,6 +240,8 @@ export interface ViewSpec<U> {
   refreshed?: (vc: ViewContext<U>) => void;
   quietChanged?: (vc: ViewContext<U>) => void;
   quietSamples?: (vc: ViewContext<U>) => Pick<PlanView, 'lifecycle' | 'reportedAt'>[];
+  /** A surface with held previews can refuse an older projection after observing a newer pin. */
+  cancelCandidate?: (vc: ViewContext<U>) => PlanView | null;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
   beforeUiChange?: (previous: U, next: U) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
@@ -1101,7 +1103,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     pin: () => {
       if (disposed || !ctx || failure || document.visibilityState === 'hidden' || cleanupBusy) return null;
       const vc = context();
-      return cancelPin(pinContext(vc), vc.health, vc.read, spec.actionPlan?.(vc) ?? null);
+      const candidate = spec.cancelCandidate ? spec.cancelCandidate(vc) : spec.actionPlan?.(vc) ?? null;
+      return cancelPin(pinContext(vc), vc.health, vc.read, candidate);
     },
     send: (request, structuralRev) => userCancelCall(host, request, structuralRev),
     operation: () => crypto.randomUUID(),
