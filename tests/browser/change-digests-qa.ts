@@ -575,6 +575,10 @@ try {
     fx.many(140);
     const capTarget = fx.revision('P-gap');
     await wait('page', `d.querySelector('${row('P-gap')}')?.dataset.revision==='${capTarget}'&&!!d.querySelector('${H('P-gap', 'digest-newer')}')`, 'cap newer offered', 8000);
+    // This plan has no working IDs at the capped revision. Its blocked/pending legend
+    // appears only when current detail finishes loading, moving the History panel below it.
+    // Wait for that paint before click() measures the Refresh button.
+    await wait('page', `!!d.querySelector('[data-testid="plan-detail"] [data-testid="progress-legend"]')?.textContent?.trim()`, 'current plan legend before capped refresh');
     await click('page', H('P-gap', 'digest-refresh'));
     await wait('page', `d.querySelector('${D('P-gap')}')?.dataset.to==='${capTarget}'`, 'digest at capped target', 15_000);
     const cap = await guest<{ complete?: string; reasons?: string; text: string }>('page', `const n=d.querySelector('${H('P-gap', 'digest-coverage')}');return {complete:n?.dataset.complete,reasons:n?.dataset.reasons,text:n?.textContent??''}`);
