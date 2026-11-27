@@ -23,6 +23,7 @@ The rail and board can show captured plan documents as read-only previews, hide 
 
 ### Fixed
 
+- Fresh unconfigured managed Setup status exposes the recommended private folder as the read-only `delivery.defaultStoreRoot` field. The guest shows the default without prefilling it, explains absolute custom paths, and provides guidance for relative paths and folder refusals; store admission and writes are unchanged (#206, fixes #204).
 - Completed format-3 Setup status with a matching selected binding ignores only the historical device number when checking the store folder and database; inode, birth time, Store ID, source, schema and the other checks remain in force. No journal is rewritten, and Resume, inspection and removal receipts stay strict. A Setup refusal now points to Setup instead of saying Progress is not responding (#195, fixes #191).
 - The board shows one empty message with **Show all plans** when the quiet filter hides every plan; other empty states are unchanged (#182).
 - When Setup finishes but can't read the progress folder's current status, the finished card explains why recording isn't confirmed and keeps **Check status** available (#183).
