@@ -112,29 +112,48 @@ try {
     }
   };
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
-    if (!point) throw new Error(`missing ${selector} in ${f}`);
+    const point = await evaluate<[number, number] | null>(`(async()=>{const fr=frame('${f}'),d=fr.contentDocument,s=${javascriptLiteral(selector)};d.querySelector(s)?.scrollIntoView({block:'nearest'});fr.scrollIntoView({block:'nearest'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const n=d.querySelector(s);if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),x=a.x+Math.min(16,a.width/2),y=a.y+a.height/2;return n.contains(d.elementFromPoint(x,y))?[o.x+x,o.y+y]:null})()`);
+    if (!point) throw new Error(`missing or covered ${selector} in ${f}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const D = (plan: string) => `[data-testid="plan-detail"] article[data-testid="plan-${plan}"] [data-testid="change-digest"]`;
+  const history = '[data-testid="surface-panel-history"]';
+  const D = (plan: string) => `.ap-board:has([data-testid="plan-row-${plan}"][aria-selected="true"]) ${history} [data-testid="change-digest"]`;
   const H = (plan: string, id: string) => `${D(plan)} [data-testid="${id}"]`;
   const row = (plan: string) => `[data-testid="plan-row-${plan}"][data-source="${SOURCE}"]`;
-  const TAB = (id: string) => `[data-testid="detail-tabs"] [role="tab"][data-id="${id}"]`;
+  const historyHeading = `${history} [data-testid="surface-panel-heading"]`;
+  const view = async (f: string, kind: 'history' | 'progress') => {
+    const back = '[data-testid="surface-panel-back"] button';
+    if (await guest(f, `return !!d.querySelector('${back}')`)) {
+      if (kind === 'history' && await guest(f, `return !!d.querySelector('${history}')`)) return;
+      await click(f, back);
+      await wait(f, `!d.querySelector('${back}')`);
+    }
+    if (kind === 'progress') {
+      await click(f, '[data-testid="plan-view-list"] button');
+    } else {
+      const item = '[role="menu"]:not([hidden]) [data-menu-id="history"]';
+      await click(f, '[data-testid="more-trigger"]');
+      await wait(f, `!!d.querySelector('${item}')`);
+      await click(f, item);
+      await wait(f, `!!d.querySelector('${history}')`);
+    }
+  };
   const digestState = (f: string, plan: string) => guest<{ state?: string; review?: string; reason?: string; to?: string; after?: string } | null>(f, `const n=d.querySelector('${D(plan)}');return n?{...n.dataset}:null`);
   const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${javascriptLiteral(selector)})?.textContent??''`);
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
+    if (await guest(f, `return !!d.querySelector('${history}')`)) await view(f, 'progress');
     await boardInput({ guest, wait, click }).revealPlan(row(plan));
     await wait(f, `!!d.querySelector('${row(plan)}')`, `${plan} listed`);
     await click(f, row(plan));
     await wait(f, `!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${SOURCE}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`, `${plan} selected`);
-    await click(f, TAB(tab));
+    await view(f, tab);
     if (tab === 'history') await wait(f, `!!d.querySelector('${D(plan)}')`, `${plan} history digest section`);
   };
   const settled = (f: string, plan: string) => wait(f, `(()=>{const n=d.querySelector('${D(plan)}');return n&&n.dataset.state!=='loading'})()`, `${plan} digest settled`);
-  const reenter = async (f: string, plan: string) => { await click(f, TAB('progress')); await wait(f, `!d.querySelector('${D(plan)}')`); await click(f, TAB('history')); await settled(f, plan); };
+  const reenter = async (f: string, plan: string) => { await view(f, 'progress'); await wait(f, `!d.querySelector('${D(plan)}')`); await view(f, 'history'); await settled(f, plan); };
   const counts = () => evaluate<{ digest: Record<string, number>; plans: Record<string, number>; detail: Record<string, number>; deviceSet: number; deviceGet: number; deviceKeys: number; instanceSet: number }>(`(()=>{const by=(p)=>{const o={};for(const r of qa.requests.filter(r=>r.path===p))o[r.frame]=(o[r.frame]??0)+1;return o};const dev=qa.storageLog.filter(l=>l.scope==='device');return {digest:by('/v1/change-digest'),plans:by('/v1/plans'),detail:by('/v1/plan'),deviceSet:dev.filter(l=>l.op==='set').length,deviceGet:dev.filter(l=>l.op==='get').length,deviceKeys:dev.filter(l=>l.op==='keys').length,instanceSet:qa.storageLog.filter(l=>l.scope==='instance'&&l.op==='set').length}})()`);
   const sumOf = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
   const deviceKeys = (ns = 'profile-1') => evaluate<string[]>(`qa.deviceKeys('${ns}')`);
@@ -178,19 +197,19 @@ try {
     const RA = `article[data-testid="plan-${P}"][data-source="${SOURCE}"]`;
     const READY = `${RA} .ap-tasks[data-readiness="ready"]`;
     const NONE = 'No prerequisites recorded';
-    const QUALIFIER = 'Other prerequisites may not be recorded';
     type Entry = { group: string; none: string | null; deps: string[] };
     type Readiness = { groups: Record<string, string | null>; qualifier: boolean; entries: Record<string, Entry>; counts: Record<string, string>; overclaim: boolean } | null;
     /** Readiness facts as painted: group counts, each entry's absent-list wording, the qualifier, server counts. */
     const readinessFacts = async (f: string) => {
-      await progressUi.expandAll(f);
-      await click(f, '[data-testid="progress-chips"] [data-testid="info-trigger"]');
+      for (const id of ['B', 'O', 'E', 'R', 'W', 'K', 'D', 'S']) await progressUi.expand(f, id);
+      const qualifier = '[data-testid="item-R"] [data-term="Needs first"] [data-testid="info-trigger"]';
+      await click(f, qualifier);
       const result = await guest<Readiness>(f, `const s=d.querySelector('${READY}'),a=d.querySelector('${RA}');if(!s||!a)return null;
       const count=state=>String(s.querySelectorAll('li[data-state="'+state+'"]').length);
       const entries={};for(const e of s.querySelectorAll('li[data-testid^="item-"]'))if(e.dataset.status!=='done'&&e.dataset.status!=='skipped')entries[e.dataset.testid.slice(5)]={group:e.dataset.state,none:e.querySelector('.ap-ready-none')?.textContent??null,deps:[...e.querySelectorAll('[data-dep]')].map(x=>x.dataset.dep)};
-      const c=a.querySelector('[data-testid="counts"]')?.dataset??{};
-      const b=d.querySelector('[data-testid="progress-chips"] [data-testid="info-trigger"]'),info=d.getElementById(b.getAttribute('aria-controls'));
-      return {groups:{ready:count('ready'),waiting:count('waiting'),skipped:count('skipped'),needsYou:count('blocked')},qualifier:b.getAttribute('aria-expanded')==='true'&&info.textContent.includes(${javascriptLiteral(QUALIFIER)})&&info.textContent.includes('recorded prerequisites only'),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
+      const c=d.querySelector('[data-testid="surface-header"] ~ [data-testid="counts"],[data-testid="counts"]')?.dataset??{};
+      const b=d.querySelector(${javascriptLiteral(qualifier)}),info=d.getElementById(b.getAttribute('aria-controls'));
+      return {groups:{ready:count('ready'),waiting:count('waiting'),skipped:count('skipped'),needsYou:count('blocked')},qualifier:b.getAttribute('aria-expanded')==='true'&&info.textContent.includes('Only prerequisites an agent recorded are listed.')&&info.textContent.includes('Others may not be recorded'),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
       await key('Escape'); return result;
     };
     const expected = {
@@ -246,7 +265,7 @@ try {
 
     // B3 — History change endpoints.
     await show(['page'], 1100);
-    await click('page', TAB('history'));
+    await view('page', 'history');
     await settled('page', P);
     check('P:B3:initial', (await digestState('page', P))?.state === 'initial' && (await digestState('page', P))?.to === String(prereqStart));
     await click('page', H(P, 'digest-mark-reviewed'));
@@ -296,7 +315,7 @@ try {
     // B5 — 360 px dark: wrapping, literal text, keyboard disclosure.
     await theme('dark');
     await show(['page'], 360);
-    await select('page', P); await settled('page', P);
+    await settled('page', P);
     if (!(await guest<boolean>('page', `return !!d.querySelector('${entry('O')}')?.open`))) await click('page', `${entry('O')} > summary`);
     // Start N1 closed whatever the repaint kept, then open it by keyboard.
     await guest('page', `const e=d.querySelector('${entry('N1')}');e.open=false;e.querySelector('summary').focus();return true`); await key('Enter');
@@ -318,20 +337,22 @@ try {
     await polls('page', 1);
     const closed1 = await counts();
     const closedDigest = sumOf(closed1.digest) - sumOf(closed0.digest);
-    requestResults.push({ interaction: 'history-closed: page Progress tab plus panel/status polling across 3 polls and a new revision', counts: { digestRequests: closedDigest, deviceWrites: closed1.deviceSet - closed0.deviceSet, deviceKeyReads: closed1.deviceKeys - closed0.deviceKeys, panelStatusDigestRequests: (closed1.digest.panel ?? 0) + (closed1.digest.status ?? 0) }, expectation: 'all zero', pass: closedDigest === 0 && closed1.deviceSet === 0 && closed1.deviceKeys === 0 });
-    check('V6:history-closed-zero-digest-work', requestResults.at(-1)!.pass, ['No digest request, checkpoint read or write while History is closed, including panel/status polling'], requestResults.at(-1));
+    // More's New History dot may read a saved review point; it must not read
+    // the digest or write a checkpoint until the reader explicitly marks one.
+    requestResults.push({ interaction: 'history-closed: List plus panel/status polling across 3 polls and a new revision', counts: { digestRequests: closedDigest, deviceWrites: closed1.deviceSet - closed0.deviceSet, deviceKeyReads: closed1.deviceKeys - closed0.deviceKeys, panelStatusDigestRequests: (closed1.digest.panel ?? 0) + (closed1.digest.status ?? 0) }, expectation: 'zero digest requests and writes; checkpoint reads allowed for the More history dot', pass: closedDigest === 0 && closed1.deviceSet === 0 });
+    check('V6:history-closed-no-digest-or-checkpoint-write', requestResults.at(-1)!.pass, undefined, requestResults.at(-1));
 
     // ------------------------------------------------------------------ S1 initial view + Enter
     const before1 = fx.state('P-digest');
-    await click('page', TAB('history'));
+    await view('page', 'history');
     await settled('page', 'P-digest');
     const s1 = await digestState('page', 'P-digest');
     const cov1 = await text('page', H('P-digest', 'digest-coverage'));
-    check('S1:initial-not-zero', s1?.state === 'initial' && cov1.includes('Initial view — no saved reviewed revision in this profile.') && !/No summarized|0 changes|nothing changed/i.test(await text('page', D('P-digest'))), ['Initial view says so; no invented interval or zero-change claim'], { s1, cov1 });
+    check('S1:initial-not-zero', s1?.state === 'initial' && s1.after === undefined && cov1.includes('Mark reviewed to compare future changes with this plan.') && !/No summarized|0 changes|nothing changed/i.test(await text('page', D('P-digest'))), ['Initial view explains how to start comparing; no invented interval or zero-change claim'], { s1, cov1 });
     check('S1:no-write-before-activation', (await counts()).deviceSet === 0 && (await deviceKeys()).length === 0, ['Mounting the digest wrote nothing']);
-    await shot('page', 'initial-view', '[data-testid="plan-detail"] article[data-testid="plan-P-digest"]');
-    // Keyboard: Tab from the History tab to Mark reviewed, then Enter.
-    await guest('page', `d.querySelector('${TAB('history')}').focus();return true`);
+    await shot('page', 'initial-view', history);
+    // Keyboard: Tab from the History heading to Mark reviewed, then Enter.
+    await guest('page', `d.querySelector('${historyHeading}').focus();return true`);
     let tabs = 0;
     while (tabs < 40 && !(await guest<boolean>('page', `return d.activeElement?.dataset?.testid==='digest-mark-reviewed'`))) { await key('Tab'); tabs++; }
     const focus1 = await guest<{ id: string; outline: string; visible: boolean }>('page', `const a=d.activeElement,s=getComputedStyle(a);return {id:a?.dataset?.testid,outline:s.outlineStyle+' '+s.outlineWidth,visible:a.matches(':focus-visible')}`);
@@ -356,9 +377,9 @@ try {
     // ------------------------------------------------------------------ S2 since reviewed
     fx.v1();
     // The pinned target is the listed revision: wait for the existing poll to list revision 6.
-    await click('page', TAB('progress'));
+    await view('page', 'progress');
     await wait('page', `d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-P-digest"]')?.dataset.revision==='6'`, 'list at revision 6', 8000);
-    await click('page', TAB('history')); await settled('page', 'P-digest');
+    await view('page', 'history'); await settled('page', 'P-digest');
     const s2 = await digestState('page', 'P-digest');
     const ev = await guest<Record<string, string>>('page', `const o={};for(const n of d.querySelectorAll('${H('P-digest', 'digest-summary')} li[data-facet]'))o[n.dataset.facet]=n.textContent;return o`);
     check('S2:comparison-1-to-6', s2?.state === 'comparison' && s2.after === '1' && s2.to === '6', undefined, s2);
@@ -383,11 +404,20 @@ try {
     const newer = await counts();
     requestResults.push({ interaction: 'new accepted revision observed by a poll', counts: { digestRequests: sumOf(newer.digest) - sumOf(open1.digest), deviceWrites: newer.deviceSet - open1.deviceSet }, expectation: 'Refresh affordance only: zero digest requests, zero writes', pass: sumOf(newer.digest) === sumOf(open1.digest) && newer.deviceSet === open1.deviceSet });
     check('V6:new-revision-refresh-affordance-only', requestResults.at(-1)!.pass && (await digestState('page', 'P-digest'))?.to === '6', ['Pinned text unchanged under the reader; no acknowledgement'], requestResults.at(-1));
-    await click('page', H('P-digest', 'digest-refresh'));
+    // Finish the list poll and the shell's New History dot lookup, and put
+    // focus in the guest before measuring the explicit digest refresh. Focus
+    // return and sibling frames may independently read their checkpoints.
+    await guest('page', `d.querySelector('${H('P-digest', 'digest-refresh')}').focus();return true`);
+    await frames2();
+    await flightDone();
+    const pageKeyReads = () => evaluate<number>(`qa.storageLog.filter(r=>r.frame==='page'&&r.scope==='device'&&r.op==='keys').length`);
+    const refreshKeysBefore = await pageKeyReads();
+    await key('Enter');
     await wait('page', `(()=>{const n=d.querySelector('${D('P-digest')}');return n?.dataset.to==='7'})()`, 'refreshed to 7');
     await flightDone();
     const refreshed = await counts();
-    requestResults.push({ interaction: 'one deliberate Refresh digest click', counts: { digestRequests: sumOf(refreshed.digest) - sumOf(newer.digest), checkpointKeyReads: refreshed.deviceKeys - newer.deviceKeys, deviceWrites: refreshed.deviceSet - newer.deviceSet }, expectation: 'one checkpoint read + one digest request, no write', pass: sumOf(refreshed.digest) - sumOf(newer.digest) === 1 && refreshed.deviceKeys - newer.deviceKeys === 1 && refreshed.deviceSet === newer.deviceSet });
+    const refreshReads = (await pageKeyReads()) - refreshKeysBefore;
+    requestResults.push({ interaction: 'one deliberate Refresh digest activation', counts: { digestRequests: sumOf(refreshed.digest) - sumOf(newer.digest), checkpointKeyReads: refreshReads, deviceWrites: refreshed.deviceSet - newer.deviceSet }, expectation: 'one checkpoint read in the active frame + one digest request, no write', pass: sumOf(refreshed.digest) - sumOf(newer.digest) === 1 && refreshReads === 1 && refreshed.deviceSet === newer.deviceSet });
     check('V6:refresh-one-coalesced-sequence', requestResults.at(-1)!.pass, undefined, requestResults.at(-1));
     const ev2 = await guest<Record<string, string>>('page', `const o={};for(const n of d.querySelectorAll('${H('P-digest', 'digest-summary')} li[data-facet]'))o[n.dataset.facet]=n.textContent;return o`);
     check('S2:replay-no-duplicate-events', same(ev2, ev) && fx.revision('P-digest') === 7, ['Replay created no revision; same-status report created a revision with no event'], ev2);
@@ -406,31 +436,37 @@ try {
     const r3 = await guest<{ open: boolean; text: string; link: boolean; group: boolean }>('page', `const e=d.querySelector('${H('P-removal', 'digest-entry-R3')}'),row=d.querySelector('${H('P-removal', 'digest-task-R3')}');return {open:e.open,text:row.textContent,link:!!row.querySelector('[data-testid^="digest-view-"]'),group:!!d.querySelector('${H('P-removal', 'digest-group-removed')} [data-testid="digest-task-R3"]')}`);
     check('S3:removed-task-historical-detail', r3.open && r3.group && !r3.link && /Update download mirrors/.test(r3.text) && /Removed — last Blocked/.test(r3.text) && /Revision 2 → 3/.test(r3.text) && /Last recorded as “Update download mirrors” \(Blocked\)/.test(r3.text) && !/resolved|solved|completed/i.test(r3.text.replace('Recorded changes', '')), ['Removed task: recorded title/status/revision inline, labelled historical, no live link, never called resolved'], r3);
     await shot('page', 'removed-task', H('P-removal', 'digest-group-removed'));
-    // Hide R1 behind a task filter and a closed group, then follow its current-task link.
-    await click('page', TAB('progress'));
-    await progressUi.planOrder('page');
-    await wait('page', `!!d.querySelector('[data-testid="focus-mode-unfinished"] button')`);
-    await click('page', '[data-testid="focus-mode-unfinished"] button');
+    // Hide R1 behind the Unfinished filter, then follow its current-task link.
+    await view('page', 'progress');
+    await click('page', '[data-testid="list-help-filters"] > summary');
+    await click('page', '[data-testid="list-filter-unfinished"] button');
     await wait('page', `d.querySelector('[data-testid="item-R1"]')?.hidden===true`, 'R1 hidden by filter');
-    await click('page', TAB('history'));
+    await view('page', 'history');
     await settled('page', 'P-removal');
+    const revealRequests = await evaluate<number>('qa.requests.length');
+    await guest('page', `w.__viewCurrentClick=false;d.querySelector('${H('P-removal', 'digest-view-R1')}').addEventListener('click',e=>{w.__viewCurrentClick=e.isTrusted},{once:true});return true`);
     await click('page', H('P-removal', 'digest-view-R1'));
-    await wait('page', `d.activeElement?.dataset?.testid==='item-R1'`, 'canonical row focused');
-    const r1 = await guest<{ tab: string | null; mode: string | undefined; open: boolean; notice: string }>('page', `return {tab:d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id??null,mode:d.querySelector('[data-testid="focus-mode"]')?.dataset.mode,open:d.querySelector('[data-testid="group-toggle-M"]').open,notice:d.querySelector('[data-testid="focus-notice"]')?.textContent??''}`);
-    check('S3:surviving-link-reveals-canonical-row', r1.tab === 'progress' && r1.mode === 'all' && r1.open && /Current task from History: Archive old builds/.test(r1.notice), ['Progress tab, filters cleared, ancestors open, canonical row focused'], r1);
+    try { await wait('page', `d.activeElement?.dataset?.testid==='item-R1'`, 'canonical row focused'); }
+    catch (error) {
+      const state = await guest('page', `return {trustedClick:w.__viewCurrentClick,focus:d.activeElement?.dataset.testid??d.activeElement?.tagName,history:!!d.querySelector('${history}'),status:d.querySelector('[data-testid="digest-status"]')?.textContent,list:!!d.querySelector('.ap-tasks[data-complete]')}`);
+      const requests = await evaluate(`qa.requests.slice(${revealRequests}).filter(q=>q.frame==='page').map(q=>q.path)`);
+      throw Error(`${String(error)}: ${JSON.stringify({ ...state, requests })}`);
+    }
+    const r1 = await guest<{ list: boolean; all: boolean; visible: boolean; notice: string }>('page', `return {list:!!d.querySelector('.ap-tasks[data-complete]'),all:d.querySelector('[data-testid="list-filter-all"] button')?.getAttribute('aria-pressed')==='true',visible:!!d.querySelector('[data-testid="item-R1"]')?.getClientRects().length,notice:d.querySelector('[data-testid="focus-notice"]')?.textContent??''}`);
+    check('S3:surviving-link-reveals-canonical-row', r1.list && r1.all && r1.visible && /Current task from History: Archive old builds/.test(r1.notice), ['List view, filters cleared, canonical row visible and focused'], r1);
     // Race: R2 is removed after the digest target, while the current-detail read is held.
-    await click('page', TAB('history'));
+    await view('page', 'history');
     await settled('page', 'P-removal');
     fx.removeSurvivor();
     await wait('page', `!!d.querySelector('${H('P-removal', 'digest-newer')}')`, 'list observed the removal revision', 8000);
     await evaluate(`qa.holds.push({tag:'race',frame:'page',path:'/v1/plan',plan:'P-removal',before:true});true`);
     await click('page', H('P-removal', 'digest-view-R2'));
     await wait('page', `qa.held.some(h=>h.tag==='race')`, 'current detail read held');
-    const waiting = await guest<{ tab: string | null; status: string }>('page', `return {tab:d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id??null,status:d.querySelector('${H('P-removal', 'digest-status')}')?.textContent??''}`);
+    const waiting = await guest<{ tab: string | null; status: string }>('page', `return {tab:d.querySelector('${history}')?'history':null,status:d.querySelector('${H('P-removal', 'digest-status')}')?.textContent??''}`);
     race('S3:link-waits-for-complete-current-detail', waiting.tab === 'history' && /Opening the current task “Rotate signing key”/.test(waiting.status), ['While current detail loads, History stays with a polite progress line'], waiting);
     await evaluate(`qa.release('race')`);
     await wait('page', `/no longer in the current plan/.test(d.querySelector('${H('P-removal', 'digest-status')}')?.textContent??'')`, 'fallback notice', 15_000);
-    const raceRemoval = await guest<{ tab: string | null; row: boolean }>('page', `return {tab:d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id??null,row:!!d.querySelector('${H('P-removal', 'digest-task-R2')}')}`);
+    const raceRemoval = await guest<{ tab: string | null; row: boolean }>('page', `return {tab:d.querySelector('${history}')?'history':null,row:!!d.querySelector('${H('P-removal', 'digest-task-R2')}')}`);
     race('S3:removed-after-target-fallback', raceRemoval.tab === 'history' && raceRemoval.row, ['Task removed after the digest target: polite notice, History and its recorded row kept, no jump'], raceRemoval);
 
     // ------------------------------------------------------------------ S4 switches, hidden, two windows
@@ -447,24 +483,24 @@ try {
     await wait('page', `qa.held.some(h=>h.tag==='account')`);
     const keysBeforeSwitch = await deviceKeys();
     await evaluate(`qa.account='account-other';qa.ready('page');true`);
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id!=='history'&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
+    await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     await evaluate(`qa.release('account')`); await flightDone(); await frames2();
     race('S4:account-switch-held-reply-retired', !(await guest<boolean>('page', `return !!d.querySelector('[data-testid="change-digest"]')`)) && same(await deviceKeys(), keysBeforeSwitch), ['Held reply from the previous account cannot paint or enable controls']);
     await select('page', 'P-digest'); await settled('page', 'P-digest');
     race('S4:other-account-initial', (await digestState('page', 'P-digest'))?.state === 'initial', ['Another account on the same profile starts initial, never borrowing']);
     await evaluate(`qa.account='account-example';qa.ready('page');true`);
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id!=='history'&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
+    await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     // Store switch: same plan ID in another store never borrows the checkpoint.
     await evaluate(`qa.holds.push({tag:'store',frame:'page',path:'/v1/change-digest',plan:'P-digest'});true`);
     await select('page', 'P-digest');
     await wait('page', `qa.held.some(h=>h.tag==='store')`);
     await evaluate(`qa.store=1;true`);
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id!=='history'&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
+    await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     await evaluate(`qa.release('store')`); await flightDone();
     await select('page', 'P-digest'); await settled('page', 'P-digest');
     race('S4:store-switch-isolated', (await digestState('page', 'P-digest'))?.state === 'initial' && /Unrelated task|Second store/.test(await text('page', '[data-testid="plan-detail"]')), ['Same plan ID in another store: initial view, store-1 content only']);
     await evaluate(`qa.store=0;true`);
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id!=='history'&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
+    await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     // Hidden frame: a held refresh released while hidden cannot acknowledge; revalidated on return.
     await select('page', 'P-digest'); await settled('page', 'P-digest');
     const hidKeys = await deviceKeys();
@@ -567,6 +603,7 @@ try {
     const releaseRev = String(fx.revision('P-release'));
     await click('page', '[data-testid="cleanup-archive"] button');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'archived');
+    await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-archived"] button');
     await select('page', 'P-release'); await settled('page', 'P-release');
     const arch = await digestState('page', 'P-release');
@@ -574,6 +611,7 @@ try {
     await shot('page', 'archived-history', '[data-testid="plan-detail"]');
     await click('page', '[data-testid="cleanup-restore"] button');
     await wait('page', `!d.querySelector('${row('P-release')}')`, 'restored');
+    await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-visible"] button');
     await select('page', 'P-release'); await settled('page', 'P-release');
     check('S6:restored-same-baseline', (await digestState('page', 'P-release'))?.after === releaseRev);
@@ -594,8 +632,9 @@ try {
 
     // ------------------------------------------------------------------ S7 reflow, narrow, motion, panel/status
     await theme('dark');
-    await show(['page'], 360);
+    await show(['page'], 1100);
     await select('page', 'P-removal'); await settled('page', 'P-removal');
+    await show(['page'], 360);
     await click('page', `${H('P-removal', 'digest-entry-R3')} > summary`);
     const narrow = await noOverflow('page');
     const reach = await guest<boolean>('page', `const cw=d.documentElement.clientWidth;return ['digest-mark-reviewed','digest-refresh','digest-view-R1'].every(id=>{const n=d.querySelector('${D('P-removal')} [data-testid="'+id+'"]');const r=n.getBoundingClientRect();return r.left>=0&&r.right<=cw&&r.width>0})`);
@@ -607,7 +646,7 @@ try {
     await reenter('page', 'P-removal');
     const reflow = await noOverflow('page');
     // Keyboard reachability at 200%: Tab to Refresh digest and activate it with Space.
-    await guest('page', `d.querySelector('${TAB('history')}').focus();return true`);
+    await guest('page', `d.querySelector('${historyHeading}').focus();return true`);
     let t2 = 0;
     while (t2 < 60 && !(await guest<boolean>('page', `return d.activeElement?.dataset?.testid==='digest-refresh'`))) { await key('Tab'); t2++; }
     const before7 = await counts();
