@@ -7,7 +7,9 @@
 // own synthetic plan and skips every other scenario; the default runs everything else as before.
 // Usage: node --experimental-strip-types tests/browser/change-digests-qa.ts --artifacts <dir> [--built-service] [--chromium <path>] [--only prerequisites]
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { DEVICE_VIEW_KEY, QUIET_VIEW_RECORD } from '../../ui/shared/device-view-state.ts';
 import { boardInput } from './board-qa.ts';
+import { LANGUAGE_KEY } from './interface-language-fixture.ts';
 import { progressInput } from './progress-qa.ts';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -124,6 +126,12 @@ try {
   const H = (plan: string, id: string) => `${D(plan)} [data-testid="${id}"]`;
   const row = (plan: string) => `[data-testid="plan-row-${plan}"][data-source="${SOURCE}"]`;
   const historyHeading = `${history} [data-testid="surface-panel-heading"]`;
+  const more = async (f: string, action: string) => {
+    const item = `[role="menu"]:not([hidden]) [data-menu-id="${action}"]`;
+    await click(f, '[data-testid="more-trigger"]');
+    await wait(f, `d.querySelector('${item}')?.disabled===false`);
+    await click(f, item);
+  };
   const view = async (f: string, kind: 'history' | 'progress') => {
     const back = '[data-testid="surface-panel-back"] button';
     if (await guest(f, `return !!d.querySelector('${back}')`)) {
@@ -134,10 +142,7 @@ try {
     if (kind === 'progress') {
       await click(f, '[data-testid="plan-view-list"] button');
     } else {
-      const item = '[role="menu"]:not([hidden]) [data-menu-id="history"]';
-      await click(f, '[data-testid="more-trigger"]');
-      await wait(f, `!!d.querySelector('${item}')`);
-      await click(f, item);
+      await more(f, 'history');
       await wait(f, `!!d.querySelector('${history}')`);
     }
   };
@@ -145,7 +150,7 @@ try {
   const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${javascriptLiteral(selector)})?.textContent??''`);
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
     if (await guest(f, `return !!d.querySelector('${history}')`)) await view(f, 'progress');
-    await boardInput({ guest, wait, click }).revealPlan(row(plan));
+    await boardInput({ guest, wait, click }, f).revealPlan(row(plan));
     await wait(f, `!!d.querySelector('${row(plan)}')`, `${plan} listed`);
     await click(f, row(plan));
     await wait(f, `!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${SOURCE}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`, `${plan} selected`);
@@ -457,9 +462,10 @@ try {
     // Race: R2 is removed after the digest target, while the current-detail read is held.
     await view('page', 'history');
     await settled('page', 'P-removal');
+    // The paint that offers the newer digest can already request current detail.
+    await evaluate(`qa.holds.push({tag:'race',frame:'page',path:'/v1/plan',plan:'P-removal',before:true});true`);
     fx.removeSurvivor();
     await wait('page', `!!d.querySelector('${H('P-removal', 'digest-newer')}')`, 'list observed the removal revision', 8000);
-    await evaluate(`qa.holds.push({tag:'race',frame:'page',path:'/v1/plan',plan:'P-removal',before:true});true`);
     await click('page', H('P-removal', 'digest-view-R2'));
     await wait('page', `qa.held.some(h=>h.tag==='race')`, 'current detail read held');
     const waiting = await guest<{ tab: string | null; status: string }>('page', `return {tab:d.querySelector('${history}')?'history':null,status:d.querySelector('${H('P-removal', 'digest-status')}')?.textContent??''}`);
@@ -498,7 +504,7 @@ try {
     await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     await evaluate(`qa.release('store')`); await flightDone();
     await select('page', 'P-digest'); await settled('page', 'P-digest');
-    race('S4:store-switch-isolated', (await digestState('page', 'P-digest'))?.state === 'initial' && /Unrelated task|Second store/.test(await text('page', '[data-testid="plan-detail"]')), ['Same plan ID in another store: initial view, store-1 content only']);
+    race('S4:store-switch-isolated', (await digestState('page', 'P-digest'))?.state === 'initial' && /Second store/.test(await text('page', row('P-digest'))), ['Same plan ID in another store: initial view, store-1 title in the selected row']);
     await evaluate(`qa.store=0;true`);
     await wait('page', `!d.querySelector('${history}')&&!d.querySelector('[data-testid="change-digest"]')`, 'selection/UI reset', 10_000);
     // Hidden frame: a held refresh released while hidden cannot acknowledge; revalidated on return.
@@ -527,7 +533,8 @@ try {
     const hiddenReview = await guest<{ review: string | undefined; status: string; mark: string | null }>('page', `return {review:d.querySelector('${D('P-digest')}')?.dataset.review,status:d.querySelector('${H('P-digest', 'digest-status')}')?.textContent??'',mark:d.querySelector('${H('P-digest', 'digest-mark-reviewed')}')?.getAttribute('aria-disabled')}`);
     race('S4:hidden-retires-pending-review', same(await deviceKeys(), hidKeys) && hiddenReview.review === 'idle' && /hidden/.test(hiddenReview.status) && hiddenReview.mark !== 'true', ['Held review preflight released after hide → show dispatched no write; Mark reviewed is available again for a fresh activation'], hiddenReview);
     // Two windows on one profile/account; a third on another profile.
-    await show(['page', 'page2', 'page3'], 400);
+    // Use desktop widths here so each frame exposes its own board rows.
+    await show(['page', 'page2', 'page3'], 1100);
     await select('page2', 'P-digest'); await settled('page2', 'P-digest');
     await select('page3', 'P-digest'); await settled('page3', 'P-digest');
     race('S4:other-profile-initial', (await digestState('page3', 'P-digest'))?.state === 'initial', ['A different device namespace remains initial']);
@@ -561,15 +568,17 @@ try {
     await click('page', H('P-gap', 'digest-refresh'));
     await wait('page', `d.querySelector('${H('P-gap', 'digest-coverage')}')?.dataset.complete==='false'`, 'partial');
     const gapCov = await guest<{ reasons: string; text: string; note: string }>('page', `return {reasons:d.querySelector('${H('P-gap', 'digest-coverage')}').dataset.reasons,text:d.querySelector('${H('P-gap', 'digest-coverage')}').textContent,note:d.querySelector('${H('P-gap', 'digest-review-note')}').textContent}`);
-    check('S5:gap-qualified', /missing-snapshot/.test(gapCov.reasons) && /could be compared/.test(gapCov.text) && /won’t be recovered/.test(gapCov.note), [`Revision ${missing} removed: only the proven suffix is summarized; totals still compared`], gapCov);
+    check('S5:gap-qualified', /missing-snapshot/.test(gapCov.reasons) && gapCov.text.includes('Some earlier changes couldn’t be compared.') && /won’t be recovered/.test(gapCov.note), [`Revision ${missing} removed: only the proven suffix is summarized; totals still compared`], gapCov);
     await shot('page', 'partial-history', D('P-gap'));
     await click('page', H('P-gap', 'digest-mark-reviewed'));
     await wait('page', `d.querySelector('${D('P-gap')}')?.dataset.review==='saved'`, 'partial reviewed explicitly');
     fx.many(140);
-    await wait('page', `!!d.querySelector('${H('P-gap', 'digest-newer')}')`, 'cap newer offered', 8000);
+    const capTarget = fx.revision('P-gap');
+    await wait('page', `d.querySelector('${row('P-gap')}')?.dataset.revision==='${capTarget}'&&!!d.querySelector('${H('P-gap', 'digest-newer')}')`, 'cap newer offered', 8000);
     await click('page', H('P-gap', 'digest-refresh'));
-    await wait('page', `/revision-bound/.test(d.querySelector('${H('P-gap', 'digest-coverage')}')?.dataset.reasons??'')`, 'revision cap qualified', 15_000);
-    check('S5:cap-qualified', /most recent 128 revisions/.test(await text('page', H('P-gap', 'digest-coverage'))), ['More than 128 revisions: bounded and qualified, not zero']);
+    await wait('page', `d.querySelector('${D('P-gap')}')?.dataset.to==='${capTarget}'`, 'digest at capped target', 15_000);
+    const cap = await guest<{ complete?: string; reasons?: string; text: string }>('page', `const n=d.querySelector('${H('P-gap', 'digest-coverage')}');return {complete:n?.dataset.complete,reasons:n?.dataset.reasons,text:n?.textContent??''}`);
+    check('S5:cap-qualified', cap.complete === 'false' && !!cap.reasons?.includes('revision-bound') && cap.text.includes('Some earlier changes couldn’t be compared.'), ['The revision cap is qualified, not presented as zero changes'], cap);
     // Rejected write: failure is announced, never success; prior baseline kept.
     const rejectKeys = await deviceKeys();
     await evaluate(`qa.storageFaults.push({frame:'page',op:'set',code:'DENIED',once:true});true`);
@@ -601,15 +610,15 @@ try {
     await click('page', H('P-release', 'digest-mark-reviewed'));
     await wait('page', `d.querySelector('${D('P-release')}')?.dataset.review==='saved'`);
     const releaseRev = String(fx.revision('P-release'));
-    await click('page', '[data-testid="cleanup-archive"] button');
+    await more('page', 'cleanup-archive');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'archived');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-archived"] button');
     await select('page', 'P-release'); await settled('page', 'P-release');
     const arch = await digestState('page', 'P-release');
-    check('S6:archived-history-inspectable', arch?.state === 'comparison' && arch.after === releaseRev && /No new revisions since you reviewed revision/.test(await text('page', H('P-release', 'digest-coverage'))), ['Archived plan keeps its shared baseline; cleanup changed, progress did not'], arch);
+    check('S6:archived-history-inspectable', arch?.state === 'comparison' && arch.after === releaseRev && (await text('page', H('P-release', 'digest-coverage'))).includes('No changes since your last review.'), ['Archived plan keeps its shared baseline; cleanup changed, progress did not'], arch);
     await shot('page', 'archived-history', '[data-testid="plan-detail"]');
-    await click('page', '[data-testid="cleanup-restore"] button');
+    await more('page', 'cleanup-restore');
     await wait('page', `!d.querySelector('${row('P-release')}')`, 'restored');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-visible"] button');
@@ -619,7 +628,7 @@ try {
     await evaluate(`qa.holds.push({tag:'delete',frame:'page',path:'/v1/change-digest',plan:'P-release'});true`);
     await click('page', H('P-release', 'digest-refresh'));
     await wait('page', `qa.held.some(h=>h.tag==='delete')`);
-    await click('page', '[data-testid="cleanup-delete"] button');
+    await more('page', 'cleanup-delete');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-confirm-delete"] button')`);
     await click('page', '[data-testid="cleanup-confirm-delete"] button');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'deleted', 15_000);
@@ -660,10 +669,13 @@ try {
     await shot('page', 'reflow-history', D('P-removal'));
     await c.send('Emulation.clearDeviceMetricsOverride');
     await show(['panel', 'status'], 360);
-    const surfaces = await evaluate<{ panel: boolean; status: boolean; requests: number; storage: number }>(`({panel:!!frame('panel').contentDocument.querySelector('[data-testid="change-digest"]'),status:!!frame('status').contentDocument.querySelector('[data-testid="change-digest"]'),requests:qa.requests.filter(r=>r.path==='/v1/change-digest'&&(r.frame==='panel'||r.frame==='status')).length,storage:qa.storageLog.filter(l=>l.scope==='device'&&(l.frame==='panel'||l.frame==='status')).length})`);
+    // Language, quiet plans and incomplete counts use their own device
+    // records. Do not count those as checkpoint reads on either surface.
+    const otherDeviceRecords = javascriptLiteral([DEVICE_VIEW_KEY, QUIET_VIEW_RECORD, LANGUAGE_KEY]);
+    const surfaces = await evaluate<{ panel: boolean; status: boolean; requests: number; storage: number }>(`({panel:!!frame('panel').contentDocument.querySelector('[data-testid="change-digest"]'),status:!!frame('status').contentDocument.querySelector('[data-testid="change-digest"]'),requests:qa.requests.filter(r=>r.path==='/v1/change-digest'&&(r.frame==='panel'||r.frame==='status')).length,storage:qa.storageLog.filter(l=>l.scope==='device'&&(l.frame==='panel'||l.frame==='status')&&!${otherDeviceRecords}.includes(l.key)).length})`);
     check('S7:panel-status-unchanged', !surfaces.panel && !surfaces.status && surfaces.requests === 0 && surfaces.storage === 0, ['Rail and Work Status show no digest UI and start no digest or checkpoint work'], surfaces);
     requestResults.push({ interaction: 'whole run: panel/status frames', counts: { digestRequests: surfaces.requests, deviceStorageOps: surfaces.storage }, expectation: 'zero', pass: surfaces.requests === 0 && surfaces.storage === 0 });
-    const getKeys = await evaluate<{ own: boolean; total: number }>(`(()=>{const all={};for(const ns of Object.keys(qa.devices))for(const k of qa.deviceKeys(ns))all[k]=1;const gets=qa.storageLog.filter(l=>l.scope==='device'&&l.op==='get');return {own:gets.every(g=>/^rv1\\.[0-9a-f]{64}\\.\\d+$/.test(g.key)),total:gets.length}})()`);
+    const getKeys = await evaluate<{ own: boolean; total: number }>(`(()=>{const gets=qa.storageLog.filter(l=>l.scope==='device'&&l.op==='get'&&!${otherDeviceRecords}.includes(l.key));return {own:gets.every(g=>/^rv1\\.[0-9a-f]{64}\\.\\d+$/.test(g.key)),total:gets.length}})()`);
     requestResults.push({ interaction: 'whole run: device value reads', counts: { gets: getKeys.total }, expectation: 'only revision-addressed checkpoint keys are fetched (enumeration via one bounded keys() per read)', pass: getKeys.own });
     check('V6:device-reads-bounded', getKeys.own, undefined, getKeys);
   }
