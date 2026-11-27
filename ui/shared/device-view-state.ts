@@ -56,7 +56,8 @@ export class DeviceViewState {
   error: 'read' | 'write' | null = null;
   private storage: LanguageStorage;
   private changed: () => void;
-  constructor(storage: LanguageStorage, changed: () => void) { this.storage = storage; this.changed = changed; }
+  private quietEnabled: boolean;
+  constructor(storage: LanguageStorage, changed: () => void, quietEnabled = true) { this.storage = storage; this.changed = changed; this.quietEnabled = quietEnabled; }
   get canHide() { return this.supported && this.loaded && this.error !== 'read'; }
   get pending() { return this.busy; }
   hidden(key: string) { return this.record.hidden.includes(key); }
@@ -82,15 +83,15 @@ export class DeviceViewState {
           const next = parse(value);
           if (epoch === this.epoch) { this.record = next; this.loaded = true; this.error = null; }
         }).catch(() => { if (epoch === this.epoch) { this.record = empty(); this.error = 'read'; this.loaded = false; } }),
-        Promise.resolve().then(() => this.storage.get(QUIET_VIEW_RECORD, DEVICE)).then(value => {
+        this.quietEnabled ? Promise.resolve().then(() => this.storage.get(QUIET_VIEW_RECORD, DEVICE)).then(value => {
           const next = parseQuiet(value);
           if (epoch === this.epoch) { this.quietHide = next; this.quietError = null; }
-        }).catch(() => { if (epoch === this.epoch) { this.quietHide = true; this.quietError = 'read'; } }),
+        }).catch(() => { if (epoch === this.epoch) { this.quietHide = true; this.quietError = 'read'; } }) : undefined,
       ]);
     } finally { this.busy = false; release(); if (snapshot() !== before) this.changed(); }
   }
   async setQuiet(hide: boolean): Promise<boolean> {
-    if (this.quietSaving) return false;
+    if (!this.quietEnabled || this.quietSaving) return false;
     if (!this.supported) { this.quietHide = hide; this.changed(); return true; }
     const epoch = this.epoch;
     this.quietSaving = true; this.changed();

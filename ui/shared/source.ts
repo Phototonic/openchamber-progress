@@ -1,5 +1,7 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import { PLAN_USER_CANCEL_PATH, type UserCancelRequest } from '../../shared/user-cancel.ts';
+import type { CancelResult } from './plan-user-cancel.ts';
 import type { DetailSnapshot as SharedDetailSnapshot, DetailFailureCause } from '../../shared/summary-types.ts';
 export type { DetailFailureCause } from '../../shared/summary-types.ts';
 import { planGraphQuery, parsePlanGraph } from './adapter.ts';
@@ -9,7 +11,7 @@ import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
   ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
-  cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
+  cleanupBody, parseCleanupReceipt, parseUserCancelReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
   NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
@@ -313,6 +315,25 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
     const body = await call(host, `${ROUTES.plan}/${action}`, undefined, 'POST', cleanupBody(request, action));
     return { ok: true, cleanup: parseCleanupReceipt(body, request, action) };
   } catch (error) { return { ok: false, failure: classify(error) }; }
+}
+
+export async function userCancelCall(host: ServiceHost, request: UserCancelRequest, structuralRev: number): Promise<CancelResult> {
+  try {
+    const body = await call(host, PLAN_USER_CANCEL_PATH, undefined, 'POST', JSON.stringify(request));
+    parseUserCancelReceipt(body, request, structuralRev);
+    return 'success';
+  } catch (error) {
+    if (error instanceof HttpError) {
+      const { status, code } = error;
+      if (status === 409 && ['conflict', 'operation-reused', 'binding', 'closed'].includes(code)) return 'changed';
+      if (status === 409 && code === 'disabled') return 'disabled';
+      if ((status === 409 && code === 'source-unverified') || (status === 404 && code === 'not-found')) return 'ineligible';
+      if ((status === 400 && code === 'invalid') || (status === 401 && code === 'unauthorized') ||
+          (status === 405 && code === 'method-not-allowed') || (status === 413 && code === 'request-too-large') ||
+          (status === 503 && ['busy', 'corrupt', 'schema', 'storage'].includes(code))) return 'refused';
+    }
+    return 'uncertain';
+  }
 }
 
 /** First-page facts only. No partial item, report or link arrays are retained here. */

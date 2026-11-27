@@ -2,6 +2,7 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
+import { PLAN_USER_CANCEL, PLAN_USER_CANCEL_MAX_BYTES, type UserCancelReceipt, type UserCancelRequest } from '../../shared/user-cancel.ts';
 import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import { parseManagedFreshStepProgress, parseManagedStepProgress } from './setup-steps.ts';
@@ -58,8 +59,9 @@ export function parseHealth(body: string): HealthView & { planComposerHandoff?: 
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
+  const userCancel: Pick<HealthView, 'planUserCancel'> = v.ready && v.planUserCancel === PLAN_USER_CANCEL ? { planUserCancel: PLAN_USER_CANCEL } : {};
   const state = v.state === 'starting' || v.state === 'unconfigured' || v.state === 'ready' || v.state === 'refused' ? v.state : undefined;
-  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planCleanupActive === 1 ? { planCleanupActive: 1 as const } : {}), ...userCancel, ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
 }
 
 /**
@@ -503,7 +505,7 @@ export function parseHistoryPage(body: string) {
     envelope: parseEnvelope(v),
     ...page(v, (x): HistoryEntry => {
       check(isRec(x) && isInt(x.revision) && isStr(x.reportedAt), 'History has an unreadable revision.');
-      return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt };
+      return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt, ...(x.lifecycle === 'cancelled' && x.actor === 'user' ? { actor: 'user' } : {}) };
     }, 'History'),
   };
 }
@@ -783,6 +785,18 @@ export function parseCleanupReceipt(body: string, request: CleanupRequest, actio
   const state = action === 'archive' ? 'archived' : action === 'restore' ? 'visible' : 'deleted';
   check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan && v.oid === request.oid && isRec(v.cleanup) && v.cleanup.state === state && v.cleanup.revision === request.cleanupRev + 1, 'The cleanup receipt does not match this action.');
   return { state, revision: request.cleanupRev + 1 };
+}
+
+export function parseUserCancelReceipt(body: string, request: UserCancelRequest, structuralRev: number): UserCancelReceipt {
+  check(body.length <= PLAN_USER_CANCEL_MAX_BYTES && new TextEncoder().encode(body).length <= PLAN_USER_CANCEL_MAX_BYTES, 'The cancellation receipt is too large.');
+  const v: unknown = JSON.parse(body);
+  check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan &&
+    v.oid === request.oid && isInt(v.rev) && v.rev === request.rev + 1 && v.structuralRev === structuralRev &&
+    v.lifecycle === 'cancelled' && v.actor === 'user' && isoInstant(v.reportedAt) &&
+    isRec(v.sourceBinding) && v.sourceBinding.sourceId === request.binding.sourceId && v.sourceBinding.verified === request.binding.verified,
+  'The cancellation receipt does not match this action.');
+  return { storeId: request.storeId, source: request.source, plan: request.plan, oid: request.oid,
+    sourceBinding: { ...request.binding }, rev: v.rev, structuralRev, actor: 'user', lifecycle: 'cancelled', reportedAt: v.reportedAt };
 }
 
 /**

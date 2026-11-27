@@ -292,6 +292,7 @@ startView<Ui>({
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
+  quietSamples: vc => searching(vc)?.page.groups.map(g => g.plan) ?? [],
   quietChanged: vc => {
     search.quietChanged(vc.quiet.hide);
     boardEpoch++;
@@ -724,6 +725,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
   const { env, ui } = vc;
   const epoch = boardEpoch;
   const c = v.criteria;
+  const selected = selectedPlan(vc);
   const board = el('div', `ap-board${selection.mode ? ' ap-selecting' : ''}`);
   board.append(resultsBlock(v, env, {
     selection: selection.mode ? { has: key => selection.has(key), disabled: vc.cleanup.pending, toggle: plan => { if (boardEpoch === epoch) { selection.toggle(plan); selectionChanged(); } } } : undefined,
@@ -731,6 +733,10 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
     openPlan: (hit) => openHit(vc, v, hit, null),
     openTask: (hit) => openHit(vc, v, hit, hit.task),
     quietEmpty: () => quietEmpty(vc),
+    report: plan => {
+      const known = selected?.key === plan.key ? selected : rowPlans.get(plan.key);
+      return known && known.revision > plan.revision ? known : plan;
+    },
     more: () => { toRegion(vc, 'updated'); search.more(); },
     retry: () => { toRegion(vc, 'resumed'); if (v.blocked) runSearch(vc, c); else search.more(); },
     refresh: () => runSearch(vc, c),
@@ -741,7 +747,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
   const detail = testid(el('section', 'ap-detail'), 'plan-detail');
   detail.setAttribute('aria-label', copy(env.locale).detail);
   const request = search.selectedPlan();
-  const plan = selectedPlan(vc);
+  const plan = selected;
   if (plan) detailPane(detail, vc, plan, c.session !== ALL ? c.session : null);
   else if (request && request.key === ui.selected) {
     const d = vc.detail(request);

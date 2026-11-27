@@ -1,5 +1,6 @@
 import * as counts from '../../ui/shared/incomplete-counts.ts';
 import * as quiet from '../../ui/shared/quiet-plans.ts';
+import * as cancellation from '../../ui/shared/plan-user-cancel.ts';
 
 // Controller harnesses stub presentation, but retain the real count derivation.
 // The real indicator DOM and interactions are covered by the rendered driver.
@@ -13,4 +14,5 @@ export const appCountsModules: Record<string, unknown> = {
   './incomplete-counts.ts': counts,
   './incomplete-counts-view.ts': { IncompleteCounts, COUNT_CSS: '' },
   './quiet-plans.ts': quiet,
+  './plan-user-cancel.ts': cancellation,
 };

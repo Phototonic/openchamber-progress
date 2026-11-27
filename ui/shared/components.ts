@@ -19,6 +19,7 @@ import type { DeviceView, IntentRefusal } from './model.ts';
 import { currentIntent, type CurrentIntent } from './intent.ts';
 import { quietCopy, quietDays, quietLabel } from './quiet-plans.ts';
 import type { MoreMenuItem } from './primitives.ts';
+import { cancelCopy } from './plan-user-cancel.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -686,6 +687,7 @@ export class ProgressShell {
     this.menu?.dispose();
     const t = shellCopy(vc.env.locale);
     const detail = plan ? vc.detail(plan) : null;
+    const cancellation = plan ? vc.cancelPlan(plan) : null;
     const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
     const items: MoreMenuItem[] = [], runs = new Map<string, () => void>();
     const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
@@ -710,6 +712,7 @@ export class ProgressShell {
     // Hidden-items owner supplies applicable actions here; bulk cleanup is board-only.
     const menuActions = [...(options.menuActions ?? [])];
     for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
+    if (cancellation?.eligible && !cancellation.confirmation) add('finish-cancelled', cancelCopy(vc.env.locale).action, cancellation.open);
     if (menuActions.length) items.push({ separator: true });
     if (!options.board) {
       items.push({ id: 'quiet-plan-filter', label: quietCopy(vc.env.locale).filter, checked: vc.quiet.hide, disabled: vc.quiet.saving });
@@ -773,6 +776,27 @@ export class ProgressShell {
       if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
     } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
     if (!options.board) { const notice = quietNotice(vc); if (notice) root.append(notice); }
+    const confirmation = cancellation?.confirmation;
+    if (confirmation) {
+      const copy = cancelCopy(vc.env.locale);
+      const box = testid(el('section', 'ap-panel'), 'plan-cancel-confirmation');
+      const heading = el('h3', 'ap-h', copy.heading(confirmation.title));
+      heading.id = 'ap-plan-cancel-heading';
+      box.setAttribute('aria-labelledby', heading.id);
+      box.append(heading, el('p', '', copy.explain));
+      const actions = el('div', 'ap-row');
+      button(actions, 'plan-cancel-keep', copy.keep, confirmation.keep, 'outline', confirmation.pending);
+      button(actions, 'plan-cancel-confirm', copy.action, () => { void confirmation.confirm(); }, 'destructive', confirmation.pending);
+      box.append(actions);
+      if (confirmation.pending) {
+        const status = el('p', 'ap-note', copy.pending);
+        status.setAttribute('role', 'status'); box.append(status);
+      }
+      box.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !confirmation.pending) { e.preventDefault(); e.stopPropagation(); confirmation.keep(); }
+      });
+      root.append(box);
+    }
     if (!this.panel) return false;
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
@@ -1980,8 +2004,8 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);
-    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: String(e.revision) })), el('span', 'ap-muted', kind(i)));
-    if (e.lifecycle !== 'active') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
+    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: String(e.revision) })), el('span', 'ap-muted', e.actor === 'user' ? cancelCopy(env.locale).history : kind(i)));
+    if (e.lifecycle !== 'active' && e.actor !== 'user') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
     li.append(age(e.reportedAt, env));
     ul.append(li);
   }

@@ -15,8 +15,8 @@
 - [x] 3.1 Implement the shared timestamp-only predicate, labels and existing-refresh boundary updates with injected-clock browser-model tests.
 - [x] 3.2 Extend the existing device preference owner with the isolated quiet-filter record, confirmed saves, safe read/write failures, unsupported fallback and normal cross-frame refresh.
 - [x] 3.3 Apply the predicate consistently to rail/board choices, browse/search counts, selection and cleanup scopes; add filtered-empty recovery without narrowing Needs you or changing Work Status.
-- [ ] 3.4 Add More-menu cancellation, bound inline confirmation, fixed errors/uncertain outcomes, user-labelled history and ordinary cache retirement/reconciliation. Test held replies and changed identity before and after dispatch.
-- [ ] 3.5 Translate the design's entire string inventory into English, Russian and Simplified Chinese; update `docs/ui.md` and the short discovery/cancellation explanation in `README.md`.
+- [x] 3.4 Add More-menu cancellation, bound inline confirmation, fixed errors/uncertain outcomes, user-labelled history and ordinary cache retirement/reconciliation. Test held replies and changed identity before and after dispatch.
+- [x] 3.5 Translate the design's entire string inventory into English, Russian and Simplified Chinese; update `docs/ui.md` and the short discovery/cancellation explanation in `README.md`.
 
 ## 4. Integrated acceptance
 

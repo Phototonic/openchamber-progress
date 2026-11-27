@@ -341,7 +341,7 @@ const hitMeta = (plan: SearchPlanView, env: Env) => {
   return parts.join(' · ');
 };
 
-function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
+function groupBlock(g: SearchGroup, env: Env, h: ResultHooks, report: Pick<SearchPlanView, 'lifecycle' | 'reportedAt'>) {
   const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru', zh = language === 'zh-CN';
   const section = testid(el('section', 'ap-hit-group'), `search-group-${g.plan.sourceId}/${g.plan.id}`);
   Object.assign(section.dataset, { source: g.plan.sourceId, plan: g.plan.id });
@@ -352,7 +352,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   Object.assign(head.dataset, { source: g.plan.sourceId, plan: g.plan.id, kind: 'plan' });
   if (h.selected?.key === g.plan.key && !h.selected.item) head.setAttribute('aria-current', 'true');
   head.append(el('span', 'ap-hit-title', g.plan.title), el('span', 'ap-hit-meta', hitMeta(g.plan, env)));
-  const quiet = quietAge(g.plan, env); if (quiet) head.append(quiet);
+  const quiet = quietAge(report, env); if (quiet) head.append(quiet);
   const notes: string[] = [];
   if (g.continued) notes.push(copy.continued);
   if (g.planOnly) notes.push(copy.planMatch);
@@ -401,7 +401,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   return section;
 }
 
-export interface ActionHooks { more: () => void; retry: () => void; refresh: () => void; page: (delta: -1 | 1) => void; removeLocation: (part: LocationPart) => void; clearAll: () => void; quietEmpty?: () => HTMLElement }
+export interface ActionHooks { more: () => void; retry: () => void; refresh: () => void; page: (delta: -1 | 1) => void; removeLocation: (part: LocationPart) => void; clearAll: () => void; quietEmpty?: () => HTMLElement; report?: (plan: SearchPlanView) => Pick<SearchPlanView, 'lifecycle' | 'reportedAt'> }
 
 /** Grouped results for the shown page, with explicit continuation and recovery actions. */
 export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & ActionHooks) {
@@ -448,7 +448,7 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
       nav.append(testid(el('p', 'ap-note', copy.noneYet), 'search-none-yet'));
     }
   }
-  for (const g of v.page.groups) nav.append(groupBlock(g, env, h));
+  for (const g of v.page.groups) nav.append(groupBlock(g, env, h, h.report?.(g.plan) ?? g.plan));
   nav.append(coverageBlock(v, language));
   const actions = testid(el('div', 'ap-row ap-search-actions'), 'search-actions');
   if (v.hasPrevious) button(actions, 'search-prev', copy.previous, () => h.page(-1));
