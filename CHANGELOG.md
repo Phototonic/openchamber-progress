@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [1.6.0] - 2026-11-27
 
-The rail and board can show captured plan documents as read-only previews, hide quiet plans, close plans deliberately, and show recorded activity. Setup can recover a proven interruption during its first save. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+The rail and board can show captured plan documents as read-only previews, hide quiet plans, close plans deliberately, and show recorded activity. Setup can recover a proven interruption during its first save and keep completed setups working after device renumbering. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
 
 ### Added
 
@@ -22,6 +22,7 @@ The rail and board can show captured plan documents as read-only previews, hide 
 
 ### Fixed
 
+- Completed format-3 Setup status with a matching selected binding ignores only the historical device number when checking the store folder and database; inode, birth time, Store ID, source, schema and the other checks remain in force. No journal is rewritten, and Resume, inspection and removal receipts stay strict. A Setup refusal now points to Setup instead of saying Progress is not responding (#195, fixes #191).
 - The board shows one empty message with **Show all plans** when the quiet filter hides every plan; other empty states are unchanged (#182).
 - When Setup finishes but can't read the progress folder's current status, the finished card explains why recording isn't confirmed and keeps **Check status** available (#183).
 - The board keeps bulk cleanup results visible through the refresh of search results or a list with quiet plans hidden. Counting, receipt validation and Undo are unchanged (#184).
