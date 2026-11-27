@@ -3,7 +3,7 @@
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { PLAN_USER_CANCEL, PLAN_USER_CANCEL_MAX_BYTES, type UserCancelReceipt, type UserCancelRequest } from '../../shared/user-cancel.ts';
-import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
+import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanActivityRequest, type PlanActivityRow, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import { parseManagedFreshStepProgress, parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
@@ -508,6 +508,38 @@ export function parseHistoryPage(body: string) {
       return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt, ...(x.lifecycle === 'cancelled' && x.actor === 'user' ? { actor: 'user' } : {}) };
     }, 'History'),
   };
+}
+
+/** GET /v1/history with an inclusive revision boundary, never an offset. */
+export function parsePlanActivity(body: string, r: PlanActivityRequest) {
+  const v: unknown = JSON.parse(body);
+  const invalid = 'The plan activity window is unreadable.';
+  check(isRec(v), invalid);
+  versions(v);
+  const b = v.sourceBinding;
+  check(v.planActivity === 1 && v.storeId === r.storeId && isRec(b) &&
+    b.sourceId === r.binding.sourceId && b.verified === r.binding.verified &&
+    v.source === r.source && v.plan === r.plan && v.cleanupRev === r.cleanupRev, invalid);
+  const count = Math.min(r.through, LIMITS.pageSize);
+  const nextThrough = r.through > count ? r.through - count : null;
+  check(isRevision(r.through) && v.nextThrough === nextThrough && Array.isArray(v.rows) && v.rows.length === count, invalid);
+  const rows = v.rows.map((row, i): PlanActivityRow => {
+    check(isRec(row) && row.revision === r.through - i && isIso(row.reportedAt) &&
+      row.reportedAt.length === 24 && new Date(row.reportedAt).toISOString() === row.reportedAt, invalid);
+    const common = { revision: row.revision, reportedAt: row.reportedAt };
+    if (row.kind === 'user' || row.kind === 'unavailable') {
+      check(Object.keys(row).length === 3, invalid);
+      return { ...common, kind: row.kind };
+    }
+    check(row.kind === 'report' && Object.keys(row).length === 7 && identifier(row.reporterSessionId) &&
+      identifier(row.attributedSessionId) && (row.mode === 'direct' && row.reporterSessionId === row.attributedSessionId ||
+        row.mode === 'parent-relay' && row.reporterSessionId !== row.attributedSessionId) &&
+      Array.isArray(row.itemIds) && row.itemIds.length <= 50 && row.itemIds.every(identifier) &&
+      new Set(row.itemIds).size === row.itemIds.length, invalid);
+    return { ...common, kind: 'report', mode: row.mode, reporterSessionId: row.reporterSessionId,
+      attributedSessionId: row.attributedSessionId, itemIds: row.itemIds };
+  });
+  return { rows, nextThrough };
 }
 
 const FACETS: readonly DigestFacet[] = ['added', 'removed', 'revised', 'completed', 'reopened', 'blocked', 'unblocked', 'skipped', 'unskipped'];

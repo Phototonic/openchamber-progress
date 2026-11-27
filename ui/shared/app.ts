@@ -25,12 +25,13 @@ import { cleanupClosed, cleanupEligible, cleanupMatches, cleanupTarget, initialC
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, projectFor, type LiveSnapshot } from './live.ts';
 import { progressItem, progressTargetState, progressTargetRead, type ProgressItem, type ProgressContextState } from './session-context.ts';
-import type { DocumentBody, HealthView, HistoryEntry, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DocumentBody, HealthView, HistoryEntry, PlanActivityState, PlanActivityView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
+import { LIMITS, type PlanActivityRequest } from '../../shared/progress.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, userCancelCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, userCancelCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readPlanActivity, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { DeviceViewState } from './device-view-state.ts';
 import { quietCopy, quietDays } from './quiet-plans.ts';
@@ -136,6 +137,8 @@ export interface ViewContext<U> {
   requestDocument: (plan: PlanView) => void;
   history: (plan: PlanView) => Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null;
   requestHistory: (plan: PlanView) => void;
+  /** Claim only when painting the selected plan's List. No claim retires the visit. */
+  planActivity: (plan: PlanView) => PlanActivityView | null;
   setup: Loadable<SetupView> | null;
   requestSetup: () => void;
   runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string) => Promise<SetupResult>;
@@ -807,8 +810,50 @@ export function startView<U>(spec: ViewSpec<U>) {
   // (A frame document belongs to one host server; a runtime switch reloads the frame.)
   const memoryKey = (key: string) => `${ctx?.connection?.account ?? ''}|${identity}#${key}`;
 
+  type ActivityVisit = { key: string; revision: number; value: PlanActivityState };
+  let activity: ActivityVisit | null = null;
+  let activityClaimed = false;
+  function claimActivity(vc: ViewContext<U>, p: PlanView): PlanActivityView | null {
+    const target = spec.reading?.(vc), r = vc.read;
+    if (!r || target?.plan !== p.key || document.visibilityState === 'hidden') return null;
+    const request = { storeId: r.storeId, binding: r.binding, source: p.sourceId, plan: p.id, cleanupRev: p.cleanup?.revision ?? 0 };
+    const key = JSON.stringify([ctx?.connection?.account ?? '', identity, target.scope, p.key, request.cleanupRev]);
+    if (activity?.key !== key) activity = { key, revision: p.revision, value: { state: 'closed' } };
+    const visit = activity;
+    visit.revision = p.revision;
+    activityClaimed = true;
+    const live = () => !disposed && activity === visit && document.visibilityState !== 'hidden';
+    const repaint = () => { versions.ui++; schedule(); };
+    return { value: visit.value, act: action => {
+      if (!live()) return;
+      const state = visit.value;
+      if (action === 'close') { visit.value = { state: 'closed' }; repaint(); return; }
+      let through: number, pin: number;
+      if (state.state === 'closed') {
+        if (action !== 'open') return;
+        through = pin = visit.revision;
+      } else {
+        pin = state.pin;
+        if (action === 'retry' && state.state === 'failure') through = state.through;
+        else if (action === 'older' && state.state === 'ready' && state.nextThrough !== null) through = state.nextThrough;
+        else if (action === 'newer' && state.state === 'ready' && state.through < pin) through = Math.min(pin, state.through + LIMITS.pageSize);
+        else return;
+      }
+      const pending = visit.value = { state: 'loading', pin, through };
+      const current = () => live() && visit.value === pending;
+      repaint();
+      void readPlanActivity(guardedHost(current), { ...request, through } satisfies PlanActivityRequest).then(result => {
+        if (!current()) return;
+        visit.value = result.ok ? { state: 'ready', pin, through, rows: result.rows, nextThrough: result.nextThrough }
+          : { state: 'failure', pin, through };
+        repaint();
+      });
+    } };
+  }
+
   const bump = () => { versions.data++; schedule(); };
   const retireParts = () => {
+    activity = null;
     cacheGeneration++; detailQueue = Promise.resolve();
     if (preview) preview = freshPreview(preview.binding, preview.mode);
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key); else if (value.refreshing) details.set(key, { ...value, refreshing: undefined });
@@ -1552,6 +1597,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         bump();
       },
+      planActivity: (p) => claimActivity(view, p),
       setup, requestSetup: loadSetup,
       runSetup: async (action, targets, confirmed, expected) => {
         ++setupSerial;
@@ -1735,7 +1781,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     digests?.beginPaint(); runs?.beginPaint();
     beginInfoPaint(root);
     paintedRuns = null; paintedCensus = null; paintedRunScope = '';
+    activityClaimed = false;
     spec.paint(root, vc);
+    if (!activityClaimed) activity = null;
     if (spec.surface !== 'status' && !root.querySelector('.ap-surface-panel')) {
       incomplete.paint(root, {
         facts: vc.countFacts, store: vc.read?.storeId ?? '',
@@ -2092,6 +2140,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       setupNeedsRefresh = true;
       language.hidden();
       cancellation?.retire();
+      if (activity) { activity = null; versions.ui++; schedule(); }
       html.dataset.apHidden = '';
       digests?.hidden();
       runs?.hidden();
@@ -2107,6 +2156,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;
+    activity = null;
     cancellation?.retire();
     retireSetupSteps();
     language.dispose();
