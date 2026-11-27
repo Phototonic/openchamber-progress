@@ -111,10 +111,26 @@ function restoreNotes(messages: unknown) {
 
 /** Sent after a delivered delegation refusal stops applying. Fixed text. */
 export const CLEARED_REFUSAL = 'Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.';
+const CLEARED_ASSIGNMENT = 'Agent Progress note: the earlier assignment note is no longer current.';
 const NOTE_SEPARATOR = '\n\n';
 const MAX_NOTE_SESSIONS = 128, MAX_NOTE_CARRIERS = 256, MAX_NOTE_BYTES = 128 * 1024;
+interface ChildCapsuleSpan { start: number; end: number; delivery: number }
 /** One delivered note and where it sits. Text is exactly what was added. */
-interface DeliveredNote { key: string; id?: string; index: number; text: string }
+interface DeliveredNote { key: string; id?: string; index: number; text: string; childCapsules?: ChildCapsuleSpan[] }
+function withoutChildCapsules(text: string, spans: ChildCapsuleSpan[], replacement?: ChildCapsuleSpan): string {
+  const kept: string[] = [];
+  let from = 0;
+  for (const span of spans) {
+    // Blank lines around a span are the composition separators, not part of
+    // any surviving note. Rejoin only the nonempty pieces in their old order.
+    const end = span.start - NOTE_SEPARATOR.length;
+    if (end > from) kept.push(text.slice(from, end));
+    if (span === replacement) kept.push(CLEARED_ASSIGNMENT);
+    from = span.end + NOTE_SEPARATOR.length;
+  }
+  if (from < text.length) kept.push(text.slice(from));
+  return kept.join(NOTE_SEPARATOR);
+}
 /** Last delivered standing text and the carrier it went out on. */
 interface Standing { text: string; key: string }
 /**
@@ -277,6 +293,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   const eligibility = new Map<string, Set<string>>(); // latest context, max128 sessions
   const noted = new Set<string>(); // max256 source/session/model-message IDs
   const memories = new Map<string, NoteMemory>(); // delivered context notes; max128 sessions, least recently used first
+  let capsuleDelivery = 0; // capsule order, independent of later hints/refusals on the same carrier
   const owned = Symbol('agent-progress-section');
   // The section is fixed text: it must be byte-identical on every request, or
   // a provider's prompt cache misses from this point on. Anything that varies
@@ -432,6 +449,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || epoch !== disableEpoch) { removeOwned(); return; }
         if (!caller || !control()) { pending.delete(sessionKey); removeOwned(); return; }
         let capsule = '';
+        let childCapsule = false, clearChildCapsules = false;
         // A new note needs a carrier valid for the latest message's role. Without one
         // nothing new is computed or consumed: the hint stays pending and an armed capsule
         // stays armed for the next request that has a carrier. Delivered notes are still
@@ -464,7 +482,12 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
             })]);
             if (identity && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity.sourceId === source.id && identity.sessionId === event.sessionID) {
               const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity.sourceId, sessionId: identity.sessionId, parentId: identity.parentId, ancestry: identity.ancestry });
-              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID) capsule = resumeText(assignedOnly ? {...selection,candidates:selection.candidates.filter(p=>p.scope==='assigned')} : selection, assignedOnly);
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID) {
+                childCapsule = identity.parentId !== null;
+                clearChildCapsules = childCapsule && identity.parentId === caller.parentID && identity.ancestry !== null
+                  && !selection.incomplete && !selection.omitted && selection.candidates.length === 0;
+                capsule = resumeText(assignedOnly ? {...selection,candidates:selection.candidates.filter(p=>p.scope==='assigned')} : selection, assignedOnly);
+              }
             }
           } catch { /* optional recovery faults preserve eligible base guidance */ }
           finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
@@ -507,11 +530,26 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         let latest = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
         // A user identifier shared with a message that already holds a note is not this message's key.
         if (latest?.id !== undefined && placed.has(latest.key) && placed.get(latest.key)!.index !== latest.index) latest = carrierAt(messages, messages.length - 1, true);
+        if (clearChildCapsules) {
+          let replacement: ChildCapsuleSpan | undefined;
+          for (const [noteKey] of placed) {
+            const span = notes.get(noteKey)!.childCapsules?.at(-1);
+            if (span && (!replacement || span.delivery > replacement.delivery)) replacement = span;
+          }
+          for (const [noteKey, note] of notes) {
+            if (!note.childCapsules) continue;
+            const text = withoutChildCapsules(note.text, note.childCapsules, replacement);
+            if (text) notes.set(noteKey, { ...note, text, childCapsules: undefined });
+            else { notes.delete(noteKey); placed.delete(noteKey); }
+          }
+          lastCapsule = undefined;
+        }
         let consumed = false, recorded = false;
         if (!latest) rearm(); // the hint stays pending; an armed capsule stays armed; capsule and refusal are read again next request
         else {
-          const due: string[] = [];
-          if (hint) due.push(hintText(hint));
+          const before = notes.get(latest.key);
+          const hintNote = hint ? hintText(hint) : '';
+          const due: string[] = hintNote ? [hintNote] : [];
           const standing = (last: Standing | undefined, text: string) => !last || last.text !== text || !placed.has(last.key);
           const capsuleDue = !!capsule && standing(lastCapsule, capsule);
           if (capsuleDue) due.push(capsule);
@@ -519,13 +557,17 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
           if (refusalRead === 'read' && standing(lastRefusal, refusal)) refusalDue = refusal;
           else if (refusalRead === 'cleared' && lastReal && placed.has(lastReal.key) && !(lastCleared && placed.has(lastCleared.key))) refusalDue = CLEARED_REFUSAL;
           if (refusalDue !== undefined) due.push(refusalDue);
-          const before = notes.get(latest.key);
           const text = [...(before ? [before.text] : []), ...(due.length ? [due.join(NOTE_SEPARATOR)] : [])].join(NOTE_SEPARATOR);
           if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
             if (due.length) {
               // A later note on a carrier follows the earlier ones; it is also the newest.
+              const capsuleStart = (before ? before.text.length + NOTE_SEPARATOR.length : 0)
+                + (hintNote ? hintNote.length + NOTE_SEPARATOR.length : 0);
+              const childCapsules = capsuleDue && childCapsule
+                ? [...(before?.childCapsules ?? []), { start: capsuleStart, end: capsuleStart + capsule.length, delivery: ++capsuleDelivery }]
+                : before?.childCapsules;
               notes.delete(latest.key);
-              notes.set(latest.key, { key: latest.key, id: latest.id, index: latest.index, text });
+              notes.set(latest.key, { key: latest.key, id: latest.id, index: latest.index, text, childCapsules });
               placed.set(latest.key, latest);
               if (capsuleDue) lastCapsule = { text: capsule, key: latest.key };
               if (refusalDue !== undefined) {
