@@ -46,7 +46,7 @@ function liveFeed(config: { projects: LiveProject[]; sessions: LiveSession[]; wo
   };
 }
 const liveSession = (id: string, projectId = 'proj', directory = '/fixture/proj'): LiveSession => ({ id, title: id, projectId, directory, parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null });
-type Opts = { plans?: PlanSummary[]; item?: unknown; /** Serve the list in cursor pages of this many plans; one page without it. */ pageSize?: number; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
+type Opts = { plans?: PlanSummary[]; item?: unknown; search?: boolean; /** Serve the list in cursor pages of this many plans; one page without it. */ pageSize?: number; live?: { projects: LiveProject[]; sessions: LiveSession[]; worktrees?: { directory: string; name: string; branch: string; status: 'ready' }[] } };
 function frame(surface: 'page' | 'panel', scan = false, active = false, activeCapability = true, extra: Partial<ViewSpec<any>> = {}, opts: Opts = {}) {
   const listeners: Record<string, (v?: any) => void> = {};
   const focusables = new Map<string, { focused: number; tagName: string; focus(): void; querySelector(): null }>();
@@ -83,6 +83,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
   let storeId: string | null = null;
   let lists = 0;
   let refused: string | null = null;
+  let lostReply: string | null = null;
   const markers = new Map<string, unknown>();
   let effectiveScope = 'initial';
   let vc!: ViewContext<{ filter: string }>;
@@ -90,7 +91,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     async serviceRequest(q: { path: string; body?: string; query?: Record<string, string> }) {
       if (q.path === '/health') {
         // The reply is decided when the request arrives, as at a real service.
-        const body = JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}) });
+        const body = JSON.stringify({ ...HEALTH, ...(setupLost ? { ready: false } : {}), ...(capability && !setupLost ? { planCleanup: 1 } : {}), ...(activeCapability ? { planCleanupActive: 1 } : {}), ...(opts.search ? { planTaskSearch: 1 } : {}) });
         if (healthHolds > 0) { healthHolds--; await new Promise<void>(r => { healthWaiting.push(r); }); }
         return { status: 200, body };
       }
@@ -106,6 +107,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
         const request = JSON.parse(q.body!);
         bodies.push(request);
         if (request.plan === refused) return { status: 409, body: '{"error":"conflict"}' };
+        if (request.plan === lostReply) throw new Error('Fixture lost the reply');
         if (holds > 0) { holds--; await new Promise<void>(r => { waiting.push(r); }); }
          return { status: 200, body: JSON.stringify({ ...request, cleanup: { state: q.path.endsWith('archive') ? 'archived' : q.path.endsWith('delete') ? 'deleted' : 'visible', revision: request.cleanupRev + 1 } }) };
       }
@@ -158,6 +160,7 @@ function frame(surface: 'page' | 'panel', scan = false, active = false, activeCa
     failPlans(on: boolean) { plansFail = on; },
     press(target: unknown) { docListeners.pointerdown({ button: 0, target }); },
     refuse(plan: string) { refused = plan; },
+    loseReply(plan: string) { lostReply = plan; },
     addPlan(plan: (typeof plans)[number]) { plans.push(plan); },
     /** Another frame removed the plan from this view: the next list read no longer carries it. */
     dropPlan(id: string) { const at = plans.findIndex(p => p.id === id); if (at >= 0) plans.splice(at, 1); },
@@ -493,6 +496,36 @@ const placed = (extra: Record<string, unknown> = {}) => {
     initialUi: () => ({ filter: 'all', filters: { ...NO_FILTERS }, archived: false, search: null }), wantProjects: () => ['proj'] } as Partial<ViewSpec<any>> };
 };
 const liveReady = (f: ReturnType<typeof frame>) => until(() => !!f.vc?.read && f.vc.live.projectsState === 'ready' && f.vc.live.sessions.get('proj')?.state === 'ready');
+
+for (const search of [true, false]) test(`a mixed selection result survives its own reconciliation (${search ? 'search' : 'browse with a quiet plan'})`, async () => {
+  const p = placed({ ownerOf: () => 'fixture', search: { key: 'search', quietRefreshRequired: false } });
+  pageFunction('isSearching', p.globals);
+  const targets = ['confirmed', 'refused', 'unconfirmed'].map(id => summary(id, [], { lifecycle: 'finished' }));
+  // An unrelated quiet plan also makes the browse scope depend on the loaded list.
+  const plans = search ? targets : [...targets, summary('quiet', [], { lifecycle: 'active', reportedAt: '2000-01-01T00:00:00.000Z' })];
+  const f = frame('page', false, false, true, p.extra, { search, plans });
+  try {
+    await until(() => !!f.vc?.read);
+    if (search) (f.vc as any).setUi({ search: { key: 'search', owner: 'fixture', criteria: NO_FILTERS } });
+    await drain();
+    f.vc.requestSelection('archive', { all: false, plans: f.vc.read!.plans.filter(p => p.lifecycle === 'completed'), includes: () => true });
+    await until(() => f.vc.cleanup.tidy?.confirmation?.targets.length === 3);
+    f.refuse('refused'); f.loseReply('unconfirmed'); f.holdHealth();
+    f.vc.confirmTidy();
+    await until(() => !f.vc.read && !f.vc.cleanup.pending);
+    assert.deepEqual(f.bodies.map(b => b.plan), ['confirmed', 'refused', 'unconfirmed']);
+    const result = f.vc.cleanup.tidy?.result;
+    assert.ok(result, 'clearing the list for reconciliation must not erase the result');
+    assert.equal(cleanup.tidyCopy('en').result(result.succeeded.length, result.total, result.action, result.unconfirmed),
+      '1 of 3 plans archived; 1 skipped; 1 could not be confirmed and may have been archived.');
+    if (!search) f.dropPlan('quiet');
+    await finishRead(f);
+    assert.equal(f.vc.cleanup.tidy?.result, result, 'the result survives adoption of the reconciled list');
+    f.vc.undoTidy();
+    await until(() => f.vc.cleanup.tidy?.result?.action === 'restore');
+    assert.deepEqual(f.bodies.slice(3).map(b => [b.plan, b.cleanupRev]), [['confirmed', 1]]);
+  } finally { f.stop(); }
+});
 
 test('a destructive request only reaches plans still in the displayed scope when it is sent', async () => {
   const config = { projects: [{ id: 'proj', name: 'Proj', directory: '/fixture/proj' }], sessions: [liveSession(S.M), liveSession(S.U)] };

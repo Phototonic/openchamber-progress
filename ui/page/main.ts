@@ -83,6 +83,7 @@ const selection = new PlanSelection();
 let selectionEpoch = 0;
 /** The filters the board displayed when a Tidy/selection was last opened (never while one runs or shows its result). */
 let tidyFilters: Filters | null = null;
+let tidyQuietScope: boolean | string[] = [];
 function selectionChanged() { selectionEpoch++; frame?.updateUi(() => ({})); }
 let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
@@ -355,9 +356,13 @@ startView<Ui>({
   // while a run is in flight or its result is shown: a live-discovery restart or the run's own
   // reconciliation reshapes them without the user changing anything, and each request is re-checked below.
   tidyScope: vc => {
-    if (vc.read && !vc.cleanup.pending && !vc.cleanup.tidy?.result) tidyFilters = isSearching(vc) ? null : derivedBoard(vc).filters;
-    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters, vc.quiet.hide,
-      isSearching(vc) ? search.quietRefreshRequired : quietKeys(vc)]);
+    // Clearing the list for reconciliation must not turn a search into browse or drop its quiet exclusions.
+    if (vc.read && !vc.cleanup.tidy?.result) {
+      const searched = isSearching(vc);
+      if (!vc.cleanup.pending) tidyFilters = searched ? null : derivedBoard(vc).filters;
+      tidyQuietScope = searched ? search.quietRefreshRequired : quietKeys(vc);
+    }
+    return JSON.stringify([vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null, selectionEpoch, tidyFilters, vc.quiet.hide, tidyQuietScope]);
   },
   // Right before each request: the plan must still be placed in the scope the user confirmed (live
   // placement can change without any plan revision changing). Anything else is skipped.
