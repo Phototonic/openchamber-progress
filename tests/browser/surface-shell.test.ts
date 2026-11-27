@@ -12,6 +12,7 @@ import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { P1, P1_ITEMS, plansPage } from './fixtures.ts';
 import * as quiet from '../../ui/shared/quiet-plans.ts';
 import * as cancellation from '../../ui/shared/plan-user-cancel.ts';
+import { pageFunction, pageHook } from './page-hooks.ts';
 
 class Element {
   dataset: Record<string, string> = {}; attributes: Record<string, string> = {};
@@ -177,6 +178,55 @@ test('history dot uses only an existing older device review point, never a diges
     assert.equal(f.menus.at(-1).label, 'More');
     assert.equal(f.checkpointReads.length, 1);
   }
+});
+test('View current task in the History panel schedules a paint and reveals only after current detail', () => {
+  const { shell, vc, plan, menus } = fixture();
+  let activate: ((item: string, title: string) => void) | undefined;
+  let notice = '', needsPaint = false;
+  const revealed: string[] = [];
+  const task = P1_ITEMS.find(item => item.kind === 'task')!;
+  vc.ctx.features.deviceStorage = false;
+  vc.ui = { tab: 'document' };
+  vc.setUi = (patch: object) => { Object.assign(vc.ui, patch); needsPaint = true; };
+  vc.retry = () => {}; // An unchanged service refresh doesn't invalidate the paint.
+  vc.requestHistory = () => {};
+  vc.history = () => null;
+  vc.digest = () => ({ announce: (text: string) => { notice = text; needsPaint = true; } });
+  const copy = { opening: (title: string) => `Opening ${title}`, historyTask: (title: string) => title };
+  const globals = {
+    shell, pendingTask: null, shownDigest: null, copy: () => copy,
+    messages: { en: copy, ru: copy, 'zh-CN': copy }, said: (en: string) => en,
+    el: (tag: string) => new Element(tag), reporting: {}, ownerOf: () => 'fixture',
+    visiblePlans: () => [plan], readingScope: () => 'fixture', isSearching: () => false, selectedPlan: () => plan,
+    compactInbox: null, hiddenInboxAction: () => [], historyBlock: () => new Element('div'),
+    digestBlock: (_panel: unknown, _env: unknown, action: typeof activate) => { activate = action; return new Element('div'); },
+    chooseTab: (_vc: unknown, tab: string) => vc.setUi({ tab }),
+    revealCurrentTask: (_article: unknown, _plan: unknown, item: string) => revealed.push(item),
+  };
+  pageFunction('surface', globals);
+  pageFunction('currentTask', globals);
+  const { surface, currentTask } = globals as typeof globals & {
+    surface: (root: Element, context: unknown, plan: unknown) => boolean;
+    currentTask: (root: unknown, context: unknown) => void;
+  };
+  const wantDetails = pageHook('wantDetails', globals);
+  surface(new Element('div'), vc, plan);
+  menus.at(-1).onSelect('history');
+  surface(new Element('div'), vc, plan);
+  needsPaint = false;
+  activate!(task.id, task.title);
+  assert.ok(needsPaint, 'the action must not depend on a changed plan list to request current detail');
+  assert.equal(notice, `Opening ${task.title}`);
+  assert.equal(wantDetails(vc)[0], plan);
+  currentTask(null, vc);
+  assert.equal(shell.activePanel, 'history', 'keep History open until detail is ready');
+  vc.detail = () => ({ state: 'ready', value: { revision: plan.revision, items: P1_ITEMS } });
+  currentTask(null, vc);
+  assert.equal(shell.activePanel, null);
+  assert.equal(vc.ui.tab, 'progress');
+  const article = { dataset: { testid: `plan-${plan.id}`, source: plan.sourceId }, querySelector: () => ({}) };
+  currentTask({ querySelectorAll: () => [article] }, vc);
+  assert.deepEqual(revealed, [task.id]);
 });
 test('panel state is frame-local and resets on plan or authority changes', () => {
   const f = fixture(); f.paint(f.plan); f.menus.at(-1).onSelect('sessions');
