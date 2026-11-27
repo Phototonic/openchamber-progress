@@ -389,8 +389,9 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
 
 /** Surface-owned More menu. Native rows, roving focus, type-ahead and a radio submenu.
  * It owns no reads or persistence; the caller supplies the device-language controller. */
+export type MoreMenuItem = MenuItem | { id: string; label: string; checked: boolean; disabled?: boolean; destructive?: boolean };
 export function moreMenu(options: {
-  label: string; items: MenuItem[]; onSelect: (id: string) => void;
+  label: string; newHistory?: boolean; items: MoreMenuItem[]; onSelect: (id: string) => void;
   languageLabel: string; automatic: string; unsupported: string; languageStatus?: string;
   language: { preference: string; supported: boolean; pending: boolean; choose: (value: 'auto' | 'en' | 'ru' | 'zh-CN') => void };
 }) {
@@ -406,54 +407,92 @@ export function moreMenu(options: {
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
   trigger.append(icon('more'));
+  const dot = node('span', 'ap-history-dot');
+  dot.dataset.testid = 'more-history-dot';
+  dot.setAttribute('aria-hidden', 'true');
   const popup = node('div', 'ap-more-popup');
   popup.dataset.testid = 'more-popup';
   popup.setAttribute('role', 'menu');
   popup.setAttribute('aria-label', options.label);
   popup.hidden = true;
   holder.append(trigger, popup); root.append(holder);
-  let items = options.items, submenu = false, prefix = '', typedAt = 0, painting = false;
+  let submenu = false, prefix = '', typedAt = 0, painting = false, disposed = false;
+  let movedFocus: Element | null = null;
+  let rendered = new Map<string, HTMLElement>();
   const rows = () => [...popup.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not(:disabled)')];
-  const focus = (index: number) => { const all = rows(); if (!all.length) return; const row = all[(index + all.length) % all.length]; all.forEach(r => r.tabIndex = r === row ? 0 : -1); row.focus(); };
+  const rove = (row: HTMLButtonElement | undefined) => {
+    for (const b of popup.querySelectorAll('button')) b.tabIndex = b === row ? 0 : -1;
+  };
+  const focus = (index: number) => { const all = rows(); if (!all.length) return; const row = all[(index + all.length) % all.length]; rove(row); row.focus(); };
   const close = (restore = false) => {
+    movedFocus = null;
     popup.hidden = true; trigger.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', outside, true);
     if (restore) trigger.focus({ preventScroll: true });
   };
   const outside = (e: Event) => { if (!(e.target instanceof Node) || !root.contains(e.target)) close(); };
   const paint = () => {
-    // Removing the focused parent row while entering the submenu fires focusout
-    // synchronously. That is internal navigation, not departure from the menu.
+    // Removing or disabling a row can fire focusout synchronously. Neither
+    // internal submenu navigation nor a paint counts as leaving the menu.
     painting = true;
     popup.setAttribute('aria-label', submenu ? options.languageLabel : options.label);
-    popup.replaceChildren();
-    const row = (id: string, label: string, run: () => void, disabled = false, checked?: boolean) => {
-      const b = node('button', 'ap-more-row', label); b.type = 'button'; b.tabIndex = -1;
-      b.dataset.menuId = id; b.dataset.testid = `more-${id}`; b.disabled = disabled;
-      b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemradio');
-      if (checked !== undefined) b.setAttribute('aria-checked', String(checked));
-      b.addEventListener('click', run); popup.append(b);
-      return b;
+    const next = new Map<string, HTMLElement>();
+    const row = (id: string, label: string, run: () => void, disabled = false, checked?: boolean, role = 'menuitem', destructive = false) => {
+      const key = `row:${id}`;
+      const b = (rendered.get(key) as HTMLButtonElement | undefined) ?? node('button', 'ap-more-row');
+      if (b.textContent !== label) b.textContent = label;
+      b.type = 'button';
+      b.dataset.menuId = id; b.dataset.testid = role === 'menuitemcheckbox' ? id : `more-${id}`;
+      // Disabling the active row can defer the browser's blur until after
+      // this paint. Release it under the guard before disabling it instead.
+      if (disabled && b === document.activeElement) b.blur();
+      b.disabled = disabled; b.setAttribute('role', role);
+      if (checked === undefined) b.removeAttribute('aria-checked');
+      else b.setAttribute('aria-checked', String(checked));
+      if (id === 'language') b.setAttribute('aria-haspopup', 'menu');
+      b.toggleAttribute('data-destructive', destructive);
+      b.onclick = () => { if (!popup.hidden && rendered.get(key) === b) run(); };
+      next.set(key, b);
+    };
+    const note = (key: string, text: string) => {
+      const p = rendered.get(key) ?? node('p', 'ap-note');
+      if (key === 'status') p.setAttribute('role', 'status');
+      if (p.textContent !== text) p.textContent = text;
+      next.set(key, p);
     };
     if (submenu) {
       row('language-back', '‹ ' + options.label, () => { submenu = false; paint(); focus(rows().findIndex(r => r.dataset.menuId === 'language')); });
       for (const [id, label] of [['auto', options.automatic], ['en', 'English'], ['ru', 'Русский'], ['zh-CN', '简体中文']] as const) {
-        row(`language-${id}`, label, () => { close(true); options.language.choose(id); }, !options.language.supported || options.language.pending, options.language.preference === id);
+        row(`language-${id}`, label, () => { close(true); options.language.choose(id); }, !options.language.supported || options.language.pending, options.language.preference === id, 'menuitemradio');
       }
-      if (!options.language.supported) popup.append(node('p', 'ap-note', options.unsupported));
-      if (options.languageStatus) { const status = node('p', 'ap-note', options.languageStatus); status.setAttribute('role', 'status'); popup.append(status); }
-    } else for (const item of items) {
-      if ('separator' in item) { const line = node('div', 'ap-more-separator'); line.setAttribute('role', 'separator'); popup.append(line); continue; }
-      const b = row(item.id, item.label, () => {
-        if (item.id === 'language') { submenu = true; paint(); focus(0); }
-        else { close(true); options.onSelect(item.id); }
-      }, item.disabled);
-      if (item.id === 'language') b.setAttribute('aria-haspopup', 'menu');
-      if (item.destructive) b.dataset.destructive = '';
+      if (!options.language.supported) note('unsupported', options.unsupported);
+      if (options.languageStatus) note('status', options.languageStatus);
+    } else {
+      let separator = 0;
+      for (const item of options.items) {
+        if ('separator' in item) {
+          const key = `separator:${separator++}`;
+          const line = rendered.get(key) ?? node('div', 'ap-more-separator');
+          line.setAttribute('role', 'separator'); next.set(key, line);
+          continue;
+        }
+        const checked = 'checked' in item;
+        row(item.id, item.label, () => {
+          if (item.id === 'language') { submenu = true; paint(); focus(0); }
+          else { close(true); options.onSelect(item.id); }
+        }, item.disabled, checked ? item.checked : undefined, checked ? 'menuitemcheckbox' : 'menuitem', item.destructive);
+      }
     }
+    for (const [key, child] of rendered) if (!next.has(key)) child.remove();
+    let cursor = popup.firstChild;
+    for (const child of next.values()) {
+      if (child === cursor) cursor = cursor.nextSibling;
+      else popup.insertBefore(child, cursor);
+    }
+    rendered = next;
     painting = false;
   };
-  const open = (last = false) => { submenu = false; prefix = ''; paint(); popup.hidden = false; trigger.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); focus(last ? rows().length - 1 : 0); };
+  const open = (last = false) => { if (disposed) return; submenu = false; prefix = ''; paint(); popup.hidden = false; trigger.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); focus(last ? rows().length - 1 : 0); };
   trigger.addEventListener('click', () => popup.hidden ? open() : close());
   trigger.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(e.key === 'ArrowUp'); } });
   root.addEventListener('focusout', e => { if (painting || (e.relatedTarget instanceof Node && root.contains(e.relatedTarget))) return; close(); });
@@ -470,7 +509,39 @@ export function moreMenu(options: {
       if (match) focus(all.indexOf(match));
     }
   });
-  return { root, trigger, update: (next: MenuItem[]) => { items = next; if (!popup.hidden) paint(); }, dispose: () => close() };
+  return {
+    root,
+    setOptions(next: typeof options) {
+      options = next;
+      trigger.setAttribute('aria-label', options.label);
+      if (options.newHistory && !dot.parentNode) trigger.append(dot);
+      else if (!options.newHistory) dot.remove();
+    },
+    mount(parent: HTMLElement) {
+      // The shell is built off-document. Preserve the menu across this internal
+      // move and let the frame's normal focus restoration run after connection.
+      const active = document.activeElement;
+      movedFocus = root.contains(active) ? active : null;
+      painting = true;
+      parent.append(root);
+      painting = false;
+    },
+    refresh() {
+      const active = document.activeElement;
+      const ownsFocus = document.hasFocus();
+      const focused = root.contains(active) ? active : active === document.body ? movedFocus : null;
+      movedFocus = null;
+      if (popup.hidden) return;
+      const previous = focused ?? popup.querySelector('[tabindex="0"]');
+      paint();
+      const enabled = rows();
+      const target = enabled.find(row => row === previous) ?? enabled[0];
+      rove(target);
+      const landing = focused === trigger ? trigger : target;
+      if (focused && landing && ownsFocus && document.activeElement !== landing) landing.focus({ preventScroll: true });
+    },
+    dispose() { close(); disposed = true; },
+  };
 }
 
 /** `neutral`: a muted ⓘ mark, for a qualification that is routine rather than a warning. */

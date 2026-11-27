@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {type Binding,verifyStore} from '../shared/binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {activationFingerprint} from '../shared/activation.ts';
-import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile} from '../shared/managed-binding.ts';
+import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile,managedDefaultStoreRoot} from '../shared/managed-binding.ts';
 import {windows,windowsPaths,privatePaths,isOwned} from '../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_STEP_LIMITS,type ManagedInspection,type ManagedCaptureObservation,type ManagedStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedReview} from '../shared/progress.ts';
@@ -261,11 +261,16 @@ function freshDiscovery(env:NodeJS.ProcessEnv,s:ManagedFreshInspectionSession) {
 }
 /** Fresh read-only Store observation; missing storage is allowed ONLY before its
  * completion. Exact initialization can reconcile from the retained creation intent. */
-export function observeManagedFreshStore(j:ManagedFreshStepJournal):ManagedCaptureObservation {
+export function observeManagedFreshStore(j:ManagedFreshStepJournal,mode:'strict'|'selected-status'='strict'):ManagedCaptureObservation {
   const m=j.migration,f=m.fresh,dir=managedFreshObjectClaim(path.dirname(j.database),true),db=managedFreshObjectClaim(j.database);
   const sidecars=f.sidecars.map(c=>managedFreshObjectClaim(c.path));
   const expectedDir=m.created.directory??f.directory,expectedDb=m.created.database??f.database;
-  need(canonical(dir)===canonical(expectedDir),'managed-migration-conflict');
+  // Only completed status may compare against historical evidence without the
+  // device number. This projection is never saved or used for step validation.
+  const ignoreDevice=mode==='selected-status'&&m.state==='complete';
+  const comparable=(object:ManagedPathClaim['object'])=>ignoreDevice&&object?{...object,device:'0'}:object;
+  const directory=(claim:ManagedPathClaim)=>({...claim,object:comparable(claim.object)});
+  need(canonical(directory(dir))===canonical(directory(expectedDir)),'managed-migration-conflict');
   if(db.kind==='absent'){
     need(expectedDb.kind==='absent'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
     if(dir.kind==='directory')need(readdirSync(dir.path).length===0,'foreign-files');
@@ -273,7 +278,7 @@ export function observeManagedFreshStore(j:ManagedFreshStepJournal):ManagedCaptu
   }
   const initialized=expectedDb.kind==='absent';
   if(initialized)need(m.intent?.step.name==='create-store'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
-  else need(canonical(db.object)===canonical(expectedDb.object),'managed-migration-conflict');
+  else need(canonical(comparable(db.object))===canonical(comparable(expectedDb.object)),'managed-migration-conflict');
   const store=new Store(j.database,{readOnly:true});
   try{
     store.subagentRunStorage();const e=store.list({limit:1});need(e.storeId===j.storeId,'managed-source-conflict');
@@ -315,7 +320,7 @@ export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,paylo
 export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string):ManagedFreshInspectionResult {
   let s:ManagedFreshInspectionSession;
   if(!prior){
-    const roots=managedSourceRoots(env),selected=storeRoot??path.join(roots.dataRoot,'openchamber-progress');
+    const roots=managedSourceRoots(env),selected=storeRoot??managedDefaultStoreRoot(roots.dataRoot);
     batch([...basePaths(roots),selected]);const target=managedPath(selected,true);
     need(![roots.configRoot,roots.dataRoot,path.join(roots.dataRoot,'agent-progress-managed')].includes(target),'managed-selection-conflict');
     for(const root of Object.values(roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');

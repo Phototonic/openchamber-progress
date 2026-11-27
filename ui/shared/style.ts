@@ -111,6 +111,7 @@ button{font:inherit}
 .ap-group>summary .ap-count{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
 .ap-group>ul{margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
 summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-doc-markdown:focus-visible,.ap-doc-markdown a:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-tasks-h:focus{outline:none}
 /* Owning headings: programmatic focus targets of a hand-off (never Tab stops), so focus shows on :focus */
 .ap-region-h{margin:0;padding:2px 4px;font-size:13px;font-weight:600;color:var(--oc-fg);border-radius:4px}
@@ -337,7 +338,24 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-doc{display:flex;flex-direction:column;gap:6px}
 .ap-doc>summary,.ap-doc-title{cursor:pointer;width:fit-content;font-weight:600;font-size:12px}
 .ap-doc-title{cursor:default}
-.ap-doc pre{margin:6px 0 2px;padding:12px;border-radius:8px;background:var(--oc-muted-surface);font:11.5px/1.6 var(--oc-mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;tab-size:2}
+.ap-doc [data-testid=document-text]{margin:6px 0 2px;padding:12px;border-radius:8px;background:var(--oc-muted-surface);overflow-wrap:anywhere;max-height:420px;overflow:auto;min-width:0}
+.ap-doc pre{font:11.5px/1.6 var(--oc-mono);white-space:pre-wrap;tab-size:2}
+.ap-doc-markdown{line-height:1.6}
+.ap-doc-markdown > :first-child{margin-top:0}
+.ap-doc-markdown > :last-child{margin-bottom:0}
+.ap-doc-markdown :is(p,ul,ol,blockquote,pre,table){margin-block:0.55em}
+.ap-doc-markdown :is(h1,h2,h3,h4,h5,h6){font-weight:700;line-height:1.3;margin-block:0.8em 0.35em}
+.ap-doc-markdown h1{font-size:1.45em}
+.ap-doc-markdown h2{font-size:1.25em}
+.ap-doc-markdown :is(ul,ol){padding-inline-start:1.5em}
+.ap-doc-markdown ul{list-style:disc}
+.ap-doc-markdown ol{list-style:decimal}
+.ap-doc-markdown .ap-doc-task{list-style:none}
+.ap-doc-task input{margin:0 0.45em 0 0;vertical-align:middle;opacity:1}
+.ap-doc-markdown code{font-family:var(--oc-mono)}
+.ap-doc-markdown blockquote{margin-inline:0;border-inline-start:2px solid var(--oc-border);padding-inline-start:0.75em}
+.ap-doc-markdown :is(th,td){padding:0.2em 0.4em;border:1px solid var(--oc-border)}
+.ap-doc-markdown a{color:var(--oc-primary-text,var(--oc-fg));text-decoration:underline;cursor:pointer}
 .ap-note{font-size:11.5px;color:var(--oc-muted)}
 .ap-empty{padding:28px 0 12px}
 
@@ -375,6 +393,20 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-history-row{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--oc-border);font-size:12px}
 .ap-history-rev{font-weight:600;font-variant-numeric:tabular-nums}
 .ap-history-row time{margin-left:auto;color:var(--oc-muted);font-size:11.5px}
+.ap-activity{margin-block-start:12px;border-block-start:1px solid var(--oc-border);padding-block-start:8px}
+.ap-activity-toggle,.ap-activity-button{min-height:28px;max-width:100%;font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:5px;text-align:start;cursor:pointer}
+.ap-activity-toggle{display:inline-flex;align-items:center;gap:8px;padding:2px 6px}
+.ap-activity-toggle::before{content:"";flex:none;width:6px;height:6px;border-inline-end:1.5px solid currentColor;border-block-end:1.5px solid currentColor;transform:rotate(-45deg)}
+.ap-activity-toggle[aria-expanded="true"]::before{transform:rotate(45deg)}
+.ap-activity-body:not([hidden]){display:flex;flex-direction:column;gap:6px}
+.ap-activity-controls{display:flex;flex-wrap:wrap;gap:6px}
+.ap-activity-button{padding:2px 8px;border-color:var(--oc-border);font-size:12px}
+.ap-activity-button[aria-disabled="true"]{color:var(--oc-muted);cursor:default}
+.ap-activity button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-activity button:not([aria-disabled="true"]):hover{background:var(--oc-hover)}
+.ap-activity .ap-history-row{overflow-wrap:anywhere}
+.ap-activity .ap-history-row>span:not(:first-child){flex-basis:100%}
+@media(pointer:coarse){.ap-activity button{min-height:44px}}
 
 /* Setup */
 .ap-setup{display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -519,7 +551,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 .ap-panel-h:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 .ap-panel .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
-.ap-panel .ap-doc pre{background:var(--oc-bg)}
+.ap-panel .ap-doc [data-testid=document-text]{background:var(--oc-bg)}
 /* One compact session row; the Sessions panel holds every participant */
 .ap-sessions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 12px;padding-top:10px;border-top:1px solid var(--oc-border)}
 .ap-sessions .ap-people{flex:1 1 14rem;min-width:0}
@@ -755,7 +787,7 @@ ${PHONE_CSS}
 .ap-surface-settings{display:flex;justify-content:flex-end}
 .ap-surface-panel{display:flex;flex-direction:column;gap:14px}
 .ap-surface-panel>.ap-h{text-transform:none;letter-spacing:0;font-size:15px}
-.ap-surface-view-switch{display:flex;gap:2px;align-items:center}
+.ap-surface-view-switch{display:flex;flex-wrap:wrap;gap:2px;align-items:center}
 .ap-surface-view-switch button:focus-visible,.ap-more .ap-actions-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
 .ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5}
 .ap-progress-line .ap-seg{order:0}

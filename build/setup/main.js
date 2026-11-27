@@ -40,10 +40,10 @@ var writerTargets;
 function requirePlatformWriteBoundary(headroomMs = 0) {
   requestBudget?.require(headroomMs);
 }
-function requirePlatformStoreFence(database) {
+function requirePlatformStoreFence(database, dataRoot) {
   requestBudget?.require();
   const targets = requestBudget?.writerFence ? requestBudget.writerFence.targets ?? [] : writerTargets;
-  if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
+  if (targets && (!targets.includes(writerTarget("store", path.dirname(database))) || dataRoot !== undefined && !targets.includes(writerTarget("scope", dataRoot))))
     throw new PlatformError("managed-step-conflict");
 }
 function windowsPath(value, allowMissing = false) {
@@ -2251,6 +2251,22 @@ function delegationRevision(db, binding, intent) {
   return revision;
 }
 
+// shared/user-cancel.ts
+var PLAN_USER_CANCEL_MAX_BYTES = 16384;
+var USER_CANCEL_ACTOR = { kind: "user", action: "cancel" };
+var record = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+var integer2 = (v, min) => typeof v === "number" && Number.isSafeInteger(v) && v >= min;
+function parseUserCancel(v) {
+  requireProgress(record(v) && Object.keys(v).length === 8);
+  const { storeId, binding, source, plan: plan2, rev, cleanupRev, oid, confirmed } = v;
+  requireProgress(identifier(storeId) && identifier(source) && identifier(plan2) && identifier(oid));
+  requireProgress(integer2(rev, 1) && integer2(cleanupRev, 0) && confirmed === true);
+  requireProgress(record(binding) && Object.keys(binding).length === 2);
+  const { sourceId, verified } = binding;
+  requireProgress((sourceId === null || identifier(sourceId)) && typeof verified === "boolean");
+  return { storeId, binding: { sourceId, verified }, source, plan: plan2, rev, cleanupRev, oid, confirmed };
+}
+
 // shared/document-comparison.ts
 var CAPTURE_LIMITS = {
   rows: 128,
@@ -2389,11 +2405,11 @@ function compareCaptureText(before, after) {
 }
 
 // shared/document-captures.ts
-var integer2 = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var integer3 = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
 var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
 var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
 function head(db, binding, r) {
-  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer2(r.cleanupRev));
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer3(r.cleanupRev));
   requireProgress(r.binding && same(binding, r.binding), "conflict");
   const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
   requireProgress(meta.store_id === r.storeId, "conflict");
@@ -2405,7 +2421,7 @@ function head(db, binding, r) {
       CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
     END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
   requireProgress(row2, "not-found");
-  requireProgress(integer2(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(integer3(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
   requireProgress(row2.snapshot_id === r.plan && row2.snapshot_source === r.source && row2.snapshot_revision === row2.revision, "corrupt");
   const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
   requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
@@ -2419,7 +2435,7 @@ function head(db, binding, r) {
   requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
   for (const key of ["path", "canonicalPath"])
     requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
-  requireProgress(doc.captureId === undefined || integer2(doc.captureId, 1), "corrupt");
+  requireProgress(doc.captureId === undefined || integer3(doc.captureId, 1), "corrupt");
   requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
   return {
     identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
@@ -2433,7 +2449,7 @@ var projection = `id, revision,
  CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
  CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
 function entry(row2) {
-  requireProgress(integer2(row2.id, 1) && integer2(row2.revision, 1) && identifier(row2.source) && identifier(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
+  requireProgress(integer3(row2.id, 1) && integer3(row2.revision, 1) && identifier(row2.source) && identifier(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
   return { id: row2.id, revision: row2.revision, hash: row2.hash, capturedAt: row2.captured_at, path: row2.canonical_path };
 }
 function decodeCursor(raw, r) {
@@ -2444,7 +2460,7 @@ function decodeCursor(raw, r) {
   } catch {
     requireProgress(false);
   }
-  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer2(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer2(c.revision, 1) && integer2(c.before, 1) && c.before <= c.ceiling + 1);
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer3(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer3(c.revision, 1) && integer3(c.before, 1) && c.before <= c.ceiling + 1);
   const i = c.identity;
   requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
   return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
@@ -2452,7 +2468,7 @@ function decodeCursor(raw, r) {
 function captureIndex(db, binding, r, cursor) {
   const h = head(db, binding, r);
   const max = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
-  requireProgress(integer2(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
+  requireProgress(integer3(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
   const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max, revision: h.current.revision, before: max + 1 };
   requireProgress(c.revision <= h.current.revision, "conflict");
   const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
@@ -2484,7 +2500,7 @@ function captureIndex(db, binding, r, cursor) {
   return out;
 }
 function captureComparison(db, binding, r, before, after) {
-  requireProgress(integer2(before, 1) && integer2(after, 1) && before <= after);
+  requireProgress(integer3(before, 1) && integer3(after, 1) && before <= after);
   const h = head(db, binding, r);
   const read = (id) => {
     const row2 = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id, r.source, r.plan);
@@ -2840,6 +2856,10 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
 // shared/store.ts
 function digest(value) {
   return createHash5("sha256").update(value).digest("hex");
+}
+var userCancelActor = JSON.stringify(USER_CANCEL_ACTOR);
+function activityTime(value) {
+  return typeof value === "string" && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -3485,19 +3505,39 @@ class Store {
       const p = this.raw(source, id);
       requireProgress(p, "not-found");
       const start = page * LIMITS.pageSize;
-      const rows = this.db.prepare(`SELECT ${snapshotBytes === undefined ? "payload" : "CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload"} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source, id, LIMITS.pageSize + 1, start);
+      const rows = snapshotBytes === undefined ? this.db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(source, id, LIMITS.pageSize + 1, start) : this.db.prepare(`
+            SELECT r.revision, r.actor=? AS user_cancel, c.revision AS contribution_revision,
+              CASE WHEN length(CAST(c.payload AS BLOB))<=16384 THEN c.payload END AS payload
+            FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+            WHERE r.source=? AND r.plan=? AND r.revision>? ORDER BY r.revision LIMIT ?
+          `).all(userCancelActor, source, id, start, LIMITS.pageSize + 1);
       if (snapshotBytes !== undefined)
-        requireProgress(rows.every((r) => typeof r.payload === "string"), "storage");
+        for (const [i, r] of rows.entries()) {
+          requireProgress(r.revision === start + i + 1, "conflict");
+          if (r.user_cancel === 1)
+            requireProgress(r.contribution_revision === null, "conflict");
+          else {
+            requireProgress(r.contribution_revision !== null, "conflict");
+            requireProgress(typeof r.payload === "string", "storage");
+          }
+        }
+      const contributions = [], userCancelRevisions = [];
+      for (const r of rows.slice(0, LIMITS.pageSize)) {
+        if (r.user_cancel === 1)
+          userCancelRevisions.push(Number(r.revision));
+        else
+          contributions.push(JSON.parse(String(r.payload)));
+      }
       return {
         ...this.metadata(),
-        ...snapshotBytes === undefined ? {} : { assembly: { itemCount: p.items.length } },
+        ...snapshotBytes === undefined ? {} : { assembly: { itemCount: p.items.length, userCancelRevisions } },
         plan: this.summary(p),
         links: p.links,
         items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
           const { blocker, ...item } = i;
           return p.lifecycle === "active" && i.kind === "task" && i.status === "blocked" && validBlockerAnnotation(blocker, p.revision) ? { ...item, blocker } : item;
         }), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
-        contributions: { data: rows.slice(0, LIMITS.pageSize).map((r) => JSON.parse(String(r.payload))), nextCursor: rows.length > LIMITS.pageSize ? String(page + 1) : null }
+        contributions: { data: contributions, nextCursor: rows.length > LIMITS.pageSize ? String(page + 1) : null }
       };
     });
   }
@@ -3525,11 +3565,74 @@ class Store {
     return this.transaction(false, () => {
       requireProgress(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       requireProgress(this.raw(source, id), "not-found");
-      const rows = this.db.prepare("SELECT snapshot FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(source, id, limit + 1, cursor);
+      const rows = this.db.prepare("SELECT snapshot, actor=? AS user_cancel FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(userCancelActor, source, id, limit + 1, cursor);
       return { ...this.metadata(), data: rows.slice(0, limit).map((r) => {
         const p = JSON.parse(String(r.snapshot));
-        return { revision: p.revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt };
+        const attribution = r.user_cancel === 1 ? { actor: "user" } : {};
+        return { revision: p.revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, ...attribution };
       }), nextCursor: rows.length > limit ? String(cursor + limit) : null };
+    });
+  }
+  planActivity(source, plan2, through) {
+    requireProgress(identifier(source) && identifier(plan2) && Number.isSafeInteger(through) && through > 0);
+    return this.transaction(false, () => {
+      const live = this.db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(source, plan2);
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan2) : undefined;
+      requireProgress(live && cleanup2?.state !== "deleted", "not-found");
+      const cleanupRev = cleanup2?.generation ?? 0;
+      requireProgress(graphInteger(live.revision, 1) && graphInteger(cleanupRev), "corrupt");
+      requireProgress(through <= live.revision);
+      const oldest = Math.max(1, through - LIMITS.pageSize + 1);
+      const revisions = this.db.prepare(`
+        SELECT r.revision, r.actor=? AS user_cancel,
+          CASE WHEN length(json_extract(r.snapshot,'$.reportedAt'))=24 THEN json_extract(r.snapshot,'$.reportedAt') END AS recorded_at,
+          CASE WHEN length(json_extract(r.actor,'$.sessionId'))<=80 THEN json_extract(r.actor,'$.sessionId') END AS reporter,
+          json_extract(r.actor,'$.sourceId')=r.source AS matching_actor_source,
+          json_extract(r.actor,'$.sessionId')=json_extract(r.snapshot,'$.sessionId') AS coordinator,
+          json_extract(r.snapshot,'$.lifecycle')='cancelled' AS cancelled,
+          CASE WHEN json_extract(r.snapshot,'$.id')=r.plan AND json_extract(r.snapshot,'$.sourceId')=r.source
+            AND json_extract(r.snapshot,'$.revision')=r.revision THEN 1 END AS matching_snapshot,
+          c.revision AS contribution_revision,
+          CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS contribution
+        FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+        WHERE r.source=? AND r.plan=? AND r.revision BETWEEN ? AND ?
+        ORDER BY r.revision DESC
+      `).all(userCancelActor, LIMITS.requestBytes, source, plan2, oldest, through);
+      requireProgress(revisions.length === through - oldest + 1, "corrupt");
+      const rows = revisions.map((r, i) => {
+        const revision = through - i;
+        requireProgress(r.revision === revision && r.matching_snapshot === 1, "corrupt");
+        if (r.user_cancel === 1 || r.contribution_revision === null) {
+          requireProgress(r.contribution_revision === null && (r.user_cancel !== 1 || r.cancelled === 1) && activityTime(r.recorded_at), "corrupt");
+          return { revision, reportedAt: r.recorded_at, kind: r.user_cancel === 1 ? "user" : "unavailable" };
+        }
+        requireProgress(typeof r.contribution === "string", "corrupt");
+        const c = JSON.parse(r.contribution);
+        requireProgress(graphRecord(c) && c.revision === revision && activityTime(c.reportedAt) && identifier(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.matching_actor_source === 1 && identifier(c.attributedSessionId) && (c.mode === "direct" && c.reporterSessionId === c.attributedSessionId || c.mode === "parent-relay" && r.coordinator === 1 && c.reporterSessionId !== c.attributedSessionId) && Array.isArray(c.itemIds) && c.itemIds.length <= 50 && c.itemIds.every(identifier) && new Set(c.itemIds).size === c.itemIds.length, "corrupt");
+        return {
+          revision,
+          reportedAt: c.reportedAt,
+          kind: "report",
+          mode: c.mode,
+          reporterSessionId: c.reporterSessionId,
+          attributedSessionId: c.attributedSessionId,
+          itemIds: c.itemIds
+        };
+      });
+      const storeId = this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id;
+      requireProgress(identifier(storeId), "corrupt");
+      return {
+        protocolVersion: VERSION,
+        schemaVersion: VERSION,
+        planActivity: 1,
+        storeId,
+        sourceBinding: { ...this.readBinding },
+        source,
+        plan: plan2,
+        cleanupRev,
+        rows,
+        nextThrough: oldest === 1 ? null : oldest - 1
+      };
     });
   }
   changeDigest(request) {
@@ -3640,6 +3743,70 @@ class Store {
       }
       result.complete = !!baseline && newer.revision === after;
       return capDigest(result);
+    });
+  }
+  cancelPlan(value) {
+    requireProgress(!this.readOnly, "storage");
+    const r = parseUserCancel(value);
+    const hash3 = digest(canonical(["plan-user-cancel-v1", r]));
+    return this.transaction(true, () => {
+      const meta = this.db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+      requireProgress(meta, "corrupt");
+      const sourceBinding = { ...this.readBinding };
+      requireProgress(meta.store_id === r.storeId && sourceBinding.sourceId === r.binding.sourceId && sourceBinding.verified === r.binding.verified, "binding");
+      requireProgress(sourceBinding.verified && r.source === sourceBinding.sourceId && this.db.prepare("SELECT verified FROM sources WHERE id=?").get(r.source)?.verified === 1, "source-unverified");
+      requireProgress(meta.enabled === 1, "disabled");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
+      const p = this.raw(r.source, r.plan);
+      requireProgress(p, "not-found");
+      const replay = this.db.prepare("SELECT payload_hash,CASE WHEN length(CAST(receipt AS BLOB))<=? THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(PLAN_USER_CANCEL_MAX_BYTES, r.source, r.plan, r.oid);
+      const receiptFor = (rev, structuralRev, reportedAt) => ({
+        storeId: r.storeId,
+        sourceBinding,
+        source: r.source,
+        plan: r.plan,
+        oid: r.oid,
+        rev,
+        structuralRev,
+        lifecycle: "cancelled",
+        actor: "user",
+        reportedAt
+      });
+      if (replay) {
+        requireProgress(replay.payload_hash === hash3, "operation-reused");
+        requireProgress(typeof replay.receipt === "string", "corrupt");
+        let saved;
+        try {
+          saved = JSON.parse(replay.receipt);
+        } catch {
+          throw new ProgressError("corrupt");
+        }
+        requireProgress(saved && saved.rev === r.rev + 1 && Number.isSafeInteger(saved.rev) && typeof saved.structuralRev === "number" && Number.isSafeInteger(saved.structuralRev) && saved.structuralRev >= 1 && saved.structuralRev <= r.rev && typeof saved.reportedAt === "string" && Number.isFinite(Date.parse(saved.reportedAt)) && new Date(saved.reportedAt).toISOString() === saved.reportedAt, "corrupt");
+        const receipt2 = receiptFor(saved.rev, saved.structuralRev, saved.reportedAt);
+        requireProgress(canonical(saved) === canonical(receipt2), "corrupt");
+        return receipt2;
+      }
+      requireProgress((cleanup2?.generation ?? 0) === r.cleanupRev && p.revision === r.rev, "conflict", p.revision);
+      requireProgress(["active", "finished", "failed", "cancelled"].includes(p.lifecycle), "corrupt");
+      requireProgress(p.lifecycle === "active", "closed");
+      requireProgress(p.revision < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(p.structuralRevision) && p.structuralRevision >= 1 && p.structuralRevision <= p.revision, "corrupt");
+      p.revision++;
+      p.lifecycle = "cancelled";
+      p.reportedAt = new Date().toISOString();
+      for (const item of p.items) {
+        delete item.blocker;
+        if (item.assignmentBinding)
+          item.assignmentBinding.validAtRevision = p.revision;
+      }
+      const snapshot = JSON.stringify(p);
+      const updated = this.db.prepare("UPDATE plans SET revision=?,snapshot=? WHERE source=? AND id=? AND revision=?").run(p.revision, snapshot, r.source, r.plan, r.rev);
+      requireProgress(updated.changes === 1, "corrupt");
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(r.source, r.plan, p.revision, snapshot, userCancelActor);
+      const receipt = receiptFor(p.revision, p.structuralRevision, p.reportedAt);
+      this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)").run(r.source, r.plan, r.oid, hash3, JSON.stringify(receipt));
+      return receipt;
     });
   }
   apply(value, actor, capture, child, binding) {
@@ -4264,7 +4431,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.2";
+var RELEASE = "1.6.0";
 
 // setup/cli.ts
 try {

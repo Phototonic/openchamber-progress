@@ -1,0 +1,78 @@
+name: Rendered browser drivers
+on:
+  schedule:
+    - cron: '43 4 * * 2'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to test
+        required: false
+        type: string
+        default: dev
+permissions:
+  contents: read
+jobs:
+  rendered:
+    name: Render Agent Progress in Chromium
+    # Ubuntu 22.04 lets the standalone browser sandbox use user namespaces
+    # without changing Ubuntu 24.04's AppArmor policy or disabling the sandbox.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Get source code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'dev' }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.19.0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Provision Chromium (Chrome for Testing)
+        run: |
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 \
+            --output "$RUNNER_TEMP/chromium.zip" \
+            'https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.18/linux64/chrome-linux64.zip'
+          printf '%s  %s\n' 'c6cb06e1574ac2f6c5c38e31551157fbcaa67e6366c89974084553c5a5772592' \
+            "$RUNNER_TEMP/chromium.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/chromium.zip" -d "$RUNNER_TEMP/chromium"
+          chromium="$RUNNER_TEMP/chromium/chrome-linux64/chrome"
+          "$chromium" --version
+          printf 'CHROMIUM_PATH=%s\nARTIFACTS=%s\n' \
+            "$chromium" "$RUNNER_TEMP/browser-driver-artifacts" >> "$GITHUB_ENV"
+      - name: Install project dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Build runtime entries
+        run: bun run build:all
+      - name: Preview summaries
+        run: timeout -k 5 120 node --experimental-strip-types tests/browser/preview-summaries-qa.ts --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/preview-summaries"
+      - name: Interface language and reading
+        run: timeout -k 5 120 node --experimental-strip-types tests/browser/interface-language-reading-qa.ts --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/interface-language-reading"
+      - name: Change digests
+        run: timeout -k 5 180 node --experimental-strip-types tests/browser/change-digests-qa.ts --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/change-digests"
+      - name: Change digest prerequisites
+        # The full driver skips the P:B1–B5 scenarios.
+        run: timeout -k 5 180 node --experimental-strip-types tests/browser/change-digests-qa.ts --only prerequisites --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/change-digests-prerequisites"
+      - name: Quiet plans
+        run: timeout -k 5 120 node --experimental-strip-types tests/browser/quiet-plans-qa.ts --source --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/quiet-plans"
+      - name: Plan activity
+        run: timeout -k 5 120 node --experimental-strip-types tests/browser/plan-activity-qa.ts --source --chromium "$CHROMIUM_PATH" --artifacts "$ARTIFACTS/plan-activity"
+      - name: Cleanup
+        run: bash scripts/run-cleanup-qa.sh "$CHROMIUM_PATH" "$ARTIFACTS/cleanup"
+      - name: Upload rendered driver screenshots and results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rendered-browser-driver-evidence
+          path: |
+            ${{ runner.temp }}/browser-driver-artifacts/**/*.png
+            ${{ runner.temp }}/browser-driver-artifacts/**/*results.json
+          if-no-files-found: ignore
+          retention-days: 7

@@ -149,12 +149,36 @@ for(const fixture of ['empty','empty-custom','retained-off','retained-on','retai
       assert.equal(p.state,'pending');assert.deepEqual(p.step,current.step);
     };
     if(fixture==='empty')await pauseResume('before-store');
+    let initialStage:string|undefined;
+    const journal=path.join(managed,'migration.json');
+    if(custom){
+      phase='seed-first-save-pair';await running.stop();
+      const bytes=fs.readFileSync(journal),first=fs.statSync(journal,{bigint:true});
+      initialStage=`${journal}.stage-prepare-${createHash('sha256').update(bytes).digest('hex')}`;
+      fs.linkSync(journal,initialStage);
+      const retained=()=>{
+        const stage=fs.statSync(initialStage!,{bigint:true}),primary=fs.statSync(journal,{bigint:true});
+        assert.ok(first.ino!==0n);assert.equal(stage.ino,first.ino);assert.equal(primary.ino,first.ino);
+        assert.equal(stage.dev,first.dev);assert.equal(primary.dev,first.dev);assert.equal(stage.nlink,2n);assert.equal(primary.nlink,2n);
+        assert.deepEqual(fs.readFileSync(initialStage!),bytes);assert.deepEqual(fs.readFileSync(journal),bytes);
+      };
+      running=await nativeService(env,observe);retained();
+      const reopened=await request('/v1/setup',undefined,'fresh-reopen-first-save',{expectedStatus:200});
+      assert.equal(reopened.value.configured,false);assert.equal(reopened.value.captureEnabled,null);
+      assert.deepEqual(reopened.value.delivery.freshProgress,p);retained();
+      p=reopened.value.delivery.freshProgress;
+    }
     const completed=['prepare'];
     for(let i=0;p.state!=='complete'&&i<MANAGED_FRESH_STEPS.length;i++){
       const current=p;assert.ok(current.step);assert.equal(current.step.batch,0);
       const body:ManagedFreshStepRequest={version:2,action:'advance',operationId,expectedSequence:p.sequence,step:current.step};
       p=(await step(body,current.step.name)).value.progress!;
       assert.equal(p.operationId,operationId);assert.equal(p.sequence,current.sequence+1);assert.deepEqual(p.lastCompleted,current.step);assert.deepEqual(p.plan,review.plan);completed.push(current.step.name);
+      if(initialStage){
+        assert.equal(current.step.name,'store-directory');assert.equal(fs.existsSync(initialStage),false);
+        assert.equal(fs.statSync(journal).nlink,1);assert.equal(fs.existsSync(database),false);
+        initialStage=undefined;
+      }
       if(retained){assert.equal(capture(),initialCapture);assert.deepEqual(historySnapshot(newSource?review.sourceId:undefined),history);}
       else if(fs.existsSync(database))assert.equal(capture(),['enable','reconcile'].includes(current.step.name),'new capture stays off until the explicit enable');
       if(fixture==='empty'&&current.step.name==='create-store'){

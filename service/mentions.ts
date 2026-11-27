@@ -56,12 +56,18 @@ async function resolveFrom(store:Pick<Store,'mentionDetail'>,key:string,alive:()
     const pin=identity(first);if(pinned!==undefined)need(pin===pinned,'conflict');pinned=pin;
     need(first.plan.cleanup?.state!=='archived','not-found');
     const items:Item[]=[],contributions:Contribution[]=[];
+    const userCancelRevisions=new Set<number>();
     let page=first,mixed=false,itemNext=true,contribNext=true;
     for(let n=0;n<120;n++){
       check();need(identity(page)===pin,'conflict');need(page.plan.cleanup?.state!=='archived','not-found');
       if(page.plan.revision!==first.plan.revision||JSON.stringify(page.plan.cleanup??null)!==JSON.stringify(first.plan.cleanup??null)){mixed=true;break;}
       bytes+=Buffer.byteLength(JSON.stringify(page));need(bytes<=16*1024*1024,'storage');
-      if(itemNext)items.push(...page.items.data);if(contribNext)contributions.push(...page.contributions.data);
+      if(itemNext)items.push(...page.items.data);
+      if(contribNext){
+        need(page.assembly,'conflict');
+        contributions.push(...page.contributions.data);
+        for(const revision of page.assembly.userCancelRevisions)userCancelRevisions.add(revision);
+      }
       need(items.length<=1000,'storage');
       const itemCursor:string|null=itemNext?page.items.nextCursor:null,contribCursor:string|null=contribNext?page.contributions.nextCursor:null;
       itemNext=itemCursor!==null;contribNext=contribCursor!==null;
@@ -75,9 +81,15 @@ async function resolveFrom(store:Pick<Store,'mentionDetail'>,key:string,alive:()
     need(validateDigestSnapshot({...p,items,links:first.links},source,id,p.revision)!==null,'conflict');
     need(first.assembly?.itemCount===items.length,'conflict');
     const counts=countItems(items);need((Object.keys(counts) as (keyof typeof counts)[]).every(k=>counts[k]===p.counts[k]),'conflict');
-    // Every committed progress revision has exactly one contribution; neutral receipts
-    // do not advance the revision. A prematurely ended contribution stream is not complete.
-    need(contributions.length===p.revision&&contributions.every((c,n)=>c.revision===n+1&&['direct','parent-relay'].includes(c.mode)),'conflict');
+    // Cover every revision with either a report or a Store-verified user cancellation.
+    need(contributions.length+userCancelRevisions.size===p.revision,'conflict');
+    let revision=1;
+    for(const c of contributions){
+      while(userCancelRevisions.has(revision))revision++;
+      need(c&&c.revision===revision++&&['direct','parent-relay'].includes(c.mode),'conflict');
+    }
+    while(userCancelRevisions.has(revision))revision++;
+    need(revision-1===p.revision,'conflict');
     const plan:SummaryInput['plan']={key,id,sourceId:source,title:p.title,ownerSessionId:p.sessionId,revision:p.revision,lifecycle:p.lifecycle==='finished'?'completed':p.lifecycle,reportedAt:p.reportedAt,counts:p.counts,cleanup:p.cleanup,document:p.document};
     const input:SummaryInput={ok:true,plan,snapshot:{plan:{...plan,counts:p.counts},identity:{storeId:first.storeId,binding:first.sourceBinding,sourceId:source,planId:id},captureEnabled:first.captureEnabled,diagnostics:first.diagnostics},detail:{key,revision:p.revision,items,contributions}};
     const sourceState=!first.sourceBinding.verified||first.sources.find(s=>s.id===source)?.verified!==true?'unverified':first.sourceBinding.sourceId===source?'bound':'other';

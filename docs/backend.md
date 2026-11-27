@@ -241,9 +241,12 @@ unambiguous verified bound-source directory records establish project locality.
 Resolve permits **120 pages per attempt, three revision restarts, 16 MiB cumulative
 detail and an 8-second cooperative deadline**, checked between awaited pages.
 Store, binding, source/key, revision, cleanup and complete items/contributions
-must agree. Missing/archived/deleted or incomplete targets refuse. No document,
-history or timing reads, schema changes, cache, new Store lifetime or mutation are
-introduced. Background actions reuse existing guest scoped-list/detail readers.
+must agree. Mention detail pages seek revision keys and left-join contributions;
+only the fixed server-authored user-cancel marker accounts for a revision
+without a contribution. Unexplained gaps still refuse, including after reopening.
+Missing/archived/deleted or incomplete targets refuse. Resolve does not read
+historical snapshots, documents or timing data. Background actions reuse existing
+guest scoped-list/detail readers.
 
 Focused proof (synthetic SQLite and real authenticated HTTP):
 
@@ -537,7 +540,16 @@ The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber
 publication with compare-before-replacement. Reads reject unsupported state,
 foreign scope, hard links, retained publication stages and old configuration
-locks. Post-write validation rereads the filesystem and reuses no earlier result. These helpers do **not** admit a Store or authorize a saved
+locks. Setup and managed-step status have one separate read-only observation:
+the first no-clobber journal checkpoint, verified against its byte-derived
+staging name and both native link identities. Only an explicit matching step
+request can settle it, after current consent/target checks and acquisition of
+both scope and Store writer slots. A bounded routing hint can find a custom Store
+after restart, but only the fenced worker can authorize unlinking. Settlement
+removes the one verified sibling and rereads through the ordinary reader;
+ordinary admission and all other publication refusals stay in place. See the
+[recovery table and test outcomes](../setup/managed-steps.md#bootstrap-recovery-and-retained-limitations).
+Post-write validation rereads the filesystem and reuses no earlier result. These helpers do **not** admit a Store or authorize a saved
 claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
 Cold progress projection reports capture as unknown unless supplied a fresh
 observation. Both journal families are integrated through the same worker/fence;
@@ -698,6 +710,18 @@ current revision, never silently rebasing. Groups and unknown IDs keep the
 ordinary task-ID recovery hint. Omission retains ordinary finish behavior;
 children cannot finish or relay a finish. No schema, receipt format or protocol
 version changes. See [atomic coordinator finish](contracts.md#atomic-coordinator-finish).
+
+The authenticated [user cancellation route](contracts.md#quiet-plans-and-user-cancellation-additive-revision-1)
+uses fresh Store admission and a separate `Store.cancelPlan` write transaction,
+not the agent report path. It verifies the reviewed store and bound source,
+recording, cleanup and progress pins. It appends one ordinary revision and a
+receipt without opening the source file or writing a session contribution. Closing
+clears current blockers, not task statuses or prior snapshots. The revision actor
+is server-authored and history projects only the fixed user discriminator.
+Cancellation and agent operations share the receipt key but use separate hash
+domains. Replay cannot bypass authority or archive/delete fences or close a
+reopened plan again. Dispatch binding cannot cross a closed revision: the active
+lifecycle and complete intervening-revision proof are still required.
 
 Moving a session preserves plan identity and contributions. Each report refreshes
 authoritative location metadata without changing the bound document path. If the
@@ -1068,15 +1092,21 @@ then the oldest) keeps each delivered note with its carrier (tool: call identifi
 position and a digest of the original output; user: message identifier, else
 position and a digest of the original content) and adds the same bytes in the same
 place on every later request that still holds the carrier, so each request begins
-with the previous one and a provider's cache entry written at the end of the latest
-message is read again. The comparison with the last delivery and the memory update
-run in one synchronous step after the request's last wait. A capsule or refusal is
-delivered again only when its text changed or its last carrier is absent (compaction,
+with the previous one when no note is retired. The comparison with the last
+delivery and the memory update run in one synchronous step after the request's
+last wait. A capsule or refusal is delivered again only when its text changed or
+its last carrier is absent (compaction,
 revert, eviction, restart, fork); a timeout adds nothing. A refusal that stops
 applying gets one fixed cleared line, only after a successful complete read that
 finds none while the last real refusal delivered is still in the request with its
 note (an incomplete empty read delivers the existing omission text, which is not a
-refusal), and again if its carrier is later gone while the refusal's is not. The
+refusal), and again if its carrier is later gone while the refusal's is not.
+A complete read that confirms no eligible assignments remain for the verified
+child, without omissions, is the exception to unchanged replay: it retires all
+remembered child capsules, whether or not their carriers are present. If any
+would be replayed, the latest delivery still present is replaced in place by one
+neutral line. Other notes and stored messages are unchanged. The outgoing prefix
+changes where the old text is removed, so cache reuse is not guaranteed there. The
 memory entry for a session is created only when a note is recorded, and recorded
 only after the notes were added to the request. Every path that removes the section
 removes every added note; the memory is cleared only by capture off or unavailable,
@@ -1873,6 +1903,23 @@ Historical continuation queues persist across companion reload and consume the
 same bounded bookkeeping budget. A producer lease qualifies restart recovery,
 not activity liveness. The timer performs no native scan for an empty queue;
 ignored cancellation still occupies a physical host slot until settlement.
+
+## Plan activity read
+
+`Store.planActivity` seeks an inclusive range of at most 20 keys on the
+`revisions` primary key, descending, and left-joins `contributions` on
+`(source, plan, revision)` in the same read transaction. It projects metadata,
+not full snapshots or the raw actor. The report clock comes from the
+contribution: an automatic binding can preserve the older plan clock. For
+the fixed user-cancel actor (same predicate as History) or an absent
+contribution, the time comes from the revision snapshot. An absent
+contribution is not a cancellation; a malformed or mismatched contribution
+or a gapped range refuses the window. Contribution input is size-admitted
+before materialization; the normal service response ceiling still applies.
+
+Ordinary History takes its existing offset path without the join. Activity
+reads retained data from archived and capture-disabled plans without writes,
+schema installation, detail traversal, capture bytes or host session reads.
 
 ## Plan graph read
 

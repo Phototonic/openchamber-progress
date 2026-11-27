@@ -161,6 +161,7 @@ test('the reopen guidance limits the stop-reporting rule to closed and not-found
   for(const file of ['plugin/SKILL.md','plugin/index.ts']){
     const text=fs.readFileSync(file,'utf8').replace(/\s+/g,' ');
     assert.match(text,/`?closed`? while in progress or on a reopen/,file);
+    assert.match(text,/cancelled, archived or deleted it\. Stop reporting to it; do not retry, reopen or recreate it unless the user specifically asks/,file);
     assert.match(text,/`?conflict`? or `?stage-incomplete`? is recoverable/,file);
     assert.match(text,/stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at/,file);
     assert.doesNotMatch(text,/use a fresh upload ID, because/,file);

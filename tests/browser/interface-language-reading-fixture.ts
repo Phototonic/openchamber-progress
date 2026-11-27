@@ -23,12 +23,14 @@ export async function startReadingFixture() {
     apply('P-reading', { op: 'bind', source: '/fixture/plan.md', confirm: false }, '# Reading example\nNew line\n');
     apply('P-reading', { op: 'change', changes: [{ id: 'B', status: 'blocked' }] }, '# Reading example\nNew line\n');
     apply('P-history', { op: 'start', title: 'Historical example', items: Array.from({ length: 21 }, (_, i) => ({ id: `H${i}`, title: `Historical task ${i}`, kind: 'task', status: 'pending' })) });
-    const seedSubagents = () => {
+    const seedSubagents = async () => {
       backend.store.installSubagentRuns();
       const runKey = { source, parent: S.M, message: 'reading-message', call: 'reading-call' };
       backend.store.beforeRun(runKey, actor, 'subagent', { description: 'Reading helper' }, Date.now() - 60000);
       backend.store.afterRun(runKey, backend.store.runControl().generation, { ...actor, sessionId: S.C1, parentId: S.M, ancestry: [S.M] }, 'returned');
       backend.store.runCaptureUnavailable();
+      // The built service observes installed run tables at startup.
+      await backend.restart();
     };
     const service: NonNullable<Parameters<typeof startLanguageFixture>[0]>['service'] = async (q) => {
       if (q.path === '/v1/extension-update' || q.path === '/v1/setup') return { status: 404, body: '{"error":"not-found"}' };

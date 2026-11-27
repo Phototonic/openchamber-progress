@@ -23,6 +23,14 @@ export const SETUP_CSS = `
 .ap-setup-details>summary:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
 .ap-setup-details[open]{display:flex;flex-direction:column;gap:8px}
 .ap-setup-details .ap-fresh-steps{font-size:12px}
+.ap-setup-status-details{border-top:1px solid var(--oc-border)}
+.ap-setup-status-details>summary{color:var(--oc-fg);font-weight:600}
+.ap-setup-status-details>:not(summary){max-inline-size:72ch;overflow-wrap:anywhere}
+.ap-setup-status-details[open]>p+p,.ap-setup-status-details[open]>p+.ap-setup-disclose{margin-block-start:6px}
+.ap-setup .ap-setup-guidance{font-size:13px;max-inline-size:66ch}
+.ap-setup-recording{color:var(--oc-fg);font-weight:600}
+.ap-setup-folder-default{overflow-wrap:anywhere;margin-block-start:4px}
+[data-testid="setup-folder-hint"]:not(:empty){margin-block-start:6px}
 .ap-fresh-facts dd{overflow-wrap:anywhere}
 `;
 export function ensureSetupStyle() {

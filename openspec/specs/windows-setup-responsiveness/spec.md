@@ -229,7 +229,7 @@ Fresh confirmation SHALL bind the inspected target, create/retain choices, ident
 
 ### Requirement: Fresh bootstrap preserves refusal boundaries
 
-Fresh preparation SHALL reuse existing directory and private-publication owners. Creation and source registration SHALL have budgeted intent/completion boundaries. A new database SHALL atomically initialize its frozen Store ID and capture-off value without a progress schema change. Unproven partial creation SHALL be retained and refused, never automatically adopted, cleaned or repaired.
+Fresh preparation SHALL reuse existing directory and private-publication owners. Creation and source registration SHALL keep budgeted intent/completion boundaries. New databases SHALL atomically initialize the frozen Store ID and capture-off value without a schema change. Both step families SHALL support explicit same-operation recovery of a proven first journal save. Unproven partial creation SHALL be retained and refused, not adopted, cleaned or repaired.
 
 #### Scenario: Managed directory exists without a valid marker
 - **WHEN** a crash leaves the managed directory created but its marker absent or invalid
@@ -237,9 +237,24 @@ Fresh preparation SHALL reuse existing directory and private-publication owners.
 - **AND** its emptiness or private permissions do not authorize adoption
 
 #### Scenario: Marked directory without a journal
-- **WHEN** the managed directory and marker are valid and private but no journal was published
+- **WHEN** the managed directory and marker are valid and private but no journal was published and no stage remains
 - **THEN** fresh same-target validation and confirmation may publish the initial journal
 - **AND** this does not authorize adopting an unmarked directory or ambiguous staging
+
+#### Scenario: Reopen after initial publication but before stage removal
+- **WHEN** both the published sequence-one journal and its identifiable temporary name survive as the only two links to the same verified private file in the marked directory
+- **THEN** Setup can show that operation and its next explicit action after restart, without changing either name or claiming capture from the journal
+- **AND** opening Setup, status, inspection and companion loading do not continue setup or grant Store admission from this observation
+
+#### Scenario: Explicit retry finishes the same save
+- **WHEN** an exact confirmed begin is retried, or the user explicitly continues the validated pending operation, and the request and pair still match under both writer fences
+- **THEN** Setup removes only its verified temporary name and checks the ordinary single-link journal before replaying or processing the requested action
+- **AND** finishing the save preserves the published file, bytes and operation identity, and does not itself advance the sequence, repeat a setup effect or change capture
+- **AND** subsequent retries use ordinary receipt and sequence rules, including after another interruption following stage removal
+
+#### Scenario: No authority to finish the save
+- **WHEN** the family, request, sequence, target, package, object or bytes no longer match, or the necessary fence or work budget is unavailable
+- **THEN** the failed precondition does not authorize unlinking, replacement or another effect
 
 #### Scenario: Store creation interrupted
 - **WHEN** a store-directory completion or database initialization cannot be proven from the same operation's durable evidence and fresh checks
@@ -247,9 +262,9 @@ Fresh preparation SHALL reuse existing directory and private-publication owners.
 - **AND** a completed database initialization may be reconciled only against the frozen Store identity, supported schema and expected pre-registration state, without a writable repair
 
 #### Scenario: Ambiguous publication or sidecars
-- **WHEN** interrupted creation leaves ambiguous stages, publication links or orphan database sidecars
+- **WHEN** interrupted creation leaves a lone or unidentified stage, unrelated or additional links, ambiguous publication files or orphan database sidecars
 - **THEN** Setup refuses and retains them for separately authorized diagnosis
-- **AND** it does not delete or repair them to make creation succeed
+- **AND** it does not delete or repair them to make creation succeed; other owned-file hard-link checks remain unchanged
 
 ### Requirement: Retained fresh reconnection preserves data and capture
 
@@ -312,3 +327,34 @@ Setup SHALL show one sentence of purpose, the grouped steps and one explicit con
 #### Scenario: Three languages at phone width
 - **WHEN** review, running, paused, failed and complete states render in English, Russian and Simplified Chinese at phone width
 - **THEN** group names, the consent line and recovery actions are readable and operable by keyboard without horizontal overflow
+
+### Requirement: Completed fresh Setup tolerates a historical device-number change
+
+On all supported platforms, read-only Setup status for a validated terminal format-3 fresh journal with its matching selected binding SHALL ignore only the recorded device number when comparing the Store directory and database with their respective checkpoints or reviewed claims. All other object, Store, source, schema, capture and expectation checks SHALL retain their existing semantics. Observation MUST NOT rewrite the journal, continue Setup or grant authority to a later operation.
+
+#### Scenario: The same installation reopens after reboot
+- **WHEN** the recorded device number differs for the directory, the database or both, and all other checks pass
+- **THEN** Setup reports the selection verified, the operation complete and the actual capture setting
+- **AND** the following health read reports ready without first requiring a plans read, repair or reconfiguration
+
+#### Scenario: There is more than a device-number difference
+- **WHEN** the inode or recorded birth time differs, the live object or sidecar is unsafe, or the opened Store ID or selected source does not match
+- **THEN** Setup does not report verified or expose a verified reporting identity, and health does not report ready
+
+#### Scenario: Terminal status evidence is missing
+- **WHEN** the journal is unfinished or there is no matching selected binding
+- **THEN** the device-number exception does not apply, and no selection or recovery authority is inferred
+- **AND** inspection, review, Resume, migration and removal keep their existing identity checks
+
+### Requirement: The panel distinguishes a Setup refusal from an outage
+
+When a responding service identifies a Setup admission refusal, the rail panel SHALL direct the user to Setup in English, Russian and Simplified Chinese instead of reporting that Progress is not responding. The read MUST remain a failure, with its diagnostic retained and any retained progress marked stale.
+
+#### Scenario: A responding service refuses the selected installation
+- **WHEN** Setup admission leaves health refused with `managed-migration-conflict`
+- **THEN** the panel identifies a Setup problem and the user can open Setup without starting a change
+- **AND** the refusal neither triggers a plans request nor appears as a new installation or an empty board
+
+#### Scenario: The service did not identify a Setup problem
+- **WHEN** the host cannot reach the service, or a reply identifies a busy, corrupt or incompatible Store
+- **THEN** the panel retains the corresponding transport or Store failure instead of diagnosing a Setup conflict
