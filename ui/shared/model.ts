@@ -1,5 +1,6 @@
 // View model shared by all three surfaces. The wire format lives only in adapter.ts.
 import { countItems } from '../../shared/progress.ts';
+import type { PlanActivityRow } from '../../shared/progress.ts';
 import { isNeedsYou, type MainSessionKind } from '../../shared/needs-you.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
@@ -180,6 +181,19 @@ export const elapsedAt = (a: ElapsedAnchor, mono: number) => a.elapsedAtRead + M
 
 export interface DocumentBody { key: string; captureId?: number; text: string | null; historical: boolean; ref: DocumentRefView }
 export interface HistoryEntry { revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string; actor?: 'user' }
+
+export type PlanActivityAction = 'open' | 'close' | 'older' | 'newer' | 'retry';
+export type PlanActivityState = { state: 'closed' } | {
+  pin: number; through: number;
+} & (
+  { state: 'loading' }
+  | { state: 'ready'; rows: PlanActivityRow[]; nextThrough: number | null }
+  | { state: 'failure' }
+);
+export interface PlanActivityView {
+  value: PlanActivityState;
+  act: (action: PlanActivityAction) => void;
+}
 
 export interface StoreRead {
   storeId: string;

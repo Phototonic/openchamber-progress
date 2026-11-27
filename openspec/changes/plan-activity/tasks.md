@@ -1,6 +1,6 @@
 ## 1. Set the shared boundary
 
-- [ ] 1.1 Announce the additive contract revision, define the activity window and row types beside the existing read contracts, document the opt-in History request, compatibility and error semantics in `docs/contracts.md`, and agree the small List-facing page state/actions before producer and consumers diverge.
+- [x] 1.1 Announce the additive contract revision, define the activity window and row types beside the existing read contracts, document the opt-in History request, compatibility and error semantics in `docs/contracts.md`, and agree the small List-facing page state/actions before producer and consumers diverge.
 
 ## 2. Read a revision window
 
