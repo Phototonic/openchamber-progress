@@ -61,9 +61,18 @@ The preview MUST NOT activate embedded HTML or load document-supplied assets. Im
 - **WHEN** either surface previews a capture containing embedded HTML and Markdown image references
 - **THEN** no embedded HTML becomes active, images appear only as alternative text, and no resource is read or requested because of the document
 
+### Requirement: Preview links are bounded and their outcome is visible
+
+Destinations longer than 2,048 characters or containing a username or password MUST NOT be actionable. The title of an actionable link SHALL show its full destination. If the host cannot open an activated link, the preview SHALL show a localized error.
+
 #### Scenario: URL activation on either surface
 
-- **WHEN** either surface previews valid absolute HTTP(S) links alongside invalid, relative, protocol-relative, fragment-only, and non-web links
+- **WHEN** either surface previews valid absolute HTTP(S) links alongside invalid, relative, protocol-relative, fragment-only, non-web, overlong or credential-bearing links
 - **THEN** opening the preview does not request any destination
 - **AND** only an explicit activation of a valid absolute HTTP(S) link opens its destination outside the progress surface, without an opener or referrer
 - **AND** all other link labels remain non-interactive
+
+#### Scenario: The host cannot open a link
+
+- **WHEN** the user activates a valid link and the host cannot open it
+- **THEN** the preview shows a localized error instead of failing silently

@@ -11,7 +11,8 @@
 ## 3. Verify recovery and update the guides
 
 - [x] 3.1 Exercise a portable interrupted writer at the link/unlink boundary, cold observation, exact replay and normal continuation over authenticated HTTP. Cover both negotiated families and unchanged refusal of an unmarked folder, old stages and unrelated links.
-- [ ] 3.2 Exercise a retained two-name NTFS fixture in the existing non-admin Windows service suite. Keep the independent no-process observation and per-request limits. Use only synthetic roots and fixed diagnostics.
-  - The fixture is implemented in `Windows built fresh steps (empty-custom)`; native execution is pending Windows CI.
+- [x] 3.2 Exercise a retained two-name NTFS fixture in the existing non-admin Windows service suite. Keep the independent no-process observation and per-request limits. Use only synthetic roots and fixed diagnostics.
+  - The native `Windows built fresh steps (empty-custom)` case passed in the Windows CI job on the merged change (#188).
 - [x] 3.3 Update `docs/setup.md`, `setup/managed-steps.md`, `docs/backend.md` and `docs/compatibility.md` with the exception, remaining manual procedure and platform evidence limits.
 - [x] 3.4 Build runtime outputs locally, run the focused and required integrated checks, validate this change strictly and review the public diff. Do not commit generated outputs on `dev`, bump versions or imply host or power-loss certification.
+  - The local full suite passed before the narrow review follow-up. Focused regression checks and merged Linux and Windows CI passed with the follow-up.

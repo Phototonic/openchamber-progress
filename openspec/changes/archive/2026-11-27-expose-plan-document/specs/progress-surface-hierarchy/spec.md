@@ -32,7 +32,7 @@ The rail and board SHALL present a plan in this order: header with title, progre
 
 ### Requirement: One More menu for secondary content
 
-Each rail and board SHALL have exactly one More menu holding copy actions, History (board), Sessions, archive actions, hidden items, Language, Setup, Troubleshooting and deletion of a closed plan. It MUST NOT duplicate Plan document. Only applicable entries SHALL appear. Language, Setup and Troubleshooting SHALL be reachable in every state, including no plan, not set up and a failed read.
+Each rail and board SHALL have exactly one More menu for applicable copy, History (board), Sessions, archive, user cancellation, hidden-item, Language, Setup, Troubleshooting and deletion of a closed plan. It MUST NOT duplicate Plan document. The rail SHALL also offer its quiet-plan filter there. Language, Setup, Troubleshooting and the rail filter SHALL remain reachable in every state, including no plan, not set up and a failed read. Cancellation MUST NOT be placed in the plan-view controls.
 
 #### Scenario: Panels replace the view
 - **WHEN** the user opens History, Sessions, Setup or Troubleshooting from More
@@ -50,3 +50,9 @@ Each rail and board SHALL have exactly one More menu holding copy actions, Histo
 #### Scenario: Before setup or after a failed read
 - **WHEN** the extension is not set up, no plan is shown, or the progress read failed
 - **THEN** More still offers Language, Setup and Troubleshooting
+- **AND** the rail filter remains reachable without authorizing a plan mutation
+
+#### Scenario: Explicit cancellation confirmation
+- **WHEN** the person chooses Finish as cancelled for an eligible plan
+- **THEN** an inline confirmation identifies that plan and explains retained history and unfinished tasks, intentional reopening, and that running agents are not stopped
+- **AND** declining or pressing Escape performs no write and returns focus to More

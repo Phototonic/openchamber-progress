@@ -22,4 +22,5 @@
 
 - [x] 4.1 Add one focused rendered quiet-plans journey using existing disposable SDK-shell, real-service and Chromium helpers, not obsolete surface selectors. Exercise rail and board, filter persistence/report resumption, More confirmation/decline/success and history in representative desktop/narrow and language states; capture sanitized screenshots and assertions.
 - [x] 4.2 Build all runtime outputs locally, run root/UI typechecks and focused backend/browser tests, then the repository-required portable suite once on stable integrated inputs. Commit TypeScript/tests/docs only, not generated outputs or a version bump.
+  - The integrated run passed backend and browser checks. The automation test that lists the serial backend fixtures needed to include the new service fixture; the automation suite passed after that test-only change.
 - [x] 4.3 Review the behaviour and public diff, validate this change strictly, and report evidence, skipped prerequisites and compatibility limits without claiming native-host or physical-device certification.
