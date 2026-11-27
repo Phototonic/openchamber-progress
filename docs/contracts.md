@@ -1630,7 +1630,8 @@ never relabeled current. checklistSynchronized marks a confirmed matching
 checklist/capture; currentFile=not-rechecked honestly describes between-report
 coverage. Body text is fetched only on demand. The sidebar and board format it
 as read-only Markdown only when the returned capture path ends in `.md`
-(case-insensitive); other or missing paths retain literal text. Checklist marks
+(case-insensitive) and parsing stays within the document-wide preview budget;
+otherwise they show the complete literal text. Checklist marks
 are non-operable. HTML is inert and images show only alt text, with no asset
 loads. Only explicit activation of a valid absolute HTTP(S) link hands its URL
 to the host to open outside the progress surface. Destinations longer than 2,048

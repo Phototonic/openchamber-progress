@@ -3,7 +3,7 @@ import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpi
 import type { Loadable, ReadingView, SummaryView, ViewContext } from './app.ts';
 import { languageMessages, resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { deriveDependencies } from './dependency-derivation.ts';
-import { isMarkdownDocument, renderDocumentMarkdown } from './document-markdown.ts';
+import { isMarkdownDocument, parseDocumentMarkdown, renderDocumentMarkdown } from './document-markdown.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, formatCount, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
@@ -1041,11 +1041,11 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
     if (!value || value.state !== 'ready') { body.append(partState('document-loading', say('the document', env.locale), value, doc.request, env.locale)); return; }
     const d = value.value;
     if (d.text === null) { body.append(el('p', 'ap-note', say('The captured text is not available.', env.locale))); return; }
-    const formatted = isMarkdownDocument(d.ref.path);
-    const preview = testid(formatted ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
+    const tokens = isMarkdownDocument(d.ref.path) ? parseDocumentMarkdown(d.text) : null;
+    const preview = testid(tokens ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
     preview.tabIndex = 0;
     preview.dataset.scrollKey = `doc-${plan.key}`;
-    if (formatted) renderDocumentMarkdown(preview, d.text, env.locale, env.openDocumentUrl);
+    if (tokens) renderDocumentMarkdown(preview, tokens, env.locale, env.openDocumentUrl);
     else preview.textContent = d.text;
     if (d.historical) body.append(testid(el('p', 'ap-doc-warn', say('A newer capture was recorded while this loaded. This is the earlier capture.', env.locale)), 'document-historical'));
     body.append(preview);
