@@ -89,6 +89,11 @@ try{
     await wait(`d.documentElement.lang===${js(lang)}`);
   };
   const menu=()=>click(more);
+  const checkFiltered=async()=>{
+    await exists(show);
+    assert.equal(await guest(`return d.querySelectorAll(${js(filtered)}).length`),1);
+    assert.equal(await guest(`return !!${by('[data-testid="list-empty"], [data-testid="filtered-empty"], [data-testid="empty-state"]')}`),false);
+  };
   const began=()=>f.store.get(source,plan)!;
   for(const {width:nextWidth,lang,history:userHistory,dark} of runs){
     phase=`${lang}: fixture setup`;width=nextWidth;
@@ -107,11 +112,12 @@ try{
       qa.context(${js(f.actor.sessionId)});qa.ready(undefined,{locale:${js(lang)},device:{formFactor:${js(width===390?'phone':'desktop')},pointer:${js(width===390?'coarse':'fine')},insets:{top:0,right:0,bottom:0,left:0},keyboard:0}});${dark?'qa.dark();':''}
       return true;})()`);
     phase=`${lang}: default filter`;
-    await select('panel',lang);await exists(filtered);
-    await select('page',lang);await exists(filtered);await shot(`${prefix}-filtered`);
+    await select('panel',lang);await checkFiltered();
+    if(width===390)await shot(`${prefix}-rail-filtered`);
+    await select('page',lang);await checkFiltered();await shot(`${prefix}-filtered`);
     await select('status',lang);
     await wait(`${by('[data-testid="status-plan-title"]')}?.textContent===${js(title)}`);
-    mark(`${prefix}: rail and board filter; Work Status unchanged`);
+    mark(`${prefix}: one filter empty message on rail and board; Work Status unchanged`);
     await select('panel',lang);
     await menu();await wait(`${by(menuFilter)}?.getAttribute('aria-checked')==='true'`);
     await escape();await click(show);await exists('[data-testid="quiet-plan-age"]');
