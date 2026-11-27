@@ -22,9 +22,9 @@ const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',
 window.frame=frame;
 // devices: one Map per synthetic device namespace (browser profile + runtime + installation).
 window.qa={account:'account-example',session:'session-example',store:0,deviceStorage:true,ns:{page:'profile-1',page2:'profile-1',page3:'profile-2',panel:'profile-1',status:'profile-1'},devices:{},instance:new Map(),
- holds:[],held:[],requests:[],storageLog:[],storageFaults:[],errors:[],flight:0,stripDigests:false};
+ holds:[],held:[],requests:[],storageLog:[],storageFaults:[],errors:[],flight:0,stripDigests:false,locale:'en'};
 const device=f=>qa.devices[qa.ns[f]]??=new Map();
-const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/Alpha',session:qa.session?{id:qa.session,title:'Example session',busy:false}:null,surface:surfaceOf(f),connection:{connected:true,account:qa.account},settings:{},item:null,...(qa.deviceStorage?{features:{deviceStorage:true}}:{})}});
+const ready=f=>send(f,{type:'ready',payload:{theme,locale:qa.locale,directory:'/fixture/Alpha',session:qa.session?{id:qa.session,title:'Example session',busy:false}:null,surface:surfaceOf(f),connection:{connected:true,account:qa.account},settings:{},item:null,...(qa.deviceStorage?{features:{deviceStorage:true}}:{})}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.show=(list,width)=>{for(const n of document.querySelectorAll('section[data-frame]')){const on=list.includes(n.dataset.frame);n.style.display=on?'block':'none';if(on)n.style.width=width+'px'}};
 qa.theme=mode=>{theme.mode=mode;Object.assign(theme.tokens,mode==='dark'?dark:light.tokens);document.documentElement.style.background=theme.tokens.background;document.body.style.background=theme.tokens.background;document.body.style.color=theme.tokens.foreground;frames.forEach(ready)};

@@ -28,6 +28,7 @@ test('inbox focus is restored after a filtered List reveal finishes its deferred
   const reading = { set: (patch: Record<string, unknown>, then?: (root: any) => void) => pending.push({ patch, then }) };
   function paint() {
     const opener = { focus() { document.activeElement = opener; } };
+    const notice = { textContent: '' };
     const target = {
       tagName: 'LI', dataset: { testid: 'item-task-example', navTarget: '' },
       closest: () => filtered ? {} : null,
@@ -39,12 +40,12 @@ test('inbox focus is restored after a filtered List reveal finishes its deferred
       isConnected: true, ownerDocument: document,
       dataset: { testid: 'plan-plan-example', source: plan.sourceId, revision: '1', locale: 'en' },
       closest: () => article, contains: () => true,
-      querySelectorAll: () => [target], querySelector: () => ({ textContent: '' }),
+      querySelectorAll: () => [target], querySelector: () => notice,
     };
     const inboxRow = { dataset: { row: row.rowKey }, querySelector: () => opener };
     const root = { querySelectorAll: (selector: string) => selector === 'article.ap-plan' ? [article] : [inboxRow] };
     components.fixtureReadings.set(article, reading);
-    return { root, opener, target };
+    return { root, opener, target, notice };
   }
   current = paint();
   inbox.revealInboxTask(reading, plan, row);
@@ -58,5 +59,6 @@ test('inbox focus is restored after a filtered List reveal finishes its deferred
   }
   assert.equal(filtered, false, 'the deferred canonical reveal cleared the hiding filters');
   assert.equal(reveals, 1, 'the canonical task was revealed');
+  assert.equal(current.notice.textContent, 'Showing all tasks so this task is visible.');
   assert.equal(document.activeElement, current.opener, 'the final reveal must not leave focus on the task row');
 });
