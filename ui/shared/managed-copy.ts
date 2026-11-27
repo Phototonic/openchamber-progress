@@ -2,6 +2,8 @@ import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const en = {
   title: 'Set up Agent Progress', unsupported: 'Managed setup is unsupported by this service. Update the extension and service together; no global plugin will be installed here.',
+  details: 'Details', attention: 'Setup needs attention', unverified: 'Couldn’t verify these OpenCode folders', ready: 'Agent Progress is configured',
+  checkFolders: 'Check that OpenCode is using the intended config and data folders.',
   choose: 'Review how Agent Progress connects to OpenCode without changing your saved history.',
   store: 'Progress folder', helper: 'Optional full folder path; leave blank to review the default',
   review: 'Review configuration', configure: 'Configure recording', migrate: 'Move to the new setup', resume: 'Review interrupted move', enable: 'Turn on recording', disable: 'Turn off recording',
@@ -30,6 +32,8 @@ const en = {
 };
 const ru: typeof en = {
   title: 'Настроить Agent Progress', unsupported: 'Этот сервис не поддерживает управляемую настройку. Обновите расширение и сервис вместе; глобальный плагин здесь не устанавливается.',
+  details: 'Подробности', attention: 'Нужно проверить настройку', unverified: 'Не удалось подтвердить папки OpenCode', ready: 'Agent Progress настроен',
+  checkFolders: 'Убедитесь, что OpenCode использует нужные папки конфигурации и данных.',
   choose: 'Проверьте подключение Agent Progress к OpenCode без изменения сохранённой истории.',
   store: 'Папка прогресса', helper: 'Необязательный полный путь к папке; оставьте пустым для проверки стандартного пути',
   review: 'Проверить настройку', configure: 'Настроить запись', migrate: 'Перейти на новую настройку', resume: 'Проверить прерванный переход', enable: 'Включить запись', disable: 'Выключить запись',
@@ -58,6 +62,8 @@ const ru: typeof en = {
 };
 const zh: typeof en = {
   title: '设置 Agent Progress', unsupported: '此服务不支持受管设置。请同时更新扩展和服务；此处不会安装全局插件。',
+  details: '详情', attention: '设置需要处理', unverified: '无法验证这些 OpenCode 文件夹', ready: 'Agent Progress 已配置',
+  checkFolders: '请确认 OpenCode 使用了正确的配置和数据文件夹。',
   choose: '查看 Agent Progress 如何连接到 OpenCode，不会更改已保存的历史。',
   store: '进度文件夹', helper: '可选的完整文件夹路径，留空以查看默认位置',
   review: '审阅配置', configure: '配置记录', migrate: '迁移到新设置', resume: '审阅中断的迁移', enable: '开启记录', disable: '关闭记录',
