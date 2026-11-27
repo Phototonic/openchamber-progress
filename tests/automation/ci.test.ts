@@ -52,7 +52,7 @@ test('portable backend groups isolate coordination ports without omitting or rep
   assert.deepEqual(serial.slice(3).map(f=>f.split('/').at(-1)).sort(),[
     'corrupt-store-startup.test.ts','managed-binding.test.ts','managed-health.test.ts',
     'managed-migration.test.ts','managed-request-worker.test.ts','managed-step-http.test.ts',
-    'production-service.test.ts','service-lifecycle.test.ts','setup-paths.test.ts',
+    'plan-user-cancel-service.test.ts','production-service.test.ts','service-lifecycle.test.ts','setup-paths.test.ts',
     'setup-suggestions.test.ts','windows-service.test.ts',
   ]);
   const source=readFileSync('scripts/ci.ts','utf8');
