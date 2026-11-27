@@ -965,7 +965,11 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
         const panel = shownDigest = vc.digest(plan);
         if (panel) {
           shell.reviewedThrough(panel.reviewedThrough);
-          body.append(digestBlock(panel, vc.env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; vc.retry(); }));
+          body.append(digestBlock(panel, vc.env, (item, title) => {
+            pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' };
+            // Announcing schedules the paint that consumes the intent, even when the list is unchanged.
+            panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title)));
+          }));
         }
         body.append(historyBlock(plan, vc.history(plan), vc.env));
       }
