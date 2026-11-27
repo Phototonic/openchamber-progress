@@ -177,7 +177,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Page.navigate',{url:'about:blank'});
       await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired')&&await evaluate('location.href==="about:blank"'),Boolean,'host page unloaded');
     };
-    const setupShot=async(name:string,selector:string)=>{
+    const setupShot=async(name:string,selector:string,beforeSetup?:string)=>{
       // Setup observations are deliberately not polled. After test-side external
       // mutations, a user-equivalent page refresh obtains a new real status read.
       const navigation=events.length;
@@ -185,6 +185,9 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       // readyState can still describe the OLD document immediately after reload.
       // Wait for this navigation's load event before inspecting the new target.
       await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired'),Boolean,'fresh host page loaded');await openBoard();
+      // A newly painted board state can replace the transient More menu. For
+      // the integrity shot, wait for the board warning before opening Setup.
+      if(beforeSetup)await wait(()=>guest('page',`!!document.querySelector(${literal(beforeSetup)})?.checkVisibility()`),Boolean,'expected board state before Setup');
       await openSetup('page');
       await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');
       if(await guest('page',`!!document.querySelector(${literal(selector)})?.closest('[data-testid="setup-details"]:not([open])')`))

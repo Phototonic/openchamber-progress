@@ -262,7 +262,8 @@ if(arg('--server-worker')) {
     check('integrity-report-committed',store.get(b.source.id,'P-managed')?.revision===4);
     const warning=await wait(()=>service('/v1/setup'),r=>r.status===200&&r.body.delivery.observation==='different','changed companion load observed');
     check('integrity-warns-and-reports',warning.body.delivery.expectedVersion===baseline.version&&readManagedExpectation(b)?.fingerprint===baseline.fingerprint);
-    await browser.setupShot('warning','[data-testid="surface-panel-setup"] [data-testid="managed-integrity-warning"]');
+    const warningSelector='[data-testid="managed-integrity-warning"]';
+    await browser.setupShot('warning',`[data-testid="surface-panel-setup"] ${warningSelector}`,warningSelector);
     write('integrity',{sameVersion:true,observation:warning.body.delivery.observation,authorizedRevision:4,warningOnly:true});fs.writeFileSync(`${extension}/build/companion/index.js`,original);
     phase='plain-terminal-reach';const plainEnv:NodeJS.ProcessEnv={...env,OPENCODE_PASSWORD:'synthetic-plain-only'};delete plainEnv.OPENCODE_CONFIG;delete plainEnv.OPENCODE_CONFIG_CONTENT;
     plain=spawn(binary,['serve','--hostname','127.0.0.1','--port','18768'],{cwd:`${root}/project`,env:plainEnv,stdio:'ignore'});remember(plain.pid!);
