@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CleanupScan, tidyConfirmation } from '../../ui/shared/cleanup.ts';
 import { BoardDerivation, ALL, NO_FILTERS, pageListScope } from '../../ui/shared/scope.ts';
-import { freezeLive, inPlace, scopeAvailability, SearchController } from '../../ui/shared/search.ts';
+import { freezeLive, inPlace, scopeAvailability, SearchController, type SearchCriteria } from '../../ui/shared/search.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC, S } from './fixtures.ts';
@@ -124,7 +124,7 @@ test('changing the quiet filter retires bulk search cleanup until a fresh submis
   const guard = hook('tidyMember', { ...globals, NO_FILTERS, tidyFilters: null });
   const requestTarget = target(vc, globals, active);
   const submit = (hide: boolean, now: number) => {
-    const criteria = { q: 'shown', project: ALL, worktree: ALL, source: ALL, session: ALL, lifecycle: ALL, status: ALL, archived: false, quiet: { hide, now } };
+    const criteria: SearchCriteria = { q: 'shown', project: ALL, worktree: ALL, source: ALL, session: ALL, lifecycle: ALL, status: ALL, archived: false, labels: {}, quiet: { hide, now } };
     vc.ui.search = { criteria };
     search.submit(`scope-${now}`, criteria, { storeId: vc.read.storeId, binding: vc.read.binding }, vc.live);
   };
