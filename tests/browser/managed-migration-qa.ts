@@ -66,6 +66,8 @@ let freshEng = freshEngine({ inspectPages: 2 });
 const oldRoutes: string[] = [];
 let captureControl: boolean | null = null;
 let freshRefusal: string | null = null;
+let holdSetupRead: Promise<void> | null = null;
+let foreignSetupBusy = false;
 const log: { method: string; path: string; action?: string; version?: number; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
@@ -102,7 +104,10 @@ const server = createServer(async (req, res) => {
       const entry: typeof log[number] = { method: q.method, path: q.path, at: Date.now() }; log.push(entry);
       const json = (status: number, value: unknown) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(value) })); };
       if (q.path === '/health') return json(200, health);
-      if (q.path === '/v1/setup' && q.method === 'GET') return json(200, setupRead());
+      if (q.path === '/v1/setup' && q.method === 'GET') {
+        if (holdSetupRead) await holdSetupRead;
+        return json(200, setupRead());
+      }
       if (q.path === '/v1/capture/disable' || q.path === '/v1/capture/enable') {
         if (q.method !== 'POST' || q.body !== undefined) return json(400, { error: 'body-not-allowed' });
         captureControl = q.path.endsWith('/enable');
@@ -116,6 +121,8 @@ const server = createServer(async (req, res) => {
         if (!capable) return json(404, { error: 'not-found' });
         const sent = JSON.parse(q.body ?? '{}');
         entry.action = sent.action; entry.version = sent.version;
+        if (holdSetupRead || foreignSetupBusy) return json(503, {version: 2, disposition: 'refused', progress: null, inspection: null,
+          error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}});
         // Version 2 reaches the fresh responder only when advertised; it records any shape violation.
         if (fresh && sent.version !== 2) oldRoutes.push('version-1-step');
         if (sent.version === 2 && !(fresh && freshCapable)) return json(404, { error: 'not-found' });
@@ -457,6 +464,30 @@ try {
     await click('[data-testid="setup-inspect"] button');
     await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'fresh review');
   };
+  await openFresh('en', 'dark', 390, 844, { inspectPages: 1 });
+  await click('[data-testid="surface-panel-back"] button');
+  let releaseStatus!: () => void;
+  const readAt = log.length;
+  holdSetupRead = new Promise<void>(resolve => { releaseStatus = resolve; });
+  try {
+    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="more-setup"]');
+    await click('[data-testid="setup-inspect"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-inspecting"]')`, 'review waiting for the panel status read');
+    check('fresh:review-waits-for-own-read', log.slice(readAt).some(r => r.path === '/v1/setup') && stepCalls() === 0);
+    await shot('24-setup-review-checking-390', true);
+  } finally { holdSetupRead = null; releaseStatus(); }
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'review opens without a second click');
+  check('fresh:review-sent-once-after-read', stepCalls() === 1 && await focused() === 'setup-cancel');
+
+  await openFresh('en', 'light', 1280, 900);
+  foreignSetupBusy = true;
+  try {
+    await click('[data-testid="setup-inspect"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-step-unsettled"]')`, 'foreign worker refusal');
+    check('fresh:foreign-refusal-copy-and-no-retry', stepCalls() === 1 && await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('Waiting for another setup action')`));
+  } finally { foreignSetupBusy = false; }
+
   /** Text that is cut off inside the Setup panel: overflowing buttons, or hidden/ellipsis overflow on text. */
   const clipped = () => guest<{ ok: boolean; offenders: string[] }>(`const win=frame().contentWindow;const bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();if(r.width<=2||r.height<=2||!e.checkVisibility())return false;const cs=win.getComputedStyle(e);const text=[...e.childNodes].some(n=>n.nodeType===3&&n.textContent.trim());const cut=/(hidden|clip)/.test(cs.overflowX)||cs.textOverflow==='ellipsis';return (e.tagName==='BUTTON'||(text&&cut))&&e.scrollWidth>e.clientWidth+1}).slice(0,5).map(e=>e.closest('[data-testid]')?.dataset.testid||e.className||e.tagName);return {ok:!bad.length,offenders:bad}`);
   const fitsAll = async () => { const a = await fits(), b = await clipped(); return { ok: a.ok && b.ok, overflow: a.overflow, offenders: a.offenders, clipped: b.offenders }; };

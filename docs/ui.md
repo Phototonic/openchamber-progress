@@ -1109,6 +1109,12 @@ load can therefore replace the initial not-observed state in the same frame even
 though managed activation remains unknown. Store/binding adoption retires old
 setup replies and requests replacement status for the adopted context.
 
+An explicit Setup action waits for any already pending passive Setup status read
+from the same frame before sending its request. The frame does not start a
+passive status read over that action. A queued step still needs its original
+active view, and the guest sends no retry. Other frames and service callers
+remain independent; worker contention can still be refused by the service.
+
 Review explains full-user plugin/service privileges and conditional lifecycle.
 After acknowledgement, fresh begin echoes wire 2, a client operation ID, the
 opaque expected review identity and `confirmed:true`, with no paths or replacement
