@@ -16,6 +16,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 ## Why you'll like it
 
 - **At a glance, then in depth.** A map or task list sits below the plan's progress bar, followed by *Needs you* and *Sub-agents*. Expand a task for its reason, next step, prerequisites and who's on it.
+- **See who reported an update.** In a plan's **List**, open **Activity** below the tasks. Page back to earlier updates to see who reported them and which task IDs they named.
 - **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view. Blue beads travel along the arrows from a task reported working to the tasks waiting on it, and an arrow from a blocked task ends in a stop bar.
 - **Know when it's your turn.** *Needs you* shows decisions and reviews the main session asks you to handle, with **Open session**, **Copy reply** and **Hide**.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.

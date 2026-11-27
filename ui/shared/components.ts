@@ -8,7 +8,7 @@ import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverag
 import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
 import {
   ALL_PARTICIPANTS, documentStateText, elapsedAt, jumpTargets, lifecycleLabel, nextJump, participantIndex, participants, relationsOf, showsLiveness, statusLabel, summarize, summaryText, taskProjection,
-  type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
+  type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanActivityView, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
 import { icon, infoDisclosure, moreMenu, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
 import { CheckpointStore } from './change-digest-checkpoint.ts';
@@ -1188,6 +1188,7 @@ const INVALID_COPY: Record<InvalidReason, CopyKey> = {
 
 export interface DetailHooks {
   detail: Loadable<PlanDetail> | null;
+  activity?: PlanActivityView | null;
   summary?: SummaryView | null;
   retryDetail?: () => void;
   document: { get: () => Loadable<DocumentBody> | null; request: () => void };
@@ -1496,7 +1497,7 @@ function rowFacts(p: Paint, row: ProgressRow) {
   const lines: { text: string; report?: string; blocker?: string }[] = [];
   const b = item.status === 'blocked' && item.reportedBlocker?.state === 'reported' ? item.reportedBlocker : null;
   const reports = reportsFor(item.id, p.detail.contributions);
-  const describe = (mode: string, reporter: string, attributed: string) => say(mode === 'parent-relay' ? 'reported by {reporter} for {attributed}' : 'reported directly by {reporter}', locale, { reporter: p.label(reporter), attributed: p.label(attributed) });
+  const describe = (mode: string, reporter: string, attributed: string) => reportPhrase(mode, reporter, attributed, p.label, locale);
   let joined = false;
   if (b) {
     const same = reports.find((r) => r.mode === b.mode && r.reporterSessionId === b.reporterSessionId && r.attributedSessionId === b.attributedSessionId);
@@ -1943,6 +1944,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
     tasks.append(tasksHeading(env.locale), partState('detail-loading', say('tasks', env.locale), hooks.detail?.state === 'error' ? hooks.detail : null, hooks.retryDetail, env.locale));
     root.append(tasks);
   }
+  if (hooks.activity) root.append(planActivityBlock(plan, hooks.activity, env));
   // One compact session row; the Sessions panel holds every participant.
   if (!options.shell && !(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
   if (options.document === 'inline') root.append(documentBlock(plan, env, 'inline', hooks.document));
@@ -1994,6 +1996,106 @@ function summaryBlock(view: SummaryView, locale: InterfaceLanguage) {
   return section;
 }
 
+function revisionNumber(n: number, locale: InterfaceLanguage) {
+  return el('span', 'ap-history-rev', say('Revision {n}', locale, { n: String(n) }));
+}
+function revisionTime(iso: string, env: Env, absolute = false) {
+  const time = age(iso, env);
+  if (absolute) { delete time.dataset.age; time.textContent = time.title; }
+  return time;
+}
+function userCancellation(locale: InterfaceLanguage) { return el('span', 'ap-muted', cancelCopy(locale).history); }
+function reportPhrase(mode: string, reporter: string, attributed: string, label: (id: string) => string, locale: InterfaceLanguage) {
+  return say(mode === 'parent-relay' ? 'reported by {reporter} for {attributed}' : 'reported directly by {reporter}', locale, {
+    reporter: label(reporter), attributed: label(attributed),
+  });
+}
+
+const ACTIVITY_EN = {
+  title: 'Activity', older: 'Older updates', newer: 'Newer updates', coordinator: 'Coordinator', child: 'Sub-agent',
+  loading: 'Loading activity…', failed: 'Activity is unavailable.', noIds: 'No task IDs reported',
+  unavailable: 'Report details unavailable', newReports: 'New updates are available. Close and reopen Activity to see them.',
+  taskIds: (ids: string) => `Task IDs: ${ids}`, range: (newest: number, oldest: number) => `Showing updates ${oldest}–${newest}`,
+};
+const ACTIVITY_COPY: Record<InterfaceLanguage, typeof ACTIVITY_EN> = {
+  en: ACTIVITY_EN,
+  ru: {
+    title: 'Активность', older: 'Более ранние обновления', newer: 'Более поздние обновления', coordinator: 'Координатор', child: 'Субагент',
+    loading: 'Загрузка обновлений…', failed: 'Не удалось загрузить обновления.', noIds: 'Идентификаторы задач не указаны',
+    unavailable: 'Сведения об отчёте недоступны', newReports: 'Есть новые обновления. Закройте и снова откройте раздел «Активность», чтобы увидеть их.',
+    taskIds: ids => `Идентификаторы задач: ${ids}`, range: (newest, oldest) => `Показаны обновления ${oldest}–${newest}`,
+  },
+  'zh-CN': {
+    title: '活动', older: '较早的更新', newer: '较新的更新', coordinator: '协调者', child: '子代理',
+    loading: '正在加载活动…', failed: '无法加载活动。', noIds: '未报告任务 ID',
+    unavailable: '报告详情不可用', newReports: '有新的更新。请关闭并重新打开“活动”查看。',
+    taskIds: ids => `任务 ID：${ids}`, range: (newest, oldest) => `显示第 ${oldest}–${newest} 次更新`,
+  },
+};
+
+export function planActivityBlock(plan: PlanView, view: PlanActivityView, env: Env) {
+  const { locale } = env, t = ACTIVITY_COPY[locale], state = view.value;
+  const expanded = state.state !== 'closed';
+  const section = testid(el('section', 'ap-activity ap-section'), 'plan-activity');
+  const heading = el('h3', 'ap-h');
+  const toggle = testid(el('button', 'ap-activity-toggle', t.title), 'activity-toggle');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.setAttribute('aria-controls', 'ap-activity-body');
+  toggle.addEventListener('click', () => view.act(expanded ? 'close' : 'open'));
+  heading.append(toggle);
+  const body = el('div', 'ap-activity-body');
+  body.id = 'ap-activity-body';
+  body.hidden = !expanded;
+  section.append(heading, body);
+  if (!expanded) return section;
+
+  const status = el('p', 'ap-note', state.state === 'loading' ? t.loading : state.state === 'failure' ? t.failed
+    : t.range(state.through, state.rows.at(-1)!.revision));
+  status.id = 'ap-activity-status';
+  status.setAttribute('role', 'status');
+  body.append(status);
+  if (plan.revision > state.pin) body.append(el('p', 'ap-note', t.newReports));
+  const controls = el('div', 'ap-activity-controls');
+  const pageButton = (action: 'newer' | 'older', name: string, enabled: boolean) => {
+    const b = testid(el('button', 'ap-activity-button', name), `activity-${action}`);
+    b.type = 'button';
+    b.setAttribute('aria-disabled', String(!enabled));
+    b.setAttribute('aria-describedby', status.id);
+    // Keep keyboard focus at the same control as its page is replaced, including
+    // at the first/last page where the control becomes unavailable.
+    b.addEventListener('click', () => { if (enabled) view.act(action); });
+    controls.append(b);
+  };
+  pageButton('newer', t.newer, state.state === 'ready' && state.through < state.pin);
+  pageButton('older', t.older, state.state === 'ready' && state.nextThrough !== null);
+  if (state.state === 'failure') {
+    const retry = testid(el('button', 'ap-activity-button', say('Try again', locale)), 'activity-retry');
+    retry.type = 'button';
+    retry.addEventListener('click', () => { toggle.focus({ preventScroll: true }); view.act('retry'); });
+    controls.append(retry);
+  }
+  body.append(controls);
+  if (state.state === 'ready') {
+    const rows = el('ul', 'ap-history');
+    const label = recordedLabel(plan, env);
+    for (const row of state.rows) {
+      const li = testid(el('li', 'ap-history-row'), `activity-revision-${row.revision}`);
+      li.append(revisionNumber(row.revision, locale), revisionTime(row.reportedAt, env, true));
+      if (row.kind === 'user') li.append(userCancellation(locale));
+      else if (row.kind === 'unavailable') li.append(el('span', 'ap-muted', t.unavailable));
+      else {
+        const who = row.reporterSessionId === plan.ownerSessionId ? t.coordinator : t.child;
+        li.append(el('span', 'ap-activity-report', `${who} · ${reportPhrase(row.mode, row.reporterSessionId, row.attributedSessionId, label, locale)}`));
+        li.append(el('span', 'ap-activity-report ap-muted', row.itemIds.length ? t.taskIds(row.itemIds.join(', ')) : t.noIds));
+      }
+      rows.append(li);
+    }
+    body.append(rows);
+  }
+  return section;
+}
+
 export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null, env: Env) {
   const section = testid(el('section', 'ap-section'), `history-${plan.id}`);
   section.append(el('h3', 'ap-h', say('Revisions', env.locale)));
@@ -2004,9 +2106,9 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);
-    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: String(e.revision) })), el('span', 'ap-muted', e.actor === 'user' ? cancelCopy(env.locale).history : kind(i)));
+    li.append(revisionNumber(e.revision, env.locale), e.actor === 'user' ? userCancellation(env.locale) : el('span', 'ap-muted', kind(i)));
     if (e.lifecycle !== 'active' && e.actor !== 'user') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
-    li.append(age(e.reportedAt, env));
+    li.append(revisionTime(e.reportedAt, env));
     ul.append(li);
   }
   section.append(ul);

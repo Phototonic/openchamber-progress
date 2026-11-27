@@ -375,6 +375,20 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-history-row{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--oc-border);font-size:12px}
 .ap-history-rev{font-weight:600;font-variant-numeric:tabular-nums}
 .ap-history-row time{margin-left:auto;color:var(--oc-muted);font-size:11.5px}
+.ap-activity{margin-block-start:12px;border-block-start:1px solid var(--oc-border);padding-block-start:8px}
+.ap-activity-toggle,.ap-activity-button{min-height:28px;max-width:100%;font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:5px;text-align:start;cursor:pointer}
+.ap-activity-toggle{display:inline-flex;align-items:center;gap:8px;padding:2px 6px}
+.ap-activity-toggle::before{content:"";flex:none;width:6px;height:6px;border-inline-end:1.5px solid currentColor;border-block-end:1.5px solid currentColor;transform:rotate(-45deg)}
+.ap-activity-toggle[aria-expanded="true"]::before{transform:rotate(45deg)}
+.ap-activity-body:not([hidden]){display:flex;flex-direction:column;gap:6px}
+.ap-activity-controls{display:flex;flex-wrap:wrap;gap:6px}
+.ap-activity-button{padding:2px 8px;border-color:var(--oc-border);font-size:12px}
+.ap-activity-button[aria-disabled="true"]{color:var(--oc-muted);cursor:default}
+.ap-activity button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-activity button:not([aria-disabled="true"]):hover{background:var(--oc-hover)}
+.ap-activity .ap-history-row{overflow-wrap:anywhere}
+.ap-activity .ap-history-row>span:not(:first-child){flex-basis:100%}
+@media(pointer:coarse){.ap-activity button{min-height:44px}}
 
 /* Setup */
 .ap-setup{display:flex;flex-direction:column;gap:12px;min-width:0}

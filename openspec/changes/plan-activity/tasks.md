@@ -10,8 +10,8 @@
 ## 3. Read and show activity on demand
 
 - [x] 3.1 Validate one activity reply in the guest wire adapter and manage one page for the active List reading. Cover pins, older/newer navigation, unavailable/legacy responses and retired replies without changing the normal refresh budget.
-- [ ] 3.2 Add the shared disclosure in rail and board List, reuse History row elements/cancellation copy and rail report phrasing, and localize normal and failure states in all three languages. Preserve History and the plan-view switch.
-- [ ] 3.3 Document discovery and behaviour in `README.md` and `docs/ui.md`; add an Unreleased entry to `CHANGELOG.md`.
+- [x] 3.2 Add the shared disclosure in rail and board List, reuse History row elements/cancellation copy and rail report phrasing, and localize normal and failure states in all three languages. Preserve History and the plan-view switch.
+- [x] 3.3 Document discovery and behaviour in `README.md` and `docs/ui.md`; add an Unreleased entry to `CHANGELOG.md`.
 
 ## 4. Verify the integrated feature
 
