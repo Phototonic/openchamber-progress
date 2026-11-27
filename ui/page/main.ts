@@ -88,7 +88,9 @@ let selectionPlans: PlanView[] | null = null;
 let selectionHits: SearchViewState['page']['hits'] | null = null;
 let selectionHitCount = -1;
 let selectionSearchPlans: SearchViewState['page']['hits'][number]['plan'][] = [];
-const quietKeys = (vc: ViewContext<Ui>) => (vc.quiet.hide ? vc.read?.plans.filter(p => !admitsQuiet(p, true, vc.env.now)).map(p => p.key) : undefined) ?? [];
+function quietKeys(vc: ViewContext<Ui>) {
+  return (vc.quiet.hide ? vc.read?.plans.filter(p => !admitsQuiet(p, true, vc.env.now)).map(p => p.key) : undefined) ?? [];
+}
 const derivedBoard = (vc: ViewContext<Ui>) => boardDerivation.get({
   plans: vc.read?.plans ?? [], live: vc.env.live, filters: vc.ui.filters,
   bound: vc.env.boundSource, locale: resolveLanguage('auto', vc.env.locale), archived: vc.ui.archived,

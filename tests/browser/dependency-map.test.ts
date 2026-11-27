@@ -16,6 +16,7 @@ import * as defaultView from '../../ui/shared/default-view.ts';
 import * as i18n from '../../ui/shared/i18n.ts';
 import * as model from '../../ui/shared/model.ts';
 import * as planSelection from '../../ui/shared/plan-selection.ts';
+import * as quiet from '../../ui/shared/quiet-plans.ts';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 async function until(predicate: () => boolean) {
@@ -162,6 +163,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/app.ts')) return { startView: (spec: unknown) => { railSpec = spec; } };
       if (name.endsWith('/scope.ts')) return scope;
       if (name.endsWith('/plan-selection.ts')) return planSelection;
+      if (name.endsWith('/quiet-plans.ts')) return quiet;
       if (name.endsWith('/refresh.ts')) return refresh;
       if (name.endsWith('/default-view.ts')) return defaultView;
       if (name.endsWith('/reporting-health.ts')) return { ReportingHealth: class {} };
@@ -184,7 +186,8 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
     const otherPlan = { ...c.plan, id: 'P-map-none', key: `${f.alpha.id}/P-map-none` };
     const vc: any = { identity: 'synthetic-identity', session: { id: 'M' }, directory: '/fixture/main',
       ui: { selected: null }, read: { plans: [c.plan, otherPlan], binding: { verified: false }, captureEnabled: true },
-      env: { boundSource: null }, storage: { get: () => { preferenceReads++; return new Promise<string>(resolve => preferences.push(resolve)); }, set: async () => {} },
+      env: { boundSource: null, now: Date.now() }, quiet: { hide: true },
+      storage: { get: () => { preferenceReads++; return new Promise<string>(resolve => preferences.push(resolve)); }, set: async () => {} },
       setUi: (patch: unknown) => { vc.ui = { ...vc.ui, ...patch as object }; }, detail: () => null, summary: () => null, document: () => null };
     railSpec.onContext(vc); railSpec.paint(node(), vc); choosePlan(otherPlan.key);
     preferences.shift()!(c.plan.key); await tick(); assert.equal(vc.ui.selected, otherPlan.key, 'late preference cannot override manual choice');

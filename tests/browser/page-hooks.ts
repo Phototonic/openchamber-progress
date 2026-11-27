@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext, runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { admitsQuiet } from '../../ui/shared/quiet-plans.ts';
 
 const file = ts.createSourceFile('page.ts', readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
 export function pageHook(name: string, globals: Record<string, unknown>) {
@@ -27,4 +28,10 @@ export function pageFunction(name: string, globals: Record<string, unknown>) {
   assert.ok(node, name);
   createContext(globals);
   runInContext(ts.transpileModule(node.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
+}
+
+/** Supply the same filter to extracted page hooks as the production module uses. */
+export function pageQuietFilter(globals: Record<string, unknown>) {
+  globals.admitsQuiet = admitsQuiet;
+  pageFunction('quietKeys', globals);
 }

@@ -6,7 +6,7 @@ import { freezeLive, inPlace, scopeAvailability } from '../../ui/shared/search.t
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC, S } from './fixtures.ts';
-import { pageHook, pageFunction } from './page-hooks.ts';
+import { pageHook, pageFunction, pageQuietFilter } from './page-hooks.ts';
 import { cleanupKnownReader } from '../../ui/shared/source.ts';
 import { identity, view, service, closed } from './cleanup-known-service.ts';
 
@@ -20,7 +20,7 @@ for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gon
     const live = { ...EMPTY_LIVE, projectsState: 'ready' as const };
     const vc = {
       ui: { filters: { ...NO_FILTERS, ...stale }, archived: false }, live,
-      env: { boundSource: SRC }, read: { ...parsePlansPage(JSON.stringify(plansPage([]))).envelope, plans: loaded, truncated: true },
+      env: { boundSource: SRC, now: 0 }, quiet: { hide: true }, read: { ...parsePlansPage(JSON.stringify(plansPage([]))).envelope, plans: loaded, truncated: true },
       service: () => ({ serviceRequest: async () => { throw Error('Unexpected transport'); } }),
     };
     const board = new BoardDerivation();
@@ -34,7 +34,7 @@ for (const stale of [{ project: 'd:/fixture/gone' }, { worktree: 'w:/fixture/gon
         return { plans: [...loaded, ...older], visited: 2, nextCursor: null };
       },
     };
-    pageFunction('scopeAdmits', globals);
+    pageQuietFilter(globals); pageFunction('scopeAdmits', globals);
     const scan = hook('tidyScan', globals)(vc, 'board') as CleanupScan;
     const counted = await scan.more(() => true);
     assert.deepEqual(counted?.targets.map(p => p.request.plan), ['older']);
@@ -64,7 +64,7 @@ function outsideRoots() {
   const board = new BoardDerivation();
   const vc = {
     ui: { filters: { ...NO_FILTERS, worktree: 'w:/elsewhere/wt' }, archived: false, search: null as null | { criteria: unknown } }, live,
-    env: { boundSource: SRC }, read: { ...parsePlansPage(JSON.stringify(plansPage([]))).envelope, plans: plans.slice(0, 1), truncated: true },
+    env: { boundSource: SRC, now: 0 }, quiet: { hide: true }, read: { ...parsePlansPage(JSON.stringify(plansPage([]))).envelope, plans: plans.slice(0, 1), truncated: true },
     service: () => ({ serviceRequest: async () => { throw Error('Unexpected transport'); } }),
   };
   const derivedBoard = () => board.get({ plans: vc.read.plans, live, filters: vc.ui.filters, bound: SRC, locale: 'en', archived: false, reading: 'board' });
@@ -73,7 +73,7 @@ function outsideRoots() {
     cleanupSearchReader: () => async () => { throw Error('Unexpected search'); },
     readCleanupListPage: async () => ({ plans, visited: 2, nextCursor: null }),
   };
-  pageFunction('scopeAdmits', globals);
+  pageQuietFilter(globals); pageFunction('scopeAdmits', globals);
   return { vc, plans, derivedBoard, globals };
 }
 test('a truncated browse Tidy follows browse placement for a worktree outside the discovered roots', async () => {
@@ -91,7 +91,25 @@ test('a search scan still refuses locations this window cannot classify', async 
 
 // One predicate decides what a count offers and what a request may reach.
 const target = (vc: any, globals: Record<string, unknown>, plan: any) =>
-  ({ request: { source: plan.sourceId }, where: { owner: plan.ownerSessionId, directory: plan.directory } }) as any;
+  ({ lifecycle: plan.lifecycle, reportedAt: plan.reportedAt, request: { source: plan.sourceId }, where: { owner: plan.ownerSessionId, directory: plan.directory } }) as any;
+
+test('Select all and the send guard exclude quiet active plans without changing Tidy eligibility', async () => {
+  const { vc, plans, globals } = outsideRoots();
+  plans[0].reportedAt = '2026-04-20T12:00:00.000Z';
+  plans[1].reportedAt = plans[0].reportedAt;
+  vc.env.now = Date.parse(plans[0].reportedAt) + 7 * 86_400_000;
+  const scan = (includes?: () => boolean) => hook('tidyScan', globals)(vc, 'scope', includes) as CleanupScan;
+  const bounded = scan(() => true);
+  vc.env.now--;
+  assert.deepEqual((await bounded.more(() => true))?.targets.map(t => t.request.plan), ['older'], 'the count freezes its cutoff');
+  vc.env.now++;
+  const guard = hook('tidyMember', { ...globals, tidyFilters: vc.ui.filters, NO_FILTERS });
+  assert.equal(guard(vc, target(vc, globals, plans[0])), false);
+  assert.equal(guard(vc, target(vc, globals, plans[1])), true);
+  vc.quiet.hide = false;
+  assert.deepEqual((await scan(() => true).more(() => true))?.targets.map(t => t.request.plan), ['shown', 'older']);
+  assert.deepEqual((await scan().more(() => true))?.targets.map(t => t.request.plan), ['older'], 'Tidy is still closed-only');
+});
 test('a named plan that stopped matching the search is not offered, whatever its new revision', async () => {
   const { vc, globals } = outsideRoots();
   const rows = [closed('Blocked-1', { directory: '/elsewhere/wt' }), closed('Blocked-2', { directory: '/elsewhere/wt' })];
