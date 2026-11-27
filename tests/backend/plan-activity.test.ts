@@ -84,7 +84,16 @@ test('activity windows include user and unavailable rows without shifting attrib
     assert.equal((await get(`source=${source}&plan=missing&through=1`)).status, 404);
     assert.deepEqual(dump(), before);
     assert.deepEqual(store.db.prepare('SELECT total_changes() AS n').get(), writes);
-    store.db.prepare(`UPDATE contributions SET payload=json_set(payload,'$.reporterSessionId','B','$.attributedSessionId','B') WHERE source=? AND plan=? AND revision=4`).run(source, plan);
+    const cleanup = { storeId, source, plan, rev };
+    store.cleanup('archive', { ...cleanup, active: true, cleanupRev: 0, oid: 'archive-fixture' });
+    const archived = await get(route + '8');
+    assert.equal(archived.status, 200);
+    assert.equal(archived.body.cleanupRev, 1);
+    assert.deepEqual(archived.body.rows, expected(8));
+    store.cleanup('restore', { ...cleanup, cleanupRev: 1, oid: 'restore-fixture' });
+    store.db.prepare(`UPDATE contributions SET payload=json_set(payload,'$.mode','parent-relay','$.attributedSessionId','B') WHERE source=? AND plan=? AND revision=4`).run(source, plan);
+    assert.deepEqual(await get(route + '8'), { status: 503, body: { error: 'corrupt' } });
+    store.db.prepare(`UPDATE contributions SET payload=json_set(payload,'$.mode','direct','$.reporterSessionId','B','$.attributedSessionId','B') WHERE source=? AND plan=? AND revision=4`).run(source, plan);
     assert.deepEqual(await get(route + '8'), { status: 503, body: { error: 'corrupt' } });
     store.db.prepare('DELETE FROM revisions WHERE source=? AND plan=? AND revision=10').run(source, plan);
     assert.deepEqual(await get(route + '27'), { status: 503, body: { error: 'corrupt' } });

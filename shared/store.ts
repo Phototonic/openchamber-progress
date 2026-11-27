@@ -468,9 +468,11 @@ export class Store {
       const oldest = Math.max(1, through - LIMITS.pageSize + 1);
       const revisions = this.db.prepare(`
         SELECT r.revision, r.actor=? AS user_cancel,
-          json_extract(r.snapshot,'$.reportedAt') AS recorded_at,
-          json_extract(r.actor,'$.sessionId') AS reporter,
-          json_extract(r.actor,'$.sourceId') AS actor_source,
+          CASE WHEN length(json_extract(r.snapshot,'$.reportedAt'))=24 THEN json_extract(r.snapshot,'$.reportedAt') END AS recorded_at,
+          CASE WHEN length(json_extract(r.actor,'$.sessionId'))<=80 THEN json_extract(r.actor,'$.sessionId') END AS reporter,
+          json_extract(r.actor,'$.sourceId')=r.source AS matching_actor_source,
+          json_extract(r.actor,'$.sessionId')=json_extract(r.snapshot,'$.sessionId') AS coordinator,
+          json_extract(r.snapshot,'$.lifecycle')='cancelled' AS cancelled,
           CASE WHEN json_extract(r.snapshot,'$.id')=r.plan AND json_extract(r.snapshot,'$.sourceId')=r.source
             AND json_extract(r.snapshot,'$.revision')=r.revision THEN 1 END AS matching_snapshot,
           c.revision AS contribution_revision,
@@ -484,16 +486,16 @@ export class Store {
         const revision = through - i;
         need(r.revision === revision && r.matching_snapshot === 1, 'corrupt');
         if (r.user_cancel === 1 || r.contribution_revision === null) {
-          need(r.contribution_revision === null && activityTime(r.recorded_at), 'corrupt');
+          need(r.contribution_revision === null && (r.user_cancel !== 1 || r.cancelled === 1) && activityTime(r.recorded_at), 'corrupt');
           return { revision, reportedAt: r.recorded_at, kind: r.user_cancel === 1 ? 'user' : 'unavailable' };
         }
         need(typeof r.contribution === 'string', 'corrupt');
         const c: unknown = JSON.parse(r.contribution);
         need(graphRecord(c) && c.revision === revision && activityTime(c.reportedAt) &&
-          identifier(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.actor_source === source &&
+          identifier(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.matching_actor_source === 1 &&
           identifier(c.attributedSessionId) &&
           (c.mode === 'direct' && c.reporterSessionId === c.attributedSessionId ||
-            c.mode === 'parent-relay' && c.reporterSessionId !== c.attributedSessionId) &&
+            c.mode === 'parent-relay' && r.coordinator === 1 && c.reporterSessionId !== c.attributedSessionId) &&
           Array.isArray(c.itemIds) && c.itemIds.length <= 50 && c.itemIds.every(identifier) &&
           new Set(c.itemIds).size === c.itemIds.length, 'corrupt');
         return { revision, reportedAt: c.reportedAt, kind: 'report', mode: c.mode,

@@ -121,8 +121,9 @@ recorded time and exactly one of: report attribution and recorded task IDs,
 fixed user cancellation, or unavailable report details. A report with no
 task IDs is distinct from unavailable details.
 
-A missing plan, future boundary, gap, invalid record or oversized reply is
-refused rather than represented as a complete window. The guest treats those
+The service refuses invalid or future boundaries (400), missing plans or
+unsupported query forms (404), gaps and invalid stored records (503), and
+replies over the service's response limit (413). The guest treats those
 failures, mismatched identity and older services' unknown-query rejection
 as unavailable in Activity only, without inferring deletion or switching to
 another read. Without `through`, History and its paging, review digest and
