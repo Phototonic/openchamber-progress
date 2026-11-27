@@ -1313,6 +1313,13 @@ Legacy phases came from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`
 | Plan from an unverified source | "Unverified OpenCode setup" in the header, "Unverified setup" list badge | `unverified-source` |
 | Document text from an earlier capture | warning line above the text | `document-historical` |
 
+When two panels make their first progress read together (for example, just after
+the extension is re-enabled), one can receive a 503 `managed-step-port-busy`
+refusal while the other is admitted. The refused panel shows **Progress is busy**,
+not **Progress is not responding**. It tries again on the existing 8-second
+failure polling cadence while visible. Setup still shows the specific
+coordination-port diagnostic.
+
 ![Draft sidebar with no session selected (synthetic example)](images/no-session-draft.png)
 
 Live session state (Running, Retrying, Waiting for permission, Waiting for an answer, Idle, State unknown, Checking…, Live state unavailable, Not open in this window) is always separate from task status. Age is information only: nothing is inferred from it.
