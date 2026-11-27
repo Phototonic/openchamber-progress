@@ -316,6 +316,6 @@ export function createProgressServer(store: Store | undefined, token: string, un
   return server;
 }
 
-function cancelStorageCode(code: Code | undefined) {
+function cancelStorageCode(code: string | undefined) {
   return code === 'busy' || code === 'corrupt' || code === 'schema' ? code : 'storage';
 }

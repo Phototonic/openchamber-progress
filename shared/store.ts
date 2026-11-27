@@ -6,7 +6,7 @@ import { installReceiptIndex, receiptIndexInstalled } from './receipt-index.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
 import { delegationRevision } from './delegation-validation.ts';
-import { parseUserCancel, USER_CANCEL_ACTOR, type HistoryAttribution, type UserCancelReceipt } from './user-cancel.ts';
+import { parseUserCancel, PLAN_USER_CANCEL_MAX_BYTES, USER_CANCEL_ACTOR, type HistoryAttribution, type UserCancelReceipt } from './user-cancel.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -534,13 +534,29 @@ export class Store {
       need(cleanup?.state !== 'archived','closed');
       const p = this.raw(r.source,r.plan);
       need(p,'not-found');
-      const replay = this.db.prepare('SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?').get(r.source,r.plan,r.oid);
+      const replay = this.db.prepare('SELECT payload_hash,CASE WHEN length(CAST(receipt AS BLOB))<=? THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? AND oid=?')
+        .get(PLAN_USER_CANCEL_MAX_BYTES,r.source,r.plan,r.oid);
+      const receiptFor = (rev:number, structuralRev:number, reportedAt:string): UserCancelReceipt => ({
+        storeId:r.storeId,sourceBinding,source:r.source,plan:r.plan,oid:r.oid,
+        rev,structuralRev,lifecycle:'cancelled',actor:'user',reportedAt,
+      });
       if (replay) {
         need(replay.payload_hash === hash,'operation-reused');
-        try { return JSON.parse(String(replay.receipt)) as UserCancelReceipt; }
+        need(typeof replay.receipt === 'string','corrupt');
+        let saved: Partial<UserCancelReceipt> | null;
+        try { saved = JSON.parse(replay.receipt); }
         catch { throw new ProgressError('corrupt'); }
+        need(saved && saved.rev === r.rev+1 && Number.isSafeInteger(saved.rev) &&
+          typeof saved.structuralRev === 'number' && Number.isSafeInteger(saved.structuralRev) &&
+          saved.structuralRev >= 1 && saved.structuralRev <= r.rev &&
+          typeof saved.reportedAt === 'string' && Number.isFinite(Date.parse(saved.reportedAt)) &&
+          new Date(saved.reportedAt).toISOString() === saved.reportedAt,'corrupt');
+        const receipt = receiptFor(saved.rev,saved.structuralRev,saved.reportedAt);
+        need(canonical(saved) === canonical(receipt),'corrupt');
+        return receipt;
       }
       need((cleanup?.generation ?? 0) === r.cleanupRev && p.revision === r.rev,'conflict',p.revision);
+      need(['active','finished','failed','cancelled'].includes(p.lifecycle),'corrupt');
       need(p.lifecycle === 'active','closed');
       need(p.revision < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(p.structuralRevision) &&
         p.structuralRevision >= 1 && p.structuralRevision <= p.revision,'corrupt');
@@ -559,8 +575,7 @@ export class Store {
         .run(p.revision,snapshot,r.source,r.plan,r.rev);
       need(updated.changes === 1,'corrupt');
       this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(r.source,r.plan,p.revision,snapshot,userCancelActor);
-      const receipt: UserCancelReceipt = {storeId:r.storeId,sourceBinding,source:r.source,plan:r.plan,oid:r.oid,
-        rev:p.revision,structuralRev:p.structuralRevision,lifecycle:'cancelled',actor:'user',reportedAt:p.reportedAt};
+      const receipt = receiptFor(p.revision,p.structuralRevision,p.reportedAt);
       this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)').run(r.source,r.plan,r.oid,hash,JSON.stringify(receipt));
       return receipt;
     });

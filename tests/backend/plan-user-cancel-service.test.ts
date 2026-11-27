@@ -37,8 +37,8 @@ test('built managed service advertises cancel and persists the user history thro
 
 test('cancel HTTP refuses malformed, unauthorized, stale, unverified, paused and unavailable requests',async()=>{
   const f=await launchCleanupService(false,false);
+  const body=request(f);
   try {
-    const body=request(f);
     const before=['plans','revisions','receipts'].map(table=>f.store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n);
     await refusal(await f.request(route,body,{headers:{}}),401,'unauthorized');
     await refusal(await f.request(route),405,'method-not-allowed');
@@ -73,14 +73,24 @@ test('cancel HTTP refuses malformed, unauthorized, stale, unverified, paused and
     f.store.setEnabled(true);
     assert.deepEqual(['plans','revisions','receipts'].map(table=>f.store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n),before);
     assert.equal(f.store.get(body.source,body.plan)!.lifecycle,'active');
-    assert.equal((await f.request(route,body,{body:text+' '.repeat(limit-Buffer.byteLength(text))})).status,200);
+    assert.equal((await f.request('/v1/plan/archive',{...f.body(body.plan,0,'archive-active',1),active:true})).status,200);
+    assert.equal((await f.request('/v1/plan/restore',f.body(body.plan,1,'restore-active',1))).status,200);
+    await refusal(await f.request(route,body),409,'conflict');
+    const current={...body,cleanupRev:2}, currentText=JSON.stringify(current);
+    assert.equal((await f.request(route,current,{body:currentText+' '.repeat(limit-Buffer.byteLength(currentText))})).status,200);
+    const read=f.store.db.prepare('SELECT receipt FROM receipts WHERE source=? AND plan=? AND oid=?');
+    const write=f.store.db.prepare('UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?');
+    const receipt=String(read.get(body.source,body.plan,body.oid)!.receipt);
+    write.run('{"unexpected":"synthetic private field"}',body.source,body.plan,body.oid);
+    await refusal(await f.request(route,current),503,'corrupt');
+    write.run(receipt,body.source,body.plan,body.oid);
     f.store.setEnabled(false);
-    await refusal(await f.request(route,body),409,'disabled');
+    await refusal(await f.request(route,current),409,'disabled');
     f.store.setEnabled(true);
-    assert.equal((await f.request('/v1/plan/archive',f.body(body.plan,0,'archive',2))).status,200);
-    await refusal(await f.request(route,body),409,'closed');
-    assert.equal((await f.request('/v1/plan/delete',{...f.body(body.plan,1,'delete',2),confirmed:true})).status,200);
-    await refusal(await f.request(route,body),404,'not-found');
+    assert.equal((await f.request('/v1/plan/archive',f.body(body.plan,2,'archive',2))).status,200);
+    await refusal(await f.request(route,current),409,'closed');
+    assert.equal((await f.request('/v1/plan/delete',{...f.body(body.plan,3,'delete',2),confirmed:true})).status,200);
+    await refusal(await f.request(route,current),404,'not-found');
   } finally {await f.stop();}
   const server=createProgressServer(undefined,'fixture-only','schema').listen(0,'127.0.0.1');
   try {
@@ -88,7 +98,7 @@ test('cancel HTTP refuses malformed, unauthorized, stale, unverified, paused and
     const port=(server.address() as {port:number}).port;
     await refusal(await fetch(`http://127.0.0.1:${port}${route}`,{
       headers:{authorization:'Bearer fixture-only'},method:'POST',
-      body:JSON.stringify(request(f)),signal:AbortSignal.timeout(3000),
+      body:JSON.stringify(body),signal:AbortSignal.timeout(3000),
     }),503,'schema');
   } finally {await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
