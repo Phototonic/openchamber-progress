@@ -63,6 +63,7 @@ let capable = true;
 // recorded, because the step client must never use them.
 let fresh = false, freshCapable = true;
 let freshEng = freshEngine({ inspectPages: 2 });
+const defaultFolder = `${freshEng.review.targets.dataRoot}/openchamber-progress`;
 const oldRoutes: string[] = [];
 let captureControl: boolean | null = null;
 let freshRefusal: string | null = null;
@@ -79,7 +80,8 @@ function setupRead() {
       configured: published, verified: published, installed: false, captureEnabled: captureControl ?? (!p ? null : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
       targets: published ? freshEng.review.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
       delivery: { kind: 'managed', revision: 1, planKind:'fresh', configuration: published ? 'configured' : 'unconfigured', migration: !p ? 'none' : done ? 'complete' : 'pending', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0',
-        managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}) },
+        managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}),
+        ...(freshCapable && !p ? {defaultStoreRoot:defaultFolder} : {}) },
       ...(freshRefusal?{diagnostics:[freshRefusal],captureEnabled:null,
         delivery:{kind:'managed',revision:1,planKind:'fresh',configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null,managedMigrationSteps:1,managedFreshSteps:1}}:{}),
     };
@@ -126,6 +128,11 @@ const server = createServer(async (req, res) => {
         // Version 2 reaches the fresh responder only when advertised; it records any shape violation.
         if (fresh && sent.version !== 2) oldRoutes.push('version-1-step');
         if (sent.version === 2 && !(fresh && freshCapable)) return json(404, { error: 'not-found' });
+        if (sent.version === 2 && sent.action === 'inspect' && !sent.cursor && !freshEng.observeSetup()) {
+          if (sent.storeRoot === '/directory') return json(409, {version:2,disposition:'refused',progress:null,inspection:null,
+            error:{stage:'store',code:'managed-migration-conflict'},accounting:{securitySpawns:0,elapsedMs:0}});
+          freshEng.review.targets.storeRoot = sent.storeRoot ?? defaultFolder;
+        }
         const result = await (sent.version === 2 ? freshEng : engine).request(q.body ?? '{}');
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(result === 'drop' ? { drop: true } : result));
@@ -464,6 +471,43 @@ try {
     await click('[data-testid="setup-inspect"] button');
     await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'fresh review');
   };
+  const folderInput = '[data-testid="setup-storeRoot"] input';
+  const enterFolder = async (value:string) => {
+    await click(folderInput);
+    await guest(`d.querySelector(${literal(folderInput)}).select();return true`);
+    await send('Input.insertText',{text:value});
+  };
+  for (const [width, form] of [[1180,'desktop'],[390,'390']] as const) {
+    await openFresh('en','dark',width,844);
+    check(`folder-${form}:read-only-recommendation`, await guest(`return d.querySelector(${literal(folderInput)}).value==='' &&
+      d.querySelector('[data-testid="setup-default-folder"] code')?.textContent===${literal(defaultFolder)}`) && freshPosts().length===0);
+    await releaseShot(`25-setup-folder-empty-${form}`,width);
+    await enterFolder('my-progress');
+    check(`folder-${form}:relative-hint`, await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent.includes('full (absolute)') &&
+      d.querySelector(${literal(folderInput)}).getAttribute('aria-invalid')==='true'`));
+    await click('[data-testid="setup-inspect"] button');
+    check(`folder-${form}:relative-not-sent`, freshPosts().length===0 && (await fits()).ok, await fits());
+    await releaseShot(`26-setup-folder-relative-${form}`,width);
+  }
+  await enterFolder('/');
+  check('folder:root-advice', await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent.includes('root of a drive or filesystem')`) && freshPosts().length===0);
+  await enterFolder('/directory');
+  check('folder:absolute-passes-client', await guest(`return d.querySelector('[data-testid="setup-folder-hint"]').textContent === ''`));
+  await click('[data-testid="setup-inspect"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-migration-conflict"]')`, 'folder service refusal');
+  check('folder:service-refusal-guidance', await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('Choose another private folder')`) &&
+    freshPosts().length===1 && freshPosts()[0].action==='inspect' && !freshEng.observeSetup());
+  await releaseShot('27-setup-folder-refused-390',390);
+  const customFolder = '/fixture/custom progress';
+  await enterFolder(customFolder);
+  await startFresh();
+  check('folder:custom-inspection-unchanged', freshEng.requests.some(r => r.action==='inspect' && 'storeRoot' in r && r.storeRoot===customFolder) &&
+    freshEng.review.targets.storeRoot===customFolder && freshPosts().every(r=>r.action==='inspect') && !freshEng.observeSetup());
+
+  await openFresh('ru','dark',390,844);
+  check('folder-ru:localized-and-fits', await guest(`return d.querySelector('[data-testid="setup-default-folder"]').textContent.includes('Рекомендуемая папка')`) && (await fits()).ok);
+  await releaseShot('25-setup-folder-empty-390-ru',390);
+
   await openFresh('en', 'dark', 390, 844, { inspectPages: 1 });
   await click('[data-testid="surface-panel-back"] button');
   let releaseStatus!: () => void;

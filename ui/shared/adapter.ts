@@ -772,6 +772,10 @@ export function parseSetup(body: string): SetupView {
   const freshProgress = hasFreshProgress ? parseManagedFreshStepProgress(d.freshProgress) : undefined;
   check(!hasFreshProgress || (fresh && !!freshProgress), 'Setup fresh progress is unreadable.');
   check(!(hasProgress && hasFreshProgress), 'Setup progress is ambiguous.');
+  const defaultStoreRoot = fresh && !v.configured && d.configuration === 'unconfigured' && d.migration === 'none'
+    && !hasProgress && !hasFreshProgress && !review && isStr(d.defaultStoreRoot)
+    && d.defaultStoreRoot.length <= 4096 && /^(?:\/|[A-Za-z]:[\\/])/.test(d.defaultStoreRoot) && !d.defaultStoreRoot.includes('\0')
+    ? d.defaultStoreRoot : null;
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -787,7 +791,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}), ...(fresh ? {managedFreshSteps:1} : {}), ...(freshProgress ? {freshProgress} : {}), ...(d.planKind==='fresh'?{planKind:'fresh'}:{}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}), ...(fresh ? {managedFreshSteps:1} : {}), ...(freshProgress ? {freshProgress} : {}), ...(defaultStoreRoot ? {defaultStoreRoot} : {}), ...(d.planKind==='fresh'?{planKind:'fresh'}:{}) } as SetupView['delivery'] } : {}),
     ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),

@@ -43,6 +43,9 @@ export function managedSourceRoots(env: NodeJS.ProcessEnv = process.env) {
   return { configRoot: managedPath(path.join(base('XDG_CONFIG_HOME', '.config'), 'opencode'), true),
     dataRoot: managedPath(path.join(base('XDG_DATA_HOME', '.local/share'), 'opencode'), true) };
 }
+/** Fresh recommendation only; inspection still validates the actual target. */
+export const managedDefaultStoreRoot = (dataRoot: string) => path.join(dataRoot, 'openchamber-progress');
+
 /** Sole managed discovery path. State roots, overrides and package siblings are deliberately ignored. */
 export function managedBindingFile(env: NodeJS.ProcessEnv = process.env): string {
   const { dataRoot } = managedSourceRoots(env);

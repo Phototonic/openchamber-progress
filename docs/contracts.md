@@ -1685,6 +1685,7 @@ interface ManagedDelivery {
   managedFreshSteps?: 1;
   migrationProgress?: ManagedStepProgress; // wire 1 only
   freshProgress?: ManagedFreshStepProgress; // wire 2 only
+  defaultStoreRoot?: string; // advisory, fresh unconfigured GET only
   review?: {
     expected: string;
     targets: { configRoot: string; dataRoot: string; storeRoot: string };
@@ -1700,6 +1701,13 @@ conditional watched-file versus restart-dependent fallback copy. `verified`
 describes validated explicit source selection, not a service-side proof of the
 active OpenCode runtime. The companion independently verifies its actual scope.
 `reportingIdentity` remains absent until the Store/source association verifies.
+
+When no selected binding, setup journal or legacy installation is present,
+fresh unconfigured `GET /v1/setup` can show `delivery.defaultStoreRoot`: the same
+`<dataRoot>/openchamber-progress` path that fresh inspection proposes for an empty
+choice. Status does not inspect or create that folder. The hint does not imply
+verified scope, usable storage or consent, and a blank form still omits `storeRoot`
+from the inspection request. Guests do not guess a path when the hint is absent.
 
 Both consumers use `managedBindingFile` / `readManagedBinding` in
 `shared/managed-binding.ts`. The only descriptor is

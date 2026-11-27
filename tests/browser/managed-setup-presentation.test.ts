@@ -13,19 +13,21 @@ import {managedFreshStepFixtures} from '../fixtures/managed-fresh-steps.ts';
 import {setupRead} from './fixtures.ts';
 import type {ManagedFreshStepProgress} from '../../shared/managed-steps.ts';
 
-function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false,initial=false,legacy?: 'verified' | 'unverified'){
+function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false,initial=false,legacy?: 'verified' | 'unverified',
+  options: { defaultStoreRoot?: unknown; refusal?: string } = {}){
   const el=(tag:string,_class='',text=''):any=>({tag,text,dataset:{},children:[] as any[],
     set textContent(value:string){this.text=value;},
     get childElementCount(){return this.children.length;},
     append(...children:any[]){this.children.push(...children);},setAttribute(){},removeAttribute(){},addEventListener(){},querySelector:()=>null});
   const testid=(node:any,id:string)=>{node.dataset.testid=id;return node;};
+  let field: {value:string;onChange:(value:string)=>void} | undefined;
   const exports:any={};
   const js=ts.transpileModule(readFileSync(new URL('../../ui/shared/setup.ts',import.meta.url),'utf8'),
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   runInNewContext(js,{exports,document:{visibilityState:'visible'},require:(name:string)=>{
     if(name==='@openchamber/sdk/ui')return {mountBanner:(node:any,o:any)=>node.append(el('p','',o.title),el('p','',o.body)),
-      mountTextField:(node:any,o:any)=>node.append(el('label','',o.label),el('p','',o.helper))};
-    if(name==='./components.ts')return {el,testid,button:(parent:any,id:string,label:string)=>parent.append(testid(el('button','',label),id))};
+      mountTextField:(node:any,o:any)=>{field=o;node.append(el('label','',o.label),el('p','',o.helper));}};
+    if(name==='./components.ts')return {el,testid,button:(parent:any,id:string,label:string,click:()=>void)=>parent.append(Object.assign(testid(el('button','',label),id),{click}))};
     if(name==='./i18n.ts')return {resolveLanguage};
     if(name==='./managed-copy.ts')return copy;
     if(name==='./setup-steps.ts')return steps;
@@ -33,17 +35,76 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
     if(name==='../../shared/managed-steps.ts')return contract;
     throw new Error(`Unexpected render dependency: ${name}`);
   }});
-  const info=parseSetup(JSON.stringify(setupRead({separateLifecycle:false,captureEnabled:legacy==='verified'?true:null,verified:legacy==='verified'||!!progress,diagnostics,
+  const info=parseSetup(JSON.stringify(setupRead({configured:!initial,separateLifecycle:false,captureEnabled:legacy==='verified'?true:null,verified:legacy==='verified'||!!progress,diagnostics,
     delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,...(!legacy?{planKind:'fresh'}:{}),
        configuration:initial?'unconfigured':invalid?'invalid':'configured',migration:initial?'none':invalid?'unavailable':legacy||progress?.state==='complete'?'complete':'pending',
-      mode:'unknown',observation:'unknown',expectedVersion:null,...(progress?{freshProgress:progress}:{})}})));
-  const root=exports.setupBlock({env:{locale},ui:{setup:exports.initialSetupUi()},setup:{state:'ready',value:info},
-    ctx:{connection:{account:'synthetic'}},requestSetup(){throw new Error('Unexpected status request');},updateUi(){},service(){throw new Error('Unexpected mutation');}});
+      mode:'unknown',observation:'unknown',expectedVersion:null,defaultStoreRoot:options.defaultStoreRoot,...(progress?{freshProgress:progress}:{})}})));
+  const sent: Array<{method: string;path: string;body: unknown}> = [];
+  let statusReads=0;
+  const vc={env:{locale},ui:{setup:exports.initialSetupUi()},setup:{state:'ready',value:info},
+    ctx:{connection:{account:'synthetic'}},requestSetup(){statusReads++;},
+    updateUi(update:(ui: unknown)=>object){Object.assign(this.ui,update(this.ui));},handoff(){},
+    service(){return {async serviceRequest(q:{method:string;path:string;body:string}){
+      sent.push({...q,body:JSON.parse(q.body)});
+      assert.ok(options.refusal,'unexpected service call');
+      return {status:409,body:JSON.stringify({version:2,disposition:'refused',progress:null,inspection:null,
+        error:{stage:'store',code:options.refusal},accounting:{securitySpawns:0,elapsedMs:0}})};
+    }};}};
+  const paint=()=>exports.setupBlock(vc);
+  const root=paint();
   const nodes=(node:any):any[]=>[node,...node.children.flatMap((child:any)=>typeof child==='string'?[{text:child,dataset:{}}]:nodes(child))];
   const all=nodes(root);
   const node=(id:string)=>all.find(n=>n.dataset.testid===id);
-  return {all,nodes,node,text:all.map(n=>n.text).join(' '),has:(id:string)=>!!node(id)};
+  return {all,nodes,node,text:all.map(n=>n.text).join(' '),has:(id:string)=>!!node(id),paint,sent,field,statusReads:()=>statusReads};
 }
+
+const defaultStoreRoot='/example/opencode/openchamber-progress';
+const opening = (locale: string, options?: Parameters<typeof render>[6]) => render(undefined,locale,[],false,true,undefined,options);
+test('fresh setup shows the actual recommended folder before inspection without prefilling it', async ()=>{
+  const shown=opening('en',{defaultStoreRoot,refusal:'foreign-files'});
+  assert.ok(shown.nodes(shown.node('setup-default-folder')).some(n=>n.text===defaultStoreRoot));
+  assert.equal(shown.field?.value,'');
+  assert.deepEqual(shown.sent,[]);
+  assert.equal(shown.statusReads(),0);
+  shown.node('setup-inspect').click();
+  await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.deepEqual(shown.sent,[{method:'POST',path:'/v1/setup/managed-step',body:{version:2,action:'inspect'}}]);
+  assert.ok(!opening('en').has('setup-default-folder'),'older services do not get a guessed path');
+  assert.ok(!opening('en',{defaultStoreRoot:'not/an/absolute/path'}).has('setup-default-folder'));
+});
+
+for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: relative and filesystem-root guidance adds no requests or new path rules`,async ()=>{
+  const shown=opening(locale,{defaultStoreRoot,refusal:'managed-migration-conflict'}), words=copy.freshFolderCopy(locale);
+  shown.field!.onChange('progress/data');
+  assert.equal(shown.node('setup-folder-hint').text,words.relative);
+  shown.node('setup-inspect').click();
+  assert.equal(shown.sent.length,0);
+  assert.equal(shown.statusReads(),0);
+  for(const root of ['/','C:\\']){
+    shown.field!.onChange(root);
+    assert.equal(shown.node('setup-folder-hint').text,words.root);
+  }
+  assert.equal(shown.sent.length,0);
+  shown.node('setup-inspect').click();
+  await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.deepEqual(shown.sent.map(q=>q.body),[{version:2,action:'inspect',storeRoot:'C:\\'}],'root advice never changes server admission');
+});
+
+for(const [code,key] of [['managed-migration-conflict','conflict'],['managed-path-unverified','path'],['path-unverified','path'],
+  ['managed-selection-conflict','selection'],['foreign-files','foreign'],['store-permissions','permissions'],
+  ['EACCES','permissions'],['symlink-escape','link']] as const)test(`initial folder review: ${code} keeps its code and shows actionable guidance`,async ()=>{
+  const shown=opening('en',{defaultStoreRoot,refusal:code});
+  shown.field!.onChange('/example/custom folder');
+  assert.equal(shown.node('setup-folder-hint').text,'');
+  assert.deepEqual(shown.sent,[]);
+  shown.node('setup-inspect').click();
+  await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.deepEqual(shown.sent,[{method:'POST',path:'/v1/setup/managed-step',body:{version:2,action:'inspect',storeRoot:'/example/custom folder'}}]);
+  const failure=shown.nodes(shown.paint()).find(n=>n.dataset.testid==='setup-migration-failure');
+  assert.equal(failure?.dataset.code,code);
+  assert.ok(shown.nodes(failure).some(n=>n.text===copy.freshFolderCopy('en')[key]));
+  assert.equal(shown.statusReads(),1,'only the existing status reread after failure');
+});
 
 for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: initial technical facts remain reachable in one disclosure, recording stays outside`,()=>{
   const shown=render(undefined,locale,[],false,true),text=copy.managedCopy(locale);

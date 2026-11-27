@@ -13,8 +13,10 @@ code runs inside OpenCode with the account's full access, like the extension's
 service. Declining approval or a host policy refusal is not bypassed. Installation
 approval alone does not authorize selecting existing progress data.
 
-Open **Agent progress → Setup**. Optionally choose a dedicated private progress
-store, inspect it, and review the resolved config/data scope and exact store.
+Open **Agent progress → Setup**. Leave **Progress folder** empty to use the
+recommended private folder shown below the field (`openchamber-progress` inside
+the OpenCode data folder). To choose your own, enter the full (absolute) path to a
+private folder in your account. Review the resolved config/data scope and exact store.
 Explicit acknowledgement and confirmation are required. Config/data roots must
 already exist, be canonical, belong to the current account and pass platform
 checks. They are not inferred from a project, PID, browser or account label.

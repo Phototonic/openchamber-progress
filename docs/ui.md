@@ -1198,6 +1198,14 @@ status; capabilities never start work. Without fresh support, the fresh action
 shows update-together guidance and sends neither a fresh mutation nor an old-route
 fallback, regardless of browser OS. Migration and capture controls remain independent.
 
+Before fresh review, **Progress folder** starts empty and recommends leaving it
+empty. It shows the path from read-only Setup status when available, without
+prefilling it or sending it back. A custom choice needs a full (absolute) path
+to a private folder in the person's account. Relative paths get an inline hint
+and are not sent; a bare drive or filesystem root gets advisory guidance, with
+the service still deciding what it can use. Folder refusals keep their fixed
+diagnostic codes and show plain recovery guidance beside the field.
+
 Fresh review leads with a purpose sentence, up to four plain-language groups,
 an explicit unchecked account-access consent and Start setup. One native,
 keyboard-operable “What Setup changes on this computer” disclosure contains
