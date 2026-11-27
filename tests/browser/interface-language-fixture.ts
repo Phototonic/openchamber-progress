@@ -34,7 +34,7 @@ const surfaces=['panel','status','page'];
 const theme=${JSON.stringify(theme)};
 window.frame=s=>document.querySelector('iframe[data-surface="'+s+'"]');
 const send=(s,m)=>frame(s).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},location.origin);
-window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],
+window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],toasts:[],
  ctx:{locale:'en',features:{deviceStorage:true},directory:'/fixture/Alpha',session:null,connection:{connected:true,account:'fixture'}},
  ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme,...this.ctx,surface:n,settings:{},item:null}})},
  dark(){theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});this.ready()},
@@ -81,6 +81,7 @@ addEventListener('message',async e=>{
   const hold=qa.holds.find(h=>matches(h,'service',s,q));if(hold)qa.held.push({tag:hold.tag,surface:s,path:q.path,go});else await go();return
  }
  if(m.type==='resize'&&s==='status'&&q.height>0)f.style.height=q.height+'px';
+ if(m.type==='toast')qa.toasts.push({surface:s,...q});
  if(m.id)result();
 });`;
 

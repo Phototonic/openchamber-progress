@@ -38,8 +38,9 @@ export interface CleanupTarget {
   key: string; title: string; lifecycle: PlanView['lifecycle']; context: string; request: CleanupRequest;
   /** Placement facts of the counted plan, so a view can check it is still in scope when the request is sent. */
   where?: { owner: string; directory: string };
+  reportedAt?: string;
 }
-export type CleanupPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'> & Partial<Pick<PlanView, 'ownerSessionId' | 'directory'>>;
+export type CleanupPlan = Pick<PlanView, 'key' | 'title' | 'lifecycle' | 'sourceId' | 'id' | 'revision' | 'cleanup'> & Partial<Pick<PlanView, 'ownerSessionId' | 'directory' | 'reportedAt'>>;
 export interface CleanupState {
   target: CleanupTarget | null;
   pending: boolean;
@@ -50,6 +51,7 @@ export interface CleanupState {
 export const initialCleanup = (): CleanupState => ({ target: null, pending: false, message: null, error: false });
 export function cleanupTarget(plan: CleanupPlan, storeId: string, context: string): CleanupTarget {
   return { key: plan.key, title: plan.title, lifecycle: plan.lifecycle, context,
+    ...(plan.reportedAt === undefined ? {} : { reportedAt: plan.reportedAt }),
     ...(plan.ownerSessionId !== undefined && plan.directory !== undefined ? { where: { owner: plan.ownerSessionId, directory: plan.directory } } : {}), request: { storeId, source: plan.sourceId, plan: plan.id, rev: plan.revision, cleanupRev: plan.cleanup?.revision ?? 0, oid: crypto.randomUUID() } };
 }
 export function cleanupClosed(plan: Pick<PlanView, 'lifecycle'>) {

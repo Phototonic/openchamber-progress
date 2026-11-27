@@ -5,6 +5,7 @@ import { mentionBody, searchMentions, resolveMention } from './mentions.ts';
 import { GRAPH_LIMITS } from '../shared/plan-graph.ts';
 import { RUN_LIMITS, parseReconcileBody, parseDismissLossBody, type RunRequest } from '../shared/subagent-runs.ts';
 import { parseCaptureBinding } from '../shared/document-captures.ts';
+import { PLAN_USER_CANCEL, PLAN_USER_CANCEL_MAX_BYTES, PLAN_USER_CANCEL_PATH, parseUserCancel } from '../shared/user-cancel.ts';
 import { CAPTURE_LIMITS } from '../shared/document-comparison.ts';
 import { timingSafeEqual } from 'node:crypto';
 import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared/progress.ts';
@@ -109,6 +110,32 @@ export function createProgressServer(store: Store | undefined, token: string, un
       digestRoute=url.pathname==='/v1/change-digest';
       searchRoute=url.pathname==='/v1/search'||url.pathname==='/v1/search-state';
       if (url.origin !== 'http://127.0.0.1') return answer(404,{error:'not-found'});
+      if (url.pathname === PLAN_USER_CANCEL_PATH) {
+        if (req.method !== 'POST') return answer(405,{error:'method-not-allowed'});
+        if (req.url?.includes('?') || req.url?.includes('#')) return answer(400,{error:'invalid'});
+        try {
+          let size=0;const chunks:Buffer[]=[];
+          for await(const chunk of req){
+            const bytes=Buffer.from(chunk);size+=bytes.length;
+            if(size>PLAN_USER_CANCEL_MAX_BYTES){req.resume();return answer(413,{error:'request-too-large'});}
+            chunks.push(bytes);
+          }
+          let body:unknown;
+          try { body=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(Buffer.concat(chunks))); }
+          catch { throw new ProgressError('invalid'); }
+          const request=parseUserCancel(body);
+          const active=setup?await setup.currentForRequest():{store,error:unavailableCode};
+          if(!active.store)return answer(503,{error:cancelStorageCode(active.error)});
+          return answer(200,active.store.cancelPlan(request));
+        } catch(e) {
+          const {code}=storageError(e);
+          if(code==='invalid')return answer(400,{error:code});
+          if(code==='not-found')return answer(404,{error:code});
+          if(['binding','conflict','closed','disabled','source-unverified','operation-reused'].includes(code))return answer(409,{error:code});
+          const diagnostic=managedDiagnostic(e);
+          return answer(503,{error:cancelStorageCode(diagnostic==='managed-step-port-busy'?'busy':code)});
+        }
+      }
       if(searchRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       cleanupRoute=['/v1/plan/archive','/v1/plan/restore','/v1/plan/delete'].includes(url.pathname);
       if(cleanupRoute) {
@@ -178,7 +205,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
         const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
         const {subagentRuns,...health}=snapshot;
-        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1,managedFreshSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planCleanupActive:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1,managedFreshSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planCleanupActive:1,planUserCancel:PLAN_USER_CANCEL,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
           protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       }
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
@@ -287,4 +314,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
   // fully received fresh setup request may legitimately take longer than 5s.
   server.requestTimeout=5000;server.headersTimeout=5000;
   return server;
+}
+
+function cancelStorageCode(code: string | undefined) {
+  return code === 'busy' || code === 'corrupt' || code === 'schema' ? code : 'storage';
 }

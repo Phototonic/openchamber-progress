@@ -6,6 +6,7 @@ import { installReceiptIndex, receiptIndexInstalled } from './receipt-index.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
 import { delegationRevision } from './delegation-validation.ts';
+import { parseUserCancel, PLAN_USER_CANCEL_MAX_BYTES, USER_CANCEL_ACTOR, type HistoryAttribution, type UserCancelReceipt } from './user-cancel.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -23,6 +24,7 @@ import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, 
 import { canonical } from './canonical.ts';
 export { canonical } from './canonical.ts';
 export function digest(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
+const userCancelActor = JSON.stringify(USER_CANCEL_ACTOR);
 /** Presentation-only Windows spelling equivalence; never case-fold directory names. */
 function directoryFilter(value:string|undefined) {return windows?value?.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toUpperCase()):value;}
 function directoryExpression(expression:string) {
@@ -443,8 +445,12 @@ export class Store {
     return this.transaction(false, () => {
       need(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       need(this.raw(source,id),'not-found');
-      const rows = this.db.prepare('SELECT snapshot FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,limit+1,cursor);
-      return { ...this.metadata(), data: rows.slice(0,limit).map(r => { const p = JSON.parse(String(r.snapshot)) as PlanState; return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt }; }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
+      const rows = this.db.prepare('SELECT snapshot, actor=? AS user_cancel FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(userCancelActor,source,id,limit+1,cursor);
+      return { ...this.metadata(), data: rows.slice(0,limit).map(r => {
+        const p = JSON.parse(String(r.snapshot)) as PlanState;
+        const attribution: HistoryAttribution = r.user_cancel === 1 ? {actor:'user'} : {};
+        return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt,...attribution };
+      }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
     });
   }
   changeDigest(request: { storeId: string; source: string; plan: string; to: number; after?: number; cleanupRev: number }): ChangeDigest {
@@ -507,6 +513,71 @@ export class Store {
       }
       result.complete = !!baseline && newer.revision === after;
       return capDigest(result);
+    });
+  }
+  /** Host user control, not an OpenCode report or a document capture. */
+  cancelPlan(value: unknown): UserCancelReceipt {
+    need(!this.readOnly,'storage');
+    const r = parseUserCancel(value);
+    const hash = digest(canonical(['plan-user-cancel-v1',r]));
+    return this.transaction(true,()=>{
+      const meta = this.db.prepare('SELECT store_id,enabled FROM meta WHERE singleton=1').get();
+      need(meta,'corrupt');
+      const sourceBinding = {...this.readBinding};
+      need(meta.store_id === r.storeId && sourceBinding.sourceId === r.binding.sourceId &&
+        sourceBinding.verified === r.binding.verified,'binding');
+      need(sourceBinding.verified && r.source === sourceBinding.sourceId &&
+        this.db.prepare('SELECT verified FROM sources WHERE id=?').get(r.source)?.verified === 1,'source-unverified');
+      need(meta.enabled === 1,'disabled');
+      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db,r.source,r.plan) : undefined;
+      need(cleanup?.state !== 'deleted','not-found');
+      need(cleanup?.state !== 'archived','closed');
+      const p = this.raw(r.source,r.plan);
+      need(p,'not-found');
+      const replay = this.db.prepare('SELECT payload_hash,CASE WHEN length(CAST(receipt AS BLOB))<=? THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? AND oid=?')
+        .get(PLAN_USER_CANCEL_MAX_BYTES,r.source,r.plan,r.oid);
+      const receiptFor = (rev:number, structuralRev:number, reportedAt:string): UserCancelReceipt => ({
+        storeId:r.storeId,sourceBinding,source:r.source,plan:r.plan,oid:r.oid,
+        rev,structuralRev,lifecycle:'cancelled',actor:'user',reportedAt,
+      });
+      if (replay) {
+        need(replay.payload_hash === hash,'operation-reused');
+        need(typeof replay.receipt === 'string','corrupt');
+        let saved: Partial<UserCancelReceipt> | null;
+        try { saved = JSON.parse(replay.receipt); }
+        catch { throw new ProgressError('corrupt'); }
+        need(saved && saved.rev === r.rev+1 && Number.isSafeInteger(saved.rev) &&
+          typeof saved.structuralRev === 'number' && Number.isSafeInteger(saved.structuralRev) &&
+          saved.structuralRev >= 1 && saved.structuralRev <= r.rev &&
+          typeof saved.reportedAt === 'string' && Number.isFinite(Date.parse(saved.reportedAt)) &&
+          new Date(saved.reportedAt).toISOString() === saved.reportedAt,'corrupt');
+        const receipt = receiptFor(saved.rev,saved.structuralRev,saved.reportedAt);
+        need(canonical(saved) === canonical(receipt),'corrupt');
+        return receipt;
+      }
+      need((cleanup?.generation ?? 0) === r.cleanupRev && p.revision === r.rev,'conflict',p.revision);
+      need(['active','finished','failed','cancelled'].includes(p.lifecycle),'corrupt');
+      need(p.lifecycle === 'active','closed');
+      need(p.revision < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(p.structuralRevision) &&
+        p.structuralRevision >= 1 && p.structuralRevision <= p.revision,'corrupt');
+      p.revision++;
+      p.lifecycle = 'cancelled';
+      p.reportedAt = new Date().toISOString();
+      for (const item of p.items) {
+        delete item.blocker;
+        // raw() has already removed stale assignment proofs. Carry only valid ones.
+        if (item.assignmentBinding) item.assignmentBinding.validAtRevision = p.revision;
+      }
+      // Existing dispatch binding requires an active snapshot and a complete
+      // proof across intervening revisions; neither permits crossing closure.
+      const snapshot = JSON.stringify(p);
+      const updated = this.db.prepare('UPDATE plans SET revision=?,snapshot=? WHERE source=? AND id=? AND revision=?')
+        .run(p.revision,snapshot,r.source,r.plan,r.rev);
+      need(updated.changes === 1,'corrupt');
+      this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(r.source,r.plan,p.revision,snapshot,userCancelActor);
+      const receipt = receiptFor(p.revision,p.structuralRevision,p.reportedAt);
+      this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)').run(r.source,r.plan,r.oid,hash,JSON.stringify(receipt));
+      return receipt;
     });
   }
   apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor, binding?: { generation: number; messageId: string; callId: string; observedAt: string }) : Receipt {

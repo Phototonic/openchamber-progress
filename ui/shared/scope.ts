@@ -172,9 +172,11 @@ export function applyFilters(plans: PlanView[], live: LiveSnapshot, f: Filters, 
 interface BoardInput {
   plans: PlanView[]; live: LiveSnapshot; filters: Filters; bound?: Bound;
   locale: InterfaceLanguage; archived: boolean; reading: string;
+  excluded?: ReadonlySet<string>;
 }
 export interface BoardDerived {
   plans: PlanView[]; filters: Filters; live: LiveSnapshot; places: Map<string, Place>;
+  quietExcluded: boolean;
   groups: { key: string; label: string; plans: PlanView[]; current: PlanView[]; finished: PlanView[] }[];
   options: () => ReturnType<typeof filterOptions>;
   select: (key: string | null | undefined) => PlanView | null;
@@ -184,19 +186,21 @@ export class BoardDerivation {
   private inputs: unknown[] = [];
   private value: BoardDerived | null = null;
   get(input: BoardInput): BoardDerived {
-    const { plans, live, filters, bound, locale, archived, reading } = input;
+    const { plans, live, filters, bound, locale, archived, reading, excluded } = input;
     const inputs = [plans, live.projectsState, live.projects, ...live.sessions.keys(), ...live.sessions.values(),
-      ...live.worktrees.keys(), ...live.worktrees.values(), live.capped.join(), filters.project, filters.worktree, filters.session, bound, locale, archived, reading];
+      ...live.worktrees.keys(), ...live.worktrees.values(), live.capped.join(), filters.project, filters.worktree, filters.session, bound, locale, archived, reading,
+      JSON.stringify(excluded ? [...excluded] : [])];
     if (this.value && inputs.length === this.inputs.length && inputs.every((v,i) => v === this.inputs[i])) return this.value;
     const indexed = indexedLive(live), places = new Map(plans.map(p => [p.key, placeOf(p, indexed, bound, locale)]));
     // Normalisation needs membership, not all session labels and counts.
     const project = filters.project === ALL || [...places.values()].some(p => p.projectKey === filters.project) ? filters.project : ALL;
     const worktree = filters.worktree === ALL || [...places.values()].some(p => (project === ALL || p.projectKey === project) && p.worktreeKey === filters.worktree) ? filters.worktree : ALL;
     const normalized = { project, worktree, session: filters.session };
-    const shown = orderPlans(project === ALL && worktree === ALL ? plans : plans.filter(p => {
+    const scoped = project === ALL && worktree === ALL ? plans : plans.filter(p => {
       const place = places.get(p.key)!;
       return (project === ALL || place.projectKey === project) && (worktree === ALL || place.worktreeKey === worktree);
-    }));
+    });
+    const shown = orderPlans(excluded?.size ? scoped.filter(p => !excluded.has(p.key)) : scoped);
     const groups = new Map<string, { key: string; label: string; plans: PlanView[] }>();
     for (const p of shown) {
       const place = places.get(p.key)!;
@@ -206,7 +210,7 @@ export class BoardDerivation {
     let options: ReturnType<typeof filterOptions> | undefined;
     let selection: { key: string | null | undefined; plan: PlanView | null } | undefined;
     this.inputs = inputs;
-    return this.value = { plans: shown, filters: normalized, live: indexed, places,
+    return this.value = { plans: shown, filters: normalized, live: indexed, places, quietExcluded: scoped.length > shown.length,
       groups: [...groups.values()].map(g => ({ ...g, ...partitionBoardPlans(g.plans, archived) })),
       options: () => options ??= filterOptions(plans, indexed, normalized, plans, bound, locale),
       select: key => { if (!selection || selection.key !== key) selection = { key, plan: pickPlan(shown, key) }; return selection.plan; } };

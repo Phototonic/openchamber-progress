@@ -699,6 +699,18 @@ ordinary task-ID recovery hint. Omission retains ordinary finish behavior;
 children cannot finish or relay a finish. No schema, receipt format or protocol
 version changes. See [atomic coordinator finish](contracts.md#atomic-coordinator-finish).
 
+The authenticated [user cancellation route](contracts.md#quiet-plans-and-user-cancellation-additive-revision-1)
+uses fresh Store admission and a separate `Store.cancelPlan` write transaction,
+not the agent report path. It verifies the reviewed store and bound source,
+recording, cleanup and progress pins. It appends one ordinary revision and a
+receipt without opening the source file or writing a session contribution. Closing
+clears current blockers, not task statuses or prior snapshots. The revision actor
+is server-authored and history projects only the fixed user discriminator.
+Cancellation and agent operations share the receipt key but use separate hash
+domains. Replay cannot bypass authority or archive/delete fences or close a
+reopened plan again. Dispatch binding cannot cross a closed revision: the active
+lifecycle and complete intervening-revision proof are still required.
+
 Moving a session preserves plan identity and contributions. Each report refreshes
 authoritative location metadata without changing the bound document path. If the
 document stays in the old worktree, it remains the source; a relocated document

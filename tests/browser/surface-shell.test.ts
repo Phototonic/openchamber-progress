@@ -10,6 +10,8 @@ import * as live from '../../ui/shared/live.ts';
 import * as scope from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { P1, P1_ITEMS, plansPage } from './fixtures.ts';
+import * as quiet from '../../ui/shared/quiet-plans.ts';
+import * as cancellation from '../../ui/shared/plan-user-cancel.ts';
 
 class Element {
   dataset: Record<string, string> = {}; attributes: Record<string, string> = {};
@@ -41,6 +43,7 @@ function fixture(locale = 'en', saved: number | null = null) {
     exports, Date, Intl, window, document: { createElement: (tag: string) => new Element(tag) },
     require: (path: string) => ({
       './i18n.ts': i18n, './format.ts': format, './model.ts': model, './live.ts': live, './scope.ts': scope,
+      './quiet-plans.ts': quiet, './plan-user-cancel.ts': cancellation,
       './change-digest-checkpoint.ts': { CheckpointStore: class { async read(identity: unknown) { checkpointReads.push(identity); return saved === null ? { state: 'absent' } : { state: 'saved', revision: saved }; } } },
       './primitives.ts': {
         moreMenu(options: any) { menus.push(options); return { root: new Element('div'), trigger: new Element('button'), update(items: any[]) { options.items = items; }, dispose() {} }; },
@@ -54,6 +57,7 @@ function fixture(locale = 'en', saved: number | null = null) {
     env: { locale, now: Date.now(), live: live.EMPTY_LIVE, boundSource: plan.sourceId, unverifiedSources: new Set(), view: { fresh: true, captureEnabled: true } }, live: live.EMPTY_LIVE,
     read: { storeId: 'store', binding: { sourceId: plan.sourceId, verified: true } },
     detail: () => null, summary: () => null, storage: {}, language: { preference: 'auto', supported: true }, reading: {}, setUi() {},
+    quiet: { hide: true, supported: true, error: null, saving: false }, cancelPlan: () => null,
   };
   const shell = new exports.ProgressShell();
   const panel = new Element('div');
@@ -117,6 +121,51 @@ test('plan menu is shared with closed-plan cleanup and keeps destructive actions
   ]), true);
   const ids = f.menus.at(-1).items.filter((i: any) => !i.separator).map((i: any) => i.id);
   assert.deepEqual(Array.from(ids), ['document', 'history', 'sessions', 'archive', 'language', 'setup', 'troubleshooting', 'delete']);
+});
+
+test('rail More offers the checked quiet filter without a selected plan', () => {
+  const f = fixture();
+  f.options.board = false;
+  let choice: boolean | null = null;
+  f.vc.quiet.choose = (hide: boolean) => { choice = hide; };
+  f.paint();
+  const menu = f.menus.at(-1);
+  const row = menu.items.find((item: { id?: string }) => item.id === 'quiet-plan-filter');
+  assert.equal(row.checked, true);
+  menu.onSelect(row.id);
+  assert.equal(choice, false);
+});
+
+test('More opens an inline confirmation; Escape and Keep do not dispatch', () => {
+  const f = fixture('zh-CN');
+  f.plan.title = '<Example plan>';
+  let open = false, keeps = 0, confirms = 0;
+  f.vc.cancelPlan = () => ({
+    eligible: true, open: () => { open = true; },
+    confirmation: open ? { title: f.plan.title, pending: false,
+      keep: () => { keeps++; open = false; }, confirm: () => { confirms++; } } : null,
+  });
+  f.paint(f.plan);
+  assert.ok(f.menus.at(-1).items.some((item: { id?: string }) => item.id === 'finish-cancelled'));
+  f.menus.at(-1).onSelect('finish-cancelled');
+  let box = f.paint(f.plan).root.children.find(node => node.dataset.testid === 'plan-cancel-confirmation')!;
+  assert.ok(box.children[0].textContent.includes('<Example plan>'));
+  let stopped = false;
+  box.listeners.keydown({ key: 'Escape', preventDefault() {}, stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true);
+  assert.equal(keeps, 1);
+  assert.equal(confirms, 0);
+  f.paint(f.plan); f.menus.at(-1).onSelect('finish-cancelled');
+  box = f.paint(f.plan).root.children.find(node => node.dataset.testid === 'plan-cancel-confirmation')!;
+  const actions = box.children[2].children;
+  assert.equal(actions[0].dataset.testid, 'plan-cancel-keep');
+  actions[0].children[0].listeners.click();
+  assert.equal(keeps, 2);
+  assert.equal(confirms, 0);
+  f.paint(f.plan); f.menus.at(-1).onSelect('finish-cancelled');
+  box = f.paint(f.plan).root.children.find(node => node.dataset.testid === 'plan-cancel-confirmation')!;
+  box.children[2].children[1].children[0].listeners.click();
+  assert.equal(confirms, 1);
 });
 test('history dot uses only an existing older device review point, never a digest read', async () => {
   for (const saved of [null, 1, P1.revision]) {

@@ -20,7 +20,7 @@ import { inPlace, scopeAvailability } from '../../ui/shared/search.ts';
 import type { PlanSummary } from '../../shared/progress.ts';
 const { EMPTY_LIVE } = liveModule;
 import { HEALTH, plansPage, summary, S } from './fixtures.ts';
-import { pageHook, pageFunction } from './page-hooks.ts';
+import { pageHook, pageFunction, pageQuietFilter } from './page-hooks.ts';
 
 const APP = ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const drain = async () => { for (let n = 0; n < 40; n++) await new Promise<void>(r => setImmediate(r)); };
@@ -397,6 +397,7 @@ test('Delete requires its own step; archive cannot confirm it, and Stop ends aft
 function effectiveScope() {
   const state = { filters: { project: 'all', worktree: 'all', session: 'all' }, selectionEpoch: 0 };
   const globals: Record<string, unknown> = { derivedBoard: () => ({ filters: state.filters }), isSearching: () => false, selectionEpoch: 0, tidyEffective: '', tidyFilters: null };
+  pageQuietFilter(globals);
   return { state, extra: { tidyScope: pageHook('tidyScope', globals) } as Partial<ViewSpec<{ filter: string }>> };
 }
 for (const [name, open] of [
@@ -443,6 +444,7 @@ test('a run keeps its own result when its reconciliation reshapes the effective 
     derivedBoard: (c: { read: unknown }) => { state.first ??= c.read; return { filters: { project: c.read === state.first ? 'p:one' : 'all', worktree: 'all', session: 'all' } }; },
     isSearching: () => false, selectionEpoch: 0, tidyEffective: '', tidyFilters: null,
   };
+  pageQuietFilter(globals);
   const f = frame('page', false, false, true, { tidyScope: pageHook('tidyScope', globals) });
   try {
     await until(() => !!f.vc?.read);
@@ -486,7 +488,7 @@ const placed = (extra: Record<string, unknown> = {}) => {
     derivedBoard: (c: any) => board.get({ plans: c.read?.plans ?? [], live: c.env.live, filters: c.ui.filters, bound: c.env.boundSource, locale: 'en', archived: c.ui.archived, reading: 'fixture' }),
     isSearching: () => false, inPlace, scopeAvailability, NO_FILTERS, selectionEpoch: 0, tidyEffective: '', tidyFilters: null, ...extra,
   };
-  pageFunction('scopeAdmits', globals);
+  pageQuietFilter(globals); pageFunction('scopeAdmits', globals);
   return { globals, extra: { tidyScope: pageHook('tidyScope', globals), tidyMember: pageHook('tidyMember', globals),
     initialUi: () => ({ filter: 'all', filters: { ...NO_FILTERS }, archived: false, search: null }), wantProjects: () => ['proj'] } as Partial<ViewSpec<any>> };
 };
@@ -770,6 +772,7 @@ test('a failed list read after cleanup support was lost still retires an open De
 test('ending Select mode without cleanup support keeps the finished archive result through later paints', async () => {
   const selection = new cleanup.PlanSelection();
   const globals: Record<string, unknown> = { selection, selectionEpoch: 0, derivedBoard: () => ({ filters: NO_FILTERS }), isSearching: () => false, tidyEffective: '', tidyFilters: null };
+  pageQuietFilter(globals);
   pageFunction('endSelectionWithoutCleanup', globals);
   const f = frame('page', false, false, true, { tidyScope: pageHook('tidyScope', globals), paint: (_r: unknown, c: unknown) => (globals.endSelectionWithoutCleanup as (c: unknown) => void)(c) });
   try {

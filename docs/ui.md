@@ -372,7 +372,51 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 ### More menu and panel integration
 
-`ProgressShell` in `components.ts` owns the rail/board header, legend, secondary navigation and exactly one More trigger. Group order: copy progress/handoff; Plan document, History (board), Sessions; applicable archive/hidden actions; Language, Setup, Troubleshooting; destructive closed-plan deletion last. `offerPlanActions` still registers per-plan cleanup actions, including from Map and every panel; confirmation stays outside the menu. `menuActions` is the mount for hidden items, not a second menu. Neither surface's More menu has a bulk cleanup entry; Tidy lives beside search and Filters on the full page only. The entry files name the Needs-you, roster and incomplete-indicator mounts after the view; the map owner owns only the map host and its tools.
+`ProgressShell` in `components.ts` owns the rail/board header, legend, secondary navigation and exactly one More trigger. Group order: copy progress/handoff; Plan document, History (board), Sessions; applicable archive/hidden actions and the rail's checked quiet-plan filter; Language, Setup, Troubleshooting; destructive closed-plan deletion last. `offerPlanActions` still registers per-plan cleanup actions, including from Map and every panel; confirmation stays outside the menu. `menuActions` is the mount for hidden items, not a second menu. Neither surface's More menu has a bulk cleanup entry; Tidy lives beside search and Filters on the full page only. The entry files name the Needs-you, roster and incomplete-indicator mounts after the view; the map owner owns only the map host and its tools.
+
+### Plans with no recent reports
+
+Active plans are quiet after seven full 24-hour days since their stored report,
+by the browser clock. Invalid and future times do not qualify. Where shown,
+quiet plans say **No reports for N days**, with an absolute report time on the
+label. This describes a recorded timestamp, not actual activity or an outcome.
+The existing visible refresh reevaluates age without another service read.
+
+**Hide plans with no reports for 7 days** is on initially. It is in rail More
+(even without a selected plan) and board Filters, and applies to their choices
+and plan lists, but not to Work Status or Needs you. When a saved rail plan is
+hidden, the displayed choice falls back without replacing the saved one.
+If filtering leaves no browse choices, **Show all plans** disables only this
+filter. Partial list coverage remains qualified.
+
+The board applies the same predicate to search hits and counts before accepting
+them, using one cutoff per traversal. Changing the preference retires the search
+reading and offers **Refresh search**, without running a new search. Select all
+and bounded cleanup counts use the displayed scope; changing that scope retires
+its confirmation. Bulk cleanup is unavailable for that retired search until
+it is explicitly refreshed or replaced, even if the preference is changed back.
+Tidy still targets only eligible closed plans.
+
+### Finish a plan as cancelled
+
+**More → Finish as cancelled** is separate from archive and delete. It appears
+only for the selected visible active plan in the verified bound source, with
+recording enabled and a service that advertises `planUserCancel:1`. The inline
+confirmation names the plan and explains that unfinished tasks and history are
+kept, running agents are not stopped, and the coordinator can reopen on request.
+Focus starts on **Keep plan active**; keeping the plan active or pressing Escape
+returns focus to More and sends no request.
+
+A confirmation belongs to one account, store/binding, selection, view scope
+and pair of progress/cleanup revisions. Changing that reading, hiding the
+frame, losing capability or seeing newer state retires it. While sending, the
+buttons cannot dispatch a second request. A reply from a retired reading
+cannot show success or change the new reading. A matching success receipt
+retires cached reads and makes one ordinary refresh. A refusal and an
+unconfirmed result have different messages; neither retries automatically.
+History labels the explicit user revision **Cancelled by user**, without
+guessing attribution for older rows. Reopen remains an explicit coordinator
+report, not a UI action.
 
 More uses native buttons with `menu`/`menuitem` roles, roving focus, Up/Down, Home/End, type-ahead, Enter/Space, and Escape returning focus to More. Outside press or focus departure dismisses it. Rows are at least 44 CSS pixels on coarse pointers. Language opens a `menuitemradio` submenu with Automatic (OpenChamber), English, Русский and 简体中文; Left returns to the parent and Escape to More. Unsupported hosts disable manual choices and explain the automatic fallback only inside this submenu. Language storage and failures keep their existing device-only contract.
 
@@ -530,7 +574,7 @@ the More language submenu with the keyboard and checks phone-width wrapping.
 
 A concise account of completed tasks, reported blockers and scope changes between the revision a person last **marked reviewed** and a pinned target, from the frozen `/v1/change-digest` read (`docs/contracts.md`). Only the board's History tab shows it, above Revisions; the rail and Work Status stay unchanged and never read a digest or review point (a confirmed delete there only removes that plan's markers). Nothing here changes tasks, revisions, documents or service rows.
 - **Explicit review (owner decision).** Only a real keyboard/pointer activation (trusted click/Enter/Space) of **Mark reviewed** on a loaded, visible digest acknowledges, and only its **displayed** target. Mounting, polls, repaints, hidden frames, focus return, dwell, list/detail/history reads and script clicks never do. Before writing, one bounded live read (the first `/v1/plan` page only, no cursors) rechecks store/binding/plan, cleanup state/generation and lifecycle; a moved plan asks for Refresh, a deleted one (404) retires the digest. A newer progress revision does not move the target: the older displayed revision is saved and the rest stays for the next digest. A higher acknowledgement from another window is never rewound ("Already reviewed through revision N"). Pending disables repeats; no automatic retry; repeating the same acknowledgement is safe. Initial and partial digests can be marked; partial ones say that earlier uncompared changes won't be recovered.
-- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. Review points, interface language and the three bounded view-state fields described under Needs you are persisted exceptions; task filters and focus remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
+- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. Review points, interface language, the quiet-plan filter and the three bounded view-state fields described under Needs you are persisted exceptions; task filters and focus remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
 - **Integration account and existing points.** SDK `connection.account` describes integration-link state, not a signed-in host user. Its value is retained in the review-point identity as a preference partition, not a security boundary. A changed value selects a different set of markers; an empty or missing value uses the same explicit `null` sentinel. Returning to a previous value makes its saved points available again. The version-1 format is unchanged, so existing points remain readable without migration. Keys are `rv1.<sha256 of the versioned tuple (integration account or absent sentinel, store, binding source + verified, source, plan)>.<revision>` (≤ 86 characters); values are `{v, id, revision}` only, never titles or digest text. Readers enumerate keys once (bounded by the SDK's 2,000) and validate only the highest of their context; an older writer's key cannot overwrite a newer one; after a successful write only lower revisions of the same context are compacted.
 - **Storage failures.** Unsupported feature, denied access, quota, unreadable/malformed highest record or persistent disagreement (one bounded reread) is **checkpoint unavailable**, never an initial view, and disables Mark reviewed; a failed write keeps the previous point and stays retryable.
 - **Pinned visit.** Entering History reads the checkpoint, then one digest for the listed revision (a checkpoint ahead of a lagging list gets one live read first; still ahead is unavailable, never a reversed interval). Unchanged polls and repaints do no digest work; a newer revision shows "Newer changes are available" and **Refresh digest**, never replacing text under the reader. Refresh is one coalesced checkpoint + digest sequence. Visible/focus return rereads only the checkpoint and marks a newer acknowledgement ("Reviewed through revision N in another window or tab") with Refresh. At most the active visit is cached.
@@ -863,7 +907,7 @@ plan, task and blocker-details report revision. New details make it return;
 unrelated plan reports do not. The expanded inbox and More show the hidden count
 and a way to show/unhide items.
 
-`device-view-state.ts` stores exactly three versioned view fields in SDK device
+`device-view-state.ts` stores three view fields in `progress-view.v1` in SDK device
 storage: hidden identities (200 maximum, oldest dropped, stale identities pruned
 after a complete traversal), rail/board expansion, and one indicator-dismissal
 identity per surface for the incomplete-count owner. No browser fallback,
@@ -874,6 +918,12 @@ Other frames converge on their existing refresh. People sharing a browser
 profile/runtime/installation share these choices; this is not per-person or
 cross-device isolation. All other inbox scope, opened-item and hidden-list
 disclosures remain frame-local.
+
+The quiet filter uses a separate SDK device record `quiet-plans.v1` (`{v:1,hide:boolean}`),
+so older frames can still read the original record. Saves are confirmed before
+the choice changes. A read failure uses the enabled default, explains it and
+offers retry without repairing the record. A failed save keeps the previous
+choice. On hosts without device storage, the choice lasts only in the open frame.
 
 QA hooks: `needs-you-inbox` (`data-availability`), `needs-you-heading`,
 `needs-you-count` (`data-count`, `data-exact`), `needs-you-row` (`data-task`,

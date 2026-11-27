@@ -17,6 +17,7 @@ import { chipLabel } from '../../ui/shared/search-view.ts';
 import { criteriaKey } from '../../ui/shared/search.ts';
 import { plansPage, summary } from './fixtures.ts';
 import { CompactInbox } from '../../ui/shared/inbox-view.ts';
+import * as quiet from '../../ui/shared/quiet-plans.ts';
 
 function surfaceHarness(surface: string, overrides: Record<string, object> = {}) {
   let spec: any;
@@ -34,6 +35,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     narrowSurface: () => frameWindow.innerWidth < 320,
     planPicker: (options: any) => { const node = el('div'); node.dataset.testid = 'plan-selector'; node.options = options; nodes.push(node); return node; },
     planDetail: (...args: any[]) => { lists.push(args); return el('article'); }, surfaceViewSwitch: () => el('div'),
+    quietAge: () => null,
     testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
     emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
     button: (_p: any, id: string, text: string, click?: () => void) => nodes.push({ text, dataset: { testid: id }, click }), recoveredHeading: (root: any) => root.recovered ?? null, detailsBlock: () => ({ text: '' }), failureFacts: () => [],
@@ -49,6 +51,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/i18n.ts')) return { resolveLanguage };
     if (path.endsWith('/model.ts')) return model;
     if (path.endsWith('/scope.ts')) return scope;
+    if (path.endsWith('/quiet-plans.ts')) return quiet;
     if (path.endsWith('/live.ts')) return live;
     if (path.endsWith('/inbox.ts')) return inbox;
     if (path.endsWith('/format.ts')) return { formatCount, plural };
@@ -81,7 +84,7 @@ function shellContext() {
     ctx: { connection: { account: 'fixture' } }, identity: 'fixture', session: { id: plan.ownerSessionId },
     ui: { filters: scope.NO_FILTERS, selected: plan.key, tab: 'progress', presentation: 'list', archived: false, search: null },
     read: { plans: [plan], binding: { verified: true }, captureEnabled: true }, health: { ready: true, planGraph: 1 },
-    live: live.EMPTY_LIVE, env: { locale: 'en', live: live.EMPTY_LIVE, boundSource: plan.sourceId, unverifiedSources: new Set() },
+    quiet: { hide: true }, live: live.EMPTY_LIVE, env: { locale: 'en', now: 0, live: live.EMPTY_LIVE, boundSource: plan.sourceId, unverifiedSources: new Set() },
     detailResult: () => ({ current: () => true, result: { ok: true, plan, detail: { items } } }),
     detail: () => null, summary: () => null, document: () => null,
   };
@@ -161,7 +164,7 @@ for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: curren
   for (const locale of ['en', 'ru']) for (const state of ['pending', 'unconfigured', 'failed']) {
     h.nodes.length = 0;
     const vc = { ui: { presentation: 'list', tab: 'progress', archived: false, filters: {}, search: null },
-      env: { locale }, language: {}, session: null, health: state === 'pending' ? null : { ready: false },
+      env: { locale }, quiet: { hide: true }, language: {}, session: null, health: state === 'pending' ? null : { ready: false },
       failure: state === 'failed' ? { kind: 'unavailable' } : null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
     // A stale old availability cannot supply presentation authority to a new entry.
     Object.defineProperty(vc, 'officialMain', { get() { throw Error('Retired metadata consumed'); } });
@@ -174,7 +177,7 @@ for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: curren
 for (const surface of ['panel', 'status', 'page']) test(`${surface}: actual empty render follows language without changing state`, () => {
   const { spec, nodes, rendered } = surfaceHarness(surface);
   const ui = { presentation: 'list', tab: 'progress', archived: false, filters: {}, search: null };
-  const vc = { ui, env: { locale: 'ru' }, language: {}, session: null, health: { ready: false }, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
+  const vc = { ui, env: { locale: 'ru' }, quiet: { hide: true }, language: {}, session: null, health: { ready: false }, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
   // Setup itself belongs to the shared setup renderer; this test covers entry-owned content.
   spec.paint({ append: (...children: any[]) => nodes.push(...children) }, vc);
   assert.match(rendered(), surface === 'page' ? /Текущие планы/ : /Сессия не выбрана/);

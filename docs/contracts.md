@@ -1,5 +1,37 @@
 # Production contract v2
 
+## Quiet plans and user cancellation (additive revision 1)
+
+Quiet labels and hiding use only the active plan's valid stored `reportedAt`:
+seven elapsed 24-hour days by the viewer clock, rounded down for display.
+Invalid and future times never hide a plan. Silence is not a lifecycle outcome
+or an observation about running work. Filtering is rail/board presentation only.
+
+Ready `health.planUserCancel:1` advertises authenticated, query-free
+`POST /v1/plan/cancel`. Use strict UTF-8 JSON (16,384 bytes maximum), exactly
+`{storeId,binding:{sourceId,verified},source,plan,rev,cleanupRev,oid,confirmed:true}`,
+with standard identifiers and safe integers (`rev >= 1`, `cleanupRev >= 0`).
+Unknown fields, including actors, task changes and outcomes, are refused.
+Protocol and schema remain 2; agent inputs and session identity are unchanged.
+
+The authenticated host proxy may cancel one visible active plan in its current
+verified bound source, only with recording enabled and matching review pins.
+Success is `{storeId,sourceBinding,source,plan,oid,rev,structuralRev,lifecycle:"cancelled",actor:"user",reportedAt}`.
+It advances one ordinary revision at service time, preserving tasks, coordinator,
+structure and captured history. The server authors `{kind:"user",action:"cancel"}`
+in the revision, with no session contribution. History may project `actor:"user"`;
+this denotes the authorized action, not a named person. Reopening still requires
+the coordinator's explicit `revise` or staged `commit` with `reopen:true`.
+
+Errors have fixed codes only: `invalid` 400, `unauthorized` 401, `not-found` 404,
+`method-not-allowed` 405, `request-too-large` 413, `binding`, `conflict`, `closed`,
+`disabled`, `source-unverified` or `operation-reused` 409, and `busy`, `corrupt`,
+`schema` or `storage` 503.
+Replies are JSON, no-store and nosniff. Identical admitted replays return the
+original receipt, even after reopening; they never cancel again. Changed inputs
+and agent/user operation-ID reuse refuse. Authority and archive/delete fences
+apply before replay. Older services must not receive cancellation requests.
+
 ## Reporting health observations
 
 Managed delivery, last loaded-byte observation, stored capture control, selected
@@ -858,7 +890,9 @@ except the bounded mention POST reads specified above:
   to avoid mixed document versions. Historical capture returns historical-capture
   diagnostic, not a current-checklist claim. Unicode-character cursor; no files.
 - `/v1/history?source=ID&plan=ID&cursor=0&limit=20`: envelope/page of
-  `{revision,structuralRevision,lifecycle,reportedAt}`. No full snapshot per row.
+  `{revision,structuralRevision,lifecycle,reportedAt,actor?}`. `actor:"user"`
+  is present only for confirmed user cancellation; no raw actor or full snapshot
+  is exposed.
   Rows are oldest-first; cursor is a row offset, not a revision. Committed plan
   revisions start at 1 and append one retained row per revision atomically;
   staging/replay create no revision, archive/restore preserve history, and
@@ -2033,9 +2067,9 @@ below the supported budget; delivery does not
 guarantee reporting or model compliance.
 
 The inline and packaged skill explain that `closed` while a reported plan was
-in progress or on a reopen, or `not-found` for a plan the agent started, means
-the user archived or deleted it: stop reporting, do not retry, and do not recreate
-it (including under another identifier) unless the user specifically asks. A
+in progress or on a reopen, or `not-found` for a plan the agent started, may mean
+the user cancelled, archived or deleted it: stop reporting, and do not retry,
+reopen or recreate it (including under another identifier) unless the user specifically asks. A
 reopen answered `conflict` (stale revision) or `stage-incomplete` is recoverable
 and is not user cleanup: read the plan and retry at its current revision. A
 commit reads only its own upload ID and needs exactly the intended chunk set at the current revision:
