@@ -19,6 +19,7 @@ The rail and board can show captured plan documents as read-only previews, hide 
 
 - Updated the rendered browser drivers for previews, language and reading, change digests, and cleanup to follow the current interface. Added rendered coverage for bulk selection across search pages and cleanup results with skipped and unconfirmed plans (#189).
 - Added a separate weekly and manually triggered CI workflow for rendered Chromium checks against `dev` by default. The schedule starts once the workflow reaches `main`; it does not run on pushes or pull requests (#190).
+- The native companion fixture and real-host release journeys use current Setup routes and interface controls, and establish the package fingerprint before the integrity test edits installed files. Test-only; no product behavior changes (#199).
 
 ### Fixed
 
@@ -26,9 +27,13 @@ The rail and board can show captured plan documents as read-only previews, hide 
 - The board shows one empty message with **Show all plans** when the quiet filter hides every plan; other empty states are unchanged (#182).
 - When Setup finishes but can't read the progress folder's current status, the finished card explains why recording isn't confirmed and keeps **Check status** available (#183).
 - The board keeps bulk cleanup results visible through the refresh of search results or a list with quiet plans hidden. Counting, receipt validation and Undo are unchanged (#184).
-- **View current task** in a History change digest switches to List and focuses the task even when the plan list hasn't changed (#185).
+- **View current task** in a History change digest switches to List and focuses the task even when the plan list hasn't changed; its filter-clear note appears once (#185, #197).
 - The companion stops replaying stale assignment notes after a complete, verified read confirms that a sub-agent has no assignments left after unlink or deletion. It replaces the latest visible stale note with a neutral notice; failed or incomplete reads retire nothing (#186).
 - Setup can show **Continue** after an interrupted first save that left both the published record and its verified temporary name. Status does not write; an explicit matching request removes only the verified temporary name. Unmarked folders and ambiguous leftovers still require manual attention (#188).
+- Setup leads with recording status, recovery guidance and the applicable action; technical explanations move into a collapsed **Details** section. Actions, diagnostics and consent are unchanged (#198).
+- A `managed-step-port-busy` refusal on a panel GET shows **Progress is busy** rather than **Progress is not responding**; other unavailable responses and the retry cadence are unchanged (#200).
+- Setup actions wait for the same panel's pending status read, while passive status reads defer during an action. Requests from another panel or process still meet the worker fence (#201).
+- The rail and board keep More and its Language submenu open across panel repaints, preserving focus where possible; normal dismissal and context-change behavior remain (#202).
 
 ## [1.5.2] - 2026-11-19
 
