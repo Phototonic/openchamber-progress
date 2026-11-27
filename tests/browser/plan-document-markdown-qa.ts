@@ -279,7 +279,7 @@ try {
           await evaluate(`qa.show(['page'],${width});frame('page').closest('section').style.margin='0';qa.theme('light');qa.rejectDocumentLink=true`);
           assert.equal(await guest(`return w.innerWidth`), width);
           await shot(`page-${width}-document`, doc('markdown'));
-          const expected = { frame: s, kind: 'error', message: 'Could not open this link.' };
+          const expected: { frame: string; kind: 'error'; message: string } = { frame: s, kind: 'error', message: 'Could not open this link.' };
           const count = await evaluate<number>('qa.toasts.length');
           await click(link);
           const toast = await until(() => evaluate<typeof expected | null>(`qa.toasts[${count}]??null`), 'host open failure toast');

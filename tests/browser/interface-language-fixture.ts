@@ -89,6 +89,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>Interface 
 
 export async function startLanguageFixture(options: { source?: boolean; service?: (request: { method: string; path: string; query?: Record<string, string>; body?: string; mode?: string }) => Promise<{ status: number; body: string }> } = {}) {
   const assets = createGuestAssets({ source: options.source, surfaces: ['panel', 'status', 'page'] });
+  const plan = { ...P1, reportedAt: new Date().toISOString() };
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     try {
@@ -105,8 +106,8 @@ export async function startLanguageFixture(options: { source?: boolean; service?
         let status = 200, body: unknown;
         if (q.mode === 'failure') { status = 503; body = { error: 'busy' }; }
         else if (q.path === '/health') body = q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
-        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [P1], null, { captureEnabled: q.mode !== 'recording-off' });
-        else if (q.path === '/v1/plan') body = planPage(P1, languageItems, []);
+        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [plan], null, { captureEnabled: q.mode !== 'recording-off' });
+        else if (q.path === '/v1/plan') body = planPage(plan, languageItems, []);
         else if (q.path === '/v1/document') body = envelope({ document: P1.document, text: DOCUMENT_TEXT, nextCursor: null });
         else if (q.path === '/v1/history') body = envelope({ data: [], nextCursor: null });
         else if (q.path === '/v1/setup') body = setupRead({

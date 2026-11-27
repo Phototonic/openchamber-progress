@@ -103,7 +103,8 @@ function tabBack(surface: string) {
 }
 function tab(surface: string, text: string) {
   tabBack(surface);
-  more(surface, text);
+  if (text === 'document') button(surface, 'plan-view-document');
+  else more(surface, text);
 }
 
 // Each explicit run starts fresh disposable stores, not a retry of a destructive action.
