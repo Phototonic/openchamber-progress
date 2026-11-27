@@ -16,4 +16,4 @@
 ## 4. Verify the integrated feature
 
 - [x] 4.1 After service and reader acceptance, connect the shared List section to the rail, then the board. Use the existing synthetic SDK shell and Chromium fixtures with a disposable service/store to verify on-demand paging on a long history, reporter/time/task fidelity, user cancellation, keyboard interaction while a read is pending, language changes and unaffected History. Capture sanitized screenshots; no live profile or model calls.
-- [ ] 4.2 Run focused checks, both typechecks and the repository's portable pre-PR suite on the integrated source; build outputs locally as needed but do not include them in the PR. Strictly validate the proposal and inspect the public diff. No version bump.
+- [x] 4.2 Run focused checks, both typechecks and the repository's portable pre-PR suite on the integrated source; build outputs locally as needed but do not include them in the PR. Strictly validate the proposal and inspect the public diff. No version bump.
