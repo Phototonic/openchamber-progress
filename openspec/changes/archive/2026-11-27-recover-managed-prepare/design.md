@@ -1,0 +1,31 @@
+# First journal publication
+
+## Decision: finish one save, not the whole setup
+
+Keep `createManagedBindingDirectory` and the mandatory product marker. The live `prepare` does not create the progress Store. Its next publication is the sequence-one journal in the marked metadata directory. Its no-clobber link publishes the already flushed bytes; removing the temporary name finishes the save. If both names survive a crash and can be verified, moving back to one name neither replaces the journal nor repeats `prepare`.
+
+Use the existing private JSON publisher and the two strict journal parsers. For the *initial, absent-destination* journal only, derive the reserved sibling name from the exact serialized bytes, e.g. `migration.json.stage-prepare-<sha256 of bytes>`. This binds the stage to one confirmed record (which includes operation, consent and receipt) without another file, field or inventory. A random old suffix or merely matching a filename pattern is not proof. Keep exclusive creation, file flush, no-replace link and directory sync where supported. A collision is a refusal: error cleanup must not unlink a pre-existing stage when exclusive creation failed, or a replacement of a stage we created. Leave every other publication mode on its existing path.
+
+## Recognize, then act only on request
+
+Use one bounded, read-only check local to the initial journal, shared by Setup observation and recovery. In the canonical marked directory, establish that the final name and its one expected sibling are regular non-symlink names of the **same native file** (nonzero inode, same device/inode, link count exactly two). Check ordinary path/parent, marker, POSIX ownership/mode or Windows filesystem protections, bounded stable bytes and no conflicting stages, locks or foreign contents. A valid existing selection must independently pass its usual same-target checks. Compare the derived stage name with the observed name; validate the unchanged family parser, canonical roots and the **initial** pending checkpoint, including its applied begin receipt for this operation. Do not mistake a later sequence, a different payload, or equal bytes in two different files for the pair. This check relies on the existing trusted-account and directory assumptions; a digest is not proof against a hostile writer that controls the directory.
+
+* **Read:** ordinary Setup status and step status may project the proven, published sequence-one record in its original family, with unknown capture unless separately verified. This is progress, not selection or permission to run. Reopening exposes the existing Continue action, not a new begin with a new operation ID. Other reads do not gain authority to accept linked files; no startup, inspection or status path unlinks anything.
+* **Mutate:** only a matching explicit mutation (exact begin replay, or a legal next operation request from the recorded progress) can finish the save. Check family, full begin digest or next operation/sequence/action, current target/package and applicable lifecycle or fresh Store facts, deadline and the held discovery **and Store** fences before unlink. Recheck pair identity at the write boundary, unlink only the reserved sibling, sync the parent on POSIX, then reread via the normal single-link journal owner. Use the existing replay or requested step after that reread. No housekeeping sequence, new consent or inferred capture change. A second interruption after unlink leaves the ordinary single-link replay path.
+* **Routing:** the current supervisor ignores multiply linked journals when picking a Store slot. A custom-store retry must not mutate under the default slot. Use existing validated status hints where available; for cold exact retry, allow a bounded routing-only hint for the journal pair, not a general exception for linked files. Do the authoritative filesystem and target checks in the worker under the actual slots, not on the health-serving thread. No retry loop or lock bypass.
+
+## Retain the other refusal boundaries
+
+| Surviving state | Result |
+|---|---|
+| No managed directory; or valid marker and no journal/staging | Existing reviewed creation path. Without a durable begin receipt, restart may require fresh inspection and consent. |
+| Directory present, marker missing, partial or invalid | Retain and refuse. Neither earlier reviewed absence, a path, emptiness nor default permissions establish who won `mkdir`. |
+| Only a stage; an older random stage; extra/wrong link; wrong journal, target, bytes or unsafe path | Retain evidence and use today's fixed refusal/manual diagnosis. Do not search other directories for the missing link. |
+| Proven pair, but busy, deadline exhausted or request does not match | No cleanup or new effect on that authority. After uncertainty, observe actual state before explicitly trying again. |
+| Later journal replacement, expectation, selector, Store folder/database, legacy lock or format-1 upgrade | Unchanged checks and recovery rules; none is a first no-clobber save. |
+
+A receipt written **after** successful exclusive `mkdir` would still be absent immediately after that call. A prewritten claim would not identify the creator. Node's two-path `rename` has no directory no-replace option; checking absence first does not add one. Do not trade these limitations for clobber risk. Windows `mkdir` does not apply POSIX modes: use existing inherited permissions and Node file identity checks only. Writable files are flushed; Windows has no POSIX directory-fsync guarantee. Recovery after power loss is conditional on the proven names and bytes actually surviving.
+
+## Compatibility and rollback
+
+The stage keeps the existing `migration.json.stage-` prefix, so earlier step readers still refuse the interruption. The canonical marker, descriptor and formats 1/2/3, wire versions and capability negotiation do not change. Uninterrupted single-link records work as before. No migration or backfill: already stranded random-name stages remain manual. Roll back code only; retain the files and history. Use a recovery-capable build or separately authorized inspection; never delete a stage, reset a Store, restore a global loader or change an ACL just to force an older build through.

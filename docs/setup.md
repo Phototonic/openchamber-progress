@@ -13,8 +13,10 @@ code runs inside OpenCode with the account's full access, like the extension's
 service. Declining approval or a host policy refusal is not bypassed. Installation
 approval alone does not authorize selecting existing progress data.
 
-Open **Agent progress → Setup**. Optionally choose a dedicated private progress
-store, inspect it, and review the resolved config/data scope and exact store.
+Open **Agent progress → Setup**. Leave **Progress folder** empty to use the
+recommended private folder shown below the field (`openchamber-progress` inside
+the OpenCode data folder). To choose your own, enter the full (absolute) path to a
+private folder in your account. Review the resolved config/data scope and exact store.
 Explicit acknowledgement and confirmation are required. Config/data roots must
 already exist, be canonical, belong to the current account and pass platform
 checks. They are not inferred from a project, PID, browser or account label.
@@ -53,7 +55,7 @@ database starts with capture off; only the later reviewed enable step turns it o
 Reconnecting valid retained storage reuses its identities, history and capture
 setting, with no enable/disable step. A matching verified source is reused;
 otherwise the review discloses a new source registered only after expectation.
-Reconnecting a retained matching source may replace an older expectation for the
+Reconnecting a retained matching source may replace a different expectation for the
 same Store/source/install identity with the explicitly reviewed package. Its
 expectation step freezes and compares the prior bytes before atomic replacement.
 Foreign or invalid metadata still refuses. Once that step completes, changed
@@ -81,11 +83,13 @@ conspicuous warning and the applicable recovery action. Retained recording stays
 unchanged. This is presentation only: step requests, journal, deadlines, budgets
 and platform checks are unchanged.
 
-Fresh Setup uses **recording** and **progress folder**. Before its first review,
-installation/load facts and the account-access, delivery and lifecycle explanations
-are in one keyboard-operable **What Setup changes on this computer** disclosure;
-recording state stays visible outside it. Review still shows the same bound facts
-and visible consent line, whether or not the disclosure was opened.
+Setup leads with the current status and what to do next. Recording status and
+recovery actions stay visible. A collapsed, keyboard-operable **Details** contains
+installation and load observations, internal steps, and explanations of account
+access, delivery, lifecycle and managed coverage. A differing loaded version or
+fingerprint still gives a visible warning. Fresh review retains **What Setup
+changes on this computer** and its visible consent line, whether or not that
+disclosure was opened.
 **More → Setup** opens it without leaving the current session;
 **Back** returns to the plan and the More button. Language follows **More →
 Language**, including before setup is complete; changing it never confirms a
@@ -260,15 +264,19 @@ known configuration operation, establish that no owner is active, and arrange
 separately authorized manual recovery of the exact lock after verifying the
 private selection. Do not treat busy as absent configuration or select a new store.
 
-Managed-directory bootstrap also retains narrow **manual-recovery crash windows**
-from versions 1.2.0 and 1.3.0. A crash after directory creation but before the
-ownership marker, or between linking a published file and removing its staging
-link, can leave invalid private metadata. Such an unmarked directory, hard-link
-anomaly or foreign content is refused, never adopted, repaired or
-deleted automatically. A valid marked same-target directory with no migration
-journal can be reused after fresh validation and confirmation; it is not the same
-as an unmarked directory. The step protocol's `prepare` stage uses this
-existing bootstrap, not a new claim file or crash-proof directory publication.
+If Setup stops while saving its first step, reopen **Setup**. For fresh setup
+and migration alike, a verified first journal save can show **Continue** without
+changing any files. On an explicit matching request, Setup can finish that save
+by removing only its own proven temporary link to the same journal file. An
+exact retry of the original confirmation replays the receipt; **Continue** runs
+only the next recorded step. Neither opening Setup nor finishing the save changes
+recording by itself.
+
+An unmarked or invalid managed directory still requires manual inspection.
+A valid marked directory without a journal or stage can be reused after fresh
+validation and confirmation. Old staging names, a stage without a journal, extra
+or unrelated links, and foreign or changed state are not repaired. See the
+[bootstrap recovery table and its test cases](../setup/managed-steps.md#bootstrap-recovery-and-retained-limitations).
 
 The step engine's lifecycle helper can reconcile an interrupted
 `record-removal`: it removes only the verified empty discovery directory and then
@@ -294,9 +302,11 @@ its exact creation intent, frozen identity, supported schema and initial off sta
 Creation reconciliation also requires absent sidecars, even when the database
 exists; this does not forbid normal WAL sidecars after its creation checkpoint.
 If Store observation fails on an unfinished format-3 operation with no database
-creation checkpoint, ordinary status reports unavailable for manual diagnosis,
+creation checkpoint (including retained storage), ordinary status reports unavailable for manual diagnosis,
 without a Resume action. Checkpointed and complete operations instead retain their
 pending or complete progress with unknown capture and the read diagnostic attached.
+The finished Setup card explains when the progress folder’s status could not be read
+and offers a fresh status check.
 Status retains the fresh-setup presentation family even when no usable progress can
 be shown. Any partial folder is retained, never deleted, reused or repaired to force
 continuation. A damaged expectation is a state conflict
@@ -314,8 +324,16 @@ journal readers refuse format 3, including complete records; use a fresh-capable
 build for recovery, never down-convert or restore a global loader.
 Creation-only sole-source and initial capture-off checks apply while fresh work is
 unfinished, not after terminal completion. A completed store may serve other
-sources; Setup still verifies its selected source, Store identity, schema, private
-objects and actual capture setting.
+sources; Setup still verifies its selected source, logical Store ID, schema, private
+objects and actual capture setting. For a completed format-3 fresh journal with
+its matching selection, read-only status ignores historical device numbers for
+the Store folder and database. This allows a device number to change after reboot
+without reconfiguring Setup. Paths, inode, recorded birth time and live safety
+checks still have to match. Verified means the same logical Store, not proof of
+the same physical volume or latest contents of a snapshot. Setup does not rewrite
+the journal or authorize a write. Unfinished work may still be refused after a
+reboot that renumbers a device; inspection, Resume, migration and removal retain
+their stricter identity checks.
 
 If bootstrap is refused, stop submitting setup actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no
@@ -543,8 +561,9 @@ earlier version keep working and are never modified. Linux and macOS keep their
 uid and mode checks.
 
 Windows keeps the checks that need only filesystem calls: drive-qualified path
-syntax, canonical path, refusal of hard-linked owned state files, content-ownership
-markers, hashes and schema validation. In the path chain only **symbolic links and
+syntax, canonical path, owned-file hard-link refusal (with the explicit first
+journal recovery above), content-ownership markers, hashes and schema validation.
+In the path chain only **symbolic links and
 junctions** are refused. Other reparse points, such as volume mount points or
 cloud-storage placeholders, are not detected: they are resolved through their real
 path. Directories are created with default inheritance, and an existing directory
@@ -571,8 +590,9 @@ do not exercise native NTFS behaviour. See
 [the step protocol](../setup/managed-steps.md#request-budgets-and-stage-split)
 for deadline and settlement rules.
 
-Use one account and local NTFS storage. Owned hard-linked state files are
-refused. Journals/side files remain in the store folder. No elevation is
+Use one account and local NTFS storage. First-save recovery requires both proven
+names and matching bytes to survive; it does not guarantee recovery from a power
+cut. Journals/side files remain in the store folder. No elevation is
 attempted.
 
 Drive-qualified paths support either separator, spaces, Unicode and trailing

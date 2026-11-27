@@ -539,6 +539,17 @@ restoration permits a fresh read. The existing Windows suite retains explicit-XD
 canonical-alias, junction and hard-link coverage, and checks that roots with an
 existing owner-only ACL keep working with that ACL unchanged.
 
+Portable HTTP tests interrupt the worker after publishing the first managed
+journal link, then verify cold read-only observation, exact retry or Continue,
+and refusal of stale or busy requests. The native `Windows built fresh steps
+(empty-custom)` case instead seeds the two names around a real first checkpoint,
+restarts the isolated built service and checks that Continue leaves one link and
+advances one step, with zero process launches and the same eight-second request
+budget. Native evidence is pending execution in the Windows CI job. The portable
+projection and a Linux skip do not certify NTFS, host delivery or power-loss
+recovery. Other hard-linked state remains refused. See the
+[bootstrap recovery table](../setup/managed-steps.md#bootstrap-recovery-and-retained-limitations).
+
 `Upload sanitized Windows migration trace` uploads `windows-migration-trace` even
 when tests fail. Its JSONL contains only fixed stages, error **classes** (platform,
 filesystem, storage, setup, test or timeout), allowlisted codes, timings, process
@@ -695,9 +706,10 @@ The separately named `progress resume` native case verifies production activatio
 and Store lookup on OpenCode **2.x >= 2.2.2** at the actual outgoing scripted-provider
 boundary. It uses direct synthetic Store construction and local plugin loading,
 not installation. The observer records metadata and the synthetic recovery text
-from the latest outgoing message, where the capsule is delivered and then stays in
-place on later requests while the system section stays fixed; it never manufactures recovery in regression
-mode or retains conversation/summary text. No real model or provider credentials
+from the latest outgoing message, where the capsule is delivered. The replay
+rules below apply while the system section stays fixed. The observer never
+manufactures recovery in regression mode or retains conversation/summary text.
+No real model or provider credentials
 are used. Node 24.19.0 and OpenCode 2.2.2 are the tested baselines; later 24.x/2.x
 releases are accepted but not separately certified. The test requires Node 24.x
 >= 24.19.0, existing Bun/dependencies, working rootless
@@ -787,13 +799,17 @@ characters (4,096 overall), and appends conditional fixed notes to qualifying
 completed direct calls. The one-request hint, the resume capsule and the
 delegation refusal note ride a message (a text part on a user message, the last
 tool result's output on a tool message), so providers that drop plugin system
-sections now receive them too. A delivered note stays in the same place on every
-later request that holds its carrier, so each request begins with the previous one
-and the provider's cache entry written at the end of the latest message, and the
-thinking bound to it, stays readable. A capsule or refusal is delivered again only
-when its text changed or its carrier is gone, and a refusal that stops applying
-gets one fixed cleared line after a complete read that finds none (an incomplete empty read
-delivers the existing omission text and never opens that line). The system section remains for
+sections now receive them too. Normally a delivered note stays in the same place on
+later requests that hold its carrier, preserving the message prefix. A capsule or
+refusal is delivered again only when its text changed or its carrier is gone.
+A refusal that stops applying gets one fixed cleared line after a complete read
+that finds none (an incomplete empty read
+delivers the existing omission text and never opens that line). When a complete,
+unabridged read confirms the verified child has no eligible assignments, old
+child capsules stop appearing on outgoing requests. If any would have been
+replayed, one neutral line replaces the latest such delivery. This does not
+rewrite stored history or earlier requests. Cache reuse and thinking tied to the
+changed message prefix are not guaranteed. The system section remains for
 providers that forward it and is the fixed guidance only, identical on every
 request, so it does not defeat a provider's prompt cache. No provider identifier
 or custom instructions are required.

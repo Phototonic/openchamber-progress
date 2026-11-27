@@ -8,7 +8,7 @@ import { BoardDerivation, NO_FILTERS, ALL } from '../../ui/shared/scope.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary, SRC } from './fixtures.ts';
-import { pageHook } from './page-hooks.ts';
+import { pageHook, pageQuietFilter } from './page-hooks.ts';
 
 // Exercise the production paint's selection reconciliation, including its cache guards.
 const source = readFileSync(new URL('../../ui/page/main.ts', import.meta.url), 'utf8');
@@ -32,6 +32,7 @@ function frame() {
     identity: 'fixture', health: { planCleanup: 1 as 1 | undefined }, ctx: { connection: { account: 'fixture' } },
     ui: { filters: { ...NO_FILTERS }, archived: false, search: null as null | { key: string } },
     read: { plans, truncated: false },
+    quiet: { hide: true },
     env: { live: { ...EMPTY_LIVE, projectsState: 'ready' as const }, boundSource: SRC },
   };
   const derivedBoard = () => board.get({ plans: vc.read.plans, live: vc.env.live, filters: vc.ui.filters,
@@ -40,6 +41,7 @@ function frame() {
     visiblePlans: () => derivedBoard().plans, ownerOf: () => 'fixture', v: null,
     isSearching: () => !!vc.ui.search,
     selectionPlans: null, selectionHits: null, selectionHitCount: -1, selectionSearchPlans: [], selectionEpoch: 0 });
+  pageQuietFilter(globals);
   for (const node of [scope, endWithoutCleanup]) if (node) runInContext(ts.transpileModule(node.getText(file),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
   return { vc, selection, derivedBoard, globals,

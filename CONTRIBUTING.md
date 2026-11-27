@@ -182,8 +182,22 @@ as two processes at once, each in its own serial test runner and as the same
 unprivileged principal, each started with `Start-Process -Wait` inside a PowerShell thread job so
 it is waited for together with everything it started, and reads both exit codes after both end; only the
 service file starts a server and request workers, which take the Setup coordination
-ports. Weekly and manual CI runs target Windows only; the Linux
+ports. In `ci.yml`, weekly and manual runs target Windows only; the Linux
 jobs retain their PR/push coverage. See [native Windows verification](docs/compatibility.md#native-windows-verification).
+
+The separate [Rendered browser drivers workflow](.github/workflows/browser-drivers.yml)
+runs preview summaries, interface language and reading, change digests (including
+prerequisites), quiet plans, plan activity and cleanup against `dev` on Tuesdays
+at 04:43 UTC, not on pushes or PRs. Scheduling starts after the next promotion
+puts the workflow file on `main`. To run it manually, use **Actions → Rendered
+browser drivers → Run workflow** from `main`; the optional `ref` input defaults
+to `dev` and can target `main` or another ref. To reproduce it on Linux, use the
+Node and Bun versions above, install dependencies and run `bun run build:all`, then set
+`CHROMIUM_PATH` to an installed Chromium executable and `ARTIFACTS` to a writable
+directory outside the checkout. Run the workflow's driver commands from the
+repository root with those variables; keep port 47851 free for cleanup. The
+drivers use disposable profiles and synthetic fixtures, not a live host. On
+failure, CI retains screenshots and result files for seven days.
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the source on `dev` first, then prepare a promotion commit containing that source and its built outputs. Run the required host gates on the promotion checkout before its PR into `main` merges.
 

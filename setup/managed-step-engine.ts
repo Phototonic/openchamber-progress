@@ -3,20 +3,24 @@ import {SetupError,type Payload} from './lifecycle.ts';
 import {managedSourceRoots,createManagedBindingDirectory} from '../shared/managed-binding.ts';
 import {windows,windowsPaths,STEP_HEADROOM_MS,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
 import {managedJournalProgress,managedFreshJournalProgress,managedRequestDigest,parseManagedStepJournal,parseManagedFreshStepJournal,sameManagedStep,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedCaptureRenewal,type ManagedFreshCaptureRenewal,type ManagedFreshStepIntent} from './managed-step-journal.ts';
-import {readManagedStepJournal,readManagedFreshStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths} from './managed-migration.ts';
+import {readManagedStepJournal,readManagedFreshStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths,observeInitialJournalSave,settleInitialJournalSave} from './managed-migration.ts';
 import {validateManagedInspectionReview,validateManagedFreshInspectionReview,type ManagedInspectionSession,type ManagedFreshInspectionSession} from './managed-inspection.ts';
 import {type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedCaptureObservation} from '../shared/managed-steps.ts';
 import {canonical} from '../shared/store.ts';
-import {validateManagedStepTarget,managedStepEffectClaims,managedStepEffectCommitted,applyManagedStepEffect} from './managed-step-effects.ts';
+import {validateManagedStepTarget,validateManagedStepTargetFacts,managedStepEffectClaims,managedStepEffectCommitted,applyManagedStepEffect} from './managed-step-effects.ts';
 import {managedDiagnostic,ManagedStepFailure} from './managed-diagnostic.ts';
 
 /** Bounded observation only. It does not admit a Store, infer capture, scan
  * legacy payloads, repair metadata or resume an interrupted operation. */
-export function observeManagedStep(env:NodeJS.ProcessEnv,operationId?:string,version:1|2=1):ManagedSetupStepJournal|undefined {
+function readOperation(env:NodeJS.ProcessEnv,version:1|2,observeInitial=false) {
   const roots=managedSourceRoots(env),root=path.join(roots.dataRoot,'agent-progress-managed');
   if(windows)windowsPaths([roots.configRoot,roots.dataRoot,root,path.join(root,'.ownership.json'),
     path.join(root,'migration.json'),path.join(root,'progress-binding.json')],true);
-  const journal=version===2?readManagedFreshStepJournal(env):readManagedStepJournal(env);
+  return (observeInitial?observeInitialJournalSave(env,version)?.journal:undefined)??
+    (version===2?readManagedFreshStepJournal(env):readManagedStepJournal(env));
+}
+export function observeManagedStep(env:NodeJS.ProcessEnv,operationId?:string,version:1|2=1):ManagedSetupStepJournal|undefined {
+  const journal=readOperation(env,version,true);
   if(operationId&&journal?.migration.operationId!==operationId)throw new SetupError('not-found');
   return journal;
 }
@@ -34,14 +38,17 @@ function validateReview(env:NodeJS.ProcessEnv,payload:Payload,session:Inspection
 }
 export interface ManagedBeginResult { disposition:'applied'|'replayed'; progress:ManagedSetupStepProgress; journal:ManagedSetupStepJournal }
 function replayBegin(env:NodeJS.ProcessEnv,request:Extract<ManagedSetupStepRequest,{action:'begin'}>):ManagedBeginResult {
-  const journal=observeManagedStep(env,undefined,request.version);
+  const journal=readOperation(env,request.version);
   if(!journal)throw new SetupError('managed-inspection-expired');
-  const m=journal.migration,receipt=m.receipt;
-  if(m.operationId!==request.operationId||m.sequence!==1||!receipt||receipt.expectedSequence!==0||receipt.outcome!=='applied'||
-    receipt.requestDigest!==managedRequestDigest(request,journal))throw new ManagedStepFailure(new SetupError('managed-step-conflict'),'prepare',journal);
+  validateBeginReplay(request,journal);
   // The receipt is durable; a service restart need not recover an in-memory
   // review nonce. Never repeat prepare or replay its old capture observation.
   return {disposition:'replayed',progress:managedSetupJournalProgress(journal),journal};
+}
+function validateBeginReplay(request:Extract<ManagedSetupStepRequest,{action:'begin'}>,journal:ManagedSetupStepJournal) {
+  const m=journal.migration,receipt=m.receipt;
+  if(m.operationId!==request.operationId||m.sequence!==1||!receipt||receipt.expectedSequence!==0||receipt.outcome!=='applied'||
+    receipt.requestDigest!==managedRequestDigest(request,journal))throw new ManagedStepFailure(new SetupError('managed-step-conflict'),'prepare',journal);
 }
 
 /** Initial sequenced action only. Caller holds the cross-process worker fence;
@@ -51,6 +58,14 @@ function replayBegin(env:NodeJS.ProcessEnv,request:Extract<ManagedSetupStepReque
 export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'begin'}>,
   budget:PlatformRequestBudget,session?:InspectionSession):ManagedBeginResult {
   requirePlatformWriteBoundary();
+  const interrupted=observeInitialJournalSave(env,request.version);
+  if(interrupted){
+    const {journal}=interrupted;
+    validateBeginReplay(request,journal);
+    try{recoverInitial(env,payload,budget,interrupted);}
+    catch(error){throw new ManagedStepFailure(error,'prepare',journal);}
+    return replayBegin(env,request);
+  }
   // An unrelated inspection cannot revoke an exact durable begin receipt. It
   // grants no authority in this family; only the matching reader may replay it.
   if(session&&(request.version===2)!==('family' in session))return replayBegin(env,request);
@@ -97,7 +112,7 @@ const unknownCapture={state:'unknown',observedAt:null} as const;
 function need(value:unknown,code='managed-step-conflict'):asserts value {if(!value)throw new SetupError(code);}
 function loadOperation(env:NodeJS.ProcessEnv,request:MutationRequest,hint?:ManagedSetupStepJournal) {
   if(!hint||(hint.migration.format===3)!==(request.version===2)){
-    const current=observeManagedStep(env,request.operationId,request.version);need(current,'not-found');return current;
+    const current=readOperation(env,request.version);need(current&&current.migration.operationId===request.operationId,'not-found');return current;
   }
   // Only trusted supervisor transport may supply hints. Even there, parse and
   // compare against the private durable record before following the claims.
@@ -108,6 +123,25 @@ function loadOperation(env:NodeJS.ProcessEnv,request:MutationRequest,hint?:Manag
   // the same journal; use the freshly read record, never reject valid work or
   // authorize it from the hint. Target validation batches any newly read paths.
   return current;
+}
+function recoverInitial(env:NodeJS.ProcessEnv,payload:Payload,budget:PlatformRequestBudget,save:NonNullable<ReturnType<typeof observeInitialJournalSave>>) {
+  const {journal}=save;
+  requirePlatformStoreFence(journal.database,journal.source.dataRoot);
+  validateManagedStepTargetFacts(env,payload,journal);
+  budget.require(STEP_HEADROOM_MS);
+  settleInitialJournalSave(env,save);
+}
+function recoverInitialForMutation(env:NodeJS.ProcessEnv,payload:Payload,request:MutationRequest,budget:PlatformRequestBudget,remember:(journal:ManagedSetupStepJournal)=>void) {
+  const save=observeInitialJournalSave(env,request.version);if(!save)return;
+  const m=save.journal.migration;
+  need(m.operationId===request.operationId,'not-found');
+  remember(save.journal);
+  need(request.expectedSequence===m.sequence);
+  if(request.action==='advance')need(sameManagedStep(request.step,m.step));
+  // The checkpoint is pending without any intent; a capture review cannot
+  // authorize a resume here. Other lifecycle controls allow pending.
+  if(request.action==='resume'&&request.review)throw new SetupError('managed-review-stale');
+  recoverInitial(env,payload,budget,save);
 }
 function renewalFor(request:MutationRequest,journal:ManagedSetupStepJournal):ManagedCaptureRenewal|ManagedFreshCaptureRenewal|undefined {
   if(request.action!=='advance')return;
@@ -138,6 +172,7 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
 function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'advance'}>,
   budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,remember:(journal:ManagedSetupStepJournal)=>void):ManagedMutationResult {
   requirePlatformWriteBoundary();
+  recoverInitialForMutation(env,payload,request,budget,remember);
   let capture:ManagedCaptureObservation=unknownCapture;
   let claims:ReturnType<typeof managedStepEffectClaims>|undefined,evidence:ReturnType<typeof managedStepEffectCommitted>|undefined;
   const prior=(()=>{
@@ -236,6 +271,7 @@ export function controlManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
 function control(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'pause'|'abandon'|'resume'}>,
   budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,session:InspectionSession|undefined,remember:(journal:ManagedSetupStepJournal)=>void):ManagedMutationResult {
   requirePlatformWriteBoundary();
+  recoverInitialForMutation(env,payload,request,budget,remember);
   const admitted=(()=>{
     const journal=loadOperation(env,request,hint);
     remember(journal);

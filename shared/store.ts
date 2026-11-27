@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { GRAPH_LIMITS, graphCheck, graphInteger, graphItems, graphRecord } from './plan-graph.ts';
-import { identifier, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
+import { identifier, type PlanActivityRow, type PlanActivityWindow, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
 import * as runs from './subagent-runs.ts';
 import { installReceiptIndex, receiptIndexInstalled } from './receipt-index.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
 import { delegationRevision } from './delegation-validation.ts';
+import { parseUserCancel, PLAN_USER_CANCEL_MAX_BYTES, USER_CANCEL_ACTOR, type HistoryAttribution, type UserCancelReceipt } from './user-cancel.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -23,6 +24,10 @@ import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, 
 import { canonical } from './canonical.ts';
 export { canonical } from './canonical.ts';
 export function digest(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
+const userCancelActor = JSON.stringify(USER_CANCEL_ACTOR);
+function activityTime(value: unknown): value is string {
+  return typeof value === 'string' && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
 /** Presentation-only Windows spelling equivalence; never case-fold directory names. */
 function directoryFilter(value:string|undefined) {return windows?value?.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toUpperCase()):value;}
 function directoryExpression(expression:string) {
@@ -50,7 +55,7 @@ CREATE TABLE contributions(source TEXT NOT NULL, plan TEXT NOT NULL, revision IN
 PRAGMA user_version=2;`;
 type StoredPlan = PlanState & { boundCanonicalPath?: string };
 export interface MentionCandidate { plan: PlanSummary; verified: boolean; locality:number }
-export type MentionDetailPage = Envelope & PlanRead & { assembly?: { itemCount:number } };
+export type MentionDetailPage = Envelope & PlanRead & { assembly?: { itemCount:number; userCancelRevisions:number[] } };
 export interface MentionSearchRead {
   binding: {sourceId:string|null;verified:boolean}; candidates: MentionCandidate[]; limited: boolean;
   work: {planSlots:number;sessionSlots:number;inputBytes:number};
@@ -414,14 +419,33 @@ export class Store {
     return this.transaction(false, () => {
       if(snapshotBytes!==undefined){const row=this.db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?').get(source,id);need(row,'not-found');need(Number(row.bytes)<=snapshotBytes,'storage');}
       need(Number.isSafeInteger(page) && page >= 0); const p = this.raw(source,id); need(p, 'not-found');
-      const start = page * LIMITS.pageSize; const rows = this.db.prepare(`SELECT ${snapshotBytes===undefined?'payload':'CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload'} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source,id,LIMITS.pageSize+1,start);
-      if(snapshotBytes!==undefined)need(rows.every(r=>typeof r.payload==='string'),'storage');
-      return { ...this.metadata(), ...(snapshotBytes===undefined?{}:{assembly:{itemCount:p.items.length}}), plan: this.summary(p), links: p.links,
+      const start = page * LIMITS.pageSize;
+      // Mention pages cover revision slots, not just reports. Verify cancellations
+      // in the same transaction using the fixed actor marker, not a missing report.
+      const rows = snapshotBytes===undefined
+        ? this.db.prepare('SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,LIMITS.pageSize+1,start)
+        : this.db.prepare(`
+            SELECT r.revision, r.actor=? AS user_cancel, c.revision AS contribution_revision,
+              CASE WHEN length(CAST(c.payload AS BLOB))<=16384 THEN c.payload END AS payload
+            FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+            WHERE r.source=? AND r.plan=? AND r.revision>? ORDER BY r.revision LIMIT ?
+          `).all(userCancelActor,source,id,start,LIMITS.pageSize+1);
+      if(snapshotBytes!==undefined)for(const [i,r] of rows.entries()){
+        need(r.revision===start+i+1,'conflict');
+        if(r.user_cancel===1)need(r.contribution_revision===null,'conflict');
+        else {need(r.contribution_revision!==null,'conflict');need(typeof r.payload==='string','storage');}
+      }
+      const contributions:Contribution[]=[],userCancelRevisions:number[]=[];
+      for(const r of rows.slice(0,LIMITS.pageSize)){
+        if(r.user_cancel===1)userCancelRevisions.push(Number(r.revision));
+        else contributions.push(JSON.parse(String(r.payload)) as Contribution);
+      }
+      return { ...this.metadata(), ...(snapshotBytes===undefined?{}:{assembly:{itemCount:p.items.length,userCancelRevisions}}), plan: this.summary(p), links: p.links,
         items: { data: p.items.slice(start,start+LIMITS.pageSize).map(i => {
           const { blocker, ...item } = i;
           return p.lifecycle === 'active' && i.kind === 'task' && i.status === 'blocked' && validBlockerAnnotation(blocker,p.revision) ? { ...item,blocker } : item;
         }), nextCursor: p.items.length > start+LIMITS.pageSize ? String(page+1) : null },
-        contributions: { data: rows.slice(0,LIMITS.pageSize).map(r => JSON.parse(String(r.payload)) as Contribution), nextCursor: rows.length > LIMITS.pageSize ? String(page+1) : null },
+        contributions: { data: contributions, nextCursor: rows.length > LIMITS.pageSize ? String(page+1) : null },
       };
     });
   }
@@ -443,8 +467,63 @@ export class Store {
     return this.transaction(false, () => {
       need(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       need(this.raw(source,id),'not-found');
-      const rows = this.db.prepare('SELECT snapshot FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,limit+1,cursor);
-      return { ...this.metadata(), data: rows.slice(0,limit).map(r => { const p = JSON.parse(String(r.snapshot)) as PlanState; return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt }; }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
+      const rows = this.db.prepare('SELECT snapshot, actor=? AS user_cancel FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(userCancelActor,source,id,limit+1,cursor);
+      return { ...this.metadata(), data: rows.slice(0,limit).map(r => {
+        const p = JSON.parse(String(r.snapshot)) as PlanState;
+        const attribution: HistoryAttribution = r.user_cancel === 1 ? {actor:'user'} : {};
+        return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt,...attribution };
+      }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
+    });
+  }
+  planActivity(source: string, plan: string, through: number): PlanActivityWindow {
+    need(identifier(source) && identifier(plan) && Number.isSafeInteger(through) && through > 0);
+    return this.transaction(false, () => {
+      const live = this.db.prepare('SELECT revision FROM plans WHERE source=? AND id=?').get(source, plan);
+      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      need(live && cleanup?.state !== 'deleted', 'not-found');
+      const cleanupRev = cleanup?.generation ?? 0;
+      need(graphInteger(live.revision, 1) && graphInteger(cleanupRev), 'corrupt');
+      need(through <= live.revision);
+      const oldest = Math.max(1, through - LIMITS.pageSize + 1);
+      const revisions = this.db.prepare(`
+        SELECT r.revision, r.actor=? AS user_cancel,
+          CASE WHEN length(json_extract(r.snapshot,'$.reportedAt'))=24 THEN json_extract(r.snapshot,'$.reportedAt') END AS recorded_at,
+          CASE WHEN length(json_extract(r.actor,'$.sessionId'))<=80 THEN json_extract(r.actor,'$.sessionId') END AS reporter,
+          json_extract(r.actor,'$.sourceId')=r.source AS matching_actor_source,
+          json_extract(r.actor,'$.sessionId')=json_extract(r.snapshot,'$.sessionId') AS coordinator,
+          json_extract(r.snapshot,'$.lifecycle')='cancelled' AS cancelled,
+          CASE WHEN json_extract(r.snapshot,'$.id')=r.plan AND json_extract(r.snapshot,'$.sourceId')=r.source
+            AND json_extract(r.snapshot,'$.revision')=r.revision THEN 1 END AS matching_snapshot,
+          c.revision AS contribution_revision,
+          CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS contribution
+        FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+        WHERE r.source=? AND r.plan=? AND r.revision BETWEEN ? AND ?
+        ORDER BY r.revision DESC
+      `).all(userCancelActor, LIMITS.requestBytes, source, plan, oldest, through);
+      need(revisions.length === through - oldest + 1, 'corrupt');
+      const rows = revisions.map((r, i): PlanActivityRow => {
+        const revision = through - i;
+        need(r.revision === revision && r.matching_snapshot === 1, 'corrupt');
+        if (r.user_cancel === 1 || r.contribution_revision === null) {
+          need(r.contribution_revision === null && (r.user_cancel !== 1 || r.cancelled === 1) && activityTime(r.recorded_at), 'corrupt');
+          return { revision, reportedAt: r.recorded_at, kind: r.user_cancel === 1 ? 'user' : 'unavailable' };
+        }
+        need(typeof r.contribution === 'string', 'corrupt');
+        const c: unknown = JSON.parse(r.contribution);
+        need(graphRecord(c) && c.revision === revision && activityTime(c.reportedAt) &&
+          identifier(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.matching_actor_source === 1 &&
+          identifier(c.attributedSessionId) &&
+          (c.mode === 'direct' && c.reporterSessionId === c.attributedSessionId ||
+            c.mode === 'parent-relay' && r.coordinator === 1 && c.reporterSessionId !== c.attributedSessionId) &&
+          Array.isArray(c.itemIds) && c.itemIds.length <= 50 && c.itemIds.every(identifier) &&
+          new Set(c.itemIds).size === c.itemIds.length, 'corrupt');
+        return { revision, reportedAt: c.reportedAt, kind: 'report', mode: c.mode,
+          reporterSessionId: c.reporterSessionId, attributedSessionId: c.attributedSessionId, itemIds: c.itemIds };
+      });
+      const storeId = this.db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()?.store_id;
+      need(identifier(storeId), 'corrupt');
+      return { protocolVersion: VERSION, schemaVersion: VERSION, planActivity: 1,
+        storeId, sourceBinding: { ...this.readBinding }, source, plan, cleanupRev, rows, nextThrough: oldest === 1 ? null : oldest - 1 };
     });
   }
   changeDigest(request: { storeId: string; source: string; plan: string; to: number; after?: number; cleanupRev: number }): ChangeDigest {
@@ -507,6 +586,71 @@ export class Store {
       }
       result.complete = !!baseline && newer.revision === after;
       return capDigest(result);
+    });
+  }
+  /** Host user control, not an OpenCode report or a document capture. */
+  cancelPlan(value: unknown): UserCancelReceipt {
+    need(!this.readOnly,'storage');
+    const r = parseUserCancel(value);
+    const hash = digest(canonical(['plan-user-cancel-v1',r]));
+    return this.transaction(true,()=>{
+      const meta = this.db.prepare('SELECT store_id,enabled FROM meta WHERE singleton=1').get();
+      need(meta,'corrupt');
+      const sourceBinding = {...this.readBinding};
+      need(meta.store_id === r.storeId && sourceBinding.sourceId === r.binding.sourceId &&
+        sourceBinding.verified === r.binding.verified,'binding');
+      need(sourceBinding.verified && r.source === sourceBinding.sourceId &&
+        this.db.prepare('SELECT verified FROM sources WHERE id=?').get(r.source)?.verified === 1,'source-unverified');
+      need(meta.enabled === 1,'disabled');
+      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db,r.source,r.plan) : undefined;
+      need(cleanup?.state !== 'deleted','not-found');
+      need(cleanup?.state !== 'archived','closed');
+      const p = this.raw(r.source,r.plan);
+      need(p,'not-found');
+      const replay = this.db.prepare('SELECT payload_hash,CASE WHEN length(CAST(receipt AS BLOB))<=? THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? AND oid=?')
+        .get(PLAN_USER_CANCEL_MAX_BYTES,r.source,r.plan,r.oid);
+      const receiptFor = (rev:number, structuralRev:number, reportedAt:string): UserCancelReceipt => ({
+        storeId:r.storeId,sourceBinding,source:r.source,plan:r.plan,oid:r.oid,
+        rev,structuralRev,lifecycle:'cancelled',actor:'user',reportedAt,
+      });
+      if (replay) {
+        need(replay.payload_hash === hash,'operation-reused');
+        need(typeof replay.receipt === 'string','corrupt');
+        let saved: Partial<UserCancelReceipt> | null;
+        try { saved = JSON.parse(replay.receipt); }
+        catch { throw new ProgressError('corrupt'); }
+        need(saved && saved.rev === r.rev+1 && Number.isSafeInteger(saved.rev) &&
+          typeof saved.structuralRev === 'number' && Number.isSafeInteger(saved.structuralRev) &&
+          saved.structuralRev >= 1 && saved.structuralRev <= r.rev &&
+          typeof saved.reportedAt === 'string' && Number.isFinite(Date.parse(saved.reportedAt)) &&
+          new Date(saved.reportedAt).toISOString() === saved.reportedAt,'corrupt');
+        const receipt = receiptFor(saved.rev,saved.structuralRev,saved.reportedAt);
+        need(canonical(saved) === canonical(receipt),'corrupt');
+        return receipt;
+      }
+      need((cleanup?.generation ?? 0) === r.cleanupRev && p.revision === r.rev,'conflict',p.revision);
+      need(['active','finished','failed','cancelled'].includes(p.lifecycle),'corrupt');
+      need(p.lifecycle === 'active','closed');
+      need(p.revision < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(p.structuralRevision) &&
+        p.structuralRevision >= 1 && p.structuralRevision <= p.revision,'corrupt');
+      p.revision++;
+      p.lifecycle = 'cancelled';
+      p.reportedAt = new Date().toISOString();
+      for (const item of p.items) {
+        delete item.blocker;
+        // raw() has already removed stale assignment proofs. Carry only valid ones.
+        if (item.assignmentBinding) item.assignmentBinding.validAtRevision = p.revision;
+      }
+      // Existing dispatch binding requires an active snapshot and a complete
+      // proof across intervening revisions; neither permits crossing closure.
+      const snapshot = JSON.stringify(p);
+      const updated = this.db.prepare('UPDATE plans SET revision=?,snapshot=? WHERE source=? AND id=? AND revision=?')
+        .run(p.revision,snapshot,r.source,r.plan,r.rev);
+      need(updated.changes === 1,'corrupt');
+      this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(r.source,r.plan,p.revision,snapshot,userCancelActor);
+      const receipt = receiptFor(p.revision,p.structuralRevision,p.reportedAt);
+      this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)').run(r.source,r.plan,r.oid,hash,JSON.stringify(receipt));
+      return receipt;
     });
   }
   apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor, binding?: { generation: number; messageId: string; callId: string; observedAt: string }) : Receipt {

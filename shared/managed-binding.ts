@@ -1,11 +1,11 @@
-import { lstatSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { readBinding, type Binding } from './binding.ts';
 import type { ManagedSetupErrorCode } from './progress.ts';
-import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory } from './platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, requirePlatformWriteBoundary, PlatformError } from './platform.ts';
 
 export class ManagedBindingError extends Error {
   readonly code: ManagedSetupErrorCode;
@@ -43,6 +43,9 @@ export function managedSourceRoots(env: NodeJS.ProcessEnv = process.env) {
   return { configRoot: managedPath(path.join(base('XDG_CONFIG_HOME', '.config'), 'opencode'), true),
     dataRoot: managedPath(path.join(base('XDG_DATA_HOME', '.local/share'), 'opencode'), true) };
 }
+/** Fresh recommendation only; inspection still validates the actual target. */
+export const managedDefaultStoreRoot = (dataRoot: string) => path.join(dataRoot, 'openchamber-progress');
+
 /** Sole managed discovery path. State roots, overrides and package siblings are deliberately ignored. */
 export function managedBindingFile(env: NodeJS.ProcessEnv = process.env): string {
   const { dataRoot } = managedSourceRoots(env);
@@ -53,7 +56,7 @@ export function managedBindingFile(env: NodeJS.ProcessEnv = process.env): string
     need(stat.isDirectory() && privatePaths([root]));
     const marker = path.join(root, '.ownership.json');
     const m = lstatSync(marker, { throwIfNoEntry: false });
-    need(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync(marker, 'utf8') === markerText);
+    need(m?.isFile() && !m.isSymbolicLink() && m.size===Buffer.byteLength(markerText) && privatePaths([marker]) && readFileSync(marker, 'utf8') === markerText);
   }
   return path.join(root, 'progress-binding.json');
 }
@@ -73,7 +76,7 @@ export function createManagedBindingDirectory(env: NodeJS.ProcessEnv = process.e
   const file = managedBindingFile(env), root = path.dirname(file), { dataRoot } = managedSourceRoots(env);
   need(lstatSync(dataRoot).isDirectory() && isOwned(dataRoot));
   if (!lstatSync(root, { throwIfNoEntry: false })) {
-    privateDirectory(root);
+    privateDirectory(root,false,{exclusive:true,validate:()=>{need(managedBindingFile(env)===file);}});
     const marker = path.join(root, '.ownership.json');
     writeFileSync(marker, markerText, { mode: 0o600, flag: 'wx' });
     syncFile(marker); syncDirectory(root); syncDirectory(dataRoot);
@@ -81,17 +84,77 @@ export function createManagedBindingDirectory(env: NodeJS.ProcessEnv = process.e
   managedBindingFile(env);
   return file;
 }
+function sameInode(a:BigIntStats,b:BigIntStats|undefined):b is BigIntStats {
+  return !!b&&b.isFile()&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;
+}
+function sameFile(a:BigIntStats,b:BigIntStats|undefined) {
+  return sameInode(a,b)&&a.birthtimeNs===b.birthtimeNs;
+}
+function stableFile(a:BigIntStats,b:BigIntStats|undefined) {
+  return sameFile(a,b)&&!!b&&a.size===b.size&&a.nlink===b.nlink&&a.mode===b.mode&&
+    a.uid===b.uid&&a.mtimeNs===b.mtimeNs&&a.ctimeNs===b.ctimeNs;
+}
+export function initialJournalStage(file:string,bytes:string|Uint8Array) {
+  need(path.basename(file)==='migration.json');
+  return `${file}.stage-prepare-${createHash('sha256').update(bytes).digest('hex')}`;
+}
+/** Physical evidence only: this bounded read grants neither path authority
+ * nor permission to unlink. The journal owner validates both before recovery. */
+export function readInitialJournalPair(file:string,maxBytes:number) {
+  const before=lstatSync(file,{bigint:true,throwIfNoEntry:false});
+  if(!before?.isFile()||before.nlink!==2n||before.ino===0n||before.size>BigInt(maxBytes))return;
+  const fd=openSync(file,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+  try{
+    if(!stableFile(before,fstatSync(fd,{bigint:true})))return;
+    const buffer=Buffer.alloc(Number(before.size)+1),length=readSync(fd,buffer,0,buffer.length,0);
+    if(BigInt(length)!==before.size)return;
+    const bytes=buffer.subarray(0,length),stage=initialJournalStage(file,bytes);
+    if(!stableFile(before,lstatSync(stage,{bigint:true,throwIfNoEntry:false}))||
+      !stableFile(before,lstatSync(file,{bigint:true,throwIfNoEntry:false}))||
+      !stableFile(before,fstatSync(fd,{bigint:true})))return;
+    return {bytes,stage,stat:before};
+  }finally{closeSync(fd);}
+}
+/** Call only after journal/request admission; never remove a replacement. */
+export function finishInitialJournalPair(file:string,expected:NonNullable<ReturnType<typeof readInitialJournalPair>>,maxBytes:number) {
+  const pair=readInitialJournalPair(file,maxBytes);
+  need(pair&&stableFile(expected.stat,pair.stat)&&expected.bytes.equals(pair.bytes),'managed-migration-conflict');
+  requirePlatformWriteBoundary();
+  unlinkSync(pair.stage);
+  syncDirectory(path.dirname(file));
+  const final=lstatSync(file,{bigint:true});
+  if(!sameFile(pair.stat,final)||final.nlink!==1n||final.size!==pair.stat.size||final.mtimeNs!==pair.stat.mtimeNs||
+    lstatSync(pair.stage,{throwIfNoEntry:false}))throw new PlatformError('managed-step-unsettled');
+}
 /** Atomic publication; absent selectors use no-clobber publication, not replacement. */
-export function publishPrivateJson(file: string, value: unknown, replace = false) {
-  const stage = `${file}.stage-${randomUUID()}`;
+export function publishPrivateJson(file: string, value: unknown, replace = false, initialJournal = false) {
+  const bytes=JSON.stringify(value);
+  need(!initialJournal||!replace);
+  const stage=initialJournal?initialJournalStage(file,bytes):`${file}.stage-${randomUUID()}`;
+  const fd=openSync(stage,'wx',0o600);
+  let created:BigIntStats|undefined;
   let failed=false;
   try {
-    writeFileSync(stage, JSON.stringify(value), { mode: 0o600, flag: 'wx' }); syncFile(stage);
+    // The open descriptor pins the inode until cleanup. Birthtime can be
+    // ctime on some runtimes, and our own write and link can change it.
+    created=fstatSync(fd,{bigint:true});
+    writeFileSync(fd,bytes);
+    fsyncSync(fd);
+    need(sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
     if (replace) renameSync(stage, file);
-    else { linkSync(stage, file); unlinkSync(stage); }
+    else {
+      linkSync(stage, file);
+      need(sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})));
+      unlinkSync(stage);
+    }
+    created=undefined; // Publication already consumed the stage name.
     syncDirectory(path.dirname(file));
   } catch(e) {failed=true;throw e;} finally {
-    try{if (lstatSync(stage, { throwIfNoEntry: false })) unlinkSync(stage);}catch(e){if(!failed)throw e;}
+    try {
+      try {
+        if(created&&sameInode(created,lstatSync(stage,{bigint:true,throwIfNoEntry:false})))unlinkSync(stage);
+      } finally {closeSync(fd);}
+    } catch(e) {if(!failed)throw e;}
   }
 }
 

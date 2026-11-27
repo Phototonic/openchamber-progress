@@ -25,6 +25,8 @@ import type { ReadFailure } from '../../ui/shared/source.ts';
 import { HEALTH, HEALTH_UNCONFIGURED, plansPage, planPage, setupRead, envelope, docRef, summary } from './fixtures.ts';
 import {parseSetup,parseLastAction} from '../../ui/shared/adapter.ts';
 import {lastMigrationText} from '../../ui/shared/setup.ts';
+import {managedStepCall, StepDriver} from '../../ui/shared/setup-steps.ts';
+import {freshEngine} from './managed-migration-engine.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'working' as const }];
 const row = summary('P-A', items, { sessionId: 'A', document: docRef() });
@@ -130,6 +132,34 @@ test('snapshot admission refusal and proxy errors never authorize plans or creat
   }
 });
 
+test('a responding Setup conflict keeps its diagnostic and never reads plans', async () => {
+  const code = 'managed-migration-conflict';
+  for (const [setupStatus, diagnostic, kind] of [
+    [200, code, 'setup-refused'], [409, code, 'setup-refused'], [503, 'storage', 'unavailable'],
+    [200, 'unexpected-code', 'unavailable'], [200, 'busy', 'busy'], [200, 'corrupt', 'damaged'], [200, 'schema', 'incompatible'],
+  ] as const) {
+    const calls: string[] = [];
+    const r = await source.readList({ serviceRequest: async q => {
+      calls.push(q.path);
+      if (q.path === '/v1/setup') return setupStatus === 200 ? response(setupRead()) : response({ error: diagnostic }, setupStatus);
+      assert.equal(q.path, '/health');
+      return response({ ...failedHealth(diagnostic), state: 'refused' });
+    } }, {});
+    assert.ok(!r.ok);
+    assert.equal(r.failure.kind, kind);
+    assert.equal(r.failure.code, diagnostic);
+    assert.deepEqual(calls, ['/health', '/v1/setup', ...(setupStatus === 200 ? ['/health'] : [])]);
+  }
+  const routes: string[] = [];
+  const proxy = await source.readList({ serviceRequest: async q => {
+    routes.push(q.path);
+    return response({ error: code }, 503);
+  } }, {});
+  assert.ok(!proxy.ok);
+  assert.equal(proxy.failure.kind, 'unavailable', 'an HTTP error outside Setup admission is not a Setup diagnosis');
+  assert.deepEqual(routes, ['/health']);
+});
+
 test('readList classifies health-reported store failures; only /health is called', async () => {
   for (const [code, kind] of [['corrupt', 'damaged'], ['schema', 'incompatible'], ['busy', 'busy'], ['storage', 'unavailable']] as const) {
     const calls: GuestRequest[] = [];
@@ -141,6 +171,39 @@ test('readList classifies health-reported store failures; only /health is called
     const unscoped = await source.readList({ serviceRequest: async () => response(failedHealth(code)) }, null);
     assert.equal(unscoped.ok === false && unscoped.failure.kind, kind, code);
   }
+});
+
+test('list and detail reads distinguish the coordination-port refusal from an outage', async () => {
+  const busy = 'managed-step-port-busy';
+  for (const [status, code, kind] of [
+    [503, busy, 'busy'],
+    [503, 'storage', 'unavailable'],
+    [502, busy, 'unavailable'],
+  ] as const) {
+    const refusal = response({ error: code }, status);
+    for (const duringAdmission of [true, false]) {
+      const calls: string[] = [];
+      const result = await source.readList({ serviceRequest: async q => {
+        calls.push(q.path);
+        if (q.path === '/health') return response(duringAdmission ? { ...HEALTH_UNCONFIGURED, state: 'starting' } : HEALTH);
+        return refusal;
+      } }, { session: 'A' });
+      assert.ok(!result.ok);
+      assert.equal(result.failure.kind, kind, code);
+      assert.equal(result.failure.code, code);
+      assert.deepEqual(calls, ['/health', duringAdmission ? '/v1/setup' : '/v1/plans']);
+    }
+    const detail = await source.readDetail({ serviceRequest: async () => refusal }, row);
+    assert.ok(!detail.ok);
+    assert.equal(detail.failure.kind, kind);
+    if (kind === 'busy') assert.deepEqual(detail.cause, { kind: 'store', code: 'busy' });
+  }
+  const outage = await source.readList({ serviceRequest: async () => {
+    throw Object.assign(new Error('Service did not respond'), { code: 'NO_SERVICE' });
+  } }, {});
+  assert.ok(!outage.ok);
+  assert.equal(outage.failure.kind, 'unavailable');
+  assert.deepEqual(await source.setupCall({ serviceRequest: async () => response({ error: busy }, 503) }, null), { ok: false, code: busy });
 });
 
 test('readList classifies a configured binding failure as unavailable with identity copy', async () => {
@@ -256,6 +319,80 @@ function controller() {
   };
 }
 
+test('fresh Setup review waits for its own status read and excludes passive reads until the action replies', async () => {
+  const c = controller();
+  const engine = freshEngine();
+  const releaseStep = engine.hold(1);
+  let releaseStatus!: () => void;
+  const status = new Promise<void>(resolve => { releaseStatus = resolve; });
+  let statusInFlight = false, holdStatus = false;
+  const stepPath = '/v1/setup/managed-step';
+  const driver = new StepDriver({
+    send: (request, current) => managedStepCall(c.vc.service(current), request),
+    context: () => 'synthetic', changed() {}, refresh() { c.vc.requestSetup(); },
+  });
+  driver.observe('synthetic', 'synthetic');
+  try {
+    c.intercept(async (q, next) => {
+      if (q.path === '/health') return response(HEALTH_UNCONFIGURED);
+      if (q.path === '/v1/setup' && holdStatus) {
+        statusInFlight = true;
+        await status;
+        statusInFlight = false;
+      }
+      if (q.path !== stepPath) return next();
+      if (statusInFlight) return response({version: 2, disposition: 'refused', progress: null, inspection: null,
+        error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}}, 503);
+      return engine.host.serviceRequest(q);
+    });
+    c.ready('A'); await settle();
+    holdStatus = true;
+    c.vc.requestSetup(); // More → Setup, retaining the previously displayed status
+    assert.equal(statusInFlight, true);
+    const review = driver.inspect('begin', {family: 'fresh'});
+    await settle();
+    assert.equal(driver.state.outcome?.code, undefined, 'the panel’s own status read must not cause a refusal');
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 0);
+
+    holdStatus = false;
+    releaseStatus();
+    await settle();
+    assert.equal(engine.requests.length, 1);
+    const mark = c.requests.length;
+    c.vc.requestSetup();
+    assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/setup'), false);
+    releaseStep();
+    await review;
+    assert.equal(driver.state.review?.kind, 'begin');
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 1, 'no action retry');
+  } finally {
+    releaseStatus();
+    releaseStep();
+    c.stop();
+  }
+});
+
+test('fresh Setup review still surfaces an unsettled refusal from another caller', async () => {
+  const c = controller();
+  const stepPath = '/v1/setup/managed-step';
+  try {
+    c.intercept(async (q, next) => q.path === stepPath
+      ? response({version: 2, disposition: 'refused', progress: null, inspection: null,
+        error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}}, 503)
+      : next());
+    c.ready('A'); await settle();
+    const driver = new StepDriver({
+      send: (request, current) => managedStepCall(c.vc.service(current), request),
+      context: () => 'synthetic', changed() {}, refresh() { c.vc.requestSetup(); },
+    });
+    driver.observe('synthetic', 'synthetic');
+    await driver.inspect('begin', {family: 'fresh'});
+    assert.equal(driver.state.review, null);
+    assert.deepEqual(driver.state.outcome, {code: 'managed-step-unsettled', stage: 'lock', uncertain: false});
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 1);
+  } finally { c.stop(); }
+});
+
 test('fresh surface shows the damaged failure, not the setup form, for a corrupt store', async () => {
   const c = controller();
   c.intercept(async (q, next) => q.path === '/health' ? response(failedHealth('corrupt')) : q.path === '/v1/plans' ? response({ error: 'corrupt' }, 503) : next());
@@ -280,6 +417,23 @@ test('cached data is retained and marked stale-damaged when the store breaks bet
   assert.equal(failure?.kind, 'damaged'); assert.equal(failure?.code, 'corrupt');
   assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
   c.stop();
+});
+
+test('last-good panel data stays stale when the service refuses Setup', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    const lastGood = c.vc.lastGoodAt;
+    assert.ok(lastGood);
+    c.intercept(async (q, next) => q.path === '/health' ? response({ ...failedHealth('managed-migration-conflict'), state: 'refused' }) : next());
+    const mark = c.requests.length;
+    c.vc.retry(); await settle();
+    assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
+    assert.equal(c.vc.lastGoodAt, lastGood);
+    assert.equal(c.vc.failure?.kind, 'setup-refused');
+    assert.equal(c.vc.failure?.code, 'managed-migration-conflict');
+    assert.deepEqual(c.requests.slice(mark).map(q => q.path), ['/health', '/v1/setup', '/health']);
+  } finally { c.stop(); }
 });
 
 test('configured binding failure shows a fresh failure, not the setup form, and stays stale on cached data', async () => {

@@ -1,12 +1,12 @@
-import {lstatSync,readFileSync,readdirSync} from 'node:fs';
+import {lstatSync,opendirSync,readFileSync,readdirSync} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
-import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile,readManagedBinding} from '../shared/managed-binding.ts';
-import {privatePaths,isOwned,PlatformError,requirePlatformWriteBoundary,windows,windowsPaths} from '../shared/platform.ts';
+import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile,readManagedBinding,readInitialJournalPair,finishInitialJournalPair} from '../shared/managed-binding.ts';
+import {privatePaths,isOwned,PlatformError,requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths} from '../shared/platform.ts';
 import {Store,canonical,storageError,digest} from '../shared/store.ts';
 import {ProgressError} from '../shared/progress.ts';
 import {SetupError,migrationBinding,validateMigrationRemoval,type Targets} from './lifecycle.ts';
-import {parseManagedStepJournal,parseManagedFreshStepJournal,validateManagedFreshCreationChange,managedJournalBinding,sameManagedStep,
+import {parseManagedStepJournal,parseManagedFreshStepJournal,validateManagedFreshCreationChange,managedJournalBinding,managedRequestDigest,sameManagedStep,
   type ManagedPathClaim,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
 import {MANAGED_STEP_LIMITS,MANAGED_OPERATION_TRANSITIONS} from '../shared/managed-steps.ts';
 
@@ -145,18 +145,27 @@ export function readManagedFreshStepJournal(env:NodeJS.ProcessEnv):ManagedFreshS
   managedPath(file);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
   if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-  const before=journalSnapshot(file),journal=parseManagedFreshStepJournal(readFileSync(file)),roots=managedSourceRoots(env),m=journal.migration;
+  const before=journalSnapshot(file),journal=parseManagedFreshStepJournal(readFileSync(file));
+  validateFreshJournalPaths(env,file,journal);
+  if(before!==journalSnapshot(file))throw new SetupError('managed-migration-conflict');
+  return journal;
+}
+function validateJournalRoots(env:NodeJS.ProcessEnv,file:string,journal:ManagedSetupStepJournal) {
+  const roots=managedSourceRoots(env);
   if(journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
-    [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
+    [roots.configRoot,roots.dataRoot,path.dirname(file)].includes(path.dirname(journal.database))||
     ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p)))throw new SetupError('managed-migration-conflict');
+}
+function validateFreshJournalPaths(env:NodeJS.ProcessEnv,file:string,journal:ManagedFreshStepJournal) {
+  validateJournalRoots(env,file,journal);
+  const m=journal.migration;
   for(const [p,directory] of [[path.dirname(journal.database),true],[journal.database,false],...m.fresh.sidecars.map(c=>[c.path,false] as const)] as const){
     managedPath(p,true);const s=lstatSync(p,{throwIfNoEntry:false});
     if(s&&(!privatePaths([p])||s.isSymbolicLink()||(directory?!s.isDirectory():!s.isFile()||s.nlink!==1)))throw new SetupError('managed-migration-conflict');
   }
   if((m.fresh.directory.kind==='directory'||m.created.directory)&&!lstatSync(path.dirname(journal.database),{throwIfNoEntry:false})?.isDirectory()||
-    (m.fresh.database.kind==='file'||m.created.database)&&!lstatSync(journal.database,{throwIfNoEntry:false})?.isFile()||before!==journalSnapshot(file))
+    (m.fresh.database.kind==='file'||m.created.database)&&!lstatSync(journal.database,{throwIfNoEntry:false})?.isFile())
     throw new SetupError('managed-migration-conflict');
-  return journal;
 }
 /** Journal observation, not Store admission. This reader validates the private
  * envelope/roots and consistency only; each engine effect must freshly validate
@@ -176,11 +185,9 @@ export function readManagedStepJournal(env:NodeJS.ProcessEnv):ManagedStepJournal
   const before=journalSnapshot(file),journal=parseManagedStepJournal(readFileSync(file));
   // Retain the existing Binding owner's native path/identity checks, including
   // actual roots. Parsing the saved claims does not replace those checks.
-  const binding=readBinding(file),roots=managedSourceRoots(env);
+  const binding=readBinding(file);
+  validateJournalRoots(env,file,journal);
   if(canonical(managedJournalBinding(binding))!==canonical(managedJournalBinding(journal))||
-    journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
-    [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
-    ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p))||
     before!==journalSnapshot(file))throw new SetupError('managed-migration-conflict');
   return journal;
 }
@@ -271,6 +278,66 @@ function validateInitialManagedCheckpoint(journal:ManagedSetupStepJournal):void 
     m.receipt.outcome!=='applied'||!sameManagedStep(m.receipt.step,m.lastCompleted))throw new SetupError('managed-step-conflict');
 }
 
+/** Setup-only observation of a first-checkpoint publication interrupted between
+ * link and unlink. Ordinary journal and Binding readers still refuse the pair. */
+export function observeInitialJournalSave(env:NodeJS.ProcessEnv,version?:1|2) {
+  const file=migrationFile(env),root=path.dirname(file),stat=lstatSync(file,{throwIfNoEntry:false});
+  if(!stat?.isFile()||stat.nlink===1)return;
+  if(lstatSync(path.join(root,'.configuration-lock'),{throwIfNoEntry:false}))throw new SetupError('managed-configuration-busy');
+  if(lstatSync(path.join(root,'.ownership.json')).nlink!==1)throw new SetupError('managed-binding-invalid');
+  if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  managedPath(file);
+  const pair=readInitialJournalPair(file,MANAGED_STEP_LIMITS.journalBytes);
+  if(!pair)throw new SetupError('managed-migration-conflict');
+  managedPath(pair.stage);
+  if(!windows&&!privatePaths([file,pair.stage]))throw new SetupError('managed-migration-conflict');
+  const names=new Set(['.ownership.json','migration.json',path.basename(pair.stage),'progress-binding.json']);
+  const dir=opendirSync(root,{bufferSize:4});
+  try{
+    for(let entry=dir.readSync();entry;entry=dir.readSync()){
+      if(!names.delete(entry.name))throw new SetupError('managed-migration-conflict');
+    }
+  }finally{dir.closeSync();}
+  if(names.has(path.basename(pair.stage)))throw new SetupError('managed-migration-conflict');
+
+  let family:unknown;
+  try{family=JSON.parse(pair.bytes.toString('utf8'))?.migration?.format;}catch{throw new SetupError('managed-journal-unsupported');}
+  const journal=family===3&&version!==1?parseManagedFreshStepJournal(pair.bytes):
+    family===2&&version!==2?parseManagedStepJournal(pair.bytes):undefined;
+  if(!journal)throw new SetupError('managed-journal-unsupported');
+  if(!pair.bytes.equals(Buffer.from(JSON.stringify(journal))))throw new SetupError('managed-migration-conflict');
+  validateInitialManagedCheckpoint(journal);
+  const m=journal.migration;
+  const begin={version:family===3?2:1,action:'begin',operationId:m.operationId,confirmed:true,expected:m.consent.reviewDigest} as const;
+  if(m.receipt?.requestDigest!==managedRequestDigest(begin,journal)||m.capture.state!=='unknown'||m.diagnostic!==null||
+    (m.format===2?m.legacy.kind!=='manifest':!!(m.created.directory||m.created.database)))
+    throw new SetupError('managed-step-conflict');
+  if(journal.migration.format===3)validateFreshJournalPaths(env,file,journal as ManagedFreshStepJournal);
+  else{
+    validateJournalRoots(env,file,journal);
+    const storeRoot=managedPath(path.dirname(journal.database));
+    if(!lstatSync(storeRoot).isDirectory())throw new SetupError('managed-migration-conflict');
+  }
+  const selector=lstatSync(path.join(root,'progress-binding.json'),{throwIfNoEntry:false});
+  if(selector&&(!selector.isFile()||selector.nlink!==1||selector.size>MANAGED_STEP_LIMITS.journalBytes))
+    throw new SetupError('managed-binding-invalid');
+  const selected=readManagedBinding(env);
+  if(selected&&canonical(selected)!==canonical(managedJournalBinding(journal)))throw new SetupError('managed-selection-conflict');
+  return {journal,pair,file};
+}
+
+export function settleInitialJournalSave(env:NodeJS.ProcessEnv,expected:NonNullable<ReturnType<typeof observeInitialJournalSave>>) {
+  const current=observeInitialJournalSave(env);
+  if(!current||current.file!==expected.file||!current.pair.bytes.equals(expected.pair.bytes))
+    throw new SetupError('managed-migration-conflict');
+  const {journal}=current;
+  requirePlatformStoreFence(journal.database,journal.source.dataRoot);
+  requirePlatformWriteBoundary();
+  finishInitialJournalPair(current.file,expected.pair,MANAGED_STEP_LIMITS.journalBytes);
+  const written=journal.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);
+  if(!written||canonical(written)!==canonical(journal))throw new SetupError('managed-step-unsettled');
+}
+
 /** Confirmed prepare for a retained format-1 pending/removed record. This is not
  * automatic startup conversion or consent: the engine first validates a fresh
  * complete same-target review and holds the shared writer fence. It preserves
@@ -333,5 +400,5 @@ function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedSetupStepJourna
     return file;
   })();
   requirePlatformWriteBoundary();
-  publishPrivateJson(file,checked,!!expected);
+  publishPrivateJson(file,checked,!!expected,!expected);
 }
