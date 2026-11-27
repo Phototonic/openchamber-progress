@@ -34,6 +34,7 @@ export function pageFunction(name: string, globals: Record<string, unknown>) {
 export function pageQuietFilter(globals: Record<string, unknown>) {
   globals.admitsQuiet = admitsQuiet;
   globals.search ??= { quietRefreshRequired: false };
+  globals.tidyQuietScope = [];
   pageFunction('quietKeys', globals);
   pageFunction('bulkCleanupAvailable', globals);
 }
