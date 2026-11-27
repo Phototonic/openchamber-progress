@@ -1,6 +1,6 @@
 import {lstatSync,readFileSync} from 'node:fs';
 import path from 'node:path';
-import {readManagedBinding,managedBindingFile,ManagedBindingError,managedSourceRoots,managedExpectationFile,readManagedExpectation} from '../shared/managed-binding.ts';
+import {readManagedBinding,managedBindingFile,ManagedBindingError,managedSourceRoots,managedExpectationFile,readManagedExpectation,managedDefaultStoreRoot} from '../shared/managed-binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {verifyStore,type Binding} from '../shared/binding.ts';
 import {requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths,PlatformError} from '../shared/platform.ts';
@@ -59,7 +59,7 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   const {binding,descriptor}=selected(env,expectedDescriptor);
   const retained=journal?managedJournalBinding(journal):prior?.binding;
   if(binding&&retained&&canonical(binding)!==canonical(retained))throw new SetupError('managed-selection-conflict');
-  return {binding,descriptor,journal,prior,legacy};
+  return {binding,descriptor,journal,prior,legacy,roots};
 }
 function storePaths(binding:Binding) {
   if(windows)windowsPaths([path.dirname(binding.database),binding.database,...['-journal','-wal','-shm'].map(s=>binding.database+s),managedExpectationFile(binding)],true);
@@ -85,12 +85,13 @@ export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:st
   }
 }
 function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?:(fresh:boolean)=>void) {
-  const {binding:b,descriptor,journal,prior,legacy}=selection(env,expectedDescriptor,family);
+  const {binding:b,descriptor,journal,prior,legacy,roots}=selection(env,expectedDescriptor,family);
   const retained=b??journal??prior?.binding;
   const base:SetupRead={configured:!!b,verified:false,installed:false,captureEnabled:null,targets:b?{configRoot:b.source.configRoot,dataRoot:b.source.dataRoot,storeRoot:path.dirname(b.database)}:null,
     version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[],
     delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,configuration:b?'configured':'unconfigured',migration:journal?journal.migration.state==='complete'?legacy?'conflict':'complete':'pending':prior?prior.phase==='complete'?legacy?'conflict':'complete':'pending':legacy?'available':'none',
       ...((journal?journal.migration.format===3:!prior&&!legacy)?{planKind:'fresh' as const}:{}),
+      ...(!retained&&!legacy?{defaultStoreRoot:managedDefaultStoreRoot(roots.dataRoot)}:{}),
       mode:'unknown',observation:'unknown',expectedVersion:null}};
   if(journal){
     if(journal.migration.format===3)base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal);

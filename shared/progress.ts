@@ -163,6 +163,8 @@ export interface ManagedDelivery {
   migrationProgress?: import('./managed-steps.ts').ManagedStepProgress;
   managedFreshSteps?: 1;
   freshProgress?: import('./managed-steps.ts').ManagedFreshStepProgress;
+  /** Advisory default on fresh, unconfigured status; not inspected or selected. */
+  defaultStoreRoot?: string;
   /** Presentation family, including refused partial setup without usable progress. Not authority. */
   planKind?: 'fresh';
   configuration: 'unconfigured' | 'configured' | 'invalid';

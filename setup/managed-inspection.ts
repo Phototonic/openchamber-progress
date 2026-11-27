@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {type Binding,verifyStore} from '../shared/binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {activationFingerprint} from '../shared/activation.ts';
-import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile} from '../shared/managed-binding.ts';
+import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile,managedDefaultStoreRoot} from '../shared/managed-binding.ts';
 import {windows,windowsPaths,privatePaths,isOwned} from '../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_STEP_LIMITS,type ManagedInspection,type ManagedCaptureObservation,type ManagedStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedReview} from '../shared/progress.ts';
@@ -320,7 +320,7 @@ export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,paylo
 export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string):ManagedFreshInspectionResult {
   let s:ManagedFreshInspectionSession;
   if(!prior){
-    const roots=managedSourceRoots(env),selected=storeRoot??path.join(roots.dataRoot,'openchamber-progress');
+    const roots=managedSourceRoots(env),selected=storeRoot??managedDefaultStoreRoot(roots.dataRoot);
     batch([...basePaths(roots),selected]);const target=managedPath(selected,true);
     need(![roots.configRoot,roots.dataRoot,path.join(roots.dataRoot,'agent-progress-managed')].includes(target),'managed-selection-conflict');
     for(const root of Object.values(roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');

@@ -301,6 +301,33 @@ test('cold begin unlink failure reports the retained checkpoint and allows an ex
   }finally{await cold?.close();await f.close();}
 });
 
+test('fresh Setup status previews the same default used by inspection without writing files',async()=>{
+  const f=await freshHttpFixture('default',false,'native');
+  try{
+    const status=await f.http('/v1/setup');
+    assert.equal(status.status,200);
+    assert.equal(status.body.targets,null);
+    assert.equal(status.body.delivery.defaultStoreRoot,f.targets.storeRoot);
+    assert.equal(parseSetup(JSON.stringify(status.body)).delivery?.defaultStoreRoot,f.targets.storeRoot);
+    assert.deepEqual(fs.readdirSync(f.targets.dataRoot),[]);
+    assert.equal((await f.inspect()).targets.storeRoot,f.targets.storeRoot);
+    assert.deepEqual(fs.readdirSync(f.targets.dataRoot),[]);
+    if(process.platform!=='win32'){
+      const notPrivate=path.join(f.root,'shared-folder');
+      fs.mkdirSync(notPrivate);
+      fs.chmodSync(notPrivate,0o755);
+      let cursor:string|undefined;
+      for(let i=0;i<4;i++){
+        const r=await f.step({version:2,action:'inspect',...(cursor?{cursor}:{storeRoot:notPrivate})});
+        if(i===3)assert.deepEqual(r.body.error,{stage:'store',code:'managed-migration-conflict'});
+        else {assert.equal(r.status,200);cursor=r.body.inspection!.cursor!;}
+      }
+      assert.deepEqual(fs.readdirSync(notPrivate),[]);
+      assert.deepEqual(fs.readdirSync(f.targets.dataRoot),[]);
+    }
+  }finally{await f.close();}
+});
+
 for(const kind of ['default','custom','retained-new','retained-reuse'] as const)test(`HTTP fresh ${kind} review, cancellation, lost reply, pause and completion`,async t=>{
   const f=await freshHttpFixture(kind,true);try{
     const before=fs.existsSync(f.database)?fs.readFileSync(f.database):null;

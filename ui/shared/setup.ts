@@ -7,7 +7,7 @@ import type { ViewContext } from './app.ts';
 import { button, el, partState, testid } from './components.ts';
 import type { CompanionUpdateView, SetupSuggestions, SetupTargets, SetupView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
-import { managedCopy, managedErrorText, managedFamilyStepCopy, managedFreshCopy } from './managed-copy.ts';
+import { freshFolderCopy, freshFolderRefusalText, managedCopy, managedErrorText, managedFamilyStepCopy, managedFreshCopy } from './managed-copy.ts';
 import { MANAGED_MIGRATION_STEPS, type ManagedFreshStepProgress, type ManagedFreshStepRef, type ManagedSetupStepProgress, type ManagedSetupStepRequest } from '../../shared/managed-steps.ts';
 import type { ManagedFreshReview } from '../../shared/progress.ts';
 import { StepDriver, canAbandon, type SetupStepDriver, currentProgress, freshStepGroups, isFreshProgress, isFreshReview, managedStepCall, nextAction, progressFamily, type StepAction, type StepFamily, type StepStop } from './setup-steps.ts';
@@ -366,6 +366,13 @@ const textFor = (locale:string) => {
 const STORE_SUFFIX = 'openchamber-progress';
 /** A form-level absolute-path check; the service owns canonicalization and safety checks. */
 export const absoluteSetupPath = (value: string) => value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value);
+function freshFolderInputIssue(path: string) {
+  if (!path) return null;
+  if (!absoluteSetupPath(path)) return 'relative';
+  // Advice only: a drive root may pass existing platform checks. Inspection
+  // remains the authority; this must not add a new path refusal.
+  return /^(?:\/+|[A-Za-z]:[\\/]+)$/.test(path) ? 'root' : null;
+}
 /** The store folder suggested for a data folder: `<data>/openchamber-progress` (a folder of its own). */
 export const deriveStore = (dataRoot: string) => {
   const d = dataRoot.trim();
@@ -857,6 +864,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   // A fresh operation reuses the coarse pending/complete status; it is never described as a legacy switch.
   const freshShown = isFreshProgress(progress) || !!d.freshProgress || d.planKind==='fresh'&&d.migration!=='none';
   const family:StepFamily=freshShown || driver?.state.family==='fresh'&&(!!driver.state.busy||!!driver.state.outcome)?'fresh':'migration';
+  const initialFresh = d.configuration === 'unconfigured' && freshSteps && !unfinished && !freshShown && d.migration === 'none';
   const freshText=managedFreshCopy(vc.env.locale);
   const details = setupStatusDetails(locale);
   if (driver) { wrap.dataset.steps = '1'; if (driver.state.busy) wrap.setAttribute('aria-busy','true'); }
@@ -929,7 +937,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     if (review) { wrap.append(review); return wrap; }
     if (progress) wrap.append(migrationCard(vc, driver, progress, details, progress === d.freshProgress && info.diagnostics.length > 0));
     else if (driver.state.busy === 'run' || driver.state.busy === 'control') wrap.append(startingCard(vc, driver));
-    else stepOutcome(wrap, driver, null, vc.env.locale);
+    else if (!initialFresh) stepOutcome(wrap, driver, null, locale);
     if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
   }
   const r = s.managedReview;
@@ -952,7 +960,6 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     card.addEventListener('keydown',event=>{if(event.key==='Escape'&&!s.busy){event.preventDefault();cancel();}});
     wrap.append(card);return wrap;
   }
-  const initialFresh = d.configuration === 'unconfigured' && freshSteps && !unfinished && !freshShown && d.migration === 'none';
   const unverified = d.configuration === 'configured' && !info.verified;
   const blocked = d.configuration === 'invalid' || d.migration === 'conflict' || d.migration === 'unavailable';
   if (!progress) {
@@ -994,10 +1001,38 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   // when the service cannot negotiate fresh steps.
   if (initialFresh) {
     wrap.append(el('p','ap-note',text.choose));
-    if (!s.edited.storeRoot && info.suggestions?.storeRoot) s.form.storeRoot=info.suggestions.storeRoot.value;
+    const words = freshFolderCopy(locale);
     const holder=testid(el('div'),'setup-storeRoot');
-    mountTextField(holder,{label:text.store,value:s.form.storeRoot,helper:text.helper,mono:true,onChange:value=>{s.form.storeRoot=value;s.edited.storeRoot=true;}});
-    const input=holder.querySelector('input');input?.setAttribute('data-keep','setup-storeRoot');input?.setAttribute('data-fixed','form');input?.setAttribute('spellcheck','false');wrap.append(holder);
+    const help = el('p','ap-note',text.helper);
+    help.id = 'setup-folder-help';
+    const hint = testid(el('p','ap-doc-warn'),'setup-folder-hint');
+    hint.id = 'setup-folder-hint';
+    hint.setAttribute('role','status');
+    mountTextField(holder,{label:text.store,value:s.form.storeRoot,mono:true,onChange:value=>{
+      s.form.storeRoot=value;s.edited.storeRoot=true;
+      showHint(value);
+    }});
+    const input = holder.querySelector('input');
+    const showHint = (value: string) => {
+      const issue = freshFolderInputIssue(value.trim());
+      hint.textContent = issue ? words[issue] : '';
+      input?.setAttribute('aria-invalid',String(issue === 'relative'));
+    };
+    input?.setAttribute('data-keep','setup-storeRoot');input?.setAttribute('data-fixed','form');input?.setAttribute('spellcheck','false');
+    holder.append(help);
+    const descriptions = [help.id];
+    if (d.defaultStoreRoot) {
+      const recommendation = testid(el('p','ap-note ap-setup-folder-default',`${words.defaultLabel} `),'setup-default-folder');
+      recommendation.id = 'setup-default-folder';
+      recommendation.append(el('code','',d.defaultStoreRoot));
+      holder.append(recommendation);
+      descriptions.push(recommendation.id);
+    }
+    holder.append(hint); descriptions.push(hint.id);
+    input?.setAttribute('aria-describedby',descriptions.join(' '));
+    showHint(s.form.storeRoot);
+    wrap.append(holder);
+    if (driver) stepOutcome(wrap, driver, null, locale, true);
   }
   const row=el('div','ap-row');
   const action=(id:string,label:string,kind:Extract<SetupAction, `managed-${string}`>)=>{button(row,id,label,()=>{if(!vc.ui.setup.busy)void run(kind,id);},'outline');row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy));};
@@ -1024,7 +1059,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
             const st = vc.ui.setup;
             if (driver.state.busy || st.busy) return;
             const store = st.form.storeRoot.trim();
-            if (store && !absoluteSetupPath(store)) { set({error:'managed-path-input'}); return; }
+            if (freshFolderInputIssue(store) === 'relative') return;
             if (st.error) set({error:null});
             void driver.inspect('begin', {family:'fresh', ...(store ? {storeRoot:store} : {})});
           },'outline');
@@ -1116,7 +1151,7 @@ export function migrationTitle(p: ManagedSetupStepProgress, driving: boolean): M
 }
 
 /** Fixed stage/code plus actionable text for the last stop that still describes this progress. */
-function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupStepProgress | null, locale: string) {
+function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupStepProgress | null, locale: string, initialFolder = false) {
   const family = p ? progressFamily(p) : driver.state.family;
   const t = managedFamilyStepCopy(family, locale);
   const o = driver.state.outcome;
@@ -1134,7 +1169,8 @@ function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupSt
   where.append(' · ',el('code', 'ap-migration-code', diagnostic.code));
   box.append(where);
   // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
-  box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale, family)));
+  const folderMessage = initialFolder && family === 'fresh' ? freshFolderRefusalText(diagnostic.code, locale) : undefined;
+  box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : folderMessage ?? setupErrorText(diagnostic.code, locale, family)));
   // In every create plan, a checkpoint after prepare proves a folder or database
   // was created. A stage/error (or a family hint) alone proves no such resource.
   if (isFreshProgress(p) && p.state !== 'complete' && p.storeMode === 'create' && p.lastCompleted && p.lastCompleted.name !== 'prepare') {
