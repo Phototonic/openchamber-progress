@@ -1,7 +1,7 @@
 ## 1. Freeze the additive contract
 
-- [ ] 1.1 Announce the additive contract revision and define the cancellation request/receipt, user revision-actor shape, optional history attribution and health capability in the existing shared contract owners and `docs/contracts.md`; preserve agent `Actor`, report inputs and protocol/schema 2.
-- [ ] 1.2 Confirm the pure quiet predicate, device-record shape and UI/service seam against this design before consumers change; retain the existing view-switch owner untouched.
+- [x] 1.1 Announce the additive contract revision and define the cancellation request/receipt, user revision-actor shape, optional history attribution and health capability in the existing shared contract owners and `docs/contracts.md`; preserve agent `Actor`, report inputs and protocol/schema 2.
+- [x] 1.2 Confirm the pure quiet predicate, device-record shape and UI/service seam against this design before consumers change; retain the existing view-switch owner untouched.
 
 ## 2. Service and lifecycle
 

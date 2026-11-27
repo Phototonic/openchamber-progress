@@ -1,5 +1,36 @@
 # Production contract v2
 
+## Quiet plans and user cancellation (additive revision 1)
+
+Quiet labels and hiding use only the active plan's valid stored `reportedAt`:
+seven elapsed 24-hour days by the viewer clock, rounded down for display.
+Invalid and future times never hide a plan. Silence is not a lifecycle outcome
+or an observation about running work. Filtering is rail/board presentation only.
+
+Ready `health.planUserCancel:1` advertises authenticated, query-free
+`POST /v1/plan/cancel`. Use strict UTF-8 JSON (16,384 bytes maximum), exactly
+`{storeId,binding:{sourceId,verified},source,plan,rev,cleanupRev,oid,confirmed:true}`,
+with standard identifiers and safe integers (`rev >= 1`, `cleanupRev >= 0`).
+Unknown fields, including actors, task changes and outcomes, are refused.
+Protocol and schema remain 2; agent inputs and session identity are unchanged.
+
+The authenticated host proxy may cancel one visible active plan in its current
+verified bound source, only with recording enabled and matching review pins.
+Success is `{storeId,sourceBinding,source,plan,oid,rev,structuralRev,lifecycle:"cancelled",actor:"user",reportedAt}`.
+It advances one ordinary revision at service time, preserving tasks, coordinator,
+structure and captured history. The server authors `{kind:"user",action:"cancel"}`
+in the revision, with no session contribution. History may project `actor:"user"`;
+this denotes the authorized action, not a named person. Reopening still requires
+the coordinator's explicit `revise` or staged `commit` with `reopen:true`.
+
+Errors have fixed codes only: invalid 400, authentication 401, not-found 404,
+wrong method 405, oversized 413, identity/revision/cleanup conflicts, closed,
+disabled, unverified or operation reuse 409, and unavailable storage 503.
+Replies are JSON, no-store and nosniff. Identical admitted replays return the
+original receipt, even after reopening; they never cancel again. Changed inputs
+and agent/user operation-ID reuse refuse. Authority and archive/delete fences
+apply before replay. Older services must not receive cancellation requests.
+
 ## Reporting health observations
 
 Managed delivery, last loaded-byte observation, stored capture control, selected
