@@ -148,6 +148,13 @@ try {
   };
   const digestState = (f: string, plan: string) => guest<{ state?: string; review?: string; reason?: string; to?: string; after?: string } | null>(f, `const n=d.querySelector('${D(plan)}');return n?{...n.dataset}:null`);
   const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${javascriptLiteral(selector)})?.textContent??''`);
+  const focusNotice = () => text('page', '[data-testid="focus-notice"]');
+  const onlyUnfinished = async () => {
+    if (!(await guest<boolean>('page', `return d.querySelector('[data-testid="list-help-filters"]')?.open`))) {
+      await click('page', '[data-testid="list-help-filters"] > summary');
+    }
+    await click('page', '[data-testid="list-filter-unfinished"] button');
+  };
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
     if (await guest(f, `return !!d.querySelector('${history}')`)) await view(f, 'progress');
     await boardInput({ guest, wait, click }, f).revealPlan(row(plan));
@@ -263,6 +270,13 @@ try {
     await key('Enter');
     await wait('page', `d.activeElement?.dataset?.testid==='item-D'`, 'canonical D focused');
     check('P:B2:keyboard-prerequisite-link', linkName === 'Show prerequisite: Prepare inputs', ['Enter on “Show prerequisite: Prepare inputs” reveals and focuses canonical item D'], linkName);
+    check('P:B2:visible-prerequisite-has-no-reveal-note', await focusNotice() === '');
+    await onlyUnfinished();
+    await wait('page', `d.querySelector('[data-testid="item-D"]')?.hidden===true`, 'prerequisite hidden by filter');
+    await click('page', link);
+    await wait('page', `d.activeElement?.dataset?.testid==='item-D'`, 'hidden prerequisite revealed and focused');
+    const prerequisiteNotice = await focusNotice();
+    check('P:B2:hidden-prerequisite-keeps-filter-clear-note', prerequisiteNotice === 'Showing all tasks so this task is visible.', undefined, prerequisiteNotice);
     await show(['status'], 360);
     await wait('status', `!!d.querySelector('section.ap-status-plan')`, 'Work Status painted a plan');
     const status = await guest<{ readiness: boolean; prerequisite: boolean }>('status', `return {readiness:!!d.querySelector('.ap-tasks'),prerequisite:/Recorded prerequisites:|No prerequisites recorded/.test(d.body.textContent)}`);
@@ -443,8 +457,7 @@ try {
     await shot('page', 'removed-task', H('P-removal', 'digest-group-removed'));
     // Hide R1 behind the Unfinished filter, then follow its current-task link.
     await view('page', 'progress');
-    await click('page', '[data-testid="list-help-filters"] > summary');
-    await click('page', '[data-testid="list-filter-unfinished"] button');
+    await onlyUnfinished();
     await wait('page', `d.querySelector('[data-testid="item-R1"]')?.hidden===true`, 'R1 hidden by filter');
     await view('page', 'history');
     await settled('page', 'P-removal');
@@ -459,6 +472,26 @@ try {
     }
     const r1 = await guest<{ list: boolean; all: boolean; visible: boolean; notice: string }>('page', `return {list:!!d.querySelector('.ap-tasks[data-complete]'),all:d.querySelector('[data-testid="list-filter-all"] button')?.getAttribute('aria-pressed')==='true',visible:!!d.querySelector('[data-testid="item-R1"]')?.getClientRects().length,notice:d.querySelector('[data-testid="focus-notice"]')?.textContent??''}`);
     check('S3:surviving-link-reveals-canonical-row', r1.list && r1.all && r1.visible && /Current task from History: Archive old builds/.test(r1.notice), ['List view, filters cleared, canonical row visible and focused'], r1);
+    check('S3:history-reveal-note-once', r1.notice === 'Showing all tasks so this task is visible. Current task from History: Archive old builds', undefined, r1.notice);
+    const setLocale = async (locale: string) => {
+      await evaluate(`qa.locale=${javascriptLiteral(locale)};qa.ready('page');true`);
+      await wait('page', `d.documentElement.lang===${javascriptLiteral(locale)}`, `page locale ${locale}`);
+    };
+    for (const [locale, expected] of [
+      ['ru', 'Показаны все задачи, чтобы была видна эта задача. Текущая задача из истории: Archive old builds'],
+      ['zh-CN', '已显示全部任务，以便查看此任务。 来自历史记录的当前任务：Archive old builds'],
+    ]) {
+      await setLocale(locale);
+      await onlyUnfinished();
+      await wait('page', `d.querySelector('[data-testid="item-R1"]')?.hidden===true`, 'R1 hidden by filter');
+      await view('page', 'history');
+      await settled('page', 'P-removal');
+      await click('page', H('P-removal', 'digest-view-R1'));
+      await wait('page', `d.activeElement?.dataset?.testid==='item-R1'`, 'canonical R1 focused');
+      const notice = await focusNotice();
+      check(`S3:history-reveal-note-once:${locale}`, notice === expected, undefined, notice);
+    }
+    await setLocale('en');
     // Race: R2 is removed after the digest target, while the current-detail read is held.
     await view('page', 'history');
     await settled('page', 'P-removal');

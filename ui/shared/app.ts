@@ -1777,6 +1777,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
       vc.reading = readingView();
     }
+    // Only take follow-ups whose state is reflected in this paint. A reveal requested
+    // by afterPaint can clear filters, but its callback must wait for the next List.
+    const readingFollowUps = reading?.then.splice(0) ?? [];
 
     let root = el('main', 'ap');
     root.dataset.surface = spec.surface;
@@ -1935,8 +1938,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (keep) retainParts(keep);
     spec.afterPaint?.(root, vc);
     paintedReading = reading;
-    // One-shot follow-ups of this reading's own state change (e.g. reveal a task once filters clear).
-    for (const then of reading?.then.splice(0) ?? []) then(root);
+    for (const then of readingFollowUps) then(root);
     planLabels();
     paintedLanguage = language.snapshot().language;
     paintedLanguageSignature = languageSignature;
