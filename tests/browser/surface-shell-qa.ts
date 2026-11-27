@@ -4,7 +4,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
-import { shellCopy } from '../../ui/shared/components.ts';
+import { failureCopy, shellCopy } from '../../ui/shared/components.ts';
 import { managedCopy } from '../../ui/shared/managed-copy.ts';
 import { startLanguageFixture } from './interface-language-fixture.ts';
 import { startPhoneShell } from './phone-layout-shell.ts';
@@ -138,16 +138,29 @@ try {
     await wait(surface, `d.documentElement.lang===${js(locale)}`);
     check(`${id}-no-overflow`, await guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
   }
-  for (const mode of ['empty', 'setup', 'failure']) for (const locale of ['en', 'ru', 'zh-CN']) for (const surface of ['panel', 'page']) {
-    const url = await evaluate<string>(`qa.mode=${js(mode)};qa.seed(undefined);qa.ctx.locale=${js(locale)};qa.show(${js(surface)},390);qa.reload(${js(surface)});frame(${js(surface)}).src`);
-    await viewport(390);
+  for (const mode of ['empty', 'setup', 'failure', 'port-busy']) for (const locale of ['en', 'ru', 'zh-CN'] as const) for (const surface of ['panel', 'page']) {
+    const size = mode === 'port-busy' && surface === 'page' ? 1180 : 390;
+    const captureBusy = mode === 'port-busy' && surface === 'panel' && locale === 'en';
+    await viewport(size);
+    if (captureBusy) await evaluate(`qa.dark();document.body.style.background='#191b20';true`);
+    const url = await evaluate<string>(`qa.mode=${js(mode)};qa.seed(undefined);qa.ctx.locale=${js(locale)};qa.show(${js(surface)},${size});qa.reload(${js(surface)});frame(${js(surface)}).src`);
     const state = mode === 'empty' ? 'empty-state' : mode === 'setup' ? 'setup-needed' : 'state-busy';
-    await wait(surface, `w.location.href===${js(url)} && !!d.querySelector('[data-testid="${state}"]') && !!d.querySelector('[data-testid="more-trigger"]')`);
+    await wait(surface, `w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="${state}"]') && !!d.querySelector('[data-testid="more-trigger"]')`);
+    if (mode === 'port-busy') {
+      const { title, body } = failureCopy('busy', locale);
+      check(`${surface}-${mode}-${locale}-busy-copy`, await guest(surface, `const t=d.querySelector('[data-testid="state-busy"]').textContent;return t.includes(${js(title)})&&t.includes(${js(body)})&&!d.querySelector('[data-testid="state-unavailable"]')`));
+      if (captureBusy) await shot('23-busy-refusal-390');
+    }
     check(`${surface}-${mode}-${locale}-no-document-button`, await guest(surface, `return !d.querySelector('[data-testid="plan-view-document"]')`));
     await click(surface, '[data-testid="more-trigger"]');
     for (const id of ['language', 'setup', 'troubleshooting']) check(`${surface}-${mode}-${id}`, await guest(surface, `return !!d.querySelector('[data-menu-id="${id}"]')`));
     await shot(`${surface}-${mode}-${locale}-more`);
     await key('Escape');
+    if (captureBusy) {
+      await evaluate(`qa.mode='plan';qa.tick('panel')`);
+      await wait(surface, `!d.querySelector('[data-testid="state-busy"]') && !!d.querySelector('[data-testid="plan-title"]')`);
+      check('panel-port-busy-recovers-on-poll', true);
+    }
   }
   // A responding refusal sends the user to Setup, which is an observation only.
   await evaluate(`qa.dark();document.body.style.background='#191b20';true`);

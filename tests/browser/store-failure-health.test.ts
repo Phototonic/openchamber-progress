@@ -171,6 +171,39 @@ test('readList classifies health-reported store failures; only /health is called
   }
 });
 
+test('list and detail reads distinguish the coordination-port refusal from an outage', async () => {
+  const busy = 'managed-step-port-busy';
+  for (const [status, code, kind] of [
+    [503, busy, 'busy'],
+    [503, 'storage', 'unavailable'],
+    [502, busy, 'unavailable'],
+  ] as const) {
+    const refusal = response({ error: code }, status);
+    for (const duringAdmission of [true, false]) {
+      const calls: string[] = [];
+      const result = await source.readList({ serviceRequest: async q => {
+        calls.push(q.path);
+        if (q.path === '/health') return response(duringAdmission ? { ...HEALTH_UNCONFIGURED, state: 'starting' } : HEALTH);
+        return refusal;
+      } }, { session: 'A' });
+      assert.ok(!result.ok);
+      assert.equal(result.failure.kind, kind, code);
+      assert.equal(result.failure.code, code);
+      assert.deepEqual(calls, ['/health', duringAdmission ? '/v1/setup' : '/v1/plans']);
+    }
+    const detail = await source.readDetail({ serviceRequest: async () => refusal }, row);
+    assert.ok(!detail.ok);
+    assert.equal(detail.failure.kind, kind);
+    if (kind === 'busy') assert.deepEqual(detail.cause, { kind: 'store', code: 'busy' });
+  }
+  const outage = await source.readList({ serviceRequest: async () => {
+    throw Object.assign(new Error('Service did not respond'), { code: 'NO_SERVICE' });
+  } }, {});
+  assert.ok(!outage.ok);
+  assert.equal(outage.failure.kind, 'unavailable');
+  assert.deepEqual(await source.setupCall({ serviceRequest: async () => response({ error: busy }, 503) }, null), { ok: false, code: busy });
+});
+
 test('readList classifies a configured binding failure as unavailable with identity copy', async () => {
   const calls: GuestRequest[] = [];
   const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(failedHealth('binding')); } }, { session: 'A' });

@@ -23,7 +23,7 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  * qa.context(session|null), qa.namespace(name), qa.reload(surface), qa.tick(surface?), qa.focus(surface),
  * qa.visible(surface, boolean), qa.show(surface,width), qa.seed(value|undefined, namespace?).
  * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe.
- * qa.mode = 'plan'|'empty'|'setup'|'failure'|'setup-refused'; qa.holds/qa.faults accept
+ * qa.mode = 'plan'|'empty'|'setup'|'failure'|'port-busy'|'setup-refused'; qa.holds/qa.faults accept
  * {tag?,kind:'storage'|'service',surface?,op?,key?,path?,code?,status?}.
  * Holds capture a read reply BEFORE release (stale-read races); writes commit ON release.
  * qa.release(tag), qa.held, qa.storageLog, qa.requests, qa.messages, qa.maps, qa.instance expose evidence.
@@ -109,6 +109,7 @@ export async function startLanguageFixture(options: { source?: boolean; service?
         const refusal = q.mode === 'setup-refused';
         const diagnostics = ['managed-migration-conflict'];
         if (q.mode === 'failure') { status = 503; body = { error: 'busy' }; }
+        else if (q.mode === 'port-busy' && q.path === '/v1/plans') { status = 503; body = { error: 'managed-step-port-busy' }; }
         else if (q.path === '/health') body = refusal ? { ...HEALTH_UNCONFIGURED, state: 'refused', diagnostics } : q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
         else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [plan], null, { captureEnabled: q.mode !== 'recording-off' });
         else if (q.path === '/v1/plan') body = planPage(plan, languageItems, []);

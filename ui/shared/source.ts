@@ -42,7 +42,10 @@ class HttpError extends Error {
   readonly lastAction?: SetupView['lastAction'];
   readonly code: string;
   readonly status: number;
-  constructor(status: number, code: string, body?: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.lastAction = body ? parseLastAction(body) : undefined; }
+  readonly method: 'GET' | 'POST';
+  constructor(status: number, code: string, body?: string, method: 'GET' | 'POST' = 'GET') { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.method = method; this.lastAction = body ? parseLastAction(body) : undefined; }
+  // Data admission, including the initial Setup read, can lose the non-waiting writer fence.
+  get busy() { return this.code === 'busy' || (this.method === 'GET' && this.status === 503 && this.code === 'managed-step-port-busy'); }
 }
 
 export function classify(error: unknown): ReadFailure {
@@ -53,7 +56,7 @@ export function classify(error: unknown): ReadFailure {
   if (error instanceof HttpError) {
     if (code === 'corrupt') return { kind: 'damaged', code, message };
     if (code === 'schema') return { kind: 'incompatible', code, message };
-    if (code === 'busy') return { kind: 'busy', code, message };
+    if (error.busy) return { kind: 'busy', code, message };
     if (code === 'not-found') return { kind: 'not-found', code, message };
     if (code === 'response-too-large' || code === 'invalid') return { kind: 'invalid', code, message };
     return { kind: 'unavailable', code, message };
@@ -69,7 +72,7 @@ export function classify(error: unknown): ReadFailure {
 
 async function call(host: ServiceHost, path: string, q?: Record<string, string>, method: 'GET' | 'POST' = 'GET', body?: string) {
   const result = await host.serviceRequest({ method, path, ...(q ? { query: q } : {}), ...(body !== undefined ? { body } : {}) });
-  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body);
+  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body, method);
   return result.body;
 }
 
@@ -358,8 +361,9 @@ function detailFailureCause(error: unknown): DetailFailureCause {
   if (error instanceof ContractError || error instanceof SyntaxError) return { kind: 'identity-contract' };
   if (error instanceof HttpError && error.status === 404 && error.code === 'not-found') return { kind: 'not-found' };
   if (error instanceof HttpError && error.status === 503) {
+    if (error.busy) return { kind: 'store', code: 'busy' };
     const code = error.code;
-    return { kind: 'store', code: code === 'unavailable' || code === 'storage' || code === 'binding' || code === 'corrupt' || code === 'schema' || code === 'busy' ? code : 'unknown' };
+    return { kind: 'store', code: code === 'unavailable' || code === 'storage' || code === 'binding' || code === 'corrupt' || code === 'schema' ? code : 'unknown' };
   }
   if (classify(error).kind === 'invalid' || classify(error).kind === 'incompatible') return { kind: 'identity-contract' };
   return { kind: 'unreachable-auth' };
