@@ -887,7 +887,8 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
       return {setup:{...u.setup,busy:true,error:null,notice:null,managedRequest:request}} as Partial<U & {setup:SetupUi}>;
     });
     if (!admitted) return;
-    const result = await vc.runSetup(review ? action : 'managed-inspect',targets,!!review,reviewed?.expected);
+    const visit = setupVisit;
+    const result = await vc.runSetup(review ? action : 'managed-inspect',targets,!!review,reviewed?.expected, () => visit === setupVisit);
     if (!result.ok && result.code === 'context-changed') {
       vc.updateUi(u => u.setup.managedRequest === request ? {setup:{...u.setup,busy:false,managedReview:null,ack:false}} as Partial<U & {setup:SetupUi}> : {});
       return;
@@ -1046,8 +1047,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
 
 let stepView: Host<unknown> | null = null;
 let stepDriver: SetupStepDriver | null = null;
-/** Called on visibility loss/disposal even when no hidden-frame paint occurs. */
-export function retireSetupSteps() { stepDriver?.retire(); }
+let setupVisit = 0;
+/** Called on panel close, visibility loss or disposal, without waiting for the next paint. */
+export function retireSetupSteps() { setupVisit++; stepDriver?.retire(); }
 /** Alert keys already announced in this frame, so a full repaint does not repeat them. */
 const announced = new Set<string>();
 /** Host account, surface, session and directory; null while hidden. A change retires the driver. */

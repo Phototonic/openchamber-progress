@@ -144,7 +144,7 @@ export interface ViewContext<U> {
   planActivity: (plan: PlanView) => PlanActivityView | null;
   setup: Loadable<SetupView> | null;
   requestSetup: () => void;
-  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string) => Promise<SetupResult>;
+  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string, current?: () => boolean) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
   cleanup: CleanupState;
@@ -1049,7 +1049,10 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
+    const listHost = guardedHost(() => generation === gate.current);
+    let result = await readList({ serviceRequest: (request) => request.path === '/v1/setup'
+      ? trackSetup(setupReads, setupActions, () => listHost.serviceRequest(request))
+      : listHost.serviceRequest(request) }, scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (item.kind === 'target' && scope && result.ok) {
       const validated = result.read && progressTargetRead(result.read);
@@ -1471,21 +1474,30 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   let setupSerial = 0;
   let setupNeedsRefresh = false;
+  const setupReads = new Set<Promise<unknown>>();
+  const setupActions = new Set<Promise<unknown>>();
+  // Only this frame's requests participate. Wait once for already pending work; the host
+  // bounds each request. The service still decides whether its worker is available.
+  function trackSetup<T>(own: Set<Promise<unknown>>, other: Set<Promise<unknown>>, send: () => Promise<T>) {
+    const pending = other.size ? Promise.allSettled(other).then(send) : send();
+    own.add(pending);
+    return pending.finally(() => { own.delete(pending); });
+  }
   // Reuse the visible list/freshness cadence. Managed activation is observational
   // (activation remains unknown), so legacy reload-required alone is insufficient.
   function setupRefreshDue() {
-    return !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
+    return setupNeedsRefresh || !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
       setup.value.delivery?.kind === 'managed' && setup.value.delivery.configuration === 'configured');
   }
   function loadSetup() {
     if (disposed) return;
-    if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
+    if (document.visibilityState === 'hidden' || setupActions.size) { setupNeedsRefresh=true; return; }
     setupNeedsRefresh=false;
     const serial = ++setupSerial;
     const current = cleanupContext();
     const generation = contextGeneration;
     setup = setup && setup.state === 'ready' ? setup : { state: 'loading' };
-    void setupCall(host, null).then((r) => {
+    void trackSetup(setupReads, setupActions, () => setupCall(host, null)).then((r) => {
       if (disposed || serial !== setupSerial || current !== cleanupContext() || generation !== contextGeneration) return;
       if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
       const next: Loadable<SetupView> = r.ok ? { state: 'ready', value: r.setup } : { state: 'error', failure: r.failure ?? { kind: 'unavailable', code: r.code, message: r.code } };
@@ -1603,17 +1615,21 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       planActivity: (p) => claimActivity(view, p),
       setup, requestSetup: loadSetup,
-      runSetup: async (action, targets, confirmed, expected) => {
+      runSetup: async (action, targets, confirmed, expected, currentVisit = () => true) => {
         ++setupSerial;
         const current = cleanupContext();
         const generation = contextGeneration;
         // Either negotiated step family also provides the bodyless, freshly validated capture controls.
         const delivery = setup?.state === 'ready' ? setup.value.delivery : undefined;
         const capability = delivery?.managedMigrationSteps === 1 || delivery?.managedFreshSteps === 1 ? 1 : undefined;
-        const r = await setupCall(host, action, targets, confirmed, expected, capability);
-        if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
+        const active = () => !disposed && current === cleanupContext() && generation === contextGeneration && document.visibilityState !== 'hidden';
+        const retired = { ok: false, code: 'context-changed' } as const;
+        const r = await trackSetup(setupActions, setupReads, () => active() && currentVisit()
+          ? setupCall(host, action, targets, confirmed, expected, capability)
+          : Promise.resolve(retired));
+        if (!active() || r === retired) {
           if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
-          return {ok:false,code:'context-changed'};
+          return retired;
         }
         if (r.ok && action !== 'inspect' && action !== 'managed-inspect') { ++setupSerial; setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
         // A refused action may mean the installation changed: re-read setup once, so the update
@@ -1668,7 +1684,15 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         return digests.claim({ identity: digestIdentity(p, read), plan: p, capable: health?.planChangeDigests === 1, fresh: !failure });
       },
-      service: (current) => guardedHost(current),
+      service: (current) => {
+        const generation = contextGeneration, owner = cleanupContext();
+        const regular = guardedHost(current);
+        const setupStep = guardedHost(() => current() && generation === contextGeneration &&
+          owner === cleanupContext() && document.visibilityState !== 'hidden');
+        return { serviceRequest: request => request.path === '/v1/setup/managed-step'
+          ? trackSetup(setupActions, setupReads, () => setupStep.serviceRequest(request))
+          : regular.serviceRequest(request) };
+      },
       detailPlan: (p) => { const c = details.get(p.key)?.result; return c?.ok && c.plan.key === p.key ? c.plan : null; },
       detailResult: (p) => {
         const c = details.get(p.key), generation = cacheGeneration;

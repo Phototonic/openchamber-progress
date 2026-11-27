@@ -25,6 +25,8 @@ import type { ReadFailure } from '../../ui/shared/source.ts';
 import { HEALTH, HEALTH_UNCONFIGURED, plansPage, planPage, setupRead, envelope, docRef, summary } from './fixtures.ts';
 import {parseSetup,parseLastAction} from '../../ui/shared/adapter.ts';
 import {lastMigrationText} from '../../ui/shared/setup.ts';
+import {managedStepCall, StepDriver} from '../../ui/shared/setup-steps.ts';
+import {freshEngine} from './managed-migration-engine.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'working' as const }];
 const row = summary('P-A', items, { sessionId: 'A', document: docRef() });
@@ -283,6 +285,80 @@ function controller() {
     stop: () => listeners.pagehide(),
   };
 }
+
+test('fresh Setup review waits for its own status read and excludes passive reads until the action replies', async () => {
+  const c = controller();
+  const engine = freshEngine();
+  const releaseStep = engine.hold(1);
+  let releaseStatus!: () => void;
+  const status = new Promise<void>(resolve => { releaseStatus = resolve; });
+  let statusInFlight = false, holdStatus = false;
+  const stepPath = '/v1/setup/managed-step';
+  const driver = new StepDriver({
+    send: (request, current) => managedStepCall(c.vc.service(current), request),
+    context: () => 'synthetic', changed() {}, refresh() { c.vc.requestSetup(); },
+  });
+  driver.observe('synthetic', 'synthetic');
+  try {
+    c.intercept(async (q, next) => {
+      if (q.path === '/health') return response(HEALTH_UNCONFIGURED);
+      if (q.path === '/v1/setup' && holdStatus) {
+        statusInFlight = true;
+        await status;
+        statusInFlight = false;
+      }
+      if (q.path !== stepPath) return next();
+      if (statusInFlight) return response({version: 2, disposition: 'refused', progress: null, inspection: null,
+        error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}}, 503);
+      return engine.host.serviceRequest(q);
+    });
+    c.ready('A'); await settle();
+    holdStatus = true;
+    c.vc.requestSetup(); // More → Setup, retaining the previously displayed status
+    assert.equal(statusInFlight, true);
+    const review = driver.inspect('begin', {family: 'fresh'});
+    await settle();
+    assert.equal(driver.state.outcome?.code, undefined, 'the panel’s own status read must not cause a refusal');
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 0);
+
+    holdStatus = false;
+    releaseStatus();
+    await settle();
+    assert.equal(engine.requests.length, 1);
+    const mark = c.requests.length;
+    c.vc.requestSetup();
+    assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/setup'), false);
+    releaseStep();
+    await review;
+    assert.equal(driver.state.review?.kind, 'begin');
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 1, 'no action retry');
+  } finally {
+    releaseStatus();
+    releaseStep();
+    c.stop();
+  }
+});
+
+test('fresh Setup review still surfaces an unsettled refusal from another caller', async () => {
+  const c = controller();
+  const stepPath = '/v1/setup/managed-step';
+  try {
+    c.intercept(async (q, next) => q.path === stepPath
+      ? response({version: 2, disposition: 'refused', progress: null, inspection: null,
+        error: {stage: 'lock', code: 'managed-step-unsettled'}, accounting: {securitySpawns: 0, elapsedMs: 0}}, 503)
+      : next());
+    c.ready('A'); await settle();
+    const driver = new StepDriver({
+      send: (request, current) => managedStepCall(c.vc.service(current), request),
+      context: () => 'synthetic', changed() {}, refresh() { c.vc.requestSetup(); },
+    });
+    driver.observe('synthetic', 'synthetic');
+    await driver.inspect('begin', {family: 'fresh'});
+    assert.equal(driver.state.review, null);
+    assert.deepEqual(driver.state.outcome, {code: 'managed-step-unsettled', stage: 'lock', uncertain: false});
+    assert.equal(c.requests.filter(q => q.path === stepPath).length, 1);
+  } finally { c.stop(); }
+});
 
 test('fresh surface shows the damaged failure, not the setup form, for a corrupt store', async () => {
   const c = controller();
