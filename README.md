@@ -21,7 +21,8 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 - **Know when it's your turn.** *Needs you* shows decisions and reviews the main session asks you to handle, with **Open session**, **Copy reply** and **Hide**.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
 - **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session. Choose **Show current session** to follow the visible chat again; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context).
-- **One More menu.** Copy a progress update or handoff note, open the plan document, change language or find Setup and Troubleshooting.
+- **Read the saved plan.** Choose **Plan document** beside **Map** and **List**.
+- **One More menu.** Copy a progress update or handoff note, change language or find Setup and Troubleshooting.
 - **Make room for current plans.** The rail and board hide active plans that haven’t reported in seven days by default. Change that in rail **More** or board **Filters**. No reports does not mean the work has stopped or finished.
 - **Close a plan you no longer need.** Choose **More → Finish as cancelled** and confirm. History and unfinished tasks stay available; the action does not stop running agents.
 - **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
