@@ -148,6 +148,28 @@ try {
     await shot(`${surface}-${mode}-${locale}-more`);
     await key('Escape');
   }
+  // A responding refusal sends the user to Setup, which is an observation only.
+  for (const [size, locale] of [[1280, 'en'], [390, 'en'], [390, 'ru'], [390, 'zh-CN']] as const) {
+    const t = shellCopy(locale), id = `panel-setup-refused-${size}-${locale}`;
+    await viewport(size);
+    const mark = await evaluate<number>('qa.requests.length');
+    const url = await evaluate<string>(`qa.mode='setup-refused';qa.seed(undefined);Object.assign(qa.ctx,{locale:${js(locale)},device:{formFactor:${js(size === 390 ? 'phone' : 'desktop')},pointer:${js(size === 390 ? 'coarse' : 'fine')},insets:{top:0,right:0,bottom:0,left:0},keyboard:0}});qa.show('panel',${size});qa.reload('panel');frame('panel').src`);
+    await wait('panel', `w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="state-setup-refused"]')`);
+    const refusal = await guest<string>('panel', `return d.querySelector('[data-testid="state-setup-refused"]').textContent`);
+    check(`${id}-guidance`, refusal.includes(t.more) && refusal.includes(t.setup), refusal);
+    check(`${id}-not-outage-or-empty`, await guest('panel', `return !d.querySelector('[data-testid="state-unavailable"],[data-testid="setup-needed"],[data-testid="empty-state"]')`));
+    check(`${id}-admission-only`, await evaluate(`qa.requests.slice(${mark}).filter(q=>q.surface==='panel').map(q=>q.path).join(',')==='/health,/v1/setup,/health'`));
+    if (locale === 'en') await shot(size === 390 ? 'refusal-390' : 'refusal');
+    const opening = await evaluate<number>('qa.requests.length');
+    await click('panel', '[data-testid="more-trigger"]');
+    await click('panel', '[data-menu-id="setup"]');
+    await wait('panel', `!!d.querySelector('[data-testid="surface-panel-setup"] [data-testid="setup-panel"]') && !d.querySelector('[data-testid="setup-loading"]') &&
+      parent.qa.responses.some(r=>r.request>=${opening} && r.surface==='panel' && r.path==='/v1/setup' && r.status===200)`);
+    check(`${id}-opening-is-read-only`, await evaluate(`qa.requests.slice(${opening}).some(q=>q.surface==='panel' && q.method==='GET' && q.path==='/v1/setup') &&
+      qa.requests.slice(${opening}).filter(q=>q.surface==='panel').every(q=>q.method==='GET')`));
+    if (locale === 'en') await shot(size === 390 ? 'setup-390' : 'setup');
+  }
+  check('setup-refusal-server-observed-no-mutations', fixture.requests.length > 0 && fixture.requests.every(q => q.method === 'GET' && ['/health', '/v1/setup'].includes(q.path)), fixture.requests);
   // Older host: explicit disabled language choices, no storage fallback.
   const unsupportedUrl = await evaluate<string>(`qa.mode='empty';qa.ready('panel',{features:{deviceStorage:false}});qa.reload('panel');frame('panel').src`);
   await wait('panel', `w.location.href===${js(unsupportedUrl)} && !!d.querySelector('[data-testid="empty-state"]') && !!d.querySelector('[data-testid="more-trigger"]')`);

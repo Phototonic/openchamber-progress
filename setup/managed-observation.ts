@@ -103,7 +103,8 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   try{
     if(journal?.migration.format===3){
       if(windows)windowsPaths(managedJournalPaths(journal),true);
-      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal);
+      // selection() already checked that a present binding matches this journal.
+      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal,b?'selected-status':'strict');
       base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,observed);
       base.captureEnabled=observed.state==='unknown'?null:observed.state==='on';
       // A proposed source/absent database is not ordinary Binding admission.

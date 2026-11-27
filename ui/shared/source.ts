@@ -24,7 +24,7 @@ export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
 }
 
-export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost';
+export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost' | 'setup-refused';
 export interface ReadFailure { kind: FailureKind; code: string; message: string }
 /** A retired search read supplies neither freshness authority nor capture metadata. */
 export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean; inbox?: InboxFirst } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
@@ -212,6 +212,11 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean, multiPag
   ...(multiPage ? { multiPage: true } : {}),
 });
 
+const SETUP_CONFLICT = 'managed-migration-conflict';
+const setupRefusal = (): ReadFailure => ({
+  kind: 'setup-refused', code: SETUP_CONFLICT, message: 'The progress service reports a conflict in Setup.',
+});
+
 /** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
 /** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
@@ -226,6 +231,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       // Old services omit state and retain their existing request sequence.
       try { await call(host, ROUTES.setup); }
       catch (error) {
+        if (error instanceof HttpError && error.code === SETUP_CONFLICT) return { ok: false, failure: setupRefusal(), health };
         // Another surface or setup action can own startup admission. Observe
         // health once, without hiding real refusals or retrying Setup here.
         if (!(health.state === 'starting' && error instanceof HttpError && error.status === 503 && error.code === 'managed-step-unsettled')) throw error;
@@ -245,6 +251,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       const failed = health.state === 'refused' ? health.diagnostics[0] ?? 'storage'
         : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
+        if (health.state === 'refused' && failed === SETUP_CONFLICT) return { ok: false, failure: setupRefusal(), health };
         const failure = classify(new HttpError(503, failed));
         return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` }, health };
       }

@@ -2208,6 +2208,7 @@ export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: st
   invalid: { title: 'Progress could not be read', body: 'The progress service sent a reply this view could not use.' },
   'not-found': { title: 'That plan is no longer available', body: 'Choose another plan.' },
   'setup-lost': { title: 'Progress setup can’t be read right now', body: 'Check Setup; nothing was changed or deleted.' },
+  'setup-refused': { title: 'Progress couldn’t verify this setup', body: 'Open More → Setup to see what needs attention.' },
 };
 const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
   en: FAILURE_COPY,
@@ -2222,6 +2223,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
     'not-found': { title: 'Этот план больше недоступен', body: 'Выберите другой план.' },
     'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Проверьте настройку; ничего не изменено и не удалено.' },
+    'setup-refused': { title: 'Не удалось проверить настройку прогресса', body: 'Откройте «Ещё» → «Настройка», чтобы узнать причину.' },
   },
   'zh-CN': {
     'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
@@ -2234,6 +2236,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
     'not-found': { title: '该计划已不再可用', body: '请选择其他计划。' },
     'setup-lost': { title: '暂时无法读取进度设置', body: '请检查设置，未更改或删除任何内容。' },
+    'setup-refused': { title: '无法验证进度设置', body: '请打开「更多」→「设置」查看原因。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];

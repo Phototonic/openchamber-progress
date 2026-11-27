@@ -23,7 +23,7 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  * qa.context(session|null), qa.namespace(name), qa.reload(surface), qa.tick(surface?), qa.focus(surface),
  * qa.visible(surface, boolean), qa.show(surface,width), qa.seed(value|undefined, namespace?).
  * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe.
- * qa.mode = 'plan'|'empty'|'setup'|'failure'; qa.holds/qa.faults accept
+ * qa.mode = 'plan'|'empty'|'setup'|'failure'|'setup-refused'; qa.holds/qa.faults accept
  * {tag?,kind:'storage'|'service',surface?,op?,key?,path?,code?,status?}.
  * Holds capture a read reply BEFORE release (stale-read races); writes commit ON release.
  * qa.release(tag), qa.held, qa.storageLog, qa.requests, qa.messages, qa.maps, qa.instance expose evidence.
@@ -90,6 +90,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>Interface 
 export async function startLanguageFixture(options: { source?: boolean; service?: (request: { method: string; path: string; query?: Record<string, string>; body?: string; mode?: string }) => Promise<{ status: number; body: string }> } = {}) {
   const assets = createGuestAssets({ source: options.source, surfaces: ['panel', 'status', 'page'] });
   const plan = { ...P1, reportedAt: new Date().toISOString() };
+  const requests: { method: string; path: string; mode?: string }[] = [];
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     try {
@@ -102,10 +103,13 @@ export async function startLanguageFixture(options: { source?: boolean; service?
       } else if (path === '/service' && req.method === 'POST') {
         let text = ''; for await (const part of req) text += part;
         const q = JSON.parse(text);
+        if (q.mode === 'setup-refused') requests.push({ method: q.method, path: q.path, mode: q.mode });
         if (options.service) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(await options.service(q))); return; }
         let status = 200, body: unknown;
+        const refusal = q.mode === 'setup-refused';
+        const diagnostics = ['managed-migration-conflict'];
         if (q.mode === 'failure') { status = 503; body = { error: 'busy' }; }
-        else if (q.path === '/health') body = q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
+        else if (q.path === '/health') body = refusal ? { ...HEALTH_UNCONFIGURED, state: 'refused', diagnostics } : q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
         else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [plan], null, { captureEnabled: q.mode !== 'recording-off' });
         else if (q.path === '/v1/plan') body = planPage(plan, languageItems, []);
         else if (q.path === '/v1/document') body = envelope({ document: P1.document, text: DOCUMENT_TEXT, nextCursor: null });
@@ -113,7 +117,8 @@ export async function startLanguageFixture(options: { source?: boolean; service?
         else if (q.path === '/v1/setup') body = setupRead({
           separateLifecycle: false,
           ...(q.mode === 'setup' ? { configured: false, verified: false, installed: false, captureEnabled: false } : {}),
-          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1, managedFreshSteps: 1 },
+          ...(refusal ? { verified: false, captureEnabled: null, diagnostics } : {}),
+          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: refusal ? 'complete' : 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1, managedFreshSteps: 1 },
         });
         else { status = 404; body = { error: 'not-found' }; }
         if (q.mode === 'recording-off' && body && typeof body === 'object' && 'captureEnabled' in body) body.captureEnabled = false;
@@ -122,5 +127,5 @@ export async function startLanguageFixture(options: { source?: boolean; service?
     } catch { res.statusCode = 500; res.end('{"error":"fixture-failed"}'); }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { port: (server.address() as { port: number }).port, session: S.M, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); assets.dispose(); } };
+  return { port: (server.address() as { port: number }).port, session: S.M, requests, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); assets.dispose(); } };
 }
