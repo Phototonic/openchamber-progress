@@ -47,7 +47,14 @@ function fixture(locale = 'en', saved: number | null = null) {
       './quiet-plans.ts': quiet, './plan-user-cancel.ts': cancellation,
       './change-digest-checkpoint.ts': { CheckpointStore: class { async read(identity: unknown) { checkpointReads.push(identity); return saved === null ? { state: 'absent' } : { state: 'saved', revision: saved }; } } },
       './primitives.ts': {
-        moreMenu(options: any) { menus.push(options); return { root: new Element('div'), trigger: new Element('button'), update(items: any[]) { options.items = items; }, dispose() {} }; },
+        moreMenu(options: any) {
+          menus.push(options);
+          const root = new Element('div');
+          return {
+            root, trigger: new Element('button'), setOptions(next: object) { Object.assign(options, next); },
+            mount(holder: Element) { holder.append(root); }, refresh() {}, dispose() { options.open = false; },
+          };
+        },
         segmentedBar: () => new Element('div'), warningBadge: () => new Element('span'),
       },
       '@openchamber/sdk/ui': { mountButton(root: Element, o: any) { const b = new Element('button'); b.textContent = o.label; b.listeners.click = o.onClick; root.append(b); buttons.push(b); } },
@@ -63,10 +70,30 @@ function fixture(locale = 'en', saved: number | null = null) {
   const shell = new exports.ProgressShell();
   const panel = new Element('div');
   const closed: string[] = [];
-  const options = { board: true, renderPanel: () => panel, closePanel: (kind: string) => closed.push(kind) };
+  const options = {
+    board: true, renderPanel: () => panel, closePanel: (kind: string) => closed.push(kind),
+    menuActions: [] as { id: string; label: string; disabled: boolean; run(): void }[],
+  };
   const paint = (p: any = null) => { const root = new Element('div'); const opened = shell.paint(root, vc, p, options); return { root, opened }; };
   return { shell, vc, plan, menus, buttons, paint, options, panel, closed, checkpointReads, exports, window };
 }
+for (const board of [false, true]) test(`${board ? 'board' : 'rail'} keeps More open through a shell repaint`, () => {
+  const f = fixture();
+  f.options.board = board;
+  f.options.menuActions = [{ id: 'extra', label: 'Extra', disabled: false, run() {} }];
+  f.paint(f.plan);
+  const menu = f.menus.at(-1);
+  menu.open = true;
+  f.options.menuActions[0].disabled = true;
+  f.paint(f.plan);
+  assert.equal(f.menus.at(-1), menu);
+  assert.equal(menu.open, true, 'the current menu was not dismissed');
+  assert.equal(menu.items.find((item: { id?: string }) => item.id === 'extra').disabled, true);
+  f.vc.identity = 'another-store';
+  f.paint(f.plan);
+  assert.equal(menu.open, false);
+  assert.notEqual(f.menus.at(-1), menu);
+});
 for (const exit of ['Back', 'Escape', 'showView', 'reset', 'reconcile', 'another panel']) test(`Setup panel retires once on ${exit}, not on repaint`, () => {
   const f = fixture(); f.paint(); f.menus.at(-1).onSelect('setup');
   f.paint(); const { root } = f.paint();
