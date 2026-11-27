@@ -328,13 +328,19 @@ if(arg('--server-worker')) {
     const afterRefusal=await step({version:1,action:'status',operationId});
     check('expectation-preflight-preserves-legacy',partial.status===409&&partial.body.error?.code==='managed-migration-conflict'&&afterRefusal.body.progress?.sequence===prepared.sequence&&store.list().captureEnabled===captureBefore&&fs.existsSync(legacyRoot));
     store.close();store=undefined;
-    await browser.setupShot('migration-preflight','[data-testid="setup-migration-progress"]');
-    let progress=prepared;
-    for(let remaining=MANAGED_MIGRATION_STEPS.length+MANAGED_STEP_LIMITS.claimPaths;progress.state!=='complete'&&remaining>0;remaining--){
-      const advanced=await advance(progress);assert.equal(advanced.status,200,advanced.body.error?.code);assert.ok(advanced.body.progress);
-      progress=advanced.body.progress;
-    }
-    check('same-target-explicit-retry',progress.state==='complete'&&(await service('/v1/setup')).body.delivery.migration==='complete');
+    // Track status reads from the screenshot's navigation onward. The board
+    // remains live afterwards and its refresh must not contend with advance.
+    const barrier=await browser.nativeControls.setupStatusBarrier();
+    try{
+      await browser.setupShot('migration-preflight','[data-testid="setup-migration-progress"]');
+      await barrier.settle();
+      let progress=prepared;
+      for(let remaining=MANAGED_MIGRATION_STEPS.length+MANAGED_STEP_LIMITS.claimPaths;progress.state!=='complete'&&remaining>0;remaining--){
+        const advanced=await advance(progress);assert.equal(advanced.status,200,advanced.body.error?.code);assert.ok(advanced.body.progress);
+        progress=advanced.body.progress;
+      }
+      check('same-target-explicit-retry',progress.state==='complete'&&(await service('/v1/setup')).body.delivery.migration==='complete');
+    }finally{await barrier.release();}
     const selected=readManagedBinding(env);assert.ok(selected);check('migration-retains-store-source',selected.storeId===b.storeId&&selected.source.id===b.source.id&&!fs.existsSync(legacyRoot));
     await reload();await active();await prompt(main.id,{name:'agent_progress_report',input:{op:'revise',plan:'P-managed',oid:'migrated',rev:4,title:'Managed acceptance plan'}});
     const migratedRead=new Store(selected.database,{readOnly:true});try{check('migration-retains-history',migratedRead.get(b.source.id,'P-managed')?.revision===5&&migratedRead.get(b.source.id,'P-legacy')?.revision===1);}finally{migratedRead.close();}
