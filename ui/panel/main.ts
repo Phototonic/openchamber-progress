@@ -229,7 +229,7 @@ startView<Ui>({
       } else if (plan) {
         // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
         // only the loading placeholder paints (no complete rows) until List or Map is settled.
-        const article = planDetail(plan, env, hooks(vc, plan), {
+        const article = planDetail(plan, env, { ...hooks(vc, plan), activity: viewChoice.current.pending ? null : vc.planActivity(plan) }, {
           document: 'omit', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading, shell: true,
           pending: viewChoice.current.pending,
         });

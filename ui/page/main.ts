@@ -847,7 +847,10 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   } else {
     // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
     // only the loading placeholder paints (no complete rows) until Progress or Map is settled.
-    const article = planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading, pending: viewChoice.current.pending, shell: true });
+    const article = planDetail(plan, env, {
+      detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks,
+      activity: viewChoice.current.pending ? null : vc.planActivity(plan),
+    }, { document: 'omit', compareSession, reading: vc.reading, pending: viewChoice.current.pending, shell: true });
     // An explicit task focus/reveal or pointer selection here is what the Map tab opens on.
     boardMap.listTargets(article);
     detail.append(article);
