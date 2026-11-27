@@ -61,6 +61,11 @@ function freshCapture(journal:ManagedFreshStepJournal,created?:ManagedCreationRe
 export function validateManagedStepTarget(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult) {
   if(windows)windowsPaths(managedJournalPaths(journal),true);
   const current=journal.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);need(current&&canonical(current)===canonical(journal));
+  return validateManagedStepTargetFacts(env,payload,journal,created);
+}
+/** Also used after Setup proves the retained initial pair. Does not admit a
+ * journal or authorize effects by itself. */
+export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult) {
   const m=journal.migration,binding=managedJournalBinding(journal);
   need(payload.plugin&&payload.guidance&&payload.version===m.expectation.version&&
     activationFingerprint({...binding,version:payload.version},Buffer.from(payload.plugin),Buffer.from(payload.guidance))===m.expectation.fingerprint,'managed-review-stale');

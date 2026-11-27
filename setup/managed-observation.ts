@@ -6,7 +6,7 @@ import {verifyStore,type Binding} from '../shared/binding.ts';
 import {requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths,PlatformError} from '../shared/platform.ts';
 import {ProgressError,type SetupRead} from '../shared/progress.ts';
 import {MANAGED_STEP_LIMITS} from '../shared/managed-steps.ts';
-import {readManagedStepJournal,readManagedFreshStepJournal,readMigration,migrationFile,managedJournalPaths} from './managed-migration.ts';
+import {readManagedStepJournal,readManagedFreshStepJournal,readMigration,migrationFile,managedJournalPaths,observeInitialJournalSave} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,managedFreshJournalProgress,parseManagedFreshStepJournal,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
 import {observeManagedFreshStore} from './managed-inspection.ts';
 import {SetupError} from './lifecycle.ts';
@@ -31,23 +31,30 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   let journal:ManagedSetupStepJournal|undefined,prior:ReturnType<typeof readMigration>;
   if(stat){
     migrationFile(env); // Validate the directory/marker before reading the record.
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new SetupError('managed-binding-invalid');
-    if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-    // The directory/marker has been validated by migrationFile. The strict owner
-    // reader validates the selected format before anything is projected or used.
-    let format:unknown;try{format=JSON.parse(readFileSync(file,'utf8'))?.migration?.format;}catch{throw new SetupError('managed-journal-unsupported');}
-    if(format===2){family?.(false);journal=readManagedStepJournal(env);}
-    else if(format===3){
-      family?.(true);
-      // Parsed private claims route ONE known-path batch, not authority. The
-      // owner rereads and validates the actual journal/roots/objects below.
-      // Without this batch an existing DB and expectation each cost a process.
-      const claims=parseManagedFreshStepJournal(readFileSync(file));
-      if(windows)windowsPaths(managedJournalPaths(claims),true);
-      journal=readManagedFreshStepJournal(env);
+    if(!stat.isFile()||stat.isSymbolicLink())throw new SetupError('managed-binding-invalid');
+    if(stat.nlink!==1){
+      // Only the Setup-read caller supplies a family observer; ordinary
+      // capture admission never gains this exception.
+      journal=family?observeInitialJournalSave(env)?.journal:undefined;
+      if(!journal)throw new SetupError('managed-binding-invalid');
+      family?.(journal.migration.format===3);
+    }else{
+      if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+      // The directory/marker has been validated by migrationFile. The strict owner
+      // reader validates the selected format before anything is projected or used.
+      let format:unknown;try{format=JSON.parse(readFileSync(file,'utf8'))?.migration?.format;}catch{throw new SetupError('managed-journal-unsupported');}
+      if(format===2){family?.(false);journal=readManagedStepJournal(env);}
+      else if(format===3){
+        family?.(true);
+        // Parsed private claims route ONE known-path batch, not authority. The
+        // owner rereads and validates the actual journal/roots/objects below.
+        const claims=parseManagedFreshStepJournal(readFileSync(file));
+        if(windows)windowsPaths(managedJournalPaths(claims),true);
+        journal=readManagedFreshStepJournal(env);
+      }
+      else if(format===1){family?.(false);prior=readMigration(env);}
+      else throw new SetupError('managed-journal-unsupported');
     }
-    else if(format===1){family?.(false);prior=readMigration(env);}
-    else throw new SetupError('managed-journal-unsupported');
   }
   const {binding,descriptor}=selected(env,expectedDescriptor);
   const retained=journal?managedJournalBinding(journal):prior?.binding;
@@ -96,7 +103,8 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   try{
     if(journal?.migration.format===3){
       if(windows)windowsPaths(managedJournalPaths(journal),true);
-      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal);
+      // selection() already checked that a present binding matches this journal.
+      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal,b?'selected-status':'strict');
       base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,observed);
       base.captureEnabled=observed.state==='unknown'?null:observed.state==='on';
       // A proposed source/absent database is not ordinary Binding admission.
@@ -124,8 +132,9 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   }catch(error){
     unavailable.diagnostics=[observationDiagnostic(error)];
     if(journal?.migration.format===3&&journal.migration.created.database===null&&journal.migration.state!=='complete'){
-      // Only uncheckpointed creation lacks the evidence for a Resume card.
-      // Later read failures retain pending/complete progress with unknown capture.
+      // Without a database creation checkpoint, an unfinished create or retain
+      // operation hides progress on read failure. Checkpointed or complete
+      // operations keep their progress but show capture as unknown.
       unavailable.delivery!.migration='unavailable';
       delete unavailable.delivery!.freshProgress;
     }

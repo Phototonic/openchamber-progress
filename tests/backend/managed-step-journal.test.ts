@@ -8,7 +8,7 @@ import {createFixtureBinding} from '../fixtures/managed.ts';
 import {canonical,digest,Store} from '../../shared/store.ts';
 import {publishPrivateJson} from '../../shared/managed-binding.ts';
 import {parseManagedStepJournal,managedTargetDigest,managedRequestDigest,managedJournalProgress,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
-import {readManagedStepJournal,writeManagedStepJournal,publishManagedStepIntent,validatePublishedManagedIntent,validateManagedJournalChange,migrationFile,readMigration} from '../../setup/managed-migration.ts';
+import {readManagedStepJournal,writeManagedStepJournal,publishManagedStepIntent,validatePublishedManagedIntent,validateManagedJournalChange,migrationFile,readMigration,observeInitialJournalSave,settleInitialJournalSave} from '../../setup/managed-migration.ts';
 import {MANAGED_STEP_LIMITS} from '../../shared/managed-steps.ts';
 
 // Wire examples intentionally use placeholder digests. Engine fixtures hash the
@@ -20,7 +20,7 @@ function hashed(journal:ManagedStepJournal) {
 }
 function prepared() {
   const journal=hashed(managedStepFixtures().journal),m=journal.migration;
-  Object.assign(m,{sequence:1,state:'pending',step:{name:'expectation',batch:0},lastCompleted:{name:'prepare',batch:0},intent:null});
+  Object.assign(m,{sequence:1,state:'pending',step:{name:'expectation',batch:0},lastCompleted:{name:'prepare',batch:0},intent:null,capture:{state:'unknown',observedAt:null}});
   const request=managedStepFixtures().requests.begin;
   m.receipt={requestDigest:managedRequestDigest(request,journal),expectedSequence:0,sequence:1,step:m.lastCompleted,outcome:'applied'};
   return journal;
@@ -50,6 +50,76 @@ function fixture() {
   journal.migration.receipt!.requestDigest=managedRequestDigest(managedStepFixtures().requests.begin,journal);
   return {root,env,binding,journal,file:migrationFile(env),cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
 }
+
+test('only an intact first journal pair can be observed and reduced to its original single-link file',()=>{
+  const f=fixture();try{
+    writeManagedStepJournal(f.env,f.journal);
+    const bytes=fs.readFileSync(f.file),stage=`${f.file}.stage-prepare-${digest(bytes)}`;
+    fs.linkSync(f.file,stage);
+    const original=fs.statSync(f.file,{bigint:true});
+    assert.equal(original.nlink,2n);assert.equal(fs.statSync(stage,{bigint:true}).ino,original.ino);
+    assert.throws(()=>readManagedStepJournal(f.env),{code:'managed-migration-conflict'});
+    const save=observeInitialJournalSave(f.env,1)!;assert.deepEqual(save.journal,f.journal);
+    assert.equal(fs.statSync(f.file).nlink,2,'observation does not unlink');
+    settleInitialJournalSave(f.env,save);
+    const final=fs.statSync(f.file,{bigint:true});
+    assert.equal(final.ino,original.ino);assert.equal(final.dev,original.dev);assert.equal(final.nlink,1n);
+    assert.equal(fs.existsSync(stage),false);assert.deepEqual(fs.readFileSync(f.file),bytes);
+    assert.deepEqual(readManagedStepJournal(f.env),f.journal);
+  }finally{f.cleanup();}
+});
+
+test('initial journal recognizer retains ambiguous links and changed or later records',()=>{
+  const f=fixture();try{
+    writeManagedStepJournal(f.env,f.journal);
+    const bytes=fs.readFileSync(f.file),stage=`${f.file}.stage-prepare-${digest(bytes)}`,other=`${f.file}.stage-other`;
+    const refuse=()=>assert.throws(()=>observeInitialJournalSave(f.env),{code:'managed-migration-conflict'});
+    fs.linkSync(f.file,other);
+    fs.copyFileSync(f.file,stage);
+    refuse();assert.notEqual(fs.statSync(stage,{bigint:true}).ino,fs.statSync(f.file,{bigint:true}).ino);
+    assert.deepEqual(fs.readFileSync(stage),bytes);assert.deepEqual(fs.readFileSync(other),bytes);
+    fs.unlinkSync(stage);refuse();assert.equal(fs.statSync(other).nlink,2);
+    fs.renameSync(other,stage);fs.linkSync(f.file,other);refuse();assert.equal(fs.statSync(stage).nlink,3);
+    fs.unlinkSync(other);fs.writeFileSync(other,'foreign',{mode:0o600});refuse();assert.equal(fs.readFileSync(other,'utf8'),'foreign');
+    fs.unlinkSync(other);const save=observeInitialJournalSave(f.env,1)!;
+    const changed=Buffer.concat([bytes,Buffer.from('\n')]);fs.writeFileSync(f.file,changed);
+    assert.throws(()=>settleInitialJournalSave(f.env,save),{code:'managed-migration-conflict'});
+    assert.deepEqual(fs.readFileSync(stage),changed);assert.deepEqual(fs.readFileSync(f.file),changed);
+    fs.unlinkSync(stage);fs.unlinkSync(f.file);fs.writeFileSync(stage,bytes,{mode:0o600});
+    assert.throws(()=>readManagedStepJournal(f.env),{code:'managed-migration-conflict'});
+    assert.deepEqual(fs.readFileSync(stage),bytes);fs.unlinkSync(stage);
+    const later=Buffer.from(JSON.stringify(control(f.journal,'paused'))),laterStage=`${f.file}.stage-prepare-${digest(later)}`;
+    fs.writeFileSync(f.file,later,{mode:0o600});fs.linkSync(f.file,laterStage);
+    assert.throws(()=>observeInitialJournalSave(f.env),{code:'managed-step-conflict'});
+    assert.equal(fs.statSync(laterStage).nlink,2);assert.deepEqual(fs.readFileSync(f.file),later);
+  }finally{f.cleanup();}
+});
+
+test('initial journal publication preserves an exclusive-stage collision and a replacement of its own stage',t=>{
+  const f=fixture(),open=fs.openSync,link=fs.linkSync,rename=fs.renameSync;
+  const stage=`${f.file}.stage-prepare-${digest(JSON.stringify(f.journal))}`,saved=`${stage}.saved`;
+  try{
+    const collision=t.mock.method(fs,'openSync',((file:any,...args:any[])=>{
+      if(file===stage){
+        const fd=open(stage,'wx',0o600);try{fs.writeFileSync(fd,'pre-existing');}finally{fs.closeSync(fd);}
+      }
+      return (open as any)(file,...args);
+    }) as typeof fs.openSync);
+    syncBuiltinESMExports();
+    try{assert.throws(()=>writeManagedStepJournal(f.env,f.journal),{code:'EEXIST'});}
+    finally{collision.mock.restore();syncBuiltinESMExports();}
+    assert.equal(fs.readFileSync(stage,'utf8'),'pre-existing');assert.equal(fs.existsSync(f.file),false);
+    fs.unlinkSync(stage);
+    const replacement=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+      link(from,to);
+      if(from===stage){rename(stage,saved);fs.writeFileSync(stage,'replacement',{mode:0o600,flag:'wx'});}
+    }) as typeof fs.linkSync);
+    syncBuiltinESMExports();
+    try{assert.throws(()=>writeManagedStepJournal(f.env,f.journal),{code:'managed-binding-invalid'});}
+    finally{replacement.mock.restore();syncBuiltinESMExports();}
+    assert.equal(fs.readFileSync(stage,'utf8'),'replacement');assert.deepEqual(fs.readFileSync(saved),fs.readFileSync(f.file));
+  }finally{f.cleanup();}
+});
 
 test('journal parser accepts all durable states, retained intents and reviewed capture histories',()=>{
   const f=managedStepFixtures(),initial=prepared();

@@ -24265,10 +24265,10 @@ var writerTargets;
 function requirePlatformWriteBoundary(headroomMs = 0) {
   requestBudget?.require(headroomMs);
 }
-function requirePlatformStoreFence(database) {
+function requirePlatformStoreFence(database, dataRoot) {
   requestBudget?.require();
   const targets = requestBudget?.writerFence ? requestBudget.writerFence.targets ?? [] : writerTargets;
-  if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
+  if (targets && (!targets.includes(writerTarget("store", path.dirname(database))) || dataRoot !== undefined && !targets.includes(writerTarget("scope", dataRoot))))
     throw new PlatformError2("managed-step-conflict");
 }
 function windowsPath(value3, allowMissing = false) {
@@ -24550,7 +24550,7 @@ function verifyStore(store, b) {
 }
 
 // shared/managed-binding.ts
-import { lstatSync as lstatSync3, realpathSync as realpathSync3, readFileSync as readFileSync2, writeFileSync, linkSync, unlinkSync, renameSync } from "node:fs";
+import { closeSync as closeSync2, constants, fstatSync, fsyncSync as fsyncSync2, lstatSync as lstatSync3, openSync as openSync2, readSync, realpathSync as realpathSync3, readFileSync as readFileSync2, writeFileSync, linkSync, unlinkSync, renameSync } from "node:fs";
 import path3 from "node:path";
 import { homedir } from "node:os";
 class ManagedBindingError extends Error {
@@ -24604,7 +24604,7 @@ function managedBindingFile(env = process.env) {
     need(stat.isDirectory() && privatePaths([root]));
     const marker = path3.join(root, ".ownership.json");
     const m = lstatSync3(marker, { throwIfNoEntry: false });
-    need(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync2(marker, "utf8") === markerText);
+    need(m?.isFile() && !m.isSymbolicLink() && m.size === Buffer.byteLength(markerText) && privatePaths([marker]) && readFileSync2(marker, "utf8") === markerText);
   }
   return path3.join(root, "progress-binding.json");
 }
@@ -24628,7 +24628,7 @@ function readManagedBinding(env = process.env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.5.2";
+var RELEASE = "1.6.0";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -24702,7 +24702,7 @@ var DELEGATION_VIEW_LIMITS = Object.freeze({
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync4, unlinkSync as unlinkSync2, realpathSync as realpathSync4, existsSync as existsSync2 } from "node:fs";
+import { openSync as openSync3, closeSync as closeSync3, lstatSync as lstatSync4, unlinkSync as unlinkSync2, realpathSync as realpathSync4, existsSync as existsSync2 } from "node:fs";
 import path4 from "node:path";
 var definitions = {
   cleanup_format: "CREATE TABLE cleanup_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1))",
@@ -24780,8 +24780,8 @@ function backup(db, file) {
   } else
     requireProgress(realpathSync4(parent) === parent, "binding");
   const destination = path4.join(path4.dirname(file), `cleanup-backup-${randomUUID()}.sqlite`);
-  const fd = openSync2(destination, "wx", 384);
-  closeSync2(fd);
+  const fd = openSync3(destination, "wx", 384);
+  closeSync3(fd);
   let copy3;
   try {
     if (windows)
@@ -26520,6 +26520,22 @@ function delegationRevision(db, binding, intent) {
   return revision;
 }
 
+// shared/user-cancel.ts
+var PLAN_USER_CANCEL_MAX_BYTES = 16384;
+var USER_CANCEL_ACTOR = { kind: "user", action: "cancel" };
+var record2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+var integer2 = (v, min6) => typeof v === "number" && Number.isSafeInteger(v) && v >= min6;
+function parseUserCancel(v) {
+  requireProgress(record2(v) && Object.keys(v).length === 8);
+  const { storeId, binding, source, plan: plan2, rev, cleanupRev, oid, confirmed } = v;
+  requireProgress(identifier2(storeId) && identifier2(source) && identifier2(plan2) && identifier2(oid));
+  requireProgress(integer2(rev, 1) && integer2(cleanupRev, 0) && confirmed === true);
+  requireProgress(record2(binding) && Object.keys(binding).length === 2);
+  const { sourceId, verified } = binding;
+  requireProgress((sourceId === null || identifier2(sourceId)) && typeof verified === "boolean");
+  return { storeId, binding: { sourceId, verified }, source, plan: plan2, rev, cleanupRev, oid, confirmed };
+}
+
 // shared/document-comparison.ts
 var CAPTURE_LIMITS = {
   rows: 128,
@@ -26658,11 +26674,11 @@ function compareCaptureText(before, after) {
 }
 
 // shared/document-captures.ts
-var integer2 = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var integer3 = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
 var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
 var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
 function head3(db, binding, r) {
-  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer2(r.cleanupRev));
+  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer3(r.cleanupRev));
   requireProgress(r.binding && same(binding, r.binding), "conflict");
   const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
   requireProgress(meta.store_id === r.storeId, "conflict");
@@ -26674,7 +26690,7 @@ function head3(db, binding, r) {
       CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
     END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
   requireProgress(row2, "not-found");
-  requireProgress(integer2(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(integer3(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
   requireProgress(row2.snapshot_id === r.plan && row2.snapshot_source === r.source && row2.snapshot_revision === row2.revision, "corrupt");
   const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
   requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
@@ -26688,7 +26704,7 @@ function head3(db, binding, r) {
   requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
   for (const key of ["path", "canonicalPath"])
     requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
-  requireProgress(doc.captureId === undefined || integer2(doc.captureId, 1), "corrupt");
+  requireProgress(doc.captureId === undefined || integer3(doc.captureId, 1), "corrupt");
   requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
   return {
     identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
@@ -26702,7 +26718,7 @@ var projection = `id, revision,
  CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
  CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
 function entry(row2) {
-  requireProgress(integer2(row2.id, 1) && integer2(row2.revision, 1) && identifier2(row2.source) && identifier2(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
+  requireProgress(integer3(row2.id, 1) && integer3(row2.revision, 1) && identifier2(row2.source) && identifier2(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
   return { id: row2.id, revision: row2.revision, hash: row2.hash, capturedAt: row2.captured_at, path: row2.canonical_path };
 }
 function decodeCursor(raw, r) {
@@ -26713,7 +26729,7 @@ function decodeCursor(raw, r) {
   } catch {
     requireProgress(false);
   }
-  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer2(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer2(c.revision, 1) && integer2(c.before, 1) && c.before <= c.ceiling + 1);
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer3(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer3(c.revision, 1) && integer3(c.before, 1) && c.before <= c.ceiling + 1);
   const i = c.identity;
   requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
   return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
@@ -26721,7 +26737,7 @@ function decodeCursor(raw, r) {
 function captureIndex(db, binding, r, cursor) {
   const h = head3(db, binding, r);
   const max6 = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
-  requireProgress(integer2(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
+  requireProgress(integer3(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
   const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max6, revision: h.current.revision, before: max6 + 1 };
   requireProgress(c.revision <= h.current.revision, "conflict");
   const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
@@ -26753,7 +26769,7 @@ function captureIndex(db, binding, r, cursor) {
   return out;
 }
 function captureComparison(db, binding, r, before, after) {
-  requireProgress(integer2(before, 1) && integer2(after, 1) && before <= after);
+  requireProgress(integer3(before, 1) && integer3(after, 1) && before <= after);
   const h = head3(db, binding, r);
   const read = (id2) => {
     const row2 = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id2, r.source, r.plan);
@@ -26775,7 +26791,7 @@ function captureComparison(db, binding, r, before, after) {
 
 // shared/store.ts
 import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync5, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync5, chmodSync, fstatSync, fsyncSync as fsyncSync2 } from "node:fs";
+import { existsSync as existsSync3, lstatSync as lstatSync5, openSync as openSync4, readSync as readSync2, closeSync as closeSync4, realpathSync as realpathSync5, chmodSync, fstatSync as fstatSync2, fsyncSync as fsyncSync3 } from "node:fs";
 import path5 from "node:path";
 
 // shared/plan-task-search.ts
@@ -27110,6 +27126,10 @@ function resumeSelection(db, binding, r, now3 = () => performance.now()) {
 function digest(value3) {
   return createHash5("sha256").update(value3).digest("hex");
 }
+var userCancelActor = JSON.stringify(USER_CANCEL_ACTOR);
+function activityTime(value3) {
+  return typeof value3 === "string" && value3.length === 24 && Number.isFinite(Date.parse(value3)) && new Date(value3).toISOString() === value3;
+}
 function directoryFilter(value3) {
   return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
 }
@@ -27172,12 +27192,12 @@ class Store {
       if (existed && !fresh) {
         const stat = lstatSync5(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
-        const fd = openSync3(file, "r");
+        const fd = openSync4(file, "r");
         const head4 = Buffer.alloc(16);
         try {
-          readSync(fd, head4, 0, 16, 0);
+          readSync2(fd, head4, 0, 16, 0);
         } finally {
-          closeSync3(fd);
+          closeSync4(fd);
         }
         requireProgress(head4.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
@@ -27233,9 +27253,9 @@ class Store {
       return storeObject(stat);
     })();
     requirePlatformWriteBoundary(STEP_HEADROOM_MS);
-    const fd = openSync3(file, "wx", 384);
+    const fd = openSync4(file, "wx", 384);
     try {
-      const reserved = storeObject(fstatSync(fd, { bigint: true }));
+      const reserved = storeObject(fstatSync2(fd, { bigint: true }));
       {
         if (windows)
           windowsPaths([parent, file, ...sidecars], true);
@@ -27245,7 +27265,7 @@ class Store {
       requirePlatformWriteBoundary();
       const store = new Store(file, {}, { token: freshStoreToken, storeId: options2.storeId, object: reserved });
       try {
-        fsyncSync2(fd);
+        fsyncSync3(fd);
         syncDirectory(parent);
         return store;
       } catch (e) {
@@ -27253,7 +27273,7 @@ class Store {
         throw e;
       }
     } finally {
-      closeSync3(fd);
+      closeSync4(fd);
     }
   }
   close() {
@@ -27794,11 +27814,74 @@ class Store {
     return this.transaction(false, () => {
       requireProgress(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       requireProgress(this.raw(source, id2), "not-found");
-      const rows = this.db.prepare("SELECT snapshot FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(source, id2, limit + 1, cursor);
+      const rows = this.db.prepare("SELECT snapshot, actor=? AS user_cancel FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(userCancelActor, source, id2, limit + 1, cursor);
       return { ...this.metadata(), data: rows.slice(0, limit).map((r) => {
         const p = JSON.parse(String(r.snapshot));
-        return { revision: p.revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt };
+        const attribution = r.user_cancel === 1 ? { actor: "user" } : {};
+        return { revision: p.revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, ...attribution };
       }), nextCursor: rows.length > limit ? String(cursor + limit) : null };
+    });
+  }
+  planActivity(source, plan2, through) {
+    requireProgress(identifier2(source) && identifier2(plan2) && Number.isSafeInteger(through) && through > 0);
+    return this.transaction(false, () => {
+      const live = this.db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(source, plan2);
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan2) : undefined;
+      requireProgress(live && cleanup2?.state !== "deleted", "not-found");
+      const cleanupRev = cleanup2?.generation ?? 0;
+      requireProgress(graphInteger(live.revision, 1) && graphInteger(cleanupRev), "corrupt");
+      requireProgress(through <= live.revision);
+      const oldest = Math.max(1, through - LIMITS.pageSize + 1);
+      const revisions = this.db.prepare(`
+        SELECT r.revision, r.actor=? AS user_cancel,
+          CASE WHEN length(json_extract(r.snapshot,'$.reportedAt'))=24 THEN json_extract(r.snapshot,'$.reportedAt') END AS recorded_at,
+          CASE WHEN length(json_extract(r.actor,'$.sessionId'))<=80 THEN json_extract(r.actor,'$.sessionId') END AS reporter,
+          json_extract(r.actor,'$.sourceId')=r.source AS matching_actor_source,
+          json_extract(r.actor,'$.sessionId')=json_extract(r.snapshot,'$.sessionId') AS coordinator,
+          json_extract(r.snapshot,'$.lifecycle')='cancelled' AS cancelled,
+          CASE WHEN json_extract(r.snapshot,'$.id')=r.plan AND json_extract(r.snapshot,'$.sourceId')=r.source
+            AND json_extract(r.snapshot,'$.revision')=r.revision THEN 1 END AS matching_snapshot,
+          c.revision AS contribution_revision,
+          CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS contribution
+        FROM revisions r LEFT JOIN contributions c ON c.source=r.source AND c.plan=r.plan AND c.revision=r.revision
+        WHERE r.source=? AND r.plan=? AND r.revision BETWEEN ? AND ?
+        ORDER BY r.revision DESC
+      `).all(userCancelActor, LIMITS.requestBytes, source, plan2, oldest, through);
+      requireProgress(revisions.length === through - oldest + 1, "corrupt");
+      const rows = revisions.map((r, i) => {
+        const revision = through - i;
+        requireProgress(r.revision === revision && r.matching_snapshot === 1, "corrupt");
+        if (r.user_cancel === 1 || r.contribution_revision === null) {
+          requireProgress(r.contribution_revision === null && (r.user_cancel !== 1 || r.cancelled === 1) && activityTime(r.recorded_at), "corrupt");
+          return { revision, reportedAt: r.recorded_at, kind: r.user_cancel === 1 ? "user" : "unavailable" };
+        }
+        requireProgress(typeof r.contribution === "string", "corrupt");
+        const c = JSON.parse(r.contribution);
+        requireProgress(graphRecord(c) && c.revision === revision && activityTime(c.reportedAt) && identifier2(c.reporterSessionId) && c.reporterSessionId === r.reporter && r.matching_actor_source === 1 && identifier2(c.attributedSessionId) && (c.mode === "direct" && c.reporterSessionId === c.attributedSessionId || c.mode === "parent-relay" && r.coordinator === 1 && c.reporterSessionId !== c.attributedSessionId) && Array.isArray(c.itemIds) && c.itemIds.length <= 50 && c.itemIds.every(identifier2) && new Set(c.itemIds).size === c.itemIds.length, "corrupt");
+        return {
+          revision,
+          reportedAt: c.reportedAt,
+          kind: "report",
+          mode: c.mode,
+          reporterSessionId: c.reporterSessionId,
+          attributedSessionId: c.attributedSessionId,
+          itemIds: c.itemIds
+        };
+      });
+      const storeId = this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id;
+      requireProgress(identifier2(storeId), "corrupt");
+      return {
+        protocolVersion: VERSION,
+        schemaVersion: VERSION,
+        planActivity: 1,
+        storeId,
+        sourceBinding: { ...this.readBinding },
+        source,
+        plan: plan2,
+        cleanupRev,
+        rows,
+        nextThrough: oldest === 1 ? null : oldest - 1
+      };
     });
   }
   changeDigest(request3) {
@@ -27909,6 +27992,70 @@ class Store {
       }
       result3.complete = !!baseline && newer.revision === after;
       return capDigest(result3);
+    });
+  }
+  cancelPlan(value3) {
+    requireProgress(!this.readOnly, "storage");
+    const r = parseUserCancel(value3);
+    const hash4 = digest(canonical(["plan-user-cancel-v1", r]));
+    return this.transaction(true, () => {
+      const meta = this.db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+      requireProgress(meta, "corrupt");
+      const sourceBinding = { ...this.readBinding };
+      requireProgress(meta.store_id === r.storeId && sourceBinding.sourceId === r.binding.sourceId && sourceBinding.verified === r.binding.verified, "binding");
+      requireProgress(sourceBinding.verified && r.source === sourceBinding.sourceId && this.db.prepare("SELECT verified FROM sources WHERE id=?").get(r.source)?.verified === 1, "source-unverified");
+      requireProgress(meta.enabled === 1, "disabled");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
+      const p = this.raw(r.source, r.plan);
+      requireProgress(p, "not-found");
+      const replay = this.db.prepare("SELECT payload_hash,CASE WHEN length(CAST(receipt AS BLOB))<=? THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(PLAN_USER_CANCEL_MAX_BYTES, r.source, r.plan, r.oid);
+      const receiptFor = (rev, structuralRev, reportedAt) => ({
+        storeId: r.storeId,
+        sourceBinding,
+        source: r.source,
+        plan: r.plan,
+        oid: r.oid,
+        rev,
+        structuralRev,
+        lifecycle: "cancelled",
+        actor: "user",
+        reportedAt
+      });
+      if (replay) {
+        requireProgress(replay.payload_hash === hash4, "operation-reused");
+        requireProgress(typeof replay.receipt === "string", "corrupt");
+        let saved;
+        try {
+          saved = JSON.parse(replay.receipt);
+        } catch {
+          throw new ProgressError("corrupt");
+        }
+        requireProgress(saved && saved.rev === r.rev + 1 && Number.isSafeInteger(saved.rev) && typeof saved.structuralRev === "number" && Number.isSafeInteger(saved.structuralRev) && saved.structuralRev >= 1 && saved.structuralRev <= r.rev && typeof saved.reportedAt === "string" && Number.isFinite(Date.parse(saved.reportedAt)) && new Date(saved.reportedAt).toISOString() === saved.reportedAt, "corrupt");
+        const receipt2 = receiptFor(saved.rev, saved.structuralRev, saved.reportedAt);
+        requireProgress(canonical(saved) === canonical(receipt2), "corrupt");
+        return receipt2;
+      }
+      requireProgress((cleanup2?.generation ?? 0) === r.cleanupRev && p.revision === r.rev, "conflict", p.revision);
+      requireProgress(["active", "finished", "failed", "cancelled"].includes(p.lifecycle), "corrupt");
+      requireProgress(p.lifecycle === "active", "closed");
+      requireProgress(p.revision < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(p.structuralRevision) && p.structuralRevision >= 1 && p.structuralRevision <= p.revision, "corrupt");
+      p.revision++;
+      p.lifecycle = "cancelled";
+      p.reportedAt = new Date().toISOString();
+      for (const item of p.items) {
+        delete item.blocker;
+        if (item.assignmentBinding)
+          item.assignmentBinding.validAtRevision = p.revision;
+      }
+      const snapshot2 = JSON.stringify(p);
+      const updated = this.db.prepare("UPDATE plans SET revision=?,snapshot=? WHERE source=? AND id=? AND revision=?").run(p.revision, snapshot2, r.source, r.plan, r.rev);
+      requireProgress(updated.changes === 1, "corrupt");
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(r.source, r.plan, p.revision, snapshot2, userCancelActor);
+      const receipt = receiptFor(p.revision, p.structuralRevision, p.reportedAt);
+      this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)").run(r.source, r.plan, r.oid, hash4, JSON.stringify(receipt));
+      return receipt;
     });
   }
   apply(value3, actor, capture, child, binding) {
@@ -28161,7 +28308,7 @@ function validateItems(items) {
 }
 
 // plugin/document.ts
-import { constants, realpathSync as realpathSync6, openSync as openSync4, closeSync as closeSync4, fstatSync as fstatSync2, lstatSync as lstatSync6, readSync as readSync2 } from "node:fs";
+import { constants as constants2, realpathSync as realpathSync6, openSync as openSync5, closeSync as closeSync5, fstatSync as fstatSync3, lstatSync as lstatSync6, readSync as readSync3 } from "node:fs";
 import path6 from "node:path";
 async function captureDocument(reference, directory, authorize, previous) {
   if (process.platform === "win32")
@@ -28178,7 +28325,7 @@ async function captureDocument(reference, directory, authorize, previous) {
     await authorize(canonicalPath);
     if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
       return result3("moved", canonicalPath);
-    fd = openSync4(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync5(canonicalPath, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
     let actual;
     try {
       actual = realpathSync6(`/proc/self/fd/${fd}`);
@@ -28187,7 +28334,7 @@ async function captureDocument(reference, directory, authorize, previous) {
     }
     if (actual !== canonicalPath || realpathSync6(requested) !== canonicalPath)
       return result3("changed-during-read");
-    const before = fstatSync2(fd, { bigint: true });
+    const before = fstatSync3(fd, { bigint: true });
     const current = lstatSync6(canonicalPath, { bigint: true });
     if (!before.isFile())
       return result3("non-text", canonicalPath);
@@ -28198,14 +28345,14 @@ async function captureDocument(reference, directory, authorize, previous) {
     const bytes2 = Buffer.alloc(LIMITS.documentBytes + 1);
     let offset = 0;
     while (offset < bytes2.length) {
-      const n = readSync2(fd, bytes2, offset, bytes2.length - offset, null);
+      const n = readSync3(fd, bytes2, offset, bytes2.length - offset, null);
       if (!n)
         break;
       offset += n;
     }
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
-    const after = fstatSync2(fd, { bigint: true });
+    const after = fstatSync3(fd, { bigint: true });
     const still = lstatSync6(canonicalPath, { bigint: true });
     if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || after.ino !== still.ino || after.dev !== still.dev || realpathSync6(requested) !== canonicalPath)
       return result3("changed-during-read");
@@ -28223,7 +28370,7 @@ async function captureDocument(reference, directory, authorize, previous) {
     return result3(code === "ENOENT" || code === "ENOTDIR" ? "missing" : code === "ELOOP" ? "changed-during-read" : "denied");
   } finally {
     if (fd !== undefined)
-      closeSync4(fd);
+      closeSync5(fd);
   }
 }
 function sameFile(a, b) {
@@ -28264,8 +28411,8 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     const parents = ancestors(canonicalPath);
     if (bound.size > BigInt(LIMITS.documentBytes))
       return result3("oversized", canonicalPath);
-    fd = openSync4(canonicalPath, constants.O_RDONLY);
-    const before = fstatSync2(fd, { bigint: true });
+    fd = openSync5(canonicalPath, constants2.O_RDONLY);
+    const before = fstatSync3(fd, { bigint: true });
     const current = lstatSync6(canonicalPath, { bigint: true });
     if (!before.isFile() || before.ino === 0n || !unchanged(bound, before) || !unchanged(before, current) || windowsPath(raw) !== canonicalPath)
       return result3("changed-during-read");
@@ -28275,14 +28422,14 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     const bytes2 = Buffer.alloc(LIMITS.documentBytes + 1);
     let offset = 0;
     while (offset < bytes2.length) {
-      const n = readSync2(fd, bytes2, offset, bytes2.length - offset, null);
+      const n = readSync3(fd, bytes2, offset, bytes2.length - offset, null);
       if (!n)
         break;
       offset += n;
     }
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
-    const after = fstatSync2(fd, { bigint: true }), still = lstatSync6(canonicalPath, { bigint: true });
+    const after = fstatSync3(fd, { bigint: true }), still = lstatSync6(canonicalPath, { bigint: true });
     if (!still.isFile() || still.isSymbolicLink() || !unchanged(before, after) || !unchanged(after, still) || windowsPath(raw) !== canonicalPath)
       return result3("changed-during-read");
     for (const [p, stat] of parents)
@@ -28302,7 +28449,7 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     return result3(code === "ENOENT" || code === "ENOTDIR" ? "missing" : code === "ELOOP" || code === "symlink-escape" ? "changed-during-read" : "denied");
   } finally {
     if (fd !== undefined)
-      closeSync4(fd);
+      closeSync5(fd);
   }
 }
 // plugin/status.ts
@@ -28692,7 +28839,7 @@ function appended(content, text) {
     return `${content}
 
 ${text}`;
-  if (Array.isArray(content) && content.every((part) => record2(part) && (part.type === "text" && typeof part.text === "string" || part.type === "file" && typeof part.uri === "string" && typeof part.mime === "string"))) {
+  if (Array.isArray(content) && content.every((part) => record3(part) && (part.type === "text" && typeof part.text === "string" || part.type === "file" && typeof part.uri === "string" && typeof part.mime === "string"))) {
     return [...content, { type: "text", text }];
   }
 }
@@ -28721,7 +28868,7 @@ function carrierAt(messages, index2, positional = false, keyed = true) {
   if (!Array.isArray(messages))
     return;
   const message = messages[index2];
-  if (!record2(message) || !Array.isArray(message.content))
+  if (!record3(message) || !Array.isArray(message.content))
     return;
   const copy3 = (content) => {
     const value3 = Object.assign(Object.create(Object.getPrototypeOf(message)), message, { content });
@@ -28735,9 +28882,9 @@ function carrierAt(messages, index2, positional = false, keyed = true) {
     }
     if (message.role !== "tool")
       return;
-    const at = message.content.findLastIndex((part2) => record2(part2) && part2.type === "tool-result");
+    const at = message.content.findLastIndex((part2) => record3(part2) && part2.type === "tool-result");
     const part = message.content[at], output = part?.result;
-    if (part?.name === CODE_MODE_TOOL || typeof part?.id !== "string" || !record2(output) || !(output.type === "text" ? typeof output.value === "string" : output.type === "content" && Array.isArray(output.value)))
+    if (part?.name === CODE_MODE_TOOL || typeof part?.id !== "string" || !record3(output) || !(output.type === "text" ? typeof output.value === "string" : output.type === "content" && Array.isArray(output.value)))
       return;
     if (appended(output.value, "") === undefined)
       return;
@@ -28748,28 +28895,44 @@ function restoreNotes(messages) {
   if (!Array.isArray(messages))
     return;
   for (let i = 0;i < messages.length; i++)
-    if (record2(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored))
+    if (record3(messages[i]) && Object.prototype.hasOwnProperty.call(messages[i], restored))
       messages[i] = messages[i][restored];
 }
 var CLEARED_REFUSAL = "Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.";
+var CLEARED_ASSIGNMENT = "Agent Progress note: the earlier assignment note is no longer current.";
 var NOTE_SEPARATOR = `
 
 `;
 var MAX_NOTE_SESSIONS = 128;
 var MAX_NOTE_CARRIERS = 256;
 var MAX_NOTE_BYTES = 128 * 1024;
+function withoutChildCapsules(text, spans, replacement) {
+  const kept = [];
+  let from = 0;
+  for (const span of spans) {
+    const end = span.start - NOTE_SEPARATOR.length;
+    if (end > from)
+      kept.push(text.slice(from, end));
+    if (span === replacement)
+      kept.push(CLEARED_ASSIGNMENT);
+    from = span.end + NOTE_SEPARATOR.length;
+  }
+  if (from < text.length)
+    kept.push(text.slice(from));
+  return kept.join(NOTE_SEPARATOR);
+}
 var REFUSAL_HEADER = "## Delegation not applied";
-var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
+var record3 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
 var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
 var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
 var iso = (value3) => typeof value3 === "string" && /^\d{4}-\d\d-\d\dT/.test(value3) && Number.isFinite(Date.parse(value3));
 var strings = (value3, fields2) => fields2.every((field) => typeof value3[field] === "string");
 var nullable = (value3, fields2, valid) => fields2.every((field) => value3[field] === undefined || value3[field] === null || valid(value3[field]));
 function failureMarker(value3) {
-  return record2(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
+  return record3(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
 }
 function proxyReason(event) {
-  if (event.status !== "completed" || !record2(event.input) || !record2(event.result) || !record2(event.result.output))
+  if (event.status !== "completed" || !record3(event.input) || !record3(event.result) || !record3(event.result.output))
     return 0;
   const output = event.result.output;
   if ([event, event.result, event.result.metadata, output].some(failureMarker))
@@ -28779,10 +28942,10 @@ function proxyReason(event) {
     return strings(input, ["agent", "description", "prompt"]) && (input.sessionID === undefined || boundedID(input.sessionID)) && (input.model === undefined || typeof input.model === "string") && (input.background === undefined || typeof input.background === "boolean") && boundedID(output.sessionID) && (output.status === "running" || output.status === "completed") && typeof output.output === "string" ? DISPATCH : 0;
   }
   if (event.tool === "linear_save_issue") {
-    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record2(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record2(v)) ? TRACKER : 0;
+    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record3(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record3(v)) ? TRACKER : 0;
   }
   if (event.tool === "linear_save_comment") {
-    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record2(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record2) ? TRACKER : 0;
+    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record3(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record3) ? TRACKER : 0;
   }
   return 0;
 }
@@ -28811,11 +28974,11 @@ function planPath(value3, directory) {
 function successfulPath(event) {
   if (event.tool !== "write" && event.tool !== "edit")
     return;
-  if (event.status !== "completed" || !record2(event.input) || !possiblePath(event.input.path))
+  if (event.status !== "completed" || !record3(event.input) || !possiblePath(event.input.path))
     return;
   const result3 = event.result;
   const output = result3.output;
-  if (!record2(output) || [event, result3, result3.metadata, output].some(failureMarker))
+  if (!record3(output) || [event, result3, result3.metadata, output].some(failureMarker))
     return;
   if (event.tool === "write") {
     if (output.operation === "write" && typeof output.existed === "boolean" && typeof output.target === "string" && typeof output.resource === "string")
@@ -28898,6 +29061,7 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
   const eligibility = new Map;
   const noted = new Set;
   const memories = new Map;
+  let capsuleDelivery = 0;
   const owned = Symbol("agent-progress-section");
   function section() {
     const part = { type: "text", text: ACTIVATION_GUIDANCE };
@@ -28980,7 +29144,7 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
       const list = await Promise.race([ctx.worktree.list({ projectID }), new Promise((resolve3) => {
         timer = setTimeout(() => resolve3(undefined), 1000);
       })]);
-      return Array.isArray(list) && list.every((entry2) => record2(entry2) && typeof entry2.directory === "string" && path7.isAbsolute(entry2.directory)) ? list.map((entry2) => path7.resolve(entry2.directory)) : [];
+      return Array.isArray(list) && list.every((entry2) => record3(entry2) && typeof entry2.directory === "string" && path7.isAbsolute(entry2.directory)) ? list.map((entry2) => path7.resolve(entry2.directory)) : [];
     } catch {
       return [];
     } finally {
@@ -29097,6 +29261,7 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
           return;
         }
         let capsule = "";
+        let childCapsule = false, clearChildCapsules = false;
         const carried = Array.isArray(event.messages) && carrierAt(event.messages, event.messages.length - 1, false, false) !== undefined;
         const rearm = () => {
           if (armed && compactions.get(sessionKey) === attempt)
@@ -29136,8 +29301,11 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
             })]);
             if (identity4 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity4.sourceId === source.id && identity4.sessionId === event.sessionID) {
               const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity4.sourceId, sessionId: identity4.sessionId, parentId: identity4.parentId, ancestry: identity4.ancestry });
-              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID) {
+                childCapsule = identity4.parentId !== null;
+                clearChildCapsules = childCapsule && identity4.parentId === caller.parentID && identity4.ancestry !== null && !selection.incomplete && !selection.omitted && selection.candidates.length === 0;
                 capsule = resumeText(assignedOnly ? { ...selection, candidates: selection.candidates.filter((p) => p.scope === "assigned") } : selection, assignedOnly);
+              }
             }
           } catch {} finally {
             if (timer !== undefined)
@@ -29183,12 +29351,12 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
         const ids = new Map;
         if (Array.isArray(messages))
           messages.forEach((message, i) => {
-            if (record2(message) && message.role === "user" && boundedID(message.id) && !ids.has(message.id))
+            if (record3(message) && message.role === "user" && boundedID(message.id) && !ids.has(message.id))
               ids.set(message.id, i);
           });
         const placed = new Map;
         for (const note of notes.values()) {
-          const at = note.id === undefined ? note.index : record2(messages?.[note.index]) && messages[note.index].id === note.id ? note.index : ids.get(note.id) ?? -1;
+          const at = note.id === undefined ? note.index : record3(messages?.[note.index]) && messages[note.index].id === note.id ? note.index : ids.get(note.id) ?? -1;
           const found = carrierAt(messages, at);
           if (found?.key === note.key)
             placed.set(note.key, found);
@@ -29196,13 +29364,33 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
         let latest2 = Array.isArray(messages) ? carrierAt(messages, messages.length - 1) : undefined;
         if (latest2?.id !== undefined && placed.has(latest2.key) && placed.get(latest2.key).index !== latest2.index)
           latest2 = carrierAt(messages, messages.length - 1, true);
+        if (clearChildCapsules) {
+          let replacement;
+          for (const [noteKey] of placed) {
+            const span = notes.get(noteKey).childCapsules?.at(-1);
+            if (span && (!replacement || span.delivery > replacement.delivery))
+              replacement = span;
+          }
+          for (const [noteKey, note] of notes) {
+            if (!note.childCapsules)
+              continue;
+            const text = withoutChildCapsules(note.text, note.childCapsules, replacement);
+            if (text)
+              notes.set(noteKey, { ...note, text, childCapsules: undefined });
+            else {
+              notes.delete(noteKey);
+              placed.delete(noteKey);
+            }
+          }
+          lastCapsule = undefined;
+        }
         let consumed = false, recorded = false;
         if (!latest2)
           rearm();
         else {
-          const due = [];
-          if (hint)
-            due.push(hintText(hint));
+          const before = notes.get(latest2.key);
+          const hintNote = hint ? hintText(hint) : "";
+          const due = hintNote ? [hintNote] : [];
           const standing = (last, text2) => !last || last.text !== text2 || !placed.has(last.key);
           const capsuleDue = !!capsule && standing(lastCapsule, capsule);
           if (capsuleDue)
@@ -29214,12 +29402,13 @@ async function registerActivation(ctx, source, enabled, recovery, onContext) {
             refusalDue = CLEARED_REFUSAL;
           if (refusalDue !== undefined)
             due.push(refusalDue);
-          const before = notes.get(latest2.key);
           const text = [...before ? [before.text] : [], ...due.length ? [due.join(NOTE_SEPARATOR)] : []].join(NOTE_SEPARATOR);
           if (!due.length || Buffer.byteLength(text) <= MAX_NOTE_BYTES) {
             if (due.length) {
+              const capsuleStart = (before ? before.text.length + NOTE_SEPARATOR.length : 0) + (hintNote ? hintNote.length + NOTE_SEPARATOR.length : 0);
+              const childCapsules = capsuleDue && childCapsule ? [...before?.childCapsules ?? [], { start: capsuleStart, end: capsuleStart + capsule.length, delivery: ++capsuleDelivery }] : before?.childCapsules;
               notes.delete(latest2.key);
-              notes.set(latest2.key, { key: latest2.key, id: latest2.id, index: latest2.index, text });
+              notes.set(latest2.key, { key: latest2.key, id: latest2.id, index: latest2.index, text, childCapsules });
               placed.set(latest2.key, latest2);
               if (capsuleDue)
                 lastCapsule = { text: capsule, key: latest2.key };
@@ -29669,7 +29858,7 @@ ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. If work moves back to the prerequisites of a task that is working, mark it blocked with changes:[{id,status:"blocked",blocker:{category:"dependency",reason}}], or set it back to pending if none of its own work was done; leave a task that is already blocked as it is. Before a handoff, and when a prerequisite finishes, read the current plan: once every prerequisite the task still lists is done, set the task you blocked this way back to working or pending, since an explicit blocked task never becomes Ready. A prerequisite the plan no longer lists no longer holds it; a still-listed skipped prerequisite counts as unfinished. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
-Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user archived or deleted it; stop reporting to it, do not retry, and don't recreate it unless the user specifically asks for it. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
+Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. If a plan you were reporting returns closed while in progress or on a reopen, or a plan you started returns not-found, the user may have cancelled, archived or deleted it. Stop reporting to it; do not retry, reopen or recreate it unless the user specifically asks. A reopen refused with conflict or stage-incomplete is recoverable: read the plan and retry at its current revision. For a staged commit, if every chunk already staged is valid for the current revision and intended layout, stage only the missing chunks under that same upload ID; otherwise stage the whole intended set under a fresh upload ID, because chunks stay pinned to the revision they were staged at. Keep reopen=true on every stage and the commit. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {
   setupLegacy,
   plugin_default as default

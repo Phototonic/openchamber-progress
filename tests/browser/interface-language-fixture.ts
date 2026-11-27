@@ -23,7 +23,7 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  * qa.context(session|null), qa.namespace(name), qa.reload(surface), qa.tick(surface?), qa.focus(surface),
  * qa.visible(surface, boolean), qa.show(surface,width), qa.seed(value|undefined, namespace?).
  * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe.
- * qa.mode = 'plan'|'empty'|'setup'|'failure'; qa.holds/qa.faults accept
+ * qa.mode = 'plan'|'empty'|'setup'|'failure'|'port-busy'|'setup-refused'; qa.holds/qa.faults accept
  * {tag?,kind:'storage'|'service',surface?,op?,key?,path?,code?,status?}.
  * Holds capture a read reply BEFORE release (stale-read races); writes commit ON release.
  * qa.release(tag), qa.held, qa.storageLog, qa.requests, qa.messages, qa.maps, qa.instance expose evidence.
@@ -34,7 +34,7 @@ const surfaces=['panel','status','page'];
 const theme=${JSON.stringify(theme)};
 window.frame=s=>document.querySelector('iframe[data-surface="'+s+'"]');
 const send=(s,m)=>frame(s).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},location.origin);
-window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],
+window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],toasts:[],
  ctx:{locale:'en',features:{deviceStorage:true},directory:'/fixture/Alpha',session:null,connection:{connected:true,account:'fixture'}},
  ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme,...this.ctx,surface:n,settings:{},item:null}})},
  dark(){theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});this.ready()},
@@ -81,6 +81,7 @@ addEventListener('message',async e=>{
   const hold=qa.holds.find(h=>matches(h,'service',s,q));if(hold)qa.held.push({tag:hold.tag,surface:s,path:q.path,go});else await go();return
  }
  if(m.type==='resize'&&s==='status'&&q.height>0)f.style.height=q.height+'px';
+ if(m.type==='toast')qa.toasts.push({surface:s,...q});
  if(m.id)result();
 });`;
 
@@ -88,6 +89,8 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>Interface 
 
 export async function startLanguageFixture(options: { source?: boolean; service?: (request: { method: string; path: string; query?: Record<string, string>; body?: string; mode?: string }) => Promise<{ status: number; body: string }> } = {}) {
   const assets = createGuestAssets({ source: options.source, surfaces: ['panel', 'status', 'page'] });
+  const plan = { ...P1, reportedAt: new Date().toISOString() };
+  const requests: { method: string; path: string; mode?: string }[] = [];
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     try {
@@ -100,18 +103,23 @@ export async function startLanguageFixture(options: { source?: boolean; service?
       } else if (path === '/service' && req.method === 'POST') {
         let text = ''; for await (const part of req) text += part;
         const q = JSON.parse(text);
+        if (q.mode === 'setup-refused') requests.push({ method: q.method, path: q.path, mode: q.mode });
         if (options.service) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(await options.service(q))); return; }
         let status = 200, body: unknown;
+        const refusal = q.mode === 'setup-refused';
+        const diagnostics = ['managed-migration-conflict'];
         if (q.mode === 'failure') { status = 503; body = { error: 'busy' }; }
-        else if (q.path === '/health') body = q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
-        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [P1], null, { captureEnabled: q.mode !== 'recording-off' });
-        else if (q.path === '/v1/plan') body = planPage(P1, languageItems, []);
+        else if (q.mode === 'port-busy' && q.path === '/v1/plans') { status = 503; body = { error: 'managed-step-port-busy' }; }
+        else if (q.path === '/health') body = refusal ? { ...HEALTH_UNCONFIGURED, state: 'refused', diagnostics } : q.mode === 'setup' ? HEALTH_UNCONFIGURED : HEALTH;
+        else if (q.path === '/v1/plans') body = plansPage(q.mode === 'empty' ? [] : [plan], null, { captureEnabled: q.mode !== 'recording-off' });
+        else if (q.path === '/v1/plan') body = planPage(plan, languageItems, []);
         else if (q.path === '/v1/document') body = envelope({ document: P1.document, text: DOCUMENT_TEXT, nextCursor: null });
         else if (q.path === '/v1/history') body = envelope({ data: [], nextCursor: null });
         else if (q.path === '/v1/setup') body = setupRead({
           separateLifecycle: false,
           ...(q.mode === 'setup' ? { configured: false, verified: false, installed: false, captureEnabled: false } : {}),
-          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1, managedFreshSteps: 1 },
+          ...(refusal ? { verified: false, captureEnabled: null, diagnostics } : {}),
+          delivery: { kind: 'managed', revision: 1, configuration: q.mode === 'setup' ? 'unconfigured' : 'configured', migration: refusal ? 'complete' : 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1, managedFreshSteps: 1 },
         });
         else { status = 404; body = { error: 'not-found' }; }
         if (q.mode === 'recording-off' && body && typeof body === 'object' && 'captureEnabled' in body) body.captureEnabled = false;
@@ -120,5 +128,5 @@ export async function startLanguageFixture(options: { source?: boolean; service?
     } catch { res.statusCode = 500; res.end('{"error":"fixture-failed"}'); }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { port: (server.address() as { port: number }).port, session: S.M, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); assets.dispose(); } };
+  return { port: (server.address() as { port: number }).port, session: S.M, requests, async stop() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); assets.dispose(); } };
 }

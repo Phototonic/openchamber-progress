@@ -1,4 +1,6 @@
-// Real Chromium actions through the existing CDP harness; requires cleanup-fixture.ts.
+// Real Chromium actions through the existing CDP harness; launch cleanup-fixture.ts
+// with --source for source guests. --selection-only and --individual-only isolate
+// the search/bulk and per-plan journeys; default exercises both.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import type nodeAssert from 'node:assert/strict';
 import { countedAssertions } from './counted-assert.ts';
@@ -24,14 +26,22 @@ function show(surface: string, width = 900) {
   wait(surface, `d.defaultView.innerWidth===${width}`);
 }
 function click(surface: string, selector: string) {
-  const point = evaluate(`(()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});f.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(r.width/2,30)+o.x,r.y+r.height/2+o.y]})()`);
+  const point = evaluate(`(async()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),d=f.contentDocument,s=${javascriptLiteral(selector)};d.querySelector(s)?.scrollIntoView({block:'nearest'});f.scrollIntoView({block:'nearest'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const n=d.querySelector(s);if(!n)throw Error('Missing control: '+s);const a=n.getBoundingClientRect(),o=f.getBoundingClientRect(),x=a.x+Math.min(a.width/2,30),y=a.y+a.height/2;if(!n.contains(d.elementFromPoint(x,y)))throw Error('Control is not reachable: '+s);return [x+o.x,y+o.y]})()`);
   cdp('click', ...point.map(String));
 }
+const menuItem = (id: string) => `[role="menuitem"][data-menu-id="${id}"]`;
+const openMenu = '[role="menu"]:not([hidden])';
+function more(surface: string, id: string) {
+  click(surface, '[data-testid="more-trigger"]');
+  wait(surface, `d.querySelector('${menuItem(id)}')`);
+  click(surface, menuItem(id));
+  wait(surface, `!d.querySelector('${openMenu}')`);
+}
 function button(surface: string, id: string) {
-  if (surface === 'page' && ['filter-project', 'filter-worktree', 'filter-session'].includes(id)) {
-    if (!guest('page', `return !!d.querySelector('[data-testid="board-filters"]')?.getClientRects().length`)) {
+  if (surface === 'page' && ['filter-project', 'filter-worktree', 'filter-session', 'cleanup-visible', 'cleanup-archived'].includes(id)) {
+    if (!guest('page', `return !!d.querySelector('[data-testid="${id}"] button')?.getClientRects().length`)) {
       click('page', '[data-testid="board-filters-trigger"]');
-      wait('page', `d.querySelector('[data-testid="board-filters"]')?.getClientRects().length>0`);
+      wait('page', `d.querySelector('[data-testid="${id}"] button')?.getClientRects().length>0`);
     }
   }
   if (['cleanup-archive', 'cleanup-restore', 'cleanup-delete'].includes(id)) {
@@ -39,10 +49,7 @@ function button(surface: string, id: string) {
       click(surface, `[data-testid="${id}"] button`);
       return;
     }
-    click(surface, '[data-testid="plan-actions"] button');
-    wait(surface, `d.querySelector('[role="menuitem"][id$="-${id}"]')`);
-    click(surface, `[role="menuitem"][id$="-${id}"]`);
-    wait(surface, `!d.querySelector('[role="menu"]')`);
+    more(surface, id);
     if (id === 'cleanup-delete') {
       wait(surface, `d.querySelector('[data-testid="cleanup-confirm"]')`);
       assert.equal(guest(surface, `return !!d.querySelector('[data-testid="cleanup-confirm"]')?.closest('[role="menu"]')`), false);
@@ -69,7 +76,10 @@ function revealPagePlan(id: string) {
   wait('page', visible);
 }
 function choosePicker(surface: string, id: string) {
-  button(surface, surface === 'status' ? 'status-plan-selector' : 'plan-selector');
+  const picker = `[data-testid="${surface === 'status' ? 'status-plan-selector' : 'plan-selector'}"] button`;
+  wait(surface, `d.querySelector('${picker}')`);
+  guest(surface, `const b=d.querySelector('${picker}');b.scrollIntoView({block:'nearest'});b.focus();return new Promise(r=>d.defaultView.requestAnimationFrame(()=>d.defaultView.requestAnimationFrame(()=>r(true))));`);
+  key('Enter');
   wait(surface, `d.querySelector('[role="listbox"]')`);
   const index = guest(surface, `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].findIndex(n=>n.id.endsWith('-source-fixture/${id}'));`);
   assert.ok(index >= 0); key('Home'); if (index) key('ArrowDown', index); key('Enter'); selected(surface, id);
@@ -85,9 +95,16 @@ function shot(name: string, surface: string, selector?: string) {
   cdp('shot', join(artifacts, `cleanup-${name}.png`), ...rect.map(String));
 }
 function noOverflow(surface: string) { assert.equal(guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth;'), true); }
+function tabBack(surface: string) {
+  if (guest(surface, `return !!d.querySelector('[data-testid="surface-panel-back"]')`)) {
+    button(surface, 'surface-panel-back');
+    wait(surface, `!d.querySelector('[data-testid="surface-panel-back"]')`);
+  }
+}
 function tab(surface: string, text: string) {
-  const index = guest(surface, `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].findIndex(n=>n.textContent===${javascriptLiteral(text)});`);
-  assert.ok(index >= 0); click(surface, `[data-testid="detail-tabs"] [role="tab"]:nth-child(${index + 1})`);
+  tabBack(surface);
+  if (text === 'document') button(surface, 'plan-view-document');
+  else more(surface, text);
 }
 
 // Each explicit run starts fresh disposable stores, not a retry of a destructive action.
@@ -96,20 +113,33 @@ assert.equal((await fixture('/reset', 'POST')).ok, true);
 evaluate('location.reload();true');
 revealPagePlan('P-done');
 assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
+const selectionOnly = process.argv.includes('--selection-only');
+const individualOnly = process.argv.includes('--individual-only');
+if (selectionOnly && individualOnly) throw Error('Choose at most one cleanup journey');
+if (!selectionOnly) await individualCleanup();
+if (!individualOnly) await searchSelection();
+assert.deepEqual(evaluate('qa.errors'), []);
+assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
+const result = { passed: true, realService: true, individualCleanup: !selectionOnly, crossPageSelection: !individualOnly, mixedResultAndReceiptOnlyUndo: !individualOnly, posts: posts(), assertions: assertions.count() };
+writeFileSync(join(artifacts, 'results.json'), JSON.stringify(result, null, 2) + '\n');
+console.log(JSON.stringify(result, null, 2));
+
+async function individualCleanup() {
 const before = await state(); const secondBefore = await state('P-done', 1);
 for (const id of ['P-active']) {
   choosePage(id); click('page', '[data-testid="plan-actions"] button');
-  wait('page', `d.querySelector('[role="menu"]')`);
-  assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-archive"],[role="menuitem"][id$="-cleanup-delete"]');`), false);
+  wait('page', `d.querySelector('${openMenu}')`);
+  assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-archive')},${menuItem('cleanup-delete')}');`), false);
   key('Escape');
 }
 evaluate('qa.dark();true');
 for (const id of ['P-cancelled', 'P-failed']) {
   for (const width of [900, 390]) {
-    show('page', width); choosePage(id);
+    if (width === 900) { show('page', width); choosePage(id); }
+    else { show('page', width); selected('page', id); }
     click('page', '[data-testid="plan-actions"] button');
-    wait('page', `d.querySelector('[role="menuitem"][id$="-cleanup-archive"]')`);
-    assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-delete"]')`), true);
+    wait('page', `d.querySelector('${menuItem('cleanup-archive')}')`);
+    assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-delete')}')`), true);
     noOverflow('page'); shot(`${id}-${width}-dark-actions`, 'page');
     key('Escape');
     button('page', 'cleanup-delete');
@@ -117,12 +147,17 @@ for (const id of ['P-cancelled', 'P-failed']) {
     noOverflow('page'); shot(`${id}-${width}-dark-confirm`, 'page', '[data-testid="cleanup-confirm"]');
     button('page', 'cleanup-cancel');
   }
+  show('page');
   button('page', 'cleanup-archive');
   wait('page', `!d.querySelector('[data-testid="plan-row-${id}"]')`);
-  button('page', 'cleanup-archived'); choosePage(id);
+  button('page', 'cleanup-archived');
+  wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'`);
+  choosePage(id);
   button('page', 'cleanup-restore');
   wait('page', `!d.querySelector('[data-testid="plan-row-${id}"]')`);
-  assert.equal((await state(id)).lifecycle, id === 'P-cancelled' ? 'cancelled' : 'failed');
+  const restoredPlan = await state(id);
+  assert.equal(restoredPlan.cleanup.state, 'visible');
+  assert.equal(restoredPlan.lifecycle, id === 'P-cancelled' ? 'cancelled' : 'failed');
   button('page', 'cleanup-visible');
 }
 // Session-local manual choice survives a temporary no-session state. Directory
@@ -136,7 +171,7 @@ const originalPosts = posts();
 button('page', 'cleanup-delete');
 wait('page', `d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.closest('[data-testid="cleanup-cancel"]')`);
 key('Enter'); // Cancel is the initial/default keyboard action.
-wait('page', `!d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.closest('[data-testid="cleanup-delete"]')`);
+wait('page', `!d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.matches('[data-testid="more-trigger"]')`);
 assert.equal(posts(), originalPosts); assert.deepEqual(await state(), before);
 
 // Archive against real built service. Other open surfaces converge on normal polls.
@@ -153,12 +188,13 @@ button('page', 'cleanup-archived');
 wait('page', `d.querySelector('[data-testid="plan-row-P-done"][data-source="source-fixture"]')`);
 choosePage('P-done');
 click('page','[data-testid="plan-actions"] button');
-wait('page', `d.querySelector('[role="menuitem"][id$="-cleanup-restore"]')`);
-assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-delete"]')`),true);
+wait('page', `d.querySelector('${menuItem('cleanup-restore')}')`);
+assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-delete')}')`),true);
 key('Escape');
-selected('page', 'P-done'); tab('page', 'Document'); wait('page', `d.querySelector('[data-testid="document-text"]')?.textContent.includes('Recorded finish')`);
-tab('page', 'History'); wait('page', `d.querySelector('[data-testid="revision-2"]')`);
+selected('page', 'P-done'); tab('page', 'document'); wait('page', `d.querySelector('[data-testid="document-text"]')?.textContent.includes('Recorded finish')`);
+tab('page', 'history'); wait('page', `d.querySelector('[data-testid="revision-2"]')`);
 shot('archived', 'page', '[data-testid="plan-detail"]');
+tabBack('page');
 button('page', 'cleanup-restore'); wait('page', `d.querySelector('[data-testid="empty-state"]')?.textContent.includes('No archived plans')`);
 const restored = await state(); assert.equal(restored.cleanup.state, 'visible'); assert.equal(restored.lifecycle, 'finished');
 assert.deepEqual(restored.history, before.history); assert.equal(restored.document, before.document);
@@ -171,10 +207,15 @@ evaluate(`qa.context('U');true`); wait('page', `!d.querySelector('[data-testid="
 evaluate(`qa.context('M');true`); choosePage('P-done'); button('page', 'cleanup-delete');
 evaluate('qa.store=1;true'); wait('page', `!d.querySelector('[data-testid="cleanup-confirm"]')`); assert.equal(posts(), count);
 assert.deepEqual(await state('P-done', 1), secondBefore);
-evaluate('qa.store=0;true'); wait('page', `qa.responses.filter(r=>r.surface==='page'&&r.path==='/v1/plans').length>2 && !d.querySelector('[data-testid="cleanup-confirm"]')`);
-// Wait on actual returned store identity via the diagnostics, not a timer.
+// Observe a new real list response for the requested store, not internal
+// diagnostics that no longer appear in the ordinary reading.
 const store0 = evaluate(`qa.requests.find(q=>q.method==='POST').body.storeId`);
-wait('page', `d.body.textContent.includes(${javascriptLiteral(store0)})`);
+function switchStore(store: number) {
+  const start = evaluate('qa.responses.length');
+  evaluate(`qa.store=${store};true`);
+  wait('page', `qa.responses.slice(${start}).some(r=>r.surface==='page'&&r.path==='/v1/plans'&&r.storeId&&((r.storeId===${javascriptLiteral(store0)})===${store === 0})) && d.querySelector('[data-testid="plan-list-heading"]')`);
+}
+switchStore(0);
 choosePage('P-other');
 
 // Genuine 409 from another real writer, with one deliberately delayed pre-change list.
@@ -186,6 +227,7 @@ assert.equal(evaluate(`qa.responses.some(r=>r.surface==='page'&&r.status===409)`
 evaluate('qa.release();true'); revealPagePlan('P-other');
 choosePage('P-other'); show('page', 360); noOverflow('page');
 shot('error', 'page', '[data-testid="cleanup-error"]');
+show('page');
 
 // Explicit SDK/HTTP boundary fault seams, not backend busy/network claims.
 for (const mode of ['busy', 'network']) {
@@ -203,11 +245,13 @@ wait('page', `d.querySelector('[data-testid="state-busy"]') && !d.querySelector(
 button('page', 'cleanup-visible'); choosePage('P-other');
 
 // Older service: capability stripped only; no archive query or action is offered.
-evaluate('qa.old=true;true'); wait('page', `d.querySelector('[data-testid="cleanup-unavailable"]')`);
+evaluate('qa.old=true;true');
+click('page', '[data-testid="board-filters-trigger"]');
+wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.disabled===true`);
 assert.equal(guest('page', `return d.querySelector('[data-testid="cleanup-archived"] button').disabled`), true);
-click('page', '[data-testid="plan-actions"] button'); wait('page', `d.querySelector('[role="menu"]')`);
-assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-archive"],[role="menuitem"][id$="-cleanup-delete"]')`), false); key('Escape');
-evaluate('qa.old=false;true'); wait('page', `!d.querySelector('[data-testid="cleanup-unavailable"]')`);
+click('page', '[data-testid="plan-actions"] button'); wait('page', `d.querySelector('${openMenu}')`);
+assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-archive')},${menuItem('cleanup-delete')}')`), false); key('Escape');
+evaluate('qa.old=false;true'); wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.disabled===false`);
 
 // Capture narrow light + dark confirmation; retained picker remains usable in rail.
 show('panel', 360); choosePicker('panel', 'P-done'); button('panel', 'cleanup-delete');
@@ -220,20 +264,22 @@ button('panel', 'cleanup-cancel');
 
 // Cold part caches, then hold old detail, document and history replies. Delete from
 // another surface and release only after the page's fresh list has removed the key.
-show('page'); evaluate('qa.store=1;true');
-wait('page', `!d.body.textContent.includes(${javascriptLiteral(store0)}) && d.querySelector('[data-testid="plan-list-heading"]')`);
+show('page'); switchStore(1);
 revealPagePlan('P-done');
-evaluate('qa.store=0;true'); wait('page', `d.body.textContent.includes(${javascriptLiteral(store0)})`);
+switchStore(0);
 evaluate(`qa.hold={surface:'page',paths:['/v1/plan','/v1/document','/v1/history']};true`);
 choosePage('P-done'); wait('page', `qa.held.length>=1`);
-tab('page', 'Document'); wait('page', `qa.held.length>=2`);
-tab('page', 'History'); wait('page', `qa.held.length>=3`);
+tab('page', 'document'); wait('page', `qa.held.length>=2`);
+tab('page', 'history'); wait('page', `qa.held.length>=3`);
 show('panel', 360); choosePicker('panel', 'P-done'); button('panel', 'cleanup-delete');
 count = posts();
 evaluate(`qa.hold={surface:'panel',path:'/v1/plan/delete'};true`);
 button('panel', 'cleanup-confirm-delete');
 wait('panel', `d.querySelector('[data-testid="cleanup-confirm-delete"] button')?.disabled`);
-button('panel', 'cleanup-confirm-delete'); // disabled duplicate input sends nothing
+// The ordinary list poll can already have retired the disabled confirmation:
+// the service applied the delete even while its reply is held.
+const duplicate = guest('panel', `const b=d.querySelector('[data-testid="cleanup-confirm-delete"] button');if(!b)return null;const r=b.getBoundingClientRect(),o=d.defaultView.frameElement.getBoundingClientRect();return [r.x+r.width/2+o.x,r.y+r.height/2+o.y]`) as [number, number] | null;
+if (duplicate) cdp('click', ...duplicate.map(String));
 assert.equal(posts(), count + 1);
 wait('page', `!d.querySelector('[data-testid="plan-row-P-done"][data-source="source-fixture"]')`);
 evaluate('qa.release();true');
@@ -248,13 +294,62 @@ show('page'); button('page', 'cleanup-visible');
 button('page', 'filter-session'); wait('page', `d.querySelector('[role="listbox"]')`);
 const fi = guest('page', `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].findIndex(n=>n.textContent.includes('Session F'));`);
 assert.ok(fi >= 0); key('Home'); key('ArrowDown', fi); key('Enter');
+wait('page', `d.querySelector('[data-testid="filter-session"] button')?.textContent.includes('Session F') && !d.querySelector('.oc-sdk-popup [role="listbox"]')`);
+button('page', 'board-filters-close');
 choosePage('P-only'); button('page', 'cleanup-archive');
 wait('page', `!d.querySelector('[data-testid="plan-row-P-only"]') && d.querySelector('[data-testid="cleanup-archived"]')`);
 button('page', 'cleanup-archived'); wait('page', `d.querySelector('[data-testid="plan-row-P-only"]')`);
 show('page', 360); noOverflow('page'); shot('archived-narrow', 'page', '[data-testid="plan-detail"]');
+}
 
-assert.deepEqual(evaluate('qa.errors'), []);
-assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
-const result = { passed: true, realService: true, archiveRestorePreserved: true, deleteSelectedPayloadOnly: true, sourceUnchanged: deleted.sourceUnchanged, secondStoreUnchanged: true, cancelSentNothing: true, duplicateBlocked: true, keyboardFocus: true, contextAndStoreConfirmationInvalidation: true, failureSeams: ['real409', 'synthetic503', 'syntheticNetwork', 'oldCapability', 'heldList', 'heldDetail', 'heldDocument', 'heldHistory', 'heldDeleteReply'], posts: posts() };
-writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ ...result, assertions: assertions.count() }, null, 2) + '\n');
-console.log(JSON.stringify({ ...result, assertions: assertions.count() }, null, 2));
+async function searchSelection() {
+// Explicit search picks span presentation pages. A real external archive of an
+// off-page pick must retire only that pick, not the rest of the selection.
+show('page'); button('page', 'cleanup-visible');
+wait('page', `d.querySelector('#ap-search-q')`);
+click('page', '#ap-search-q'); cdp('type', 'P-page-'); key('Enter');
+wait('page', `d.querySelector('[data-testid="search-more"] button')`);
+button('page', 'selection-mode');
+const hit = (plan: string) => `[data-testid="search-plan-source-fixture/${plan}"]`;
+const displayedPicks = (): string[] => guest('page', `return [...d.querySelectorAll('button[data-testid^="search-plan-source-fixture/P-page-"][aria-pressed="false"]')].map(n=>n.dataset.plan)`);
+const expectCount = (n: number) => wait('page', `d.querySelector('[data-testid="selection-count"]')?.textContent==='${n} selected'`);
+const [departed, confirmed, refused] = displayedPicks();
+assert.ok(departed && confirmed && refused);
+for (const plan of [departed, confirmed, refused]) click('page', hit(plan));
+expectCount(3);
+button('page', 'search-more');
+wait('page', `d.querySelector('[data-testid="search-prev"] button') && !d.querySelector('[data-testid="search-loading"]')`);
+const [lost] = displayedPicks();
+assert.ok(lost && ![departed, confirmed, refused].includes(lost));
+click('page', hit(lost)); expectCount(4);
+assert.equal((await fixture(`/archive-elsewhere?plan=${departed}`, 'POST')).ok, true);
+button('page', 'search-prev');
+expectCount(3);
+wait('page', `!d.querySelector(${javascriptLiteral(hit(departed))}) && d.querySelector(${javascriptLiteral(hit(confirmed))})?.getAttribute('aria-pressed')==='true'`);
+button('page', 'search-next');
+wait('page', `d.querySelector(${javascriptLiteral(hit(lost))})?.getAttribute('aria-pressed')==='true'`);
+
+// One real refusal after confirmation, one real mutation whose reply is lost,
+// and one receipt. The live result line must distinguish all three outcomes.
+button('page', 'selection-archive');
+wait('page', `d.querySelector('[data-testid="tidy-confirm-archive"] button') && d.querySelector('#tidy-heading')?.textContent.includes('3 selected plans')`);
+assert.equal((await fixture(`/archive-elsewhere?plan=${refused}`, 'POST')).ok, true);
+evaluate(`qa.loseArchiveReply=${javascriptLiteral(lost)};true`);
+const archivePosts = () => evaluate(`qa.requests.filter(q=>q.path==='/v1/plan/archive' && q.method==='POST').map(q=>q.body.plan)`) as string[];
+const archiveStart = archivePosts().length;
+guest('page', `const result=d.querySelector('[data-testid="tidy-result"]');d.defaultView.parent.qa.selectionResults=[];new MutationObserver(()=>d.defaultView.parent.qa.selectionResults.push(result.textContent)).observe(result,{childList:true,characterData:true,subtree:true});return true`);
+button('page', 'tidy-confirm-archive');
+try {
+  wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('plans archived')`);
+} catch (error) {
+  console.error({ announcements: evaluate('qa.selectionResults'), requested: archivePosts().slice(archiveStart), statuses: evaluate(`qa.responses.filter(r=>r.path==='/v1/plan/archive').slice(-3).map(r=>r.status)`), stillConfirming: guest('page', `return !!d.querySelector('[data-testid="tidy-confirm-archive"]')`) });
+  throw error;
+}
+assert.equal(guest('page', `return d.querySelector('[data-testid="tidy-result"]')?.textContent`), '1 of 3 plans archived; 1 skipped; 1 could not be confirmed and may have been archived.');
+assert.deepEqual(archivePosts().slice(archiveStart).sort(), [confirmed, refused, lost].sort());
+shot('selection-mixed-result', 'page', '[data-testid="tidy-result"]');
+button('page', 'tidy-undo');
+wait('page', `d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('restored')`);
+assert.equal((await state(confirmed)).cleanup.state, 'visible');
+for (const plan of [departed, refused, lost]) assert.equal((await state(plan)).cleanup.state, 'archived');
+}

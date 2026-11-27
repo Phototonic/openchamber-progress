@@ -2,6 +2,8 @@ import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const en = {
   title: 'Set up Agent Progress', unsupported: 'Managed setup is unsupported by this service. Update the extension and service together; no global plugin will be installed here.',
+  details: 'Details', attention: 'Setup needs attention', unverified: 'Couldn’t verify these OpenCode folders', ready: 'Agent Progress is configured',
+  checkFolders: 'Check that OpenCode is using the intended config and data folders.',
   choose: 'Review how Agent Progress connects to OpenCode without changing your saved history.',
   store: 'Progress folder', helper: 'Optional full folder path; leave blank to review the default',
   review: 'Review configuration', configure: 'Configure recording', migrate: 'Move to the new setup', resume: 'Review interrupted move', enable: 'Turn on recording', disable: 'Turn off recording',
@@ -30,6 +32,8 @@ const en = {
 };
 const ru: typeof en = {
   title: 'Настроить Agent Progress', unsupported: 'Этот сервис не поддерживает управляемую настройку. Обновите расширение и сервис вместе; глобальный плагин здесь не устанавливается.',
+  details: 'Подробности', attention: 'Нужно проверить настройку', unverified: 'Не удалось подтвердить папки OpenCode', ready: 'Agent Progress настроен',
+  checkFolders: 'Убедитесь, что OpenCode использует нужные папки конфигурации и данных.',
   choose: 'Проверьте подключение Agent Progress к OpenCode без изменения сохранённой истории.',
   store: 'Папка прогресса', helper: 'Необязательный полный путь к папке; оставьте пустым для проверки стандартного пути',
   review: 'Проверить настройку', configure: 'Настроить запись', migrate: 'Перейти на новую настройку', resume: 'Проверить прерванный переход', enable: 'Включить запись', disable: 'Выключить запись',
@@ -58,6 +62,8 @@ const ru: typeof en = {
 };
 const zh: typeof en = {
   title: '设置 Agent Progress', unsupported: '此服务不支持受管设置。请同时更新扩展和服务；此处不会安装全局插件。',
+  details: '详情', attention: '设置需要处理', unverified: '无法验证这些 OpenCode 文件夹', ready: 'Agent Progress 已配置',
+  checkFolders: '请确认 OpenCode 使用了正确的配置和数据文件夹。',
   choose: '查看 Agent Progress 如何连接到 OpenCode，不会更改已保存的历史。',
   store: '进度文件夹', helper: '可选的完整文件夹路径，留空以查看默认位置',
   review: '审阅配置', configure: '配置记录', migrate: '迁移到新设置', resume: '审阅中断的迁移', enable: '开启记录', disable: '关闭记录',
@@ -274,6 +280,7 @@ const freshEn = {
   groups: { folder: 'Create a private progress folder', existing: 'Use your existing progress folder', connect: 'Connect it to OpenCode', record: 'Turn on recording', check: 'Check that it works' },
   recording: { on: 'Recording is on.', off: 'Recording is not on yet.', unknown: 'Recording is not confirmed yet.' },
   completedRecording: { off: 'Turn on recording in Setup if you want agents to save progress.', unknown: 'Check the recording setting again before relying on saved progress.' },
+  completedReadUnavailable: 'Setup couldn’t read the progress folder’s current status. Check again before relying on saved progress.',
   groupStates: { pending: 'Not started', running: 'In progress', paused: 'Paused', abandoned: 'Stopped', failed: 'Failed', complete: 'Done' },
   stages: {
     prepare: 'Preparing setup', 'store-directory': 'Creating the store folder', 'create-store': 'Creating the progress store',
@@ -337,6 +344,7 @@ const freshRu: typeof freshEn = {
   groups: { folder: 'Создать приватную папку прогресса', existing: 'Использовать существующую папку прогресса', connect: 'Подключить её к OpenCode', record: 'Включить запись', check: 'Проверить, что всё работает' },
   recording: { on: 'Запись включена.', off: 'Запись ещё не включена.', unknown: 'Запись пока не подтверждена.' },
   completedRecording: { off: 'Включите запись в настройке, если хотите сохранять прогресс агентов.', unknown: 'Проверьте запись ещё раз, прежде чем полагаться на сохранение прогресса.' },
+  completedReadUnavailable: 'Не удалось прочитать текущее состояние папки прогресса. Проверьте его ещё раз, прежде чем полагаться на сохранение прогресса.',
   groupStates: { pending: 'Не начато', running: 'Выполняется', paused: 'Приостановлено', abandoned: 'Остановлено', failed: 'Ошибка', complete: 'Готово' },
   stages: {
     prepare: 'Подготовка настройки', 'store-directory': 'Создание папки хранилища', 'create-store': 'Создание хранилища прогресса',
@@ -400,6 +408,7 @@ const freshZh: typeof freshEn = {
   groups: { folder: '创建私有进度文件夹', existing: '使用现有进度文件夹', connect: '将其连接到 OpenCode', record: '开启记录', check: '检查是否正常工作' },
   recording: { on: '记录已开启。', off: '记录尚未开启。', unknown: '记录尚未确认。' },
   completedRecording: { off: '如果需要保存智能体的进度，请在设置中开启记录。', unknown: '请再次检查记录设置，然后再依赖进度保存。' },
+  completedReadUnavailable: '设置暂时无法读取进度文件夹的当前状态。请重新检查，再依赖进度保存。',
   groupStates: { pending: '尚未开始', running: '进行中', paused: '已暂停', abandoned: '已停止', failed: '失败', complete: '已完成' },
   stages: {
     prepare: '准备设置', 'store-directory': '创建存储文件夹', 'create-store': '创建进度存储',

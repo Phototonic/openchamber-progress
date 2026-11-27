@@ -1309,7 +1309,7 @@ try {
           await wait('panel', `d.activeElement?.dataset.testid==='item-${dep}'`, 'prerequisite reveal');
           kcheck('K1', 'panel', 'readiness:prerequisite-reveals-row', await owns('panel'));
         } else skip('K1', 'panel', 'no prerequisite button rendered for the fixture');
-        // Native group/document disclosures toggle with Enter and keep focus.
+        // Native group disclosures toggle with Enter and keep focus.
         const group = await guest<string>('panel', `return d.querySelector('article[data-reading] details[data-testid^="group-toggle-"]').dataset.testid`);
         await tabTo('panel', `[data-testid="${group}"] > summary`);
         const was = await guest<boolean>('panel', `return d.querySelector('[data-testid="${group}"]').open`);
@@ -1317,11 +1317,11 @@ try {
         await wait('panel', `d.querySelector('[data-testid="${group}"]').open===${!was}`, 'group toggled');
         kcheck('K1', 'panel', 'group-disclosure:enter-toggles-keeps-focus', await focusedOn('panel', `[data-testid="${group}"] > summary`));
         await focusShot('rail-focus-light-summary', 'panel');
-        await progressUi.action('panel', 'document', true);
-        await wait('panel', `d.querySelector('[data-testid="plan-panel-document"]')`, 'document panel open');
-        kcheck('K1', 'panel', 'document-menu:enter-opens', await focusedOn('panel', '[data-testid="plan-panel-document"] .ap-panel-h'));
+        await tabTo('panel', '[data-testid="plan-view-document"] button'); await key('Enter');
+        await wait('panel', `d.querySelector('[data-testid="surface-panel-document"]')`, 'document panel open');
+        kcheck('K1', 'panel', 'document-button:enter-opens', await focusedOn('panel', '[data-testid="surface-panel-heading"]'));
         await key('Escape');
-        kcheck('K1', 'panel', 'document-panel:escape-returns-trigger', await focusedOn('panel', '[data-testid="plan-actions"] button'));
+        kcheck('K1', 'panel', 'document-panel:escape-returns-trigger', await focusedOn('panel', '[data-testid="plan-view-document"] button'));
         await shot('rail-light-360', '[data-testid="progress-root"]', 8, 1500, 'panel');
       });
       // ---------------------------------------------------------------- K7 rail filtered-empty recovery

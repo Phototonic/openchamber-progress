@@ -429,15 +429,13 @@ try {
     // Row disclosures are native Tab stops too; hidden task identities must never be reached.
     check('Q4:rail-tab-skips-hidden', same([...new Set(listTabbed)].sort(), Object.entries(un).filter(([,state])=>state!=='hidden').map(([id])=>id).sort()), tabbed);
 
-    // Collapse all with the keyboard (Tab from Expand all, Enter); Details and the document stay as they are.
-    await progressUi.action('panel', 'document', true);
-    await wait('panel', `d.querySelector('${art} [data-testid="plan-panel-document"]')`);
+    // Collapse all with the keyboard; it only folds task disclosures.
     await progressUi.action('panel', 'collapse-all', true);
     await wait('panel', `d.activeElement?.closest('[data-testid="plan-actions"]')`, 'collapse action focus restored after repaint');
     check('Q4:rail-keyboard-collapse-menu', await guest('panel', `return !!d.activeElement?.closest('[data-testid="plan-actions"]')`));
     await wait('panel', `[...d.querySelectorAll('${art} ul.ap-items details')].every(x=>!x.open)`, 'collapse all');
     await wait('panel', `d.querySelector('${art} [data-testid="group-G"]').dataset.folded==='4'`, 'native disclosure toggle updates folded count');
-    check('Q4:rail-collapse-only-task-disclosures', await guest('panel', `return !!d.querySelector('${art} [data-testid="plan-panel-document"]')&&!d.querySelector('[data-testid="details"]')?.open&&!!d.activeElement?.closest('[data-testid="plan-actions"]')`));
+    check('Q4:rail-collapse-only-task-disclosures', await guest('panel', `return !d.querySelector('[data-testid="surface-panel-document"]')&&!d.querySelector('[data-testid="details"]')?.open&&!!d.activeElement?.closest('[data-testid="plan-actions"]')`));
     const folded = await guest('panel', `const s=id=>d.querySelector('${art} [data-testid="'+id+'"]>details>summary');return {G:s('group-G').innerText,Z:s('group-Z').innerText,gFolded:d.querySelector('${art} [data-testid="group-G"]').dataset.folded}`);
     check('Q4:rail-collapsed-keep-indicators', /1 in progress/.test(folded.G) && /1 blocked/.test(folded.G) && /4 tasks? folded/.test(folded.G) && /1 in progress/.test(folded.Z) && /1 blocked/.test(folded.Z) && folded.gFolded === '4', folded);
     await shot('panel', 'collapsed-indicators', `${art} [data-testid="focus-controls"]`);

@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-27
+
+The rail and board can show captured plan documents as read-only previews, hide quiet plans, close plans deliberately, and show recorded activity. Setup can recover a proven interruption during its first save and keep completed setups working after device renumbering. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- **Plan document** beside Map and List on the rail and board opens the saved capture, not the live file. The preview bundles `markdown-it` 15.0.3 for read-only Markdown with inert HTML, image alt text and non-interactive checkboxes. Other formats and recorded-capture comparisons stay literal (#192, superseding #180).
+- Plan document links open through the host only on explicit activation. Destinations longer than 2,048 characters or containing a username or password are rejected; an actionable link's title shows the full destination, and a localized toast reports a failed open (#192).
+- The rail and board label active plans with no stored report for at least seven days. A device preference, on by default, hides those plans in both views and keeps them out of board search results, bulk selection and cleanup. **Finish as cancelled** in the selected plan's More menu requires confirmation, records user attribution without changing tasks or captures, and can be reversed only by an explicit reopen from the coordinating agent (#181).
+- Open **Activity** below the tasks in a plan's List to page through recorded updates, see who reported or relayed them, and read the task IDs they named. User cancellations are shown separately; History and review markers are unchanged (#187).
+
+### Changed
+
+- Updated the rendered browser drivers for previews, language and reading, change digests, and cleanup to follow the current interface. Added rendered coverage for bulk selection across search pages and cleanup results with skipped and unconfirmed plans (#189).
+- Added a separate weekly and manually triggered CI workflow for rendered Chromium checks against `dev` by default. The schedule starts once the workflow reaches `main`; it does not run on pushes or pull requests (#190).
+- The native companion fixture and real-host release journeys use current Setup routes and interface controls, and establish the package fingerprint before the integrity test edits installed files. Test-only; no product behavior changes (#199).
+
+### Fixed
+
+- Completed format-3 Setup status with a matching selected binding ignores only the historical device number when checking the store folder and database; inode, birth time, Store ID, source, schema and the other checks remain in force. No journal is rewritten, and Resume, inspection and removal receipts stay strict. A Setup refusal now points to Setup instead of saying Progress is not responding (#195, fixes #191).
+- The board shows one empty message with **Show all plans** when the quiet filter hides every plan; other empty states are unchanged (#182).
+- When Setup finishes but can't read the progress folder's current status, the finished card explains why recording isn't confirmed and keeps **Check status** available (#183).
+- The board keeps bulk cleanup results visible through the refresh of search results or a list with quiet plans hidden. Counting, receipt validation and Undo are unchanged (#184).
+- **View current task** in a History change digest switches to List and focuses the task even when the plan list hasn't changed; its filter-clear note appears once (#185, #197).
+- The companion stops replaying stale assignment notes after a complete, verified read confirms that a sub-agent has no assignments left after unlink or deletion. It replaces the latest visible stale note with a neutral notice; failed or incomplete reads retire nothing (#186).
+- Setup can show **Continue** after an interrupted first save that left both the published record and its verified temporary name. Status does not write; an explicit matching request removes only the verified temporary name. Unmarked folders and ambiguous leftovers still require manual attention (#188).
+- Setup leads with recording status, recovery guidance and the applicable action; technical explanations move into a collapsed **Details** section. Actions, diagnostics and consent are unchanged (#198).
+- A `managed-step-port-busy` refusal on a panel GET shows **Progress is busy** rather than **Progress is not responding**; other unavailable responses and the retry cadence are unchanged (#200).
+- Setup actions wait for the same panel's pending status read, while passive status reads defer during an action. Requests from another panel or process still meet the worker fence (#201).
+- The rail and board keep More and its Language submenu open across panel repaints, preserving focus where possible; normal dismissal and context-change behavior remain (#202).
+
 ## [1.5.2] - 2026-11-19
 
 Cleanup follow-ups from the 1.5.1 review and a companion system prompt section that stays identical across requests, so it no longer defeats a provider's prompt cache. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -369,7 +400,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.1...v1.5.0

@@ -13,8 +13,9 @@ import {managedFreshStepFixtures} from '../fixtures/managed-fresh-steps.ts';
 import {setupRead} from './fixtures.ts';
 import type {ManagedFreshStepProgress} from '../../shared/managed-steps.ts';
 
-function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false,initial=false){
+function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:string[]=[],invalid=false,initial=false,legacy?: 'verified' | 'unverified'){
   const el=(tag:string,_class='',text=''):any=>({tag,text,dataset:{},children:[] as any[],
+    set textContent(value:string){this.text=value;},
     get childElementCount(){return this.children.length;},
     append(...children:any[]){this.children.push(...children);},setAttribute(){},removeAttribute(){},addEventListener(){},querySelector:()=>null});
   const testid=(node:any,id:string)=>{node.dataset.testid=id;return node;};
@@ -32,29 +33,50 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
     if(name==='../../shared/managed-steps.ts')return contract;
     throw new Error(`Unexpected render dependency: ${name}`);
   }});
-  const info=parseSetup(JSON.stringify(setupRead({separateLifecycle:false,captureEnabled:null,verified:false,diagnostics,
-    delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,planKind:'fresh',
-       configuration:initial?'unconfigured':invalid?'invalid':'configured',migration:initial?'none':invalid?'unavailable':progress?.state==='complete'?'complete':'pending',
+  const info=parseSetup(JSON.stringify(setupRead({separateLifecycle:false,captureEnabled:legacy==='verified'?true:null,verified:legacy==='verified'||!!progress,diagnostics,
+    delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,...(!legacy?{planKind:'fresh'}:{}),
+       configuration:initial?'unconfigured':invalid?'invalid':'configured',migration:initial?'none':invalid?'unavailable':legacy||progress?.state==='complete'?'complete':'pending',
       mode:'unknown',observation:'unknown',expectedVersion:null,...(progress?{freshProgress:progress}:{})}})));
   const root=exports.setupBlock({env:{locale},ui:{setup:exports.initialSetupUi()},setup:{state:'ready',value:info},
     ctx:{connection:{account:'synthetic'}},requestSetup(){throw new Error('Unexpected status request');},updateUi(){},service(){throw new Error('Unexpected mutation');}});
   const nodes=(node:any):any[]=>[node,...node.children.flatMap((child:any)=>typeof child==='string'?[{text:child,dataset:{}}]:nodes(child))];
   const all=nodes(root);
-  return {all,nodes,text:all.map(n=>n.text).join(' '),has:(id:string)=>all.some(n=>n.dataset.testid===id)};
+  const node=(id:string)=>all.find(n=>n.dataset.testid===id);
+  return {all,nodes,node,text:all.map(n=>n.text).join(' '),has:(id:string)=>!!node(id)};
 }
 
 for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: initial technical facts remain reachable in one disclosure, recording stays outside`,()=>{
   const shown=render(undefined,locale,[],false,true),text=copy.managedCopy(locale);
-  const disclosure=shown.all.find(n=>n.dataset.testid==='setup-changes');
+  const disclosure=shown.node('setup-details');
   assert.equal(disclosure.tag,'details');
   assert.equal(disclosure.children[0].tag,'summary');
-  assert.equal(disclosure.children[0].text,copy.managedFreshCopy(locale).disclosure);
+  assert.equal(disclosure.children[0].text,text.details);
   const within=shown.nodes(disclosure),facts=within.map(n=>n.text).join(' ');
   for(const fact of [text.unconfigured,text.unknown,text.observation,text.privilege,text.lifecycle,text.reach])assert.ok(facts.includes(fact),'moved fact is retained');
   assert.ok(shown.has('managed-capture-control'));
   assert.ok(!within.some(n=>n.dataset.testid==='managed-capture-control'),'recording is visible before opening the disclosure');
   assert.ok(shown.has('setup-storeRoot'));
   assert.ok(shown.has('setup-inspect'));
+  assert.ok(shown.all.indexOf(shown.node('setup-inspect'))<shown.all.indexOf(disclosure));
+});
+
+for(const locale of ['en','ru','zh-CN'])test(`managed ${locale}: verification and recording lead before technical details`,()=>{
+  const words=copy.managedCopy(locale);
+  for (const [state, diagnostics, status, next] of [
+    ['unverified',['managed-migration-conflict'],words.unverified,words.conflict],
+    ['unverified',[],words.unverified,words.checkFolders],
+    ['verified',[],words.ready,words.on],
+  ] as const){
+    const shown=render(undefined,locale,[...diagnostics],false,false,state);
+    const disclosure=shown.node('setup-details');
+    const facts=shown.nodes(disclosure).map(n=>n.text);
+    const lead=shown.all.slice(1,shown.all.indexOf(disclosure)).map(n=>n.text);
+    assert.equal(lead[0],status);
+    assert.ok(lead.includes(next),'recovery or recording is visible');
+    for (const fact of [words.configured,words.complete,words.unknown,words.observation,words.privilege,words.lifecycle,words.reach]) assert.ok(facts.includes(fact));
+    assert.ok(!facts.includes(next),'no duplicate lead guidance');
+    if (state==='verified') assert.ok(shown.all.indexOf(shown.node('setup-disable'))<shown.all.indexOf(disclosure));
+  }
 });
 
 const prepared=managedFreshStepFixtures().replies.prepared.progress!;
@@ -111,20 +133,42 @@ for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: no partial-folder
   assert.equal(preMarker.has('setup-fresh-partial'),false);
 });
 
-test('fresh pending read failure still offers explicit continuation; completed read failure keeps its complete card',()=>{
+for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: read failure qualifies the completed card without displacing it`,()=>{
   const pending:ManagedFreshStepProgress={...prepared,sequence:3,step:{name:'expectation',batch:0},lastCompleted:{name:'create-store',batch:0}};
-  assert.ok(render(pending,'en',['EBUSY']).has('setup-migration-continue'));
+  const f=copy.managedFreshCopy(locale);
+  const pendingShown=render(pending,locale,['EBUSY']);
+  assert.ok(pendingShown.has('setup-migration-continue'));
+  assert.ok(pendingShown.has('setup-migration-capture-warning'));
+  assert.ok(!pendingShown.text.includes(f.completedReadUnavailable));
   const complete:ManagedFreshStepProgress={...pending,sequence:8,state:'complete',step:null,lastCompleted:{name:'reconcile',batch:0},recovery:'none'};
-  const shown=render(complete,'en',['EACCES']);
+  const shown=render(complete,locale,['EACCES']);
   assert.ok(shown.has('setup-migration-progress'),'durable completion survives an unavailable capture observation');
-  assert.match(shown.text,/Setup finished/);
-  assert.equal(shown.text.includes(copy.managedFreshCopy().partial),false);
+  assert.equal(shown.all.find(n=>n.dataset.testid==='setup-migration-heading')?.text,f.titles.complete);
+  assert.equal(shown.text.includes(f.partial),false);
   assert.equal(shown.has('setup-migration-resume'),false);
   assert.ok(shown.has('setup-migration-capture-warning'),'completion with unknown recording keeps the warning');
-  assert.ok(shown.has('setup-recording-state'),'recording state remains outside the disclosure');
+  assert.ok(!shown.has('setup-recording-state'),'the warning already explains that recording is unconfirmed');
   assert.ok(shown.has('setup-migration-status'),'completion with unknown recording offers a status check');
-  assert.ok(shown.text.includes(copy.managedFreshCopy().completedRecording.unknown));
-  assert.ok(!shown.text.includes(copy.managedFreshCopy().warn.create.unknown.body),'completion never asks to finish the finished operation');
+  for (const [view, action] of [[pendingShown,'setup-migration-continue'],[shown,'setup-migration-status']] as const) {
+    const i=(hook:string)=>view.all.indexOf(view.node(hook));
+    assert.ok(i('setup-migration-heading')<i('setup-migration-capture-warning'));
+    assert.ok(i('setup-migration-capture-warning')<i(action) && i(action)<i('setup-fresh-groups'));
+    assert.ok(i('setup-fresh-groups')<i('setup-details'));
+    const facts=view.nodes(view.node('setup-details'));
+    for (const hook of ['setup-fresh-plan','managed-load-observation','setup-disclosure']) assert.ok(facts.includes(view.node(hook)));
+    assert.ok(!view.has('managed-capture-control'));
+  }
+  const warning=shown.all.find(n=>n.dataset.testid==='setup-migration-capture-warning');
+  assert.ok(shown.nodes(warning).some(n=>n.text===f.completedReadUnavailable));
+  const card=shown.all.find(n=>n.dataset.testid==='setup-migration-progress');
+  const cardNodes=shown.nodes(card);
+  assert.equal(cardNodes.filter(n=>n.text===f.completedReadUnavailable).length,1);
+  assert.ok(!cardNodes.some(n=>n.text===f.recording.unknown));
+  assert.ok(!shown.text.includes(f.warn.create.unknown.body),'completion never asks to finish the finished operation');
+  const noDiagnostic=render(complete,locale);
+  assert.ok(!noDiagnostic.has('setup-recording-state'));
+  assert.ok(noDiagnostic.text.includes(f.completedRecording.unknown));
+  assert.ok(!noDiagnostic.text.includes(f.completedReadUnavailable));
 });
 
 test('fresh retention wording distinguishes database creation in an existing directory from reconnection',()=>{

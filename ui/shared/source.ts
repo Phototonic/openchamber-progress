@@ -1,5 +1,7 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import { PLAN_USER_CANCEL_PATH, type UserCancelRequest } from '../../shared/user-cancel.ts';
+import type { CancelResult } from './plan-user-cancel.ts';
 import type { DetailSnapshot as SharedDetailSnapshot, DetailFailureCause } from '../../shared/summary-types.ts';
 export type { DetailFailureCause } from '../../shared/summary-types.ts';
 import { planGraphQuery, parsePlanGraph } from './adapter.ts';
@@ -8,13 +10,13 @@ import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shar
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
-  cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
+  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanActivity, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  cleanupBody, parseCleanupReceipt, parseUserCancelReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
   NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
-import { SEARCH_LIMITS } from '../../shared/progress.ts';
+import { SEARCH_LIMITS, type PlanActivityRequest } from '../../shared/progress.ts';
 import type { InboxWindowView } from './model.ts';
 import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
@@ -22,7 +24,7 @@ export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
 }
 
-export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost';
+export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost' | 'setup-refused';
 export interface ReadFailure { kind: FailureKind; code: string; message: string }
 /** A retired search read supplies neither freshness authority nor capture metadata. */
 export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean; inbox?: InboxFirst } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
@@ -40,7 +42,10 @@ class HttpError extends Error {
   readonly lastAction?: SetupView['lastAction'];
   readonly code: string;
   readonly status: number;
-  constructor(status: number, code: string, body?: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.lastAction = body ? parseLastAction(body) : undefined; }
+  readonly method: 'GET' | 'POST';
+  constructor(status: number, code: string, body?: string, method: 'GET' | 'POST' = 'GET') { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.method = method; this.lastAction = body ? parseLastAction(body) : undefined; }
+  // Data admission, including the initial Setup read, can lose the non-waiting writer fence.
+  get busy() { return this.code === 'busy' || (this.method === 'GET' && this.status === 503 && this.code === 'managed-step-port-busy'); }
 }
 
 export function classify(error: unknown): ReadFailure {
@@ -51,7 +56,7 @@ export function classify(error: unknown): ReadFailure {
   if (error instanceof HttpError) {
     if (code === 'corrupt') return { kind: 'damaged', code, message };
     if (code === 'schema') return { kind: 'incompatible', code, message };
-    if (code === 'busy') return { kind: 'busy', code, message };
+    if (error.busy) return { kind: 'busy', code, message };
     if (code === 'not-found') return { kind: 'not-found', code, message };
     if (code === 'response-too-large' || code === 'invalid') return { kind: 'invalid', code, message };
     return { kind: 'unavailable', code, message };
@@ -67,7 +72,7 @@ export function classify(error: unknown): ReadFailure {
 
 async function call(host: ServiceHost, path: string, q?: Record<string, string>, method: 'GET' | 'POST' = 'GET', body?: string) {
   const result = await host.serviceRequest({ method, path, ...(q ? { query: q } : {}), ...(body !== undefined ? { body } : {}) });
-  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body);
+  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body, method);
   return result.body;
 }
 
@@ -210,6 +215,11 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean, multiPag
   ...(multiPage ? { multiPage: true } : {}),
 });
 
+const SETUP_CONFLICT = 'managed-migration-conflict';
+const setupRefusal = (): ReadFailure => ({
+  kind: 'setup-refused', code: SETUP_CONFLICT, message: 'The progress service reports a conflict in Setup.',
+});
+
 /** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
 /** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
@@ -224,6 +234,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       // Old services omit state and retain their existing request sequence.
       try { await call(host, ROUTES.setup); }
       catch (error) {
+        if (error instanceof HttpError && error.code === SETUP_CONFLICT) return { ok: false, failure: setupRefusal(), health };
         // Another surface or setup action can own startup admission. Observe
         // health once, without hiding real refusals or retrying Setup here.
         if (!(health.state === 'starting' && error instanceof HttpError && error.status === 503 && error.code === 'managed-step-unsettled')) throw error;
@@ -243,6 +254,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       const failed = health.state === 'refused' ? health.diagnostics[0] ?? 'storage'
         : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
+        if (health.state === 'refused' && failed === SETUP_CONFLICT) return { ok: false, failure: setupRefusal(), health };
         const failure = classify(new HttpError(503, failed));
         return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` }, health };
       }
@@ -315,6 +327,25 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
   } catch (error) { return { ok: false, failure: classify(error) }; }
 }
 
+export async function userCancelCall(host: ServiceHost, request: UserCancelRequest, structuralRev: number): Promise<CancelResult> {
+  try {
+    const body = await call(host, PLAN_USER_CANCEL_PATH, undefined, 'POST', JSON.stringify(request));
+    parseUserCancelReceipt(body, request, structuralRev);
+    return 'success';
+  } catch (error) {
+    if (error instanceof HttpError) {
+      const { status, code } = error;
+      if (status === 409 && ['conflict', 'operation-reused', 'binding', 'closed'].includes(code)) return 'changed';
+      if (status === 409 && code === 'disabled') return 'disabled';
+      if ((status === 409 && code === 'source-unverified') || (status === 404 && code === 'not-found')) return 'ineligible';
+      if ((status === 400 && code === 'invalid') || (status === 401 && code === 'unauthorized') ||
+          (status === 405 && code === 'method-not-allowed') || (status === 413 && code === 'request-too-large') ||
+          (status === 503 && ['busy', 'corrupt', 'schema', 'storage'].includes(code))) return 'refused';
+    }
+    return 'uncertain';
+  }
+}
+
 /** First-page facts only. No partial item, report or link arrays are retained here. */
 export type DetailSnapshot = SharedDetailSnapshot<PlanView>;
 export type CompleteDetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number; snapshot: DetailSnapshot | null };
@@ -330,8 +361,9 @@ function detailFailureCause(error: unknown): DetailFailureCause {
   if (error instanceof ContractError || error instanceof SyntaxError) return { kind: 'identity-contract' };
   if (error instanceof HttpError && error.status === 404 && error.code === 'not-found') return { kind: 'not-found' };
   if (error instanceof HttpError && error.status === 503) {
+    if (error.busy) return { kind: 'store', code: 'busy' };
     const code = error.code;
-    return { kind: 'store', code: code === 'unavailable' || code === 'storage' || code === 'binding' || code === 'corrupt' || code === 'schema' || code === 'busy' ? code : 'unknown' };
+    return { kind: 'store', code: code === 'unavailable' || code === 'storage' || code === 'binding' || code === 'corrupt' || code === 'schema' ? code : 'unknown' };
   }
   if (classify(error).kind === 'invalid' || classify(error).kind === 'incompatible') return { kind: 'identity-contract' };
   return { kind: 'unreachable-auth' };
@@ -431,6 +463,17 @@ export async function readDocument(host: ServiceHost, plan: Pick<PlanView, 'sour
 }
 
 export type HistoryResult = { ok: true; entries: HistoryEntry[]; truncated: boolean } | { ok: false; failure: ReadFailure };
+
+export async function readPlanActivity(host: ServiceHost, r: PlanActivityRequest) {
+  try {
+    const body = await call(host, ROUTES.history, query({ source: r.source, plan: r.plan, through: r.through }));
+    return { ok: true as const, ...parsePlanActivity(body, r) };
+  } catch {
+    // A legacy server's 404 is indistinguishable from a lost plan here. Neither is
+    // authoritative for the list or other parts of the reading.
+    return { ok: false as const };
+  }
+}
 
 /** Read a suffix through the listed revision; keep wire order for transition labels in historyBlock. */
 export async function readHistory(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id' | 'revision'>, maxPages = 5): Promise<HistoryResult> {

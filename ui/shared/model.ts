@@ -1,5 +1,6 @@
 // View model shared by all three surfaces. The wire format lives only in adapter.ts.
 import { countItems } from '../../shared/progress.ts';
+import type { PlanActivityRow } from '../../shared/progress.ts';
 import { isNeedsYou, type MainSessionKind } from '../../shared/needs-you.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
@@ -179,7 +180,20 @@ export interface ElapsedAnchor { kind: 'exact' | 'lower-bound'; since: string; e
 export const elapsedAt = (a: ElapsedAnchor, mono: number) => a.elapsedAtRead + Math.max(0, mono - a.receivedAt);
 
 export interface DocumentBody { key: string; captureId?: number; text: string | null; historical: boolean; ref: DocumentRefView }
-export interface HistoryEntry { revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string }
+export interface HistoryEntry { revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string; actor?: 'user' }
+
+export type PlanActivityAction = 'open' | 'close' | 'older' | 'newer' | 'retry';
+export type PlanActivityState = { state: 'closed' } | {
+  pin: number; through: number;
+} & (
+  { state: 'loading' }
+  | { state: 'ready'; rows: PlanActivityRow[]; nextThrough: number | null }
+  | { state: 'failure' }
+);
+export interface PlanActivityView {
+  value: PlanActivityState;
+  act: (action: PlanActivityAction) => void;
+}
 
 export interface StoreRead {
   storeId: string;
@@ -199,7 +213,7 @@ export interface StoreRead {
   multiPage?: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planCleanupActive?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planCleanupActive?: 1; planUserCancel?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
 /** Canonical revision-1 graph DTO, with no presentation or detail semantics. */
 export type { PlanGraphRead, PlanGraphRequest, PlanGraphItem } from '../../shared/progress.ts';
 
