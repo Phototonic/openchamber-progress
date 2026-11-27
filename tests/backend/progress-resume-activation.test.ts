@@ -22,6 +22,7 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   finally { clearTimeout(timer); }
 }
 const CLEARED = 'Agent Progress note (delegation): the earlier delegation refusal no longer applies; read the current plan before you declare or link.';
+const CLEARED_ASSIGNMENT = 'Agent Progress note: the earlier assignment note is no longer current.';
 const parts = (c: any) => c.system.filter((p: any) => p.text?.startsWith('# Agent progress (companion)'));
 const capsule = (c: any): string => { const note = requestNote(c), at = note.indexOf('## Progress resume'); return at < 0 ? '' : note.slice(at); };
 const samples: Record<string, string> = {};
@@ -161,9 +162,8 @@ test('ordinary child contexts deliver only current verified assignments without 
   assert.ok(text(c).includes('last-known revision 2'));assert.equal(f.store.get(child.sourceId,'P-alpha').revision,2);
   assert.equal(parts(await f.next('ses_C',false)).length,0);
   f.store.apply({op:'link',plan:'P-alpha',oid:'unlink-child',rev:2,child:'ses_C',assign:[]},parent,undefined,child);
-  // The delivered brief stays where it was put on a rebuilt request; only a new turn after the unlink has none.
-  await f.context(c);assert.equal(text(c).includes('Assigned-only scope:'),true);
-  assert.equal(text(await f.next('ses_C')).includes('Assigned-only scope:'),false);
+  await f.context(c);assert.equal(text(c),CLEARED_ASSIGNMENT);
+  assert.equal(text(await f.next('ses_C')),'');
   assert.equal(f.store.get(child.sourceId,'P-alpha').items[0].status,'pending');
 }));
 
@@ -549,9 +549,10 @@ test('V8 reused context keeps delivered notes in place once and preserves unrela
 const textPart = (value: string) => ({ type: 'text', text: value });
 /**
  * A stored conversation that only grows, from which the host rebuilds each request.
- * Every request checks that the stored objects never carry a note, that the system
- * array never changes and that its messages begin with the previous request's messages
- * byte for byte. `added` lists every note on a request as [index, text].
+ * Every request checks that the stored objects never carry a note. With prefix
+ * checking enabled, messages begin with the previous request's messages byte for
+ * byte and the system array is collected for comparison. `added` lists every
+ * note on a request as [index, text].
  */
 let conversationTurns = 0; // distinct text for every message of every conversation
 function conversation(f: any, withId = false, sessionID = 'ses_M') {
@@ -677,6 +678,89 @@ test('an assigned child gets its brief once, a changed brief after the latest me
     assert.equal(new Set(t.systems).size, 1);
   });
 });
+
+test('confirmed unlink removes every earlier child brief and keeps co-delivered notes', async () => fixture(async f => {
+  f.seed('P-alpha', 'Synthetic first 🌱');
+  const link = (rev: number, assign: string[]) => f.report({ op: 'link', plan: 'P-alpha', oid: `link-${rev}`, rev, child: 'ses_C', assign });
+  assert.equal((await link(1, ['I1'])).rev, 2);
+  const refusals = refusalReads();
+  try {
+    const t = conversation(f, true, 'ses_C');
+    t.user(); const first = t.last;
+    await f.after(writeEvent('docs/plans/search.md', 'w1', 'ses_C'));
+    const original = await t.request();
+    assert.match(t.added(original)[0][1], /Synthetic first 🌱/);
+    assert.equal((await f.report({ op: 'revise', plan: 'P-alpha', oid: 'second', rev: 2, title: 'Synthetic second' })).rev, 3);
+    t.tool('read', 'Original tool text about P-alpha'); const second = t.last;
+    refusals.set(refusals.refused('d1'));
+    const before = t.added(await t.request());
+    assert.match(before[1][1], /Synthetic second/);
+    assert.ok(before[1][1].endsWith(refusals.text('d1')));
+    // A retry can append another capsule to the very same carrier.
+    assert.equal((await f.report({ op: 'revise', plan: 'P-alpha', oid: 'third', rev: 3, title: 'Synthetic retry' })).rev, 4);
+    const retry = t.added(await t.request(true, false));
+    assert.equal(retry[1][1].split('Assigned-only scope:').length - 1, 2);
+    assert.equal((await link(4, [])).rev, 5);
+    t.user();
+
+    // The companion opens its own Store connection, separate from the fixture writer.
+    const read = Store.prototype.resumePlans;
+    for (const fault of ['incomplete', 'omitted', 'failed'] as const) {
+      const override = mock.method(Store.prototype, 'resumePlans', function (this: Store, ...args: Parameters<Store['resumePlans']>) {
+        if (fault === 'failed') throw new Error('synthetic resume read failure');
+        const selection = read.apply(this, args);
+        return selection && { ...selection, [fault]: true };
+      });
+      try {
+        assert.deepEqual(t.added(await t.request(true, false)), retry, fault);
+        assert.equal(override.mock.callCount(), 1);
+        if (fault !== 'failed') assert.equal(override.mock.calls[0].result?.candidates.length, 0);
+      }
+      finally { override.mock.restore(); }
+    }
+    const noCarrier = [...t.history, { role: 'assistant', content: [textPart('No latest carrier')] }];
+    const reads = f.reads;
+    assert.deepEqual(t.added(await t.request(true, false, noCarrier), noCarrier), retry);
+    assert.equal(f.reads, reads, 'no lookup without a latest carrier');
+
+    const expected = [[first, HINT], [second, `${refusals.text('d1')}\n\n${CLEARED_ASSIGNMENT}`]];
+    const cleared = await t.request(true, false);
+    assert.deepEqual(t.added(cleared), expected, 'only the latest capsule is replaced, even on a carrier with two versions');
+    assert.deepEqual(cleared.system, original.system);
+    assert.deepEqual(cleared.messages[second].content[0].result.value[0], textPart('Original tool text about P-alpha'));
+    t.user();
+    assert.deepEqual(t.added(await t.request(true, false)), expected);
+
+    assert.equal((await link(5, ['I1'])).rev, 6);
+    t.user();
+    const reassigned = t.added(await t.request(true, false));
+    assert.deepEqual(reassigned.slice(0, -1), expected);
+    assert.equal(reassigned.at(-1)![0], t.last);
+    assert.match(reassigned.at(-1)![1], /last-known revision 6.*Assigned-only scope: \["I1"\]/s);
+  } finally { refusals.restore(); }
+}));
+
+for (const present of [true, false]) test(`confirmed delete retires a post-compaction child brief (carrier ${present ? 'present' : 'absent'})`, async () => fixture(async f => {
+  f.seed('P-alpha', 'Synthetic compaction', 'ses_M', [{ id: 'I1', title: 'Task', kind: 'task', status: 'done' }]);
+  assert.equal((await f.report({ op: 'link', plan: 'P-alpha', oid: 'link', rev: 1, child: 'ses_C', assign: ['I1'] })).rev, 2);
+  const t = conversation(f, false, 'ses_C');
+  await f.compact('ses_C');
+  t.user();
+  const delivered = await t.request();
+  assert.match(t.added(delivered)[0][1], /^## Progress resume.*Synthetic compaction.*Assigned-only scope/s);
+  assert.equal((await f.report({ op: 'finish', plan: 'P-alpha', oid: 'finish', rev: 2, outcome: 'finished' })).rev, 3);
+  const cleanup = { storeId: f.binding.storeId, source: f.binding.source.id, plan: 'P-alpha', rev: 3, cleanupRev: 0, oid: 'archive' };
+  f.store.cleanup('archive', cleanup);
+  f.store.cleanup('delete', { ...cleanup, cleanupRev: 1, oid: 'delete', confirmed: true });
+  await f.compact('ses_C'); // The clearing read itself also follows compaction.
+  t.user();
+  const messages = present ? t.history : t.history.slice(1);
+  const cleared = await t.request(true, false, messages);
+  const expected = present ? [[0, CLEARED_ASSIGNMENT]] : [];
+  assert.deepEqual(t.added(cleared, messages), expected);
+  assert.deepEqual(cleared.system, delivered.system);
+  assert.deepEqual(t.added(await t.request(true, false)), expected, 'a returning carrier cannot restore the obsolete capsule');
+}));
 
 const OMISSION = 'Additional refusal evidence may be unavailable or omitted.';
 

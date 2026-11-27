@@ -1080,15 +1080,21 @@ then the oldest) keeps each delivered note with its carrier (tool: call identifi
 position and a digest of the original output; user: message identifier, else
 position and a digest of the original content) and adds the same bytes in the same
 place on every later request that still holds the carrier, so each request begins
-with the previous one and a provider's cache entry written at the end of the latest
-message is read again. The comparison with the last delivery and the memory update
-run in one synchronous step after the request's last wait. A capsule or refusal is
-delivered again only when its text changed or its last carrier is absent (compaction,
+with the previous one when no note is retired. The comparison with the last
+delivery and the memory update run in one synchronous step after the request's
+last wait. A capsule or refusal is delivered again only when its text changed or
+its last carrier is absent (compaction,
 revert, eviction, restart, fork); a timeout adds nothing. A refusal that stops
 applying gets one fixed cleared line, only after a successful complete read that
 finds none while the last real refusal delivered is still in the request with its
 note (an incomplete empty read delivers the existing omission text, which is not a
-refusal), and again if its carrier is later gone while the refusal's is not. The
+refusal), and again if its carrier is later gone while the refusal's is not.
+A complete read that confirms no eligible assignments remain for the verified
+child, without omissions, is the exception to unchanged replay: it retires all
+remembered child capsules, whether or not their carriers are present. If any
+would be replayed, the latest delivery still present is replaced in place by one
+neutral line. Other notes and stored messages are unchanged. The outgoing prefix
+changes where the old text is removed, so cache reuse is not guaranteed there. The
 memory entry for a session is created only when a note is recorded, and recorded
 only after the notes were added to the request. Every path that removes the section
 removes every added note; the memory is cleared only by capture off or unavailable,

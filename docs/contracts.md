@@ -672,8 +672,16 @@ incomplete adds no cleared line, and an incomplete read with no refusal still
 delivers the existing omission text, which is not a refusal and does not open the
 cleared-line gate. It counts as the last refusal delivered, so the same refusal
 returning is delivered again, and it is delivered again when that refusal is still
-in the request with its note and the cleared line's carrier is not. A capsule that becomes empty gets no cleared line: the capsule
-already says to read current state first.
+in the request with its note and the cleared line's carrier is not. The exception
+to unchanged replay is a successful, complete read for the same verified child,
+store and source that finds no eligible assignments and omits none. The companion
+retires all remembered child capsules, including those on absent carriers. If any
+would have been replayed, it replaces the most recently delivered one still present
+with `Agent Progress note: the earlier assignment note is no longer current.`
+Other notes, the original messages, the stored conversation and past requests are
+unchanged. A skipped, failed, incomplete or abridged lookup does not retire a
+capsule. The outgoing message prefix changes from the first removed capsule,
+so cache reuse and thinking bound to the old prefix are not guaranteed there.
 
 Every path that removes the section (capture off, report tool unavailable, source
 unverified, caller lookup failed, an epoch change, disposal, a failure in the hook)
