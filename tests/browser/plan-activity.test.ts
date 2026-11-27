@@ -136,15 +136,15 @@ function frame() {
 }
 
 test('one on-demand page, pinned across ordinary refresh, navigable back to revision one', async () => {
-  const f = frame();
+  const f = frame(), value = () => f.view?.value;
   try {
     f.ready(); await settle();
-    assert.equal(f.view?.value.state, 'closed');
+    assert.equal(value()?.state, 'closed');
     assert.equal(f.calls.length, 0);
     const open = f.view!;
     open.act('open'); open.act('open'); open.act('older');
     await settle();
-    assert.equal(f.view?.value.state, 'loading');
+    assert.equal(value()?.state, 'loading');
     assert.equal(f.calls.length, 1);
     f.release(0); await settle();
     const first = f.view!.value;
@@ -153,13 +153,13 @@ test('one on-demand page, pinned across ordinary refresh, navigable back to revi
     const before = f.reads;
     f.append(); await settle();
     assert.ok(f.reads > before);
-    assert.equal(f.view?.value, first);
+    assert.equal(value(), first);
     assert.equal(f.calls.length, 1);
     let cursor = 263;
     while (cursor > 20) {
       cursor -= 20;
       f.view!.act('older');
-      const i = f.calls.length - 1;
+      const i: number = f.calls.length - 1;
       assert.equal(f.calls[i].query?.through, String(cursor));
       f.release(i); await settle();
     }
@@ -174,17 +174,18 @@ test('one on-demand page, pinned across ordinary refresh, navigable back to revi
 });
 
 test('legacy error stays local; a closed, switched, hidden or cleanup-changed visit ignores held replies', async () => {
-  const f = frame();
+  const f = frame(), state = () => f.view?.value.state;
   try {
     f.ready(); await settle();
     f.view!.act('open'); f.release(0, 404); await settle();
-    assert.equal(f.view?.value.state, 'failure');
+    assert.equal(state(), 'failure');
     assert.equal(f.vc.read?.plans.length, 2);
     assert.equal(f.calls.length, 1);
     f.view!.act('retry'); await settle();
     f.select(1); await settle();
     f.release(1); await settle();
-    assert.equal(f.view?.value.state, 'closed');
+    assert.notEqual(f.calls[1].query?.source, f.vc.read?.plans[1].sourceId);
+    assert.equal(state(), 'closed');
     for (const retire of [() => f.view!.act('close'), () => f.showList(false), () => f.hide(), () => f.cleanupChanged()]) {
       f.view!.act('open'); await settle();
       const i = f.calls.length - 1;
@@ -192,7 +193,7 @@ test('legacy error stays local; a closed, switched, hidden or cleanup-changed vi
       f.release(i); await settle();
       f.showList(true); f.show();
       await settle();
-      assert.equal(f.view?.value.state, 'closed');
+      assert.equal(state(), 'closed');
     }
   } finally { f.stop(); }
 });
