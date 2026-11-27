@@ -20,6 +20,6 @@
 
 ## 4. Integrated acceptance
 
-- [ ] 4.1 Add one focused rendered quiet-plans journey using existing disposable SDK-shell, real-service and Chromium helpers, not obsolete surface selectors. Exercise rail and board, filter persistence/report resumption, More confirmation/decline/success and history in representative desktop/narrow and language states; capture sanitized screenshots and assertions.
-- [ ] 4.2 Build all runtime outputs locally, run root/UI typechecks and focused backend/browser tests, then the repository-required portable suite once on stable integrated inputs. Commit TypeScript/tests/docs only, not generated outputs or a version bump.
-- [ ] 4.3 Review the behaviour and public diff, validate this change strictly, and report evidence, skipped prerequisites and compatibility limits without claiming native-host or physical-device certification.
+- [x] 4.1 Add one focused rendered quiet-plans journey using existing disposable SDK-shell, real-service and Chromium helpers, not obsolete surface selectors. Exercise rail and board, filter persistence/report resumption, More confirmation/decline/success and history in representative desktop/narrow and language states; capture sanitized screenshots and assertions.
+- [x] 4.2 Build all runtime outputs locally, run root/UI typechecks and focused backend/browser tests, then the repository-required portable suite once on stable integrated inputs. Commit TypeScript/tests/docs only, not generated outputs or a version bump.
+- [x] 4.3 Review the behaviour and public diff, validate this change strictly, and report evidence, skipped prerequisites and compatibility limits without claiming native-host or physical-device certification.
