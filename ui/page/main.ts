@@ -586,7 +586,9 @@ function endSearch() {
 function runSearch(vc: ViewContext<Ui>, criteria: SearchCriteria) {
   if (!vc.read || vc.health?.planTaskSearch !== 1) return;
   if (!searchable(criteria)) { vc.setUi({ problem: { kind: 'empty' } }); return; }
-  criteria = { ...criteria, quiet: { hide: vc.quiet.hide, now: vc.env.now } };
+  // The submit may be much later than its last paint, with no visible age
+  // change to trigger a repaint. Freeze the clock at the actual traversal.
+  criteria = { ...criteria, quiet: { hide: vc.quiet.hide, now: Date.now() } };
   const owner = ownerOf(vc);
   const key = JSON.stringify([owner, criteriaKey(criteria), ++submits]);
   // The recent set survives runs (bounded); the selection being left joins it.
