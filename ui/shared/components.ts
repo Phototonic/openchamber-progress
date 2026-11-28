@@ -722,7 +722,9 @@ export class ProgressShell {
     return holder;
   }
   paint<U>(root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, options: {
-    board?: boolean; scope?: string; picker?: HTMLElement | null; railActions?: HTMLElement;
+    board?: boolean; scope?: string; picker?: HTMLElement | null;
+    /** Rail only: More goes into `railActions`; Copy update and Handoff note into `railSummaries` (the Hide quiet row). */
+    railActions?: HTMLElement; railSummaries?: HTMLElement;
     renderPanel: (kind: SurfacePanel) => HTMLElement;
     closePanel?: (kind: SurfacePanel) => void;
   }) {
@@ -783,7 +785,7 @@ export class ProgressShell {
       const linked = linkedWorkChips(plan, vc.env);
       if (linked) meta.append(linked);
       root.append(head);
-      if (summary && options.railActions) root.append(summaries);
+      if (summary && options.railActions) (options.railSummaries ?? root).append(summaries);
       const s = summarize(plan, ready);
       root.append(progressBlock(s, false, vc.env.locale));
       const legend = testid(el('p', 'ap-progress-legend'), 'progress-legend');

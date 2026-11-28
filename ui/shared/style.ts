@@ -804,9 +804,11 @@ ${PHONE_CSS}
 .ap-rail-bar{display:grid;gap:2px}
 .ap-rail-chooser{justify-content:flex-end}
 .ap-rail-chooser>.ap-picker{flex:1 1 auto;min-width:0}
-.ap-rail-bar>.ap-quiet-check{justify-self:start}
-.ap-rail-summaries{display:grid;gap:4px}
-.ap-rail-summaries button{width:100%}
+/* Hide quiet at the start; the plan's two summary buttons stay small at the end and wrap below it when narrow */
+.ap-rail-tools{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+.ap-rail-tools>.ap-quiet-check{min-width:0}
+.ap-rail-summaries{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;margin-inline-start:auto;min-width:0;max-width:100%}
+.ap-rail-summaries .oc-sdk-btn[data-size]{white-space:normal;height:auto;min-height:28px;padding-inline:8px;overflow-wrap:anywhere}
 .ap-library-actions{margin-inline-start:auto}
 .ap-library-actions .ap-inbox-toggle{width:auto;min-height:32px;padding:0 8px;border-radius:calc(var(--oc-radius,9px) - 2px);white-space:nowrap}
 .ap-library-actions .ap-inbox-toggle:hover{background:var(--oc-hover)}
@@ -816,11 +818,11 @@ ${PHONE_CSS}
 .ap-plan-list-head .ap-region-h{padding-inline:8px;font-size:13px;font-weight:600;color:var(--oc-fg)}
 /* Shell buttons share one text size and the kit's control corner, whatever their kit size */
 :is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries,.ap-plan-list-head,.ap-library-tidy,.ap-document-heading,.ap-list-help,[data-testid="cleanup-modes"]) .oc-sdk-btn[data-size]{font-size:12px;border-radius:calc(var(--oc-radius,9px) - 2px)}
-:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) .oc-sdk-btn{padding-inline:12px}
+.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn{padding-inline:12px}
 .ap[data-surface="panel"]{gap:10px}
 .ap-detail>.ap-plan-head,.ap-detail>.ap-progress-line,.ap-detail>.ap-progress-legend{margin-block-end:8px}
 .ap-plan-top>[data-testid="surface-more"]{gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:100%;margin-inline-start:auto}
-:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) .oc-sdk-btn{white-space:normal;height:auto;min-height:32px}
+.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn{white-space:normal;height:auto;min-height:32px}
 :is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-plan-top .ap-plan-title{font-size:16px;line-height:1.3}
 /* One segmented control, drawn like the kit's tracked tabs: a faint track, the chosen view raised */
@@ -878,8 +880,8 @@ ${PHONE_CSS}
 @media(max-width:500px){.ap-board-bar .ap-search-field,.ap-library-title{flex-basis:100%}.ap-library-actions{gap:2px}.ap-more-popup{max-width:min(232px,calc(100vw - 40px))}}
 @media(max-width:320px){.ap-library-actions{justify-content:flex-end;flex:1 1 auto}.ap-board-bar .ap-search-row{gap:4px}.ap-filters-trigger{padding-inline:6px}}
 @media(max-width:240px){.ap[data-surface="panel"] .ap-surface-view-switch{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn{min-height:44px;min-width:44px}}
-[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn){min-height:44px;min-width:44px}
+@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn[data-size]{min-height:44px;min-width:44px}}
+[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn[data-size]){min-height:44px;min-width:44px}
 @media(forced-colors:active){
 .ap-more-popup,.ap-more .ap-actions-btn,.ap-surface-view-switch .oc-sdk-btn{border:1px solid ButtonText}
 .ap-surface-view-switch .oc-sdk-btn[aria-pressed="true"],.ap-more-row[aria-checked="true"]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-2px}

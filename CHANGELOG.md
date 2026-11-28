@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- The rail's **Copy update** and **Handoff note** are small buttons at the end of the **Hide quiet** row instead of two full-width rows under the plan title; they wrap below the switch on a narrow rail. The board is unchanged.
+
 ## [1.7.0] - 2026-11-28
 
 The board and rail put plan actions and views in reach, and the selected plan can show its main session's linked pull requests and issues. Unfinished Setup can continue after a btrfs device number changes when the original disk and subvolume can be verified. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
