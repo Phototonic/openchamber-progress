@@ -17,6 +17,7 @@ class Node {
   children: (Node | string)[] = [];
   parent: Node | null = null;
   handlers = new Map<string, () => void>();
+  style = { setProperty() {} };
   tag: string;
   className: string;
   constructor(tag = 'div', className = '', text = '') { this.tag = tag; this.className = className; if (text) this.children.push(text); }
@@ -47,12 +48,12 @@ const components = {
     wrapper.dataset.testid = id; wrapper.append(button); parent.append(wrapper); return wrapper;
   },
 };
-function load(file: string, extra = '') {
+function load(file: string, extra = '', overrides: Record<string, unknown> = {}) {
   const exports: any = {};
   const imports: Record<string, unknown> = {
     './components.ts': components, './i18n.ts': i18n, './incomplete-counts.ts': counts,
     './subagents.ts': { EARLIER_STEP }, './format.ts': { ...format, absoluteTime: () => 'a known time' },
-    './inbox.ts': { scopeInbox },
+    './inbox.ts': { scopeInbox }, ...overrides,
   };
   const code = ts.transpileModule(readFileSync(new URL(`../../ui/shared/${file}.ts`, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -105,6 +106,33 @@ test('an empty records disclosure with a continuation never labels zero with a p
     assert.ok(node);
     assert.doesNotMatch(node.textContent, /\b0\+/);
   }
+});
+
+test('a section of idle-only rows still leads with the nothing-running words, on rail and board', () => {
+  // Task-linked host children that are idle (complete coverage) or whose current activity is
+  // unavailable (incomplete coverage), with no recorded runs: rows but no count part at all.
+  const idle = { key: 'C1', depth: 1, sessionId: 'C1', title: 'Title C1', agent: 'general', openable: false,
+    ran: { kind: 'idle', label: 'Idle', time: null, duration: null }, now: null };
+  const unavailable = { ...idle, ran: { ...idle.ran, kind: 'unknown', label: 'Current activity unavailable' } };
+  for (const [row, livePartial, words] of [[idle, false, 'Nothing running now'], [unavailable, true, 'None seen running']] as const)
+    for (const surface of ['panel', 'page'] as const) {
+      const roster = { featured: [row], earlier: [], earlierTotal: 0, summary: [], livePartial, recorded: false, soFar: false,
+        hostTruncated: false, notes: [], canPage: false };
+      const { subagentsBlock } = load('census-view', '', {
+        './subagents.ts': { EARLIER_STEP, rosterFor: () => roster },
+        './components.ts': { ...components, info: () => new Node('span'), age: () => new Node('time') },
+        './primitives.ts': { icon: () => new Node('span') },
+      });
+      const section = subagentsBlock({ surface, plan: { sourceId: 'example', id: 'plan' }, currentSession: 'A', env: { locale: 'en' }, runs: null });
+      const label = `${surface}, ${livePartial ? 'incomplete' : 'complete'} coverage`;
+      assert.ok(section, label);
+      const head = section.children.find((n: Node | string) => n instanceof Node && n.className === 'ap-census-head');
+      const line = head?.hook('subagent-count');
+      assert.ok(line, `${label}: the lead line exists`);
+      assert.deepEqual(line.children.map((n: Node) => [n.dataset.kind, n.textContent]), [['none', words]], label);
+      assert.ok(section.hook('observed-more')?.hook('subagent-row-C1'), `${label}: the idle row stays in Show more`);
+      assert.equal(section.hook('subagent-count-more'), null, `${label}: no empty tucked line`);
+    }
 });
 
 test('retained other-blocked rows with no count-authoritative rows keep access, not a zero count', () => {

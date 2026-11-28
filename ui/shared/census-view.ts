@@ -420,11 +420,12 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   head.append(title);
   // Lead with what matters now; finished and unknown counts open Show more (kept in the lead only
-  // when there is no disclosure to hold them, so no count is ever dropped).
+  // when there is no disclosure to hold them, so no count is ever dropped). The lead line is always
+  // there: with no current part, even with no count at all (idle task-linked rows only), it says so.
   let lead = r.summary.filter((s) => !LATER.has(s.kind)), later = r.summary.filter((s) => LATER.has(s.kind));
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact, later);
   if (!records) { lead = r.summary; later = []; }
-  if (r.summary.length) head.append(summaryNode(r, lead, language));
+  head.append(summaryNode(r, lead, language));
   section.append(head);
   const now = r.featured.filter(running);
   if (now.length) {

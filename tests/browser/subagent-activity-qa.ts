@@ -417,6 +417,33 @@ try {
   await show('panel');
   await wait('panel', `d.querySelector('${row('C1')}')`, 'rail back on A');
 
+  // Idle task-linked children only and no recorded runs: the section has rows but no count part,
+  // and still leads with the nothing-running words on rail and board (qualified when coverage is not complete).
+  await evaluate(`qa.saved={runs:qa.runs.A,activity:qa.ws.sessions['proj-alpha'].map(s=>[s.id,s.activity,s.outcome])};qa.runs.A={useful:[],history:[],recovery:{state:'complete',reason:null,token:null},loss:false};for(const id of ['C1','N1','C2'])Object.assign(qa.ws.sessions['proj-alpha'].find(s=>s.id===id),{activity:'idle',outcome:null});qa.bump();qa.context('B');true`);
+  await wait('panel', `d.querySelector('[data-testid="empty-state"]')`, 'away before the idle-only roster');
+  await evaluate(`qa.context('A');true`);
+  const idleOnly = `const s=d.querySelector('${sec}');return !!s&&[...s.querySelectorAll('[data-session]')].map(n=>n.dataset.session+':'+n.dataset.ran).sort().join()`;
+  for (const [coverage, words, ran] of [['ready', 'Nothing running now', 'idle'], ['loading', 'None seen running', 'unknown']] as const) {
+    await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'${coverage}'}];qa.push('sessions');true`);
+    const rows = ['C1', 'C2', 'N1'].map((id) => `${id}:${ran}`).join();
+    await show('panel');
+    await wait('panel', `(()=>{${idleOnly}})()===${javascriptLiteral(rows)} && d.querySelector('[data-testid="subagent-count"]')?.textContent===${javascriptLiteral(words)}`, `rail idle-only roster, ${coverage} coverage`);
+    const rail = await lineParts('panel');
+    check(`idle-only roster, ${coverage} coverage (rail): the lead says "${words}"; no count, no running list`, JSON.stringify(rail) === JSON.stringify({ lead: [words], later: [] }) && await guest('panel', `return !d.querySelector('${sec} > .ap-obs-list')&&d.querySelector('${sec} [data-testid="subagent-count"] [data-kind="none"]')?.closest('.ap-census-head')!==null&&d.querySelector('[data-testid="observed-more"] > summary').textContent==='Sub-agents · 3'`), rail);
+    await shot('panel', `subagents-line-idle-only-${coverage}-rail`, 4000, true);
+    await show('page', 1100);
+    await selectPlan('src-local');
+    await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-count"]')?.textContent===${javascriptLiteral(words)}`, `board idle-only roster, ${coverage} coverage`);
+    const boardIdle = await lineParts('page', '[data-testid="plan-detail"]');
+    check(`idle-only roster, ${coverage} coverage (board): the lead says "${words}"`, JSON.stringify(boardIdle) === JSON.stringify({ lead: [words], later: [] }) && await guest('page', `const s=d.querySelector('[data-testid="plan-detail"] ${sec}');return !s.querySelector(':scope > .ap-obs-list')&&s.querySelectorAll('[data-testid="observed-more"] [data-session]').length===3`), boardIdle);
+    await shot('page', `subagents-line-idle-only-${coverage}-board`, 4000, true);
+  }
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'ready'}];qa.runs.A=qa.saved.runs;for(const [id,activity,outcome] of qa.saved.activity)Object.assign(qa.ws.sessions['proj-alpha'].find(s=>s.id===id),{activity,outcome});qa.bump();qa.push('sessions');qa.context('B');true`);
+  await show('panel');
+  await wait('panel', `d.querySelector('[data-testid="empty-state"]')`, 'away after the idle-only roster');
+  await evaluate(`qa.context('A');true`);
+  await wait('panel', `d.querySelector('${row('C1')}[data-run]')?.dataset.ran==='active'`, 'rail roster restored');
+
   }
   await evaluate(`qa.context('A');true`);
   await wait('panel', `d.querySelector('${row('C1')}')`, 'indicator root ready');

@@ -692,6 +692,19 @@ test('coverage gate: idle-now and running-again need current coverage too; a tas
   assert.deepEqual([c1.ran.kind, c1.ran.label, c1.accepted?.tasks.length], ['unknown', 'Current activity unavailable', 2]);
 });
 
+test('idle-only task-linked children with no recorded runs: a section with no count part, qualified only when coverage is incomplete', () => {
+  // The view still leads it with the nothing-running words (incomplete-counts-view.test.ts).
+  const facts = planFacts(plan, { state: 'ready', value: detail([items[0], items[1], items[2]]) }, plan.sourceId);
+  const records = [rec('A', null), rec('C1', 'A')];
+  for (const [coverage, livePartial, kind] of [['ready', false, 'idle'], ['loading', true, 'unknown']] as const) {
+    const census = censusFor('A', alpha.directory, snap(records, {}, [{ directory: alpha.directory, state: coverage }]));
+    const r = rosterFor(input({ census, facts, runs: panel(readOf([])) }));
+    assert.ok(r, coverage);
+    assert.deepEqual([r.summary, r.livePartial], [[], livePartial], coverage);
+    assert.deepEqual(r.featured.map((e) => [e.sessionId, e.ran.kind]), [['C1', kind]], coverage);
+  }
+});
+
 test('coverage gate: a same-subscription reload of a complete snapshot stays current; loss, incomplete retained rows and failed reload coverage do not', async () => {
   const { ws, emit, roster } = await oneSubscription();
   const live = run('running', { childSessionId: 'K1' });
