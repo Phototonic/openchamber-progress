@@ -10,7 +10,9 @@ import { managedPath } from '../shared/managed-binding.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, PlatformError, sameWindowsObject, sameWindowsDirectory, requirePlatformWriteBoundary } from '../shared/platform.ts';
 import { MANAGED_STEP_LIMITS, type ManagedCaptureObservation, type ManagedStepRef } from '../shared/managed-steps.ts';
 import type {ManagedLegacyEvidence,ManagedPathClaim,ManagedStepJournal} from './managed-step-journal.ts';
-import {compareManagedHistoricalObject,compareManagedVolumePlacement,type ManagedVolumeIdentityReader} from './managed-volume-identity.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,requireSameManagedVolume,type ManagedVolumeIdentityReader} from './managed-volume-identity.ts';
+import {SetupError} from './setup-error.ts';
+export {SetupError} from './setup-error.ts';
 
 export interface Targets { configRoot: string; dataRoot: string; storeRoot: string; confirmed: boolean }
 /** Trim directory suffixes only; do not resolve traversal or conceal symlinks. */
@@ -39,7 +41,6 @@ export function migrationOwnership(bytes:string):Manifest {
   }
   return m as unknown as Manifest;
 }
-export class SetupError extends Error { readonly code: string; constructor(code:string) {super(code);this.code=code;} }
 function need(v:unknown,code:string):asserts v {if(!v)throw new SetupError(code);}
 function safe(p:string, allowMissing=false) {
   if(windows){try{windowsPath(p,allowMissing);return;}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}}
@@ -242,7 +243,7 @@ export function validateMigrationRemoval(journal:ManagedStepJournal,read:Managed
   const validateAbsentPlacement=(file:string)=>{
     if(!evidence?.paths.some(p=>p.path===file))return;
     managedPath(file,true);
-    need(compareManagedVolumePlacement({path:file,kind:'absent',object:null},evidence,read)==='same','installation-changed');
+    requireSameManagedVolume(compareManagedVolumePlacement({path:file,kind:'absent',object:null},evidence,read));
   };
   // All paths come from the structurally checked frozen manifest/claims or
   // fixed Store names. Include ancestors in one new batch; no cached verdict
@@ -259,7 +260,8 @@ export function validateMigrationRemoval(journal:ManagedStepJournal,read:Managed
     const publicRoot=claim.path===targets.configRoot||claim.path===targets.dataRoot;
     need(!s.isSymbolicLink()&&(claim.kind==='directory'?s.isDirectory():claim.kind==='file'&&s.isFile()&&s.nlink===1n)&&
       (publicRoot?isOwned(claim.path):privatePaths([claim.path])),'ownership-invalid');
-    need(compareManagedHistoricalObject(claim,{path:claim.path,kind:claim.kind,object:migrationObject(s)},evidence,read)==='same','installation-changed');
+    requireSameManagedVolume(compareManagedHistoricalObject(claim,{path:claim.path,kind:claim.kind,object:migrationObject(s)},evidence,read),
+      evidence?.paths.some(p=>p.path===claim.path)??false,'installation-changed');
     if(claim.kind==='file'){
       need(digest(readFileSync(claim.path))===claim.digest&&migrationStatKey(s)===migrationSnapshot(claim.path),'modified-owned-files');
     }
@@ -283,7 +285,7 @@ export function validateMigrationRemoval(journal:ManagedStepJournal,read:Managed
   for(const p of extra){
     const s=lstatSync(p,{bigint:true,throwIfNoEntry:false});if(!s){validateAbsentPlacement(p);continue;}
     safe(p);need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1n&&privatePaths([p]),'store-permissions');
-    need(compareManagedVolumePlacement({path:p,kind:'file',object:migrationObject(s)},evidence,read)==='same','installation-changed');
+    requireSameManagedVolume(compareManagedVolumePlacement({path:p,kind:'file',object:migrationObject(s)},evidence,read));
   }
   const store=new Store(database,{readOnly:true});let enabled:boolean;
   try{verifyStore(store,binding);store.subagentRunStorage();enabled=store.list({limit:1}).captureEnabled;}finally{store.close();}
@@ -313,8 +315,9 @@ function removalHistory(journal:ManagedStepJournal,read:ManagedVolumeIdentityRea
   need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1n&&privatePaths([path.dirname(file),file]),'store-permissions');
   if(stat.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
   const live={path:file,kind:'file' as const,object:migrationObject(stat)},evidence=journal.migration.legacy.volumeIdentity;
-  if(saved)need(compareManagedHistoricalObject(saved,live,evidence,read)==='same','managed-step-conflict');
-  else need(compareManagedVolumePlacement(live,evidence,read)==='same','installation-changed');
+  if(saved)requireSameManagedVolume(compareManagedHistoricalObject(saved,live,evidence,read),
+    evidence?.paths.some(p=>p.path===file)??false,'managed-step-conflict');
+  else requireSameManagedVolume(compareManagedVolumePlacement(live,evidence,read));
   const bytes=readFileSync(file);
   need(migrationStatKey(stat)===migrationSnapshot(file),'installation-changed');
   let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}

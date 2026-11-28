@@ -9,8 +9,8 @@ import {MANAGED_STEP_LIMITS,type ManagedCaptureObservation,type ManagedStepRef} 
 import {SetupError,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded,migrationRemovalComplete,type Payload} from './lifecycle.ts';
 import {managedJournalBinding,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedPathClaim,type ManagedStepIntent} from './managed-step-journal.ts';
 import {managedJournalPaths,readManagedStepJournal,readManagedFreshStepJournal,readRemovalReceipt,validatePublishedManagedIntent} from './managed-migration.ts';
-import {observeManagedFreshStore,requireSameManagedVolume,validateManagedFixedPlacement} from './managed-inspection.ts';
-import {compareManagedHistoricalObject,compareManagedVolumePlacement} from './managed-volume-identity.ts';
+import {observeManagedFreshStore,validateManagedFixedPlacement} from './managed-inspection.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,requireSameManagedVolume} from './managed-volume-identity.ts';
 import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
 function need(value:unknown,code='managed-step-conflict'):asserts value {if(!value)throw new SetupError(code);}

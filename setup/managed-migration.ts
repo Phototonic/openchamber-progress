@@ -9,7 +9,7 @@ import {SetupError,migrationBinding,validateMigrationRemoval,type Targets} from 
 import {parseManagedStepJournal,parseManagedFreshStepJournal,validateManagedFreshCreationChange,managedJournalBinding,managedRequestDigest,sameManagedStep,
   type ManagedPathClaim,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
 import {MANAGED_STEP_LIMITS,MANAGED_OPERATION_TRANSITIONS} from '../shared/managed-steps.ts';
-import {compareManagedHistoricalObject,compareManagedVolumePlacement,type ManagedVolumeIdentityEvidence,type ManagedVolumeIdentityReader,
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,requireSameManagedVolume,type ManagedVolumeIdentityEvidence,type ManagedVolumeIdentityReader,
   type ManagedVolumeTarget} from './managed-volume-identity.ts';
 
 export interface MigrationRecord {
@@ -82,7 +82,7 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
   const conflict=()=>{throw new SetupError('managed-migration-conflict');};
   const observation=(path:string,kind:'directory'|'file',s:BigIntStats)=>({path,kind,
     object:{device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)}});
-  const placement=(live:ManagedVolumeTarget)=>{if(compareManagedVolumePlacement(live,evidence,read)!=='same')conflict();};
+  const placement=(live:ManagedVolumeTarget)=>requireSameManagedVolume(compareManagedVolumePlacement(live,evidence,read));
   if(!b.source.verified||!record.legacyInstallId||record.legacyInstallId===b.installId)conflict();
   for(const root of [b.source.configRoot,b.source.dataRoot,path.dirname(b.database)]){
     managedPath(root);const s=lstatSync(root,{bigint:true});if(!s.isDirectory()||!isOwned(root))conflict();
@@ -111,7 +111,8 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
   if(before.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
   const live=observation(file,'file',before);
   if(retained){
-    if(compareManagedHistoricalObject(retained.history,live,evidence,read)!=='same')conflict();
+    requireSameManagedVolume(compareManagedHistoricalObject(retained.history,live,evidence,read),
+      evidence?.paths.some(p=>p.path===file)??false);
   }else placement(live);
   const bytes=readFileSync(file),after=lstatSync(file,{bigint:true});
   if([before.dev,before.ino,before.birthtimeNs,before.size,before.mtimeNs,before.ctimeNs,before.nlink].join(':')!==

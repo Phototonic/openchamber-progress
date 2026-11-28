@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {Binding} from '../shared/binding.ts';
 import {managedExpectationFile} from '../shared/managed-binding.ts';
 import type {ManagedPathClaim} from './managed-step-journal.ts';
+import {SetupError} from './setup-error.ts';
 
 export interface ManagedVolumeIdentityEvidence {
   version: 1;
@@ -16,6 +17,14 @@ export type ManagedVolumeObservation = {kind:'verified';fingerprint:string}|{kin
  * validation batch; never reuse proof across an effect. */
 export type ManagedVolumeIdentityReader = (target:ManagedVolumeTarget)=>ManagedVolumeObservation;
 export type ManagedHistoricalComparison = 'same'|'different'|'unavailable';
+
+/** Keep the running intent when its reviewed target can no longer be proved. */
+export class ManagedVolumePlacementError extends SetupError {}
+export function requireSameManagedVolume(result:ManagedHistoricalComparison,witnessed=true,strictCode='managed-migration-conflict') {
+  if(result==='same')return;
+  if(witnessed)throw new ManagedVolumePlacementError(result==='unavailable'?'managed-path-unverified':'managed-migration-conflict');
+  throw new SetupError(strictCode);
+}
 
 /** Fixed layout paths eligible for evidence. Manifest paths are derived
  * separately by the lifecycle owner and are not discovered from the evidence. */

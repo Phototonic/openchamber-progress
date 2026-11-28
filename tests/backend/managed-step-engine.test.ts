@@ -605,6 +605,52 @@ for(const receipt of [false,true])test(`migration ${receipt?'receipt':'manifest'
   }finally{f.cleanup();}
 });
 
+for(const receipt of [false,true])for(const proof of ['lost','copy'])test(
+  `migration ${receipt?'receipt':'manifest'} retains its running intent when ${proof} proof appears after publication`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),targetName=receipt?'progress.sqlite':'SKILL.md';
+    volume.select(file=>path.basename(file)===targetName&&(receipt||path.basename(path.dirname(file))==='agent-progress'));
+    const f=fixture(receipt,volume.read);
+    try{
+      if(!receipt)f.until('remove-discovery');
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env);
+      const discovery=path.join(f.targets.configRoot,'plugins','agent-progress'),target=receipt?prior.database:path.join(discovery,targetName);
+      assert.deepEqual(prior.migration.legacy.volumeIdentity?.paths,[{path:target,fingerprint:digest('original')}]);
+      const snapshot=()=>fs.readdirSync(f.root,{recursive:true,withFileTypes:true})
+        .map(entry=>path.join(entry.parentPath,entry.name)).filter(p=>p!==file).sort()
+        .map(p=>[p,fs.statSync(p).isDirectory()?null:fs.readFileSync(p)]);
+      const before=snapshot(),{renameSync}=fs;
+      let published:Buffer|undefined;
+      const mock=t.mock.method(fs,'renameSync',((from,to)=>{
+        renameSync(from,to);
+        if(String(to)===file&&!published){
+          published=fs.readFileSync(file);
+          volume.setProof(proof);
+        }
+      }) as typeof renameSync);syncBuiltinESMExports();
+      try{
+        const result=f.advance(request);
+        assert.equal(result.disposition,'refused');
+        assert.equal(result.error?.code,proof==='lost'?'managed-path-unverified':'managed-migration-conflict');
+      }
+      finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published,'the first rename published the intent');
+      const retained=f.journal().migration;
+      assert.equal(retained.state,'running');
+      assert.equal(retained.sequence,request.expectedSequence);
+      assert.deepEqual(retained.intent?.step,request.step);
+      assert.deepEqual(retained.receipt,prior.migration.receipt);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.deepEqual(snapshot(),before);
+
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+      assert.equal(f.journal().migration.intent,null);
+      if(receipt)assert.ok(fs.existsSync(managedExpectationFile(prior)));
+      else assert.equal(fs.existsSync(target),false);
+    }finally{f.cleanup();}
+  });
+
 for(const unreadable of [false,true])test(`receipt migration with ${unreadable?'an unreadable journal and ':''}a corrupt selector is not labelled fresh`,()=>{
   const f=fixture(true);try{
     assert.equal(fs.existsSync(path.join(f.targets.configRoot,'plugins','agent-progress')),false);

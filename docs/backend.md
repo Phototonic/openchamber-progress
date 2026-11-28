@@ -428,6 +428,9 @@ resume. Each advance publishes a running intent before one effect, verifies that
 effect inside the completion checkpoint's fresh validation batch, and settles
 one sequence increment. Failures retain the intent and attempt a bounded private
 failure checkpoint; if settlement cannot be proven, the result remains uncertain.
+For fresh Setup and both migration paths, a missing or mismatched recorded volume
+proof instead leaves the running intent and sequence unchanged, without a failure
+checkpoint. Restoring proof permits the existing retry checks to run.
 Publication errors are read back when budget permits, since rename may have
 succeeded before an error. No failure path rolls back capture or restores discovery.
 

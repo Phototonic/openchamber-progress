@@ -16,7 +16,7 @@ import {MANAGED_FRESH_INSPECTION_STEPS,managedFreshPlan,type ManagedFreshInspect
 import type {ManagedFreshReview} from '../shared/progress.ts';
 import {readManagedFreshStepJournal} from './managed-migration.ts';
 import {managedFreshJournalProgress,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
-import {compareManagedHistoricalObject,compareManagedVolumePlacement,managedVolumeFixedPaths,type ManagedHistoricalComparison,
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,managedVolumeFixedPaths,ManagedVolumePlacementError,requireSameManagedVolume,
   type ManagedVolumeIdentityReader,type ManagedVolumeIdentityEvidence,type ManagedVolumeTarget} from './managed-volume-identity.ts';
 import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
@@ -101,13 +101,6 @@ function enrollVolumeIdentity(binding:Binding,read:ManagedVolumeIdentityReader,m
   }
   if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
   return paths.length?{version:1,paths}:undefined;
-}
-export class ManagedVolumePlacementError extends SetupError {}
-export function requireSameManagedVolume(result:ManagedHistoricalComparison,witnessed=true) {
-  if(result==='same')return;
-  const code=result==='unavailable'?'managed-path-unverified':'managed-migration-conflict';
-  if(witnessed)throw new ManagedVolumePlacementError(code);
-  throw new SetupError(code);
 }
 /** Check independently derived destinations too, even when a file does not
  * exist yet or has been replaced by an authorized publication. Never derive

@@ -80,7 +80,7 @@ test('matching proofs after renumbering reconcile removal and exact history desp
     const {observed,read}=volumeFixture(f,true);
     const priorHistory=fs.readFileSync(f.history);
     const file=authorize(f.journal,read);
-    assert.throws(()=>removeMigrationFile(f.journal),{code:'installation-changed'});
+    assert.throws(()=>removeMigrationFile(f.journal),{code:'managed-path-unverified'});
     assert.ok(fs.existsSync(file));
     assert.equal(removeMigrationFile(f.journal,undefined,read).removed,true);
     assert.equal(removeMigrationFile(f.journal,undefined,read).removed,false);
@@ -106,7 +106,7 @@ test('matching proofs after renumbering reconcile removal and exact history desp
     complete(f.journal);
     assert.equal(migrationRemovalComplete(f.journal,read),true);
     observed.set(f.history,'e'.repeat(64));
-    assert.throws(()=>migrationRemovalComplete(f.journal,read),{code:'installation-changed'});
+    assert.throws(()=>migrationRemovalComplete(f.journal,read),{code:'managed-migration-conflict'});
     assert.deepEqual(fs.readFileSync(f.history),appended);
     assert.equal(fs.existsSync(f.legacyRoot),false);
   }finally{f.cleanup();}
@@ -118,7 +118,7 @@ for(const proof of ['different','unavailable'] as const)test(`removal refuses ${
     const first=authorize(f.journal,read);removeMigrationFile(f.journal,undefined,read);complete(f.journal);
     const next=authorize(f.journal,read),bytes=fs.readFileSync(next),history=fs.readFileSync(f.history),prior=structuredClone(f.journal);
     if(proof==='different')observed.set(next,'d'.repeat(64));else observed.delete(next);
-    assert.throws(()=>removeMigrationFile(f.journal,undefined,read),{code:'installation-changed'});
+    assert.throws(()=>removeMigrationFile(f.journal,undefined,read),{code:proof==='different'?'managed-migration-conflict':'managed-path-unverified'});
     assert.deepEqual(fs.readFileSync(next),bytes);
     assert.equal(fs.existsSync(first),false);
     assert.deepEqual(fs.readFileSync(f.history),history);
@@ -134,7 +134,7 @@ test('a history-only swap between rmdir and append refuses without undoing the d
     const mock=t.mock.method(fs,'rmdirSync',((p:any,options:any)=>{
       original(p,options);if(String(p)===f.legacyRoot)observed.set(f.history,'e'.repeat(64));
     }) as typeof fs.rmdirSync);syncBuiltinESMExports();
-    try{assert.throws(()=>recordMigrationRemoval(f.journal,undefined,read),{code:'installation-changed'});}
+    try{assert.throws(()=>recordMigrationRemoval(f.journal,undefined,read),{code:'managed-migration-conflict'});}
     finally{mock.mock.restore();syncBuiltinESMExports();}
     assert.equal(fs.existsSync(f.legacyRoot),false);
     assert.deepEqual(fs.readFileSync(f.history),bytes);

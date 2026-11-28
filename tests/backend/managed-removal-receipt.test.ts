@@ -79,7 +79,7 @@ test('history receipt permits renumbering with its own proof and later appends; 
     observed.set(f.history,'c'.repeat(64));
     assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-migration-conflict'},'device/inode/birth and event still match');
     observed.delete(f.history);
-    assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-migration-conflict'});
+    assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-path-unverified'});
     observed.set(f.history,'a'.repeat(64));
     observed.set(database,'a'.repeat(64));
     assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-migration-conflict'},'history proof cannot stand in for database placement');

@@ -95,11 +95,10 @@ for(const removed of [false,true])test(`format-1 upgrade rechecks ${removed?'ret
       assert.equal(fs.existsSync(f.legacyRoot),!removed);
       assert.equal(fs.existsSync(selector),false);
     };
-    const code=removed?'managed-migration-conflict':'installation-changed';
-    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code});
+    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code:'managed-migration-conflict'});
     unchanged();
     fingerprint=undefined;
-    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code});
+    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code:'managed-path-unverified'});
     unchanged();
     claim.object!.device=String(BigInt(claim.object!.device)+1n);
     refreshConsent();fingerprint=mount.fingerprint;
