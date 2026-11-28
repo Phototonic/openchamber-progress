@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,9 +17,10 @@ import {Store,digest} from '../../shared/store.ts';
 import {observeManagedSetup} from '../../setup/managed-observation.ts';
 import {nextAction} from '../../ui/shared/setup-steps.ts';
 import type {ManagedStepRequest,ManagedFreshStepRequest} from '../../shared/managed-steps.ts';
+import type {ManagedVolumeIdentityReader} from '../../setup/managed-volume-identity.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
-function freshFixture(kind:'absent'|'directory'|'new-source'|'reuse'='absent',enabled=false){
+function freshFixture(kind:'absent'|'directory'|'new-source'|'reuse'='absent',enabled=false,read?:ManagedVolumeIdentityReader){
   const root=fs.mkdtempSync('/tmp/opencode/fresh-engine-'),env=isolatedEnvironment(root);
   const roots={configRoot:path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot:path.join(env.XDG_DATA_HOME!,'opencode')};
   for(const p of Object.values(roots))fs.mkdirSync(p,{mode:0o700});
@@ -35,21 +36,271 @@ function freshFixture(kind:'absent'|'directory'|'new-source'|'reuse'='absent',en
     }finally{store.close();}
     fs.writeFileSync(path.join(storeRoot,'installation-history.jsonl'),JSON.stringify({action:'retained-history',installId:'retained-install'})+'\n',{mode:0o600});
   }
-  const review=()=>{let s:ManagedFreshInspectionSession|undefined;for(let i=0;i<5;i++)s=inspectManagedFreshStep(env,payload,s,s?undefined:storeRoot).session;return s!;};
+  const review=()=>{let s:ManagedFreshInspectionSession|undefined;for(let i=0;i<5;i++)s=inspectManagedFreshStep(env,payload,s,s?undefined:storeRoot,read).session;return s!;};
   const journal=()=>readManagedFreshStepJournal(env)!;
   const begin=(session=review())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>beginManagedStep(env,payload,
-    {version:2,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},budget,session));};
+    {version:2,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},budget,session,read));};
   const request=():Extract<ManagedFreshStepRequest,{action:'advance'}>=>{const m=journal().migration;return {version:2,action:'advance',operationId:m.operationId,expectedSequence:m.sequence,step:m.step!};};
-  const advance=(r=request())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>advanceManagedStep(env,payload,r,budget,journal()));};
+  const advance=(r=request())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>advanceManagedStep(env,payload,r,budget,journal(),read));};
   const control=(action:'pause'|'resume'|'abandon',session?:ManagedFreshInspectionSession)=>{
     const j=journal(),budget=new PlatformRequestBudget(),r:Extract<ManagedFreshStepRequest,{action:'pause'|'resume'|'abandon'}>={version:2,action,operationId:j.migration.operationId,expectedSequence:j.migration.sequence,
       ...(session?{review:{confirmed:true,step:'enable',expected:session.review!.expected}}:{})};
-    return withPlatformRequestBudget(budget,()=>controlManagedStep(env,payload,r,budget,j,session));
+    return withPlatformRequestBudget(budget,()=>controlManagedStep(env,payload,r,budget,read?undefined:j,session,read));
   };
   const until=(name:string)=>{while(journal().migration.step?.name!==name){const r=advance();assert.equal(r.disposition,'applied',JSON.stringify(r.error));}};
   const capture=(enabled?:boolean)=>{const s=new Store(database);try{if(enabled!==undefined)s.setEnabled(enabled);return s.list().captureEnabled;}finally{s.close();}};
   return {root,env,roots,storeRoot,database,review,journal,begin,request,advance,control,until,capture,cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
 }
+
+// Change only the native device observation of existing Store objects. The
+// real fixture inode, birth time, permissions, source, and bytes are untouched.
+function projectStoreDevice(t:TestContext,storeRoot:string) {
+  const {lstatSync,fstatSync,openSync,closeSync}=fs,fds=new Set<number>();
+  const onStore=(file:string)=>file===storeRoot||file.startsWith(storeRoot+path.sep);
+  const project=(stat:fs.Stats|fs.BigIntStats|undefined,belongs:boolean)=>{
+    if(stat&&typeof stat.dev==='bigint'&&belongs)stat.dev+=1000n;
+    return stat;
+  };
+  const mocks=[
+    t.mock.method(fs,'lstatSync',((name,options)=>project(lstatSync(name,options),onStore(String(name)))) as typeof lstatSync),
+    t.mock.method(fs,'fstatSync',((fd,options)=>project(fstatSync(fd,options),fds.has(fd))) as typeof fstatSync),
+    t.mock.method(fs,'openSync',((file,flags,mode)=>{
+      const fd=openSync(file,flags,mode);if(onStore(String(file)))fds.add(fd);return fd;
+    }) as typeof openSync),
+    t.mock.method(fs,'closeSync',((fd)=>{fds.delete(fd);return closeSync(fd);}) as typeof closeSync),
+  ];syncBuiltinESMExports();
+  return ()=>{for(const mock of mocks)mock.mock.restore();syncBuiltinESMExports();};
+}
+function fixtureVolume() {
+  let proof='original',target=(file:string)=>false;
+  const read:ManagedVolumeIdentityReader=({path:file})=>target(file)&&proof!=='lost'?
+    {kind:'verified',fingerprint:digest(proof)}:{kind:'unavailable'};
+  return {read,setProof(next:string){proof=next;},select(next:typeof target){target=next;}};
+}
+const nativeVolumeFixture={skip:process.platform==='win32'};
+
+for(const checkpoint of ['create-store','expectation','retained'] as const)test(`fresh verified volume continues at ${checkpoint} after renumbering`,nativeVolumeFixture,t=>{
+  const volume=fixtureVolume(),f=freshFixture(checkpoint==='retained'?'reuse':'absent',false,volume.read);
+  volume.select(()=>true);
+  const unmock:(()=>void)[]=[];
+  try{
+    const review=f.review();
+    const witness=review.candidate!.migration.fresh.volumeIdentity!;
+    assert.ok(witness.paths.some(p=>p.path===f.database));
+    assert.ok(witness.paths.some(p=>p.path===managedBindingFile(f.env)));
+    assert.equal(JSON.stringify(review.review).includes(digest('original')),false);
+    f.begin(review);
+    if(checkpoint!=='retained')f.until(checkpoint);
+    f.control('pause');
+    const file=migrationFile(f.env),paused=f.journal(),bytes=fs.readFileSync(file);
+    const native=fs.lstatSync(f.storeRoot,{bigint:true});
+    unmock.push(projectStoreDevice(t,f.storeRoot));
+    assert.notEqual(fs.lstatSync(f.storeRoot,{bigint:true}).dev,native.dev);
+    assert.equal(fs.lstatSync(f.storeRoot,{bigint:true}).ino,native.ino);
+    assert.equal(fs.lstatSync(f.storeRoot,{bigint:true}).birthtimeNs,native.birthtimeNs);
+    const status=observeManagedSetup(f.env,undefined,volume.read).status;
+    assert.equal(nextAction(status.delivery!.freshProgress!),'resume');
+    assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.equal(f.control('resume').disposition,'applied');
+    while(f.journal().migration.state!=='complete'){
+      const request=f.request(),result=f.advance(request);
+      assert.equal(result.disposition,'applied',JSON.stringify(result.error));
+      const settled=fs.readFileSync(file);
+      assert.equal(f.advance(request).disposition,'replayed');
+      assert.deepEqual(fs.readFileSync(file),settled);
+    }
+    const finished=f.journal();
+    assert.equal(finished.migration.operationId,paused.migration.operationId);
+    assert.deepEqual(finished.migration.consent,paused.migration.consent);
+    assert.deepEqual(finished.migration.fresh,paused.migration.fresh);
+    for(const [key,claim] of Object.entries(paused.migration.created))
+      if(claim)assert.deepEqual(finished.migration.created[key as keyof typeof finished.migration.created],claim);
+    assert.equal(f.capture(),checkpoint!=='retained');
+    const terminalBytes=fs.readFileSync(file);
+    assert.equal(observeManagedSetup(f.env,undefined,()=>{throw new Error('terminal status must not read a witness');}).status.verified,true);
+    assert.deepEqual(fs.readFileSync(file),terminalBytes);
+  }finally{for(const restore of unmock)restore();f.cleanup();}
+});
+
+for(const [proof,renumber,expected] of [
+  ['copy',false,'managed-migration-conflict'],['copy',true,'managed-migration-conflict'],
+  ['lost',true,'managed-path-unverified'],['unanchored',true,'managed-migration-conflict'],
+] as const)test(`fresh ${proof} with ${renumber?'changed':'reused'} device refuses before the next effect`,nativeVolumeFixture,t=>{
+  const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+  if(proof!=='unanchored')volume.select(file=>file===f.database||file===f.storeRoot);
+  let restore:(()=>void)|undefined;
+  try{
+    f.begin();f.until('expectation');
+    const j=f.journal(),file=migrationFile(f.env),bytes=fs.readFileSync(file),db=fs.readFileSync(f.database);
+    const native=fs.lstatSync(f.database,{bigint:true});
+    volume.setProof(proof);
+    if(renumber)restore=projectStoreDevice(t,f.storeRoot);
+    const current=fs.lstatSync(f.database,{bigint:true});
+    assert.equal(current.dev===native.dev,!renumber);
+    assert.equal(current.ino,native.ino);assert.equal(current.birthtimeNs,native.birthtimeNs);
+    assert.throws(()=>f.control('resume'),{code:expected});
+    assert.throws(()=>f.advance(),{code:expected});
+    assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.deepEqual(fs.readFileSync(f.database),db);
+    assert.equal(fs.existsSync(managedExpectationFile(j)),false);
+    assert.equal(fs.existsSync(managedBindingFile(f.env)),false);
+    assert.equal(f.capture(),false);
+  }finally{restore?.();f.cleanup();}
+});
+
+test('a changed reviewed placement makes unconfirmed fresh consent stale without bootstrap writes',nativeVolumeFixture,()=>{
+  const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+  volume.select(file=>file===f.database);
+  try{
+    const review=f.review();
+    volume.setProof('copy');
+    assert.throws(()=>f.begin(review),{code:'managed-migration-conflict'});
+    assert.equal(fs.existsSync(path.dirname(managedBindingFile(f.env))),false);
+    assert.equal(fs.existsSync(f.storeRoot),false);
+  }finally{f.cleanup();}
+});
+
+test('a staged first fresh save is retained without proof and settles only on explicit same-target replay',nativeVolumeFixture,()=>{
+  const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+  volume.select(()=>true);
+  try{
+    const review=f.review(),begin=f.begin(review),file=migrationFile(f.env),bytes=fs.readFileSync(file);
+    const stage=`${file}.stage-prepare-${digest(bytes)}`;
+    fs.linkSync(file,stage);
+    assert.equal(observeManagedSetup(f.env,undefined,volume.read).status.delivery!.freshProgress!.sequence,1);
+    assert.equal(fs.existsSync(stage),true);
+    volume.setProof('lost');
+    assert.throws(()=>f.begin(review),{code:'managed-path-unverified'});
+    assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.deepEqual(fs.readFileSync(stage),bytes);
+    assert.equal(fs.statSync(stage).nlink,2);
+    assert.equal(fs.existsSync(f.storeRoot),false);
+    volume.setProof('original');
+    const replay=f.begin(review);
+    assert.equal(replay.disposition,'replayed');assert.equal(replay.progress.sequence,begin.progress.sequence);
+    assert.equal(fs.existsSync(stage),false);
+    assert.deepEqual(fs.readFileSync(file),bytes);
+  }finally{f.cleanup();}
+});
+
+test('fresh reconnect reconciles a pre-publication expectation intent after the original volume is renumbered',nativeVolumeFixture,t=>{
+  const volume=fixtureVolume(),f=freshFixture('reuse',true,volume.read);
+  volume.select(file=>file.startsWith(f.storeRoot+path.sep)||file===f.storeRoot);
+  let restore:(()=>void)|undefined;
+  try{
+    const review=f.review(),binding=review.candidate!,file=managedExpectationFile(binding);
+    const old={format:1,storeId:binding.storeId,sourceId:binding.source.id,installId:binding.installId,version:'1.2.0',fingerprint:digest('older')};
+    fs.writeFileSync(file,JSON.stringify(old),{mode:0o600});
+    f.begin(review);
+    const rename=fs.renameSync;
+    const mock=t.mock.method(fs,'renameSync',((from,to)=>{
+      if(String(to)===file)throw new Error('synthetic publication interruption');
+      return rename(from,to);
+    }) as typeof rename);syncBuiltinESMExports();
+    try{assert.equal(f.advance().disposition,'refused');}finally{mock.mock.restore();syncBuiltinESMExports();}
+    assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),old);
+    const intent=f.journal().migration.intent;
+    assert.equal(intent?.before[0]?.kind,'file');
+    restore=projectStoreDevice(t,f.storeRoot);
+    assert.equal(f.control('resume').disposition,'applied');
+    const request=f.request();assert.equal(f.advance(request).disposition,'applied');
+    const published=fs.readFileSync(file);
+    assert.notEqual(JSON.parse(published.toString()).fingerprint,old.fingerprint);
+    assert.equal(f.advance(request).disposition,'replayed');
+    assert.deepEqual(fs.readFileSync(file),published);
+    assert.equal(f.capture(),true);
+  }finally{restore?.();f.cleanup();}
+});
+
+test('a changed selector placement does not undo the earlier fresh Store or expectation',nativeVolumeFixture,()=>{
+  const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+  const selector=managedBindingFile(f.env);
+  volume.select(file=>file===selector);
+  try{
+    f.begin();f.until('publish-binding');
+    const j=f.journal(),file=migrationFile(f.env),expected=managedExpectationFile(j);
+    const snapshots=[file,f.database,expected].map(p=>fs.readFileSync(p));
+    volume.setProof('copy');
+    assert.throws(()=>f.control('resume'),{code:'managed-migration-conflict'});
+    assert.throws(()=>f.advance(),{code:'managed-migration-conflict'});
+    assert.deepEqual([file,f.database,expected].map(p=>fs.readFileSync(p)),snapshots);
+    assert.equal(fs.existsSync(selector),false);
+    assert.equal(f.capture(),false);
+  }finally{f.cleanup();}
+});
+
+test('a fresh directory created before proof loss is retained without claiming its checkpoint',nativeVolumeFixture,t=>{
+  const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+  volume.select(file=>file===f.storeRoot);
+  try{
+    f.begin();
+    const {mkdirSync}=fs;
+    const mock=t.mock.method(fs,'mkdirSync',((file,options)=>{
+      const result=mkdirSync(file,options);
+      if(String(file)===f.storeRoot)volume.setProof('lost');
+      return result;
+    }) as typeof mkdirSync);syncBuiltinESMExports();
+    try{
+      const result=f.advance();
+      assert.equal(result.disposition,'refused');
+      assert.equal(result.error?.code,'managed-path-unverified');
+    }finally{mock.mock.restore();syncBuiltinESMExports();}
+    const j=f.journal();
+    assert.equal(j.migration.state,'running');
+    assert.equal(j.migration.sequence,1);
+    assert.equal(j.migration.intent?.step.name,'store-directory');
+    assert.equal(j.migration.created.directory,null);
+    assert.equal(fs.statSync(f.storeRoot).isDirectory(),true);
+    assert.equal(fs.existsSync(f.database),false);
+    volume.setProof('original');
+    assert.throws(()=>f.control('resume'),{code:'managed-migration-conflict'},'an uncheckpointed directory remains unadoptable');
+  }finally{f.cleanup();}
+});
+
+for(const [target,proof] of [
+  ['directory','lost'],['directory','copy'],['database','lost'],['database','copy'],['sidecar','lost'],['sidecar','copy'],['directory','original'],
+] as const)test(
+  `fresh ${proof==='original'?'settles failure':'retains its running intent'} after EIO with ${proof} ${target} placement`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+    volume.select(file=>file===(target==='directory'?f.storeRoot:target==='database'?f.database:f.database+'-wal'));
+    try{
+      f.begin();
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env);
+      const {mkdirSync}=fs;
+      let published:Buffer|undefined;
+      const mock=t.mock.method(fs,'mkdirSync',((p,options)=>{
+        if(String(p)!==f.storeRoot)return mkdirSync(p,options);
+        published=fs.readFileSync(file);
+        volume.setProof(proof);
+        throw Object.assign(new Error('synthetic mkdir failure'),{code:'EIO'});
+      }) as typeof mkdirSync);syncBuiltinESMExports();
+      let observed:ReturnType<typeof f.advance>;
+      try{observed=f.advance(request);}
+      finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published);
+      assert.equal(observed.disposition,'refused');
+      assert.equal(fs.existsSync(f.storeRoot),false);
+      assert.equal(fs.existsSync(managedBindingFile(f.env)),false);
+      assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(),['.ownership.json','migration.json']);
+      if(proof==='original'){
+        assert.equal(f.journal().migration.state,'failed');
+        assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+        assert.equal(f.advance(request).disposition,'replayed');
+        return;
+      }
+      assert.equal(f.journal().migration.state,'running');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence);
+      assert.deepEqual(f.journal().migration.receipt,prior.migration.receipt);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.equal(observed.error?.code,proof==='lost'?'managed-path-unverified':'managed-migration-conflict');
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+      assert.equal(fs.existsSync(f.database),false);
+      assert.equal(fs.statSync(f.storeRoot).isDirectory(),true);
+      assert.equal(f.advance(request).disposition,'replayed');
+    }finally{f.cleanup();}
+  });
 
 for(const kind of ['absent','directory','new-source','reuse'] as const)for(const enabled of [false,true])test(`fresh ${kind} completes its frozen plan and preserves retained capture ${enabled}`,()=>{
   const f=freshFixture(kind,enabled);try{
@@ -353,7 +604,7 @@ test('fresh repeated uncertain enable needs another review and cannot reuse stal
     f.capture(false);assert.equal(f.advance().disposition,'applied');assert.equal(f.capture(),false);
   }finally{f.cleanup();}
 });
-function fixture(receipt=false){
+function fixture(receipt=false,read?:ManagedVolumeIdentityReader){
   const root=fs.mkdtempSync('/tmp/opencode/step-engine-'),env=isolatedEnvironment(root);
   const targets={configRoot:path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot:path.join(env.XDG_DATA_HOME!,'opencode'),storeRoot:path.join(root,'store'),confirmed:true};
   for(const file of [targets.configRoot,targets.dataRoot])fs.mkdirSync(file,{mode:0o700});
@@ -363,21 +614,125 @@ function fixture(receipt=false){
     writeMigration(env,{binding:{...evidence.binding,installId:'managed-synthetic'},legacyInstallId:evidence.binding.installId,phase:'pending'});
     lifecycle('remove-capture',targets);
   }
-  const review=()=>{let session:ManagedInspectionSession|undefined;for(let i=0;i<6;i++)session=inspectManagedStep(env,payload,session).session;return session!;};
+  const review=()=>{let session:ManagedInspectionSession|undefined;for(let i=0;i<6;i++)session=inspectManagedStep(env,payload,session,undefined,read).session;return session!;};
   const session=review(),budget=new PlatformRequestBudget();
-  withPlatformRequestBudget(budget,()=>beginManagedStep(env,payload,{version:1,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},budget,session));
+  withPlatformRequestBudget(budget,()=>beginManagedStep(env,payload,{version:1,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},budget,session,read));
   const journal=()=>readManagedStepJournal(env)!;
   const request=():Extract<ManagedStepRequest,{action:'advance'}>=>{const m=journal().migration;return {version:1,action:'advance',operationId:m.operationId,expectedSequence:m.sequence,step:m.step!};};
-  const advance=(r=request())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>advanceManagedStep(env,payload,r,budget,journal()));};
+  const advance=(r=request())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>advanceManagedStep(env,payload,r,budget,journal(),read));};
   const control=(action:'pause'|'resume'|'abandon',review?:Extract<ManagedStepRequest,{action:'resume'}>['review'],session?:ManagedInspectionSession)=>{
     const current=journal(),budget=new PlatformRequestBudget();
     const request:Extract<ManagedStepRequest,{action:'pause'|'resume'|'abandon'}>={version:1,action,operationId:current.migration.operationId,expectedSequence:current.migration.sequence,...(review?{review}:{})};
-    return withPlatformRequestBudget(budget,()=>controlManagedStep(env,payload,request,budget,current,session));
+    return withPlatformRequestBudget(budget,()=>controlManagedStep(env,payload,request,budget,current,session,read));
   };
   const until=(step:string)=>{while(journal().migration.step?.name!==step){const result=advance();assert.equal(result.disposition,'applied',JSON.stringify(result.error));}};
   const capture=(enabled?:boolean)=>{const store=new Store(journal().database);try{if(enabled!==undefined)store.setEnabled(enabled);return store.list().captureEnabled;}finally{store.close();}};
   return {root,env,targets,journal,review,request,advance,control,until,capture,cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
 }
+
+for(const receipt of [false,true])test(`migration ${receipt?'receipt':'manifest'} inspection freezes independently proved managed destinations`,nativeVolumeFixture,()=>{
+  const volume=fixtureVolume();
+  volume.select(file=>path.basename(file)==='progress-binding.json'&&path.basename(path.dirname(file))==='agent-progress-managed');
+  const f=fixture(receipt,volume.read);
+  try{
+    const selector=managedBindingFile(f.env),file=migrationFile(f.env),j=f.journal();
+    assert.deepEqual(j.migration.legacy.volumeIdentity,{version:1,paths:[{path:selector,fingerprint:digest('original')}]});
+    const bytes=fs.readFileSync(file),database=fs.readFileSync(j.database);
+    volume.setProof('copy');
+    assert.throws(()=>f.control('resume'),{code:'managed-migration-conflict'});
+    assert.throws(()=>f.advance(),{code:'managed-migration-conflict'});
+    assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.deepEqual(fs.readFileSync(j.database),database);
+    assert.equal(fs.existsSync(selector),false);
+    assert.equal(fs.existsSync(managedExpectationFile(j)),false);
+    volume.setProof('original');
+    assert.equal(f.advance().disposition,'applied');
+  }finally{f.cleanup();}
+});
+
+for(const receipt of [false,true])for(const proof of ['lost','copy'])test(
+  `migration ${receipt?'receipt':'manifest'} retains its running intent when ${proof} proof appears after publication`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),targetName=receipt?'progress.sqlite':'SKILL.md';
+    volume.select(file=>path.basename(file)===targetName&&(receipt||path.basename(path.dirname(file))==='agent-progress'));
+    const f=fixture(receipt,volume.read);
+    try{
+      if(!receipt)f.until('remove-discovery');
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env);
+      const discovery=path.join(f.targets.configRoot,'plugins','agent-progress'),target=receipt?prior.database:path.join(discovery,targetName);
+      assert.deepEqual(prior.migration.legacy.volumeIdentity?.paths,[{path:target,fingerprint:digest('original')}]);
+      const snapshot=()=>fs.readdirSync(f.root,{recursive:true,withFileTypes:true})
+        .map(entry=>path.join(entry.parentPath,entry.name)).filter(p=>p!==file).sort()
+        .map(p=>[p,fs.statSync(p).isDirectory()?null:fs.readFileSync(p)]);
+      const before=snapshot(),{renameSync}=fs;
+      let published:Buffer|undefined;
+      const mock=t.mock.method(fs,'renameSync',((from,to)=>{
+        renameSync(from,to);
+        if(String(to)===file&&!published){
+          published=fs.readFileSync(file);
+          volume.setProof(proof);
+        }
+      }) as typeof renameSync);syncBuiltinESMExports();
+      try{
+        const result=f.advance(request);
+        assert.equal(result.disposition,'refused');
+        assert.equal(result.error?.code,proof==='lost'?'managed-path-unverified':'managed-migration-conflict');
+      }
+      finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published,'the first rename published the intent');
+      const retained=f.journal().migration;
+      assert.equal(retained.state,'running');
+      assert.equal(retained.sequence,request.expectedSequence);
+      assert.deepEqual(retained.intent?.step,request.step);
+      assert.deepEqual(retained.receipt,prior.migration.receipt);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.deepEqual(snapshot(),before);
+
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+      assert.equal(f.journal().migration.intent,null);
+      if(receipt)assert.ok(fs.existsSync(managedExpectationFile(prior)));
+      else assert.equal(fs.existsSync(target),false);
+    }finally{f.cleanup();}
+  });
+
+for(const receipt of [false,true])test(
+  `migration ${receipt?'receipt':'manifest'} does not checkpoint an EIO after placement is lost during the effect`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),targetName=receipt?'progress.sqlite':'SKILL.md';
+    volume.select(file=>path.basename(file)===targetName&&(receipt||path.basename(path.dirname(file))==='agent-progress'));
+    const f=fixture(receipt,volume.read);
+    try{
+      if(!receipt)f.until('remove-discovery');
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env),expected=managedExpectationFile(prior);
+      const {renameSync,unlinkSync,linkSync}=fs;
+      let published:Buffer|undefined;
+      const abort=()=>{assert.ok(published);volume.setProof('lost');throw Object.assign(new Error('synthetic effect failure'),{code:'EIO'});};
+      const mocks=[
+        t.mock.method(fs,'renameSync',((from,to)=>{
+          renameSync(from,to);if(String(to)===file&&!published)published=fs.readFileSync(file);
+        }) as typeof renameSync),
+        t.mock.method(fs,'unlinkSync',((p)=>{
+          if(!receipt&&path.dirname(String(p))===path.join(f.targets.configRoot,'plugins','agent-progress'))abort();
+          return unlinkSync(p);
+        }) as typeof unlinkSync),
+        t.mock.method(fs,'linkSync',((from,to)=>{
+          if(receipt&&String(to)===expected)abort();
+          return linkSync(from,to);
+        }) as typeof linkSync),
+      ];syncBuiltinESMExports();
+      try{
+        const observed=f.advance(request);
+        assert.equal(observed.disposition,'refused');assert.equal(observed.error?.code,'managed-path-unverified');
+      }finally{for(const mock of mocks)mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.equal(f.journal().migration.state,'running');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence);
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+    }finally{f.cleanup();}
+  });
 
 for(const unreadable of [false,true])test(`receipt migration with ${unreadable?'an unreadable journal and ':''}a corrupt selector is not labelled fresh`,()=>{
   const f=fixture(true);try{

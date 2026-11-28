@@ -4,18 +4,21 @@ import {randomUUID} from 'node:crypto';
 import {type Binding,verifyStore} from '../shared/binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {activationFingerprint} from '../shared/activation.ts';
-import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile,managedDefaultStoreRoot} from '../shared/managed-binding.ts';
+import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,managedExpectationFile,managedDefaultStoreRoot,ManagedBindingError} from '../shared/managed-binding.ts';
 import {windows,windowsPaths,privatePaths,isOwned} from '../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_STEP_LIMITS,type ManagedInspection,type ManagedCaptureObservation,type ManagedStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedReview} from '../shared/progress.ts';
-import {SetupError,discoverMigrationPaths,migrationEvidence,validateMigrationRemoval,type Payload} from './lifecycle.ts';
+import {SetupError,discoverMigrationPaths,migrationEvidence,managedRemovalPlacementClaims,validateMigrationRemoval,type Payload} from './lifecycle.ts';
 import {migrationFile,readMigration,readManagedStepJournal,readRemovalReceipt,managedJournalPaths,type MigrationRecord} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,managedTargetDigest,type ManagedStepJournal,type ManagedPathClaim} from './managed-step-journal.ts';
 import {ManagedStepFailure} from './managed-diagnostic.ts';
 import {MANAGED_FRESH_INSPECTION_STEPS,managedFreshPlan,type ManagedFreshInspection,type ManagedFreshStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedFreshReview} from '../shared/progress.ts';
 import {readManagedFreshStepJournal} from './managed-migration.ts';
-import {managedFreshJournalProgress,type ManagedFreshStepJournal} from './managed-step-journal.ts';
+import {managedFreshJournalProgress,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,managedVolumeFixedPaths,ManagedVolumePlacementError,requireSameManagedVolume,
+  type ManagedVolumeIdentityReader,type ManagedVolumeIdentityEvidence,type ManagedVolumeTarget} from './managed-volume-identity.ts';
+import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
 /** Private supervisor/worker state. NEVER accept this object from an HTTP body.
  * Paths and hashes are discovery claims only, not reusable verdicts. */
@@ -67,6 +70,77 @@ function storePaths(binding:Binding) {
   return [path.dirname(binding.database),binding.database,...['-journal','-wal','-shm'].map(s=>binding.database+s),
     managedExpectationFile(binding),path.join(path.dirname(binding.database),'installation-history.jsonl')];
 }
+function volumeTarget(binding:Binding,file:string,initialPair=false,layoutKind?:ManagedVolumeTarget['kind']):ManagedVolumeTarget|undefined {
+  try{managedPath(file,true);}
+  catch(error){if(error instanceof ManagedBindingError&&error.code==='managed-path-unverified')return;throw error;}
+  const stat=lstatSync(file,{bigint:true,throwIfNoEntry:false});
+  if(!stat)return {path:file,kind:'absent',object:null};
+  const {configRoot,dataRoot}=binding.source;
+  const publicRoot=file===configRoot||file===dataRoot;
+  const directory=layoutKind!==undefined?layoutKind==='directory':
+    publicRoot||file===path.dirname(binding.database)||file===path.join(dataRoot,'agent-progress-managed')||
+      file===path.join(configRoot,'plugins','agent-progress');
+  const paired=initialPair&&file===path.join(dataRoot,'agent-progress-managed','migration.json');
+  if(stat.isSymbolicLink()||(directory?!stat.isDirectory():!stat.isFile()||stat.nlink!==(paired?2n:1n))||
+    !(publicRoot?isOwned(file):privatePaths([file])))return;
+  return {path:file,kind:directory?'directory':'file',object:{device:String(stat.dev),inode:String(stat.ino),birthNs:String(stat.birthtimeNs)}};
+}
+function enrollVolumeIdentity(binding:Binding,read:ManagedVolumeIdentityReader,manifest:readonly ManagedPathClaim[]=[]):ManagedVolumeIdentityEvidence|undefined {
+  if(windows)return;
+  // The manifest owner has verified these claims, not merely parsed them.
+  // Reuse its observations where available, including the two source roots.
+  const targets=new Map<string,ManagedVolumeTarget>(manifest.map(c=>[c.path,c]));
+  for(const file of managedVolumeFixedPaths(binding)){
+    if(targets.has(file))continue;
+    const target=volumeTarget(binding,file);
+    if(target)targets.set(file,target);
+  }
+  const paths:ManagedVolumeIdentityEvidence['paths']=[];
+  for(const target of targets.values()){
+    const proof=read(target);
+    if(proof.kind==='verified')paths.push({path:target.path,fingerprint:proof.fingerprint});
+  }
+  if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+  return paths.length?{version:1,paths}:undefined;
+}
+/** Check independently derived destinations too, even when a file does not
+ * exist yet or has been replaced by an authorized publication. Never derive
+ * a read path from a witness. Manifest-only paths stay with the lifecycle. */
+export function validateManagedFixedPlacement(journal:ManagedSetupStepJournal,read:ManagedVolumeIdentityReader,initialPair=false) {
+  const m=journal.migration,volume=m.format===3?m.fresh.volumeIdentity:m.legacy.volumeIdentity;
+  if(!volume)return;
+  for(const file of managedVolumeFixedPaths(journal)){
+    if(!volume.paths.some(p=>p.path===file))continue;
+    // Migration's discovery and Store paths are checked in the lifecycle and
+    // receipt owners. This admission owns their five managed destinations.
+    const managedRoot=path.join(journal.source.dataRoot,'agent-progress-managed');
+    if(m.format===2&&file!==managedRoot&&path.dirname(file)!==managedRoot&&file!==managedExpectationFile(journal))continue;
+    // Fresh Store objects have their own checked observations below.
+    if(m.format===3&&[m.fresh.directory.path,m.fresh.database.path,...m.fresh.sidecars.map(c=>c.path)].includes(file))continue;
+    validateVolumeTarget(journal,file,volume,read,initialPair);
+  }
+}
+function validateVolumeTarget(journal:ManagedSetupStepJournal,file:string,volume:ManagedVolumeIdentityEvidence,read:ManagedVolumeIdentityReader,
+  initialPair=false,layoutKind?:ManagedVolumeTarget['kind']) {
+  const current=volumeTarget(journal,file,initialPair,layoutKind);
+  if(!current)throw new ManagedVolumePlacementError('managed-migration-conflict');
+  requireSameManagedVolume(compareManagedVolumePlacement(current,volume,read));
+}
+/** Failure settlement has no successful effect to reconcile. Check every
+ * witnessed location without asserting old/new presence, history or Store
+ * contents, and never let the witness nominate a path to read. */
+export function validateManagedFailurePlacement(journal:ManagedSetupStepJournal,read:ManagedVolumeIdentityReader) {
+  const m=journal.migration,volume=m.format===3?m.fresh.volumeIdentity:m.legacy.volumeIdentity;
+  if(!volume)return;
+  const paths=new Map<string,ManagedVolumeTarget['kind']|undefined>(managedVolumeFixedPaths(journal).map(file=>[file,undefined]));
+  if(m.format===2&&m.legacy.kind==='manifest'){
+    for(const claim of managedRemovalPlacementClaims(journal as ManagedStepJournal))paths.set(claim.path,claim.kind);
+  }
+  for(const {path:file} of volume.paths){
+    if(!paths.has(file))throw new ManagedVolumePlacementError('managed-migration-conflict');
+    validateVolumeTarget(journal,file,volume,read,false,paths.get(file));
+  }
+}
 function paths(session:ManagedInspectionSession) {
   return [...basePaths(session.roots),...(session.candidate?managedJournalPaths(session.candidate):
     session.operation?managedJournalPaths(session.operation):session.prior?storePaths(session.prior.binding):session.binding?storePaths(session.binding):[]),
@@ -97,11 +171,13 @@ function expectation(binding:Binding,payload:Payload) {
   need(payload.plugin&&payload.guidance&&/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version),'payload-invalid');
   return {version:payload.version,fingerprint:activationFingerprint({...managedJournalBinding(binding),version:payload.version},Buffer.from(payload.plugin),Buffer.from(payload.guidance))};
 }
-function validateCandidate(session:ManagedInspectionSession,payload:Payload):ManagedCaptureObservation {
+function validateCandidate(session:ManagedInspectionSession,payload:Payload,read:ManagedVolumeIdentityReader):ManagedCaptureObservation {
   const candidate=session.candidate!;
   need(canonical(candidate.migration.expectation)===canonical(expectation(candidate,payload)));
-  if(candidate.migration.legacy.kind==='manifest')return validateMigrationRemoval(candidate).capture;
-  need(!!readRemovalReceipt({binding:managedJournalBinding(candidate),phase:'removed',legacyInstallId:candidate.migration.legacyInstallId},candidate.migration.legacy.receipt));
+  validateManagedFixedPlacement(candidate,read);
+  const {legacy,legacyInstallId}=candidate.migration;
+  if(legacy.kind==='manifest')return validateMigrationRemoval(candidate,read).capture;
+  need(!!readRemovalReceipt({binding:managedJournalBinding(candidate),phase:'removed',legacyInstallId},legacy.receipt,legacy.volumeIdentity,read));
   return capture(candidate);
 }
 function reviewFor(session:ManagedInspectionSession,observed:ManagedCaptureObservation):ManagedReview {
@@ -116,10 +192,10 @@ function reviewFor(session:ManagedInspectionSession,observed:ManagedCaptureObser
 }
 /** Mutation admission calls this again under its OWN fresh batch/fence. An
  * opaque token alone, or a worker's earlier observation, never authorizes it. */
-export function validateManagedInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,session:ManagedInspectionSession) {
+export function validateManagedInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,session:ManagedInspectionSession,read=managedVolumeIdentityReader) {
   need(session.stage===MANAGED_INSPECTION_STEPS.length&&session.review&&session.candidate,'managed-inspection-expired');
   batch(paths(session));sameDiscovery(env,session);
-  const observed=validateCandidate(session,payload),review=reviewFor(session,observed);
+  const observed=validateCandidate(session,payload,read),review=reviewFor(session,observed);
   need(review.expected===session.review.expected);
   return {candidate:structuredClone(session.candidate),prior:session.prior&&structuredClone(session.prior),
     operation:session.operation&&structuredClone(session.operation),capture:observed,review};
@@ -127,7 +203,7 @@ export function validateManagedInspectionReview(env:NodeJS.ProcessEnv,payload:Pa
 
 /** Exactly one read-only stage. The supervisor supplies prior state, never the
  * caller. Every stage gets a new opaque cursor and revalidates its paths. */
-export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedInspectionSession,storeRoot?:string):ManagedInspectionResult {
+export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedInspectionSession,storeRoot?:string,read=managedVolumeIdentityReader):ManagedInspectionResult {
   let stage:typeof MANAGED_INSPECTION_STEPS[number]='roots',known:ManagedStepJournal|undefined;
   try{
     let session:ManagedInspectionSession;
@@ -178,7 +254,7 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
       // a truncated successful review. Ancestors are deduplicated by platform.
       if(new Set(paths(session)).size>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
     }else if(stage==='legacy-releases'){
-      if(session.candidate)validateCandidate(session,payload);
+      if(session.candidate)validateCandidate(session,payload,read);
       else {
         const discovered=session.discovered;
         let evidence:ReturnType<typeof migrationEvidence>|undefined;
@@ -200,16 +276,18 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
           legacyInstallId:session.prior?.legacyInstallId??evidence!.binding.installId,operationId:session.nonce,sequence:1,state:'pending',
           step:plan[1]!,lastCompleted:plan[0]!,consent:{reviewDigest:'0'.repeat(64),targetDigest:'0'.repeat(64),planDigest:digest(canonical(plan))},
           expectation:expectation(binding,payload),plan,legacy,captureRenewals:[],intent:null,receipt:null,capture:{state:'unknown',observedAt:null},diagnostic:null}};
-        session.candidate.migration.consent.targetDigest=managedTargetDigest(session.candidate);
         // Includes managed expectation paths not present in legacy discovery.
         if(new Set(paths(session)).size>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+        const volumeIdentity=enrollVolumeIdentity(binding,read,evidence?.legacy.claims);
+        if(volumeIdentity)session.candidate.migration.legacy.volumeIdentity=volumeIdentity;
+        session.candidate.migration.consent.targetDigest=managedTargetDigest(session.candidate);
       }
     }else if(stage==='store'){
-      validateCandidate(session,payload);
+      validateCandidate(session,payload,read);
       // Also retain a stable schema/identity observation before the final review.
       capture(session.candidate!);
     }else if(stage==='review'){
-      const observed=validateCandidate(session,payload);
+      const observed=validateCandidate(session,payload,read);
       session.review=reviewFor(session,observed);session.stage++;session.cursor=randomUUID();
       return {session,inspection:{state:'complete',stage:'review',cursor:null,review:session.review},
         progress:session.operation?managedJournalProgress(session.operation,observed):null};
@@ -261,24 +339,37 @@ function freshDiscovery(env:NodeJS.ProcessEnv,s:ManagedFreshInspectionSession) {
 }
 /** Fresh read-only Store observation; missing storage is allowed ONLY before its
  * completion. Exact initialization can reconcile from the retained creation intent. */
-export function observeManagedFreshStore(j:ManagedFreshStepJournal,mode:'strict'|'selected-status'='strict'):ManagedCaptureObservation {
+export function observeManagedFreshStore(j:ManagedFreshStepJournal,mode:'strict'|'selected-status'='strict',read=managedVolumeIdentityReader,
+  options:{initialPair?:boolean;createdNow?:Partial<ManagedFreshStepJournal['migration']['created']>}={}):ManagedCaptureObservation {
   const m=j.migration,f=m.fresh,dir=managedFreshObjectClaim(path.dirname(j.database),true),db=managedFreshObjectClaim(j.database);
   const sidecars=f.sidecars.map(c=>managedFreshObjectClaim(c.path));
   const expectedDir=m.created.directory??f.directory,expectedDb=m.created.database??f.database;
-  // Only completed status may compare against historical evidence without the
-  // device number. This projection is never saved or used for step validation.
+  // Terminal status retains its separate logical check. Unfinished work must
+  // prove placement whenever there is a witness, even on a reused device.
   const ignoreDevice=mode==='selected-status'&&m.state==='complete';
   const comparable=(object:ManagedPathClaim['object'])=>ignoreDevice&&object?{...object,device:'0'}:object;
-  const directory=(claim:ManagedPathClaim)=>({...claim,object:comparable(claim.object)});
-  need(canonical(directory(dir))===canonical(directory(expectedDir)),'managed-migration-conflict');
+  const compare=(live:ManagedPathClaim,saved:ManagedPathClaim,createdNow:boolean)=>{
+    if(m.state==='complete'||createdNow){
+      need(live.path===saved.path&&live.kind===saved.kind&&canonical(comparable(live.object))===canonical(comparable(saved.object)),'managed-migration-conflict');
+      if(m.state!=='complete')requireSameManagedVolume(compareManagedVolumePlacement(live,f.volumeIdentity,read));
+    }else requireSameManagedVolume(compareManagedHistoricalObject(saved,live,f.volumeIdentity,read),f.volumeIdentity?.paths.some(p=>p.path===live.path)??false);
+  };
+  if(m.state!=='complete'){
+    validateManagedFixedPlacement(j,read,options.initialPair);
+    for(const sidecar of sidecars)requireSameManagedVolume(compareManagedVolumePlacement(sidecar,f.volumeIdentity,read));
+  }
+  compare(dir,expectedDir,!!options.createdNow?.directory);
   if(db.kind==='absent'){
     need(expectedDb.kind==='absent'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
+    compare(db,expectedDb,false);
     if(dir.kind==='directory')need(readdirSync(dir.path).length===0,'foreign-files');
     return {state:'unknown',observedAt:null};
   }
   const initialized=expectedDb.kind==='absent';
-  if(initialized)need(m.intent?.step.name==='create-store'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
-  else need(canonical(comparable(db.object))===canonical(comparable(expectedDb.object)),'managed-migration-conflict');
+  if(initialized){
+    need(m.intent?.step.name==='create-store'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
+    if(m.state!=='complete')requireSameManagedVolume(compareManagedVolumePlacement(db,f.volumeIdentity,read));
+  }else compare(db,expectedDb,!!options.createdNow?.database);
   const store=new Store(j.database,{readOnly:true});
   try{
     store.subagentRunStorage();const e=store.list({limit:1});need(e.storeId===j.storeId,'managed-source-conflict');
@@ -304,20 +395,20 @@ function freshReview(s:ManagedFreshInspectionSession,observed:ManagedCaptureObse
   return {expected,planKind:'fresh',targets:{...s.roots,storeRoot:s.storeRoot},storeId:j.storeId,sourceId:j.source.id,
     storeMode:f.storeMode,sourceMode:f.sourceMode,capturePolicy:f.capturePolicy,packageVersion:m.expectation.version,capture:observed,plan:structuredClone(m.plan)};
 }
-export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,s:ManagedFreshInspectionSession) {
+export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,s:ManagedFreshInspectionSession,read=managedVolumeIdentityReader) {
   need(s.family===2&&s.stage===MANAGED_FRESH_INSPECTION_STEPS.length&&s.review&&s.candidate,'managed-inspection-expired');
   batch(freshPaths(s));freshDiscovery(env,s);
   const j=s.candidate;
   need(canonical(j.migration.expectation)===canonical(expectation(j,payload)));
   if(s.operation)need(canonical(readManagedFreshStepJournal(env))===canonical(s.operation));
-  const observed=observeManagedFreshStore(j),review=freshReview(s,observed);
+  const observed=observeManagedFreshStore(j,'strict',read),review=freshReview(s,observed);
   need(review.expected===s.review.expected);
   return {candidate:structuredClone(j),operation:s.operation&&structuredClone(s.operation),capture:observed,review};
 }
 
 /** Fresh pages share the existing inspection owner, private cursor transport and
  * review nonce rules. No filesystem/DB/source/binding write occurs here. */
-export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string):ManagedFreshInspectionResult {
+export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string,read=managedVolumeIdentityReader):ManagedFreshInspectionResult {
   let s:ManagedFreshInspectionSession;
   if(!prior){
     const roots=managedSourceRoots(env),selected=storeRoot??managedDefaultStoreRoot(roots.dataRoot);
@@ -367,13 +458,15 @@ export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,pr
           source:sourceMode==='reuse'?source:null,capture:captureState,selection:s.selection,journal:s.record,
           legacy:{path:path.join(s.roots.configRoot,'plugins','agent-progress'),kind:'absent',object:null,digest:null}},
         created:{directory:null,database:null},intent:null,receipt:null,captureRenewals:[],capture:{state:'unknown',observedAt:null},diagnostic:null}};
+      const volumeIdentity=enrollVolumeIdentity(binding,read);
+      if(volumeIdentity)s.candidate.migration.fresh.volumeIdentity=volumeIdentity;
       s.candidate.migration.consent.targetDigest=managedTargetDigest(s.candidate);
     }
-    observeManagedFreshStore(s.candidate!);
+    observeManagedFreshStore(s.candidate!,'strict',read);
   }else if(stage==='review'){
     need(s.candidate,'managed-inspection-expired');freshDiscovery(env,s);
     need(canonical(s.candidate.migration.expectation)===canonical(expectation(s.candidate,payload)));
-    const observed=observeManagedFreshStore(s.candidate);s.review=freshReview(s,observed);s.stage++;s.cursor=randomUUID();
+    const observed=observeManagedFreshStore(s.candidate,'strict',read);s.review=freshReview(s,observed);s.stage++;s.cursor=randomUUID();
     return {session:s,inspection:{state:'complete',stage:'review',cursor:null,review:s.review},
       progress:s.operation?managedFreshJournalProgress(s.operation,observed):null};
   }
