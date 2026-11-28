@@ -388,7 +388,8 @@ export function quietAge(plan: Pick<PlanView, 'lifecycle' | 'reportedAt'>, env: 
 
 export function quietNotice<U>(vc: ViewContext<U>) {
   const t = quietCopy(vc.env.locale), q = vc.quiet;
-  const text = q.saving ? t.saving : q.error ? t[q.error] : !q.supported ? t.unsupported : '';
+  // Without device storage the switch itself says the choice is frame-local (quietCheck).
+  const text = q.saving ? t.saving : q.error ? t[q.error] : '';
   if (!text) return null;
   const box = testid(el('div', 'ap-note'), 'quiet-filter-note');
   const status = el('span', '', text); status.setAttribute('role', 'status'); box.append(status);
@@ -409,12 +410,20 @@ export function quietCheck<U>(vc: ViewContext<U>) {
   const control = testid(el('input', 'ap-sr'), 'quiet-plan-filter');
   control.type = 'checkbox'; control.checked = vc.quiet.hide; control.disabled = vc.quiet.saving;
   control.setAttribute('role', 'switch');
-  label.title = quietCopy(vc.env.locale).filter;
-  control.setAttribute('aria-description', label.title);
+  const t = quietCopy(vc.env.locale);
+  // The seven-day rule, plus the frame-local caveat when the host has no device storage. The
+  // tooltip shows it to pointer users; a hidden description (not the name) carries it to
+  // assistive technology.
+  const stop = resolveLanguage('auto', vc.env.locale) === 'zh-CN' ? '。' : '. ';
+  const about = vc.quiet.supported ? t.filter : `${t.filter}${stop}${t.unsupported}`;
+  label.title = about;
+  const description = testid(el('span', '', about), 'quiet-plan-filter-description');
+  description.id = 'ap-quiet-description'; description.hidden = true;
+  control.setAttribute('aria-describedby', description.id);
   control.addEventListener('change', () => { const choice = control.checked; control.checked = vc.quiet.hide; void vc.quiet.choose(choice); });
   const track = el('span', 'ap-quiet-track'); track.setAttribute('aria-hidden', 'true');
   const short = { en: 'Hide quiet', ru: 'Скрыть без отчётов', 'zh-CN': '隐藏久未更新' }[resolveLanguage('auto', vc.env.locale)];
-  label.append(control, track, el('span', '', short));
+  label.append(control, track, el('span', '', short), description);
   return label;
 }
 

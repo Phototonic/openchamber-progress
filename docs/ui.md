@@ -942,6 +942,9 @@ so older frames can still read the original record. Saves are confirmed before
 the choice changes. A read failure uses the enabled default, explains it and
 offers retry without repairing the record. A failed save keeps the previous
 choice. On hosts without device storage, the choice lasts only in the open frame.
+The switch says so itself, with no separate line: its tooltip and its description
+(`aria-describedby`, after the seven-day rule) add **This choice lasts only while
+this view is open.** Saving, read and save failures keep their one-line note.
 
 QA hooks: `needs-you-inbox` (`data-availability`), `needs-you-heading`,
 `needs-you-count` (`data-count`, `data-exact`), `needs-you-row` (`data-task`,

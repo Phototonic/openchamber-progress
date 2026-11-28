@@ -154,7 +154,8 @@ try{
     mark(`${prefix}: fresh report returns hidden plan`);
     if(lang==='ru'){
       await evaluate(`qa.ready('panel',{features:{deviceStorage:false}});true`);
-      await exists('[data-testid="quiet-filter-note"]');
+      // Explained on the switch (tooltip and description), not as a separate line.
+      await wait(`${by(quietFilter)}?.getAttribute('aria-describedby')==='ap-quiet-description' && d.getElementById('ap-quiet-description')?.textContent.includes('Этот выбор действует только пока открыт этот экран.') && ${by('.ap-quiet-check')}.title.includes('Этот выбор') && !${by('[data-testid="quiet-filter-note"]')}`);
       mark(`${prefix}: unavailable storage explained`);
     }
     phase=`${lang}: commit and read history`;
