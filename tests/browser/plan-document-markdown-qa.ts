@@ -439,7 +439,7 @@ try {
       if (s === 'page') await wait(`!!${has(`[data-testid="plan-row-${id}"]`)}`, 'new reading fixture listed');
       await open(id); await wait('!!n', 'reading fixture opened');
       const view = (mode: string) => `[data-testid="plan-view-${mode}"] button`;
-      await click(view('map')); await wait(`!!${has('[data-testid="map-world"]')}`, 'Map reading ready');
+      await click(view('map')); await wait(`!!${has('[data-testid="map-world"]')}&&${has('[data-testid="map-region"]')}?.dataset.state==='ready'`, 'Map reading ready');
       const transform = () => guest<string>(`return ${has('[data-testid="map-world"]')}?.style.transform??''`);
       const initial = await transform();
       await click('[data-testid="map-zoom-in"]');
@@ -456,6 +456,9 @@ try {
       await click(view('map'));
       await wait(`${has('[data-testid="map-world"]')}?.style.transform===${js(savedMap)}`, 'Map resumes its transform');
       check(`${s}: Map restores zoom and viewport after List and Document`, true);
+      // The newer report shows the map's one-line Updating state above the toolbar; leave Map only
+      // after it settles, or the press lands where the view switch was before the line collapsed.
+      await wait(`${has('[data-testid="map-region"]')}?.dataset.state==='ready'`, 'Map settled before leaving it');
       await click(view('list'));
       await wait(`!!${has('.ap-tasks[data-complete]')}&&Math.abs(w.scrollY-${savedList})<=2`, 'List resumes the lower reading');
       check(`${s}: List restores the same lower reading after visiting Map`, true, { savedList });
