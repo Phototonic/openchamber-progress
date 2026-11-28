@@ -6,6 +6,7 @@ import type { ManagedStepRequest, ManagedStepProgress } from '../shared/managed-
 import { MANAGED_ACTION_CODES } from '../shared/progress.ts';
 import { canonical, digest } from '../shared/store.ts';
 import { SetupError, migrationOwnership } from './lifecycle.ts';
+import { managedVolumeFixedPaths, type ManagedVolumeIdentityEvidence } from './managed-volume-identity.ts';
 import path from 'node:path';
 import { MANAGED_FRESH_STEPS, managedFreshPlan, type ManagedFreshStepRef, type ManagedSetupStepRef,
   type ManagedFreshStepRequest, type ManagedFreshStepProgress, type ManagedFreshStepDiagnostic,
@@ -52,10 +53,11 @@ export interface ManagedCaptureRenewal {
 }
 
 /** Receipt evidence proves prior removal only; it never authorizes deleting remaining files. */
-export type ManagedLegacyEvidence =
+export type ManagedLegacyEvidence = (
   | { kind: 'manifest'; ownership: string; ownershipDigest: string; claims: ManagedPathClaim[] }
   | { kind: 'removal-receipt'; ownership: null; ownershipDigest: null; claims: ManagedPathClaim[];
-      receipt: { history: ManagedPathClaim; entry: string } };
+      receipt: { history: ManagedPathClaim; entry: string } }
+) & { volumeIdentity?: ManagedVolumeIdentityEvidence };
 
 /** Stored at the existing managed migration.json location. Keeping the Binding
  * envelope and raising migration.format makes the format-1 reader refuse, not
@@ -104,6 +106,7 @@ export interface ManagedFreshFacts {
   selection: ManagedPathClaim;
   journal: ManagedPathClaim;
   legacy: ManagedPathClaim;
+  volumeIdentity?: ManagedVolumeIdentityEvidence;
 }
 export interface ManagedFreshStepIntent extends Omit<ManagedStepIntent, 'step'> { step: ManagedFreshStepRef }
 export interface ManagedFreshStepReceipt extends Omit<ManagedStepReceipt, 'step'> { step: ManagedFreshStepRef | null }
@@ -135,6 +138,10 @@ function record(value:unknown):asserts value is Record<string,unknown> {
 function keys(value:unknown,names:string[]):asserts value is Record<string,unknown> {
   record(value);need(Object.keys(value).length===names.length&&names.every(name=>Object.hasOwn(value,name)));
 }
+function reviewKeys(value:unknown,names:string[]):asserts value is Record<string,unknown> {
+  record(value);
+  keys(value,Object.hasOwn(value,'volumeIdentity')?[...names,'volumeIdentity']:names);
+}
 const hash=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const integer=(value:unknown):value is number=>Number.isSafeInteger(value)&&(value as number)>=0;
 const text=(value:unknown,max=256):value is string=>typeof value==='string'&&value.length>0&&!value.includes('\0')&&Buffer.byteLength(value)<=max;
@@ -145,6 +152,21 @@ function pathname(value:unknown):asserts value is string {
   // by the filesystem owner, never by this portable journal parser.
   const dialect=/^[a-z]:[\\/]/i.test(value)?path.win32:path.posix;
   need(dialect.isAbsolute(value)&&dialect.normalize(value)===value);
+}
+function volumeIdentity(facts:Record<string,unknown>,binding:Binding,manifestClaims:readonly ManagedPathClaim[]=[]):void {
+  if(!Object.hasOwn(facts,'volumeIdentity'))return;
+  const value=facts.volumeIdentity;
+  keys(value,['version','paths']);
+  need(value.version===1&&Array.isArray(value.paths)&&value.paths.length>0);
+  if(value.paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+  // Manifest claims are still only syntax here: the lifecycle owner independently
+  // derives and checks their complete layout before reading those paths.
+  const allowed=new Set([...managedVolumeFixedPaths(binding),...manifestClaims.map(c=>c.path)]),seen=new Set<string>();
+  for(const entry of value.paths){
+    keys(entry,['path','fingerprint']);pathname(entry.path);
+    need(allowed.has(entry.path)&&!seen.has(entry.path)&&hash(entry.fingerprint));
+    seen.add(entry.path);
+  }
 }
 function capture(value:unknown):asserts value is ManagedCaptureObservation {
   keys(value,['state','observedAt']);
@@ -233,7 +255,7 @@ export function parseManagedFreshStepJournal(bytes:string|Uint8Array):ManagedFre
   keys(m.consent,['reviewDigest','targetDigest','planDigest']);need(Object.values(m.consent).every(hash));
   keys(m.expectation,['version','fingerprint']);need(version(m.expectation.version)&&hash(m.expectation.fingerprint));
   const f=m.fresh,known=new Set<string>();
-  keys(f,['storeMode','sourceMode','capturePolicy','directory','database','sidecars','source','capture','selection','journal','legacy']);
+  reviewKeys(f,['storeMode','sourceMode','capturePolicy','directory','database','sidecars','source','capture','selection','journal','legacy']);
   need(['create','retain'].includes(f.storeMode as string)&&['create','reuse'].includes(f.sourceMode as string));
   need(f.capturePolicy===(f.storeMode==='create'?'enable-new':'preserve'));
   claims([f.directory,f.selection,f.journal,f.legacy],known);claims([f.database],known,false,true);claims(f.sidecars,known,false,true);
@@ -291,7 +313,9 @@ export function parseManagedFreshStepJournal(bytes:string|Uint8Array):ManagedFre
     need([...MANAGED_FRESH_STEPS,...MANAGED_INSPECTION_STEPS,'journal','lock'].includes(m.diagnostic.stage as never)&&
       [...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES].includes(m.diagnostic.code as string));}
   need(m.state!=='failed'||m.diagnostic!==null);
-  const journal=raw as unknown as ManagedFreshStepJournal;need(managedTargetDigest(journal)===m.consent.targetDigest);return journal;
+  const journal=raw as unknown as ManagedFreshStepJournal;
+  volumeIdentity(f,journal);
+  need(managedTargetDigest(journal)===m.consent.targetDigest);return journal;
 }
 
 /** Checkpoint evolution contract; persistence still validates ordinary sequence,
@@ -340,13 +364,13 @@ export function parseManagedStepJournal(bytes:string|Uint8Array):ManagedStepJour
   const known=new Set<string>(),legacy=m.legacy;
   record(legacy);
   if(legacy.kind==='manifest'){
-    keys(legacy,['kind','ownership','ownershipDigest','claims']);
+    reviewKeys(legacy,['kind','ownership','ownershipDigest','claims']);
     need(text(legacy.ownership,MANAGED_STEP_LIMITS.journalBytes)&&hash(legacy.ownershipDigest)&&digest(legacy.ownership)===legacy.ownershipDigest);
     // Structural manifest parsing stays with the lifecycle/removal owner. It is
     // not equivalent to that owner's fresh file/selector/retained-release checks.
     need(migrationOwnership(legacy.ownership).installId===m.legacyInstallId);
   }else{
-    keys(legacy,['kind','ownership','ownershipDigest','claims','receipt']);
+    reviewKeys(legacy,['kind','ownership','ownershipDigest','claims','receipt']);
     need(legacy.kind==='removal-receipt'&&legacy.ownership===null&&legacy.ownershipDigest===null);
     keys(legacy.receipt,['history','entry']);claims([legacy.receipt.history],known);
     const history=legacy.receipt.history as unknown as ManagedPathClaim;need(history.kind==='file');
@@ -415,6 +439,7 @@ export function parseManagedStepJournal(bytes:string|Uint8Array):ManagedStepJour
   }
   need(m.state!=='failed'||m.diagnostic!==null);
   const journal=raw as unknown as ManagedStepJournal;
+  volumeIdentity(legacy,journal,legacy.kind==='manifest'?legacy.claims:[]);
   need(managedTargetDigest(journal)===m.consent.targetDigest);
   return journal;
 }

@@ -326,12 +326,18 @@ export function observeInitialJournalSave(env:NodeJS.ProcessEnv,version?:1|2) {
   return {journal,pair,file};
 }
 
-export function settleInitialJournalSave(env:NodeJS.ProcessEnv,expected:NonNullable<ReturnType<typeof observeInitialJournalSave>>) {
+export function settleInitialJournalSave(env:NodeJS.ProcessEnv,expected:NonNullable<ReturnType<typeof observeInitialJournalSave>>,
+  validate?:(journal:ManagedSetupStepJournal)=>void) {
   const current=observeInitialJournalSave(env);
   if(!current||current.file!==expected.file||!current.pair.bytes.equals(expected.pair.bytes))
     throw new SetupError('managed-migration-conflict');
   const {journal}=current;
   requirePlatformStoreFence(journal.database,journal.source.dataRoot);
+  // The exact pair proves publication, not the current target. For a witness
+  // journal require the engine's fresh target validation at this write boundary.
+  const m=journal.migration;
+  if((m.format===3?m.fresh.volumeIdentity:m.legacy.volumeIdentity)&&!validate)throw new SetupError('managed-step-conflict');
+  validate?.(journal);
   requirePlatformWriteBoundary();
   finishInitialJournalPair(current.file,expected.pair,MANAGED_STEP_LIMITS.journalBytes);
   const written=journal.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);
