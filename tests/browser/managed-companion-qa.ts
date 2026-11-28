@@ -148,11 +148,13 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guest('page','!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")&&!!document.querySelector("[data-testid=empty-state],[data-testid=plan-list-heading],[data-testid=plan-title]")'),Boolean,'board initial read settled');
     };
     const moreItem=async(surface:'panel'|'page',item:string)=>{
+      const trigger=item==='sessions'?'more-trigger':'settings-trigger';
       await guestClick(surface,`[data-testid="more-${item}"]`,async()=>{
         // The shell can replace the transient menu when live progress repaints.
         // Open only a known closed menu before looking for its actionable row.
-        if(await guest(surface,'document.querySelector("[data-testid=settings-trigger]")?.getAttribute("aria-expanded")==="false"'))
-          await guestClick(surface,'[data-testid="settings-trigger"]');
+        const selector=`[data-testid="${trigger}"]`;
+        if(await guest(surface,`document.querySelector(${literal(selector)})?.getAttribute('aria-expanded')==='false'`))
+          await guestClick(surface,selector);
       });
     };
     const language=async(surface:'panel'|'page',value:'en'|'ru'|'zh-CN')=>{

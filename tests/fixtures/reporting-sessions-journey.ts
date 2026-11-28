@@ -78,9 +78,15 @@ export async function reportingSessionsJourney(o:{root:string;binding:Binding;st
   await browser.guest('panel','new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await browser.shot('map-task');await send('Emulation.clearDeviceMetricsOverride');
   await moreItem('panel','troubleshooting');
   const troubleshooting='[data-testid="surface-panel-troubleshooting"]';
-  await guestClick('panel',`${troubleshooting} [data-testid="advanced-details"] > summary`);
+  const advanced=`${troubleshooting} [data-testid="advanced-details"]`;
+  const directReport=`[...document.querySelectorAll(${literal(`${advanced} [data-testid="advanced-report-authorship"] dd`)})].find(e=>e.textContent.includes(' · direct · ')&&e.textContent.includes(' · task-b · '))`;
+  // The initial explicit health read repaints this disclosure. Wait for that
+  // read to settle and for the qualified report to be in the DOM before clicking.
+  await wait(()=>browser.guest('panel',`!!document.querySelector(${literal(`${troubleshooting} [data-testid="reporting-health"][aria-busy="false"]`)})&&!!(${directReport})`),Boolean,'settled Troubleshooting with task-b direct report');
+  await guestClick('panel',`${advanced} > summary`);
+  await wait(()=>browser.guest('panel',`document.querySelector(${literal(advanced)})?.open===true`),Boolean,'Advanced details opened');
   // The map now keeps only live activity; the full recorded attribution is in this disclosure.
-  await wait(()=>browser.guest('panel',`[...document.querySelectorAll(${literal(`${troubleshooting} [data-testid="advanced-report-authorship"] dd`)})].some(e=>e.checkVisibility()&&e.textContent.includes(' · direct · ')&&e.textContent.includes(' · task-b · '))`),Boolean,'visible task-b direct report provenance');
+  await wait(()=>browser.guest('panel',`(${directReport})?.checkVisibility()===true`),Boolean,'visible task-b direct report provenance');
   await browser.shot('report-authorship');
   await guestClick('panel',`${troubleshooting} [data-testid="surface-panel-back"] button`);
   await guestClick('panel','[data-testid="plan-view-list"] button');
