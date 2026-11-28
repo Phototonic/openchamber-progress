@@ -369,6 +369,44 @@ try {
     await wait(surface, `d.documentElement.lang===${js(locale)}`);
     check(`${id}-no-overflow`, await guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'));
   }
+  // Rail Copy update and Handoff note share the Hide quiet row: small beside it at 390 CSS px,
+  // wrapping inside 320 with Russian labels, and 44 px targets under a coarse pointer.
+  const quietRow = `const q=d.querySelector('.ap-quiet-check'),row=q?.parentElement`;
+  const railActions = (expected: string[]) => guest<any>('panel', `${quietRow},cw=d.documentElement.clientWidth;
+    const box=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}};
+    const text=q.querySelector('span:not(.ap-quiet-track):not([hidden])'),t=box(text),l=box(q),rb=box(row);
+    const buttons=['progress','handoff'].map(m=>d.querySelector('[data-testid="summary-open-'+m+'"] button'));
+    const hits=(n,r)=>[[r.left+2,(r.top+r.bottom)/2],[r.right-2,(r.top+r.bottom)/2],[(r.left+r.right)/2,(r.top+r.bottom)/2]].every(([x,y])=>n.contains(d.elementFromPoint(x,y)));
+    const apart=(a,b)=>a.right<=b.left+0.5||b.right<=a.left+0.5||a.bottom<=b.top+0.5||b.bottom<=a.top+0.5;
+    return {cw,docFits:d.documentElement.scrollWidth<=cw,rowFits:row.scrollWidth<=row.clientWidth&&rb.left>=-0.5&&rb.right<=cw+0.5,row:rb,
+      quiet:{text:text.textContent,whole:t.left>=l.left-0.5&&t.right<=l.right+0.5&&l.left>=rb.left-0.5&&l.right<=rb.right+0.5&&q.scrollWidth<=q.clientWidth+1&&hits(q,t),box:l},
+      buttons:buttons.map((b,i)=>{if(!b)return null;const r=box(b);
+        return {label:b.textContent,expected:${js(expected)}[i],inRow:row.contains(b),...r,
+          visible:r.left>=rb.left-0.5&&r.right<=rb.right+0.5&&apart(r,l)&&b.scrollWidth<=b.clientWidth+1&&b.scrollHeight<=b.clientHeight+1&&hits(b,r)&&b.checkVisibility()}})}`);
+  const railCase = async (size: number, locale: 'en' | 'ru', pointer: 'fine' | 'coarse') => {
+    await viewport(size, 844, pointer === 'coarse');
+    await evaluate(`qa.show('panel',${size});qa.ready('panel',{locale:${js(locale)},device:{formFactor:${js(pointer === 'coarse' ? 'phone' : 'desktop')},pointer:${js(pointer)},insets:{top:0,right:0,bottom:0,left:0},keyboard:0}});true`);
+    await wait('panel', `w.innerWidth===${size} && d.documentElement.lang===${js(locale)} && d.documentElement.dataset.devicePointer===${js(pointer)} && !!d.querySelector('[data-testid="summary-open-handoff"] button')`);
+    await guest('panel', 'w.scrollTo(0,0);return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
+    const labels = { en: ['Copy update', 'Handoff note'], ru: ['Копировать отчёт', 'Заметка для передачи'] }[locale];
+    const facts = await railActions(labels);
+    const id = `rail-plan-actions-${size}-${locale}-${pointer}`;
+    check(`${id}-buttons-in-quiet-row`, facts.buttons.every((b: any) => b?.inRow && b.label === b.expected), facts.buttons);
+    check(`${id}-fits`, facts.docFits && facts.rowFits && facts.quiet.whole && facts.quiet.text === { en: 'Hide quiet', ru: 'Скрыть без отчётов' }[locale] && facts.buttons.every((b: any) => b.visible), facts);
+    if (pointer === 'coarse') check(`${id}-44px-targets`, facts.buttons.every((b: any) => b.height >= 44 && b.width >= 44), facts.buttons);
+    return { id, facts };
+  };
+  {
+    const { id, facts } = await railCase(390, 'en', 'fine');
+    const q = facts.quiet.box;
+    check(`${id}-share-the-switch-line`, facts.buttons.every((b: any) => b.top < q.bottom && b.bottom > q.top && b.left >= q.right), { quiet: q, buttons: facts.buttons });
+    check(`${id}-small-not-full-width`, facts.buttons.every((b: any) => b.width < facts.row.width / 2), { row: facts.row, buttons: facts.buttons });
+    await shot('rail-390-plan-actions-row', 240);
+    await railCase(390, 'en', 'coarse');
+    for (const locale of ['en', 'ru'] as const) for (const pointer of ['fine', 'coarse'] as const) await railCase(320, locale, pointer);
+    await shot('rail-320-ru-coarse-plan-actions-row', 260);
+    await evaluate(`qa.ready('panel',{locale:'en'});true`);
+  }
   for (const mode of ['empty', 'setup', 'failure', 'port-busy']) for (const locale of ['en', 'ru', 'zh-CN'] as const) for (const surface of ['panel', 'page']) {
     const size = mode === 'port-busy' && surface === 'page' ? 1180 : 390;
     const captureBusy = mode === 'port-busy' && surface === 'panel' && locale === 'en';
@@ -383,6 +421,10 @@ try {
       if (captureBusy) await shot('23-busy-refusal-390');
     }
     check(`${surface}-${mode}-${locale}-no-document-button`, await guest(surface, `return !d.querySelector('[data-testid="plan-view-document"]')`));
+    if (surface === 'panel' && mode === 'empty') {
+      const row = await guest<any>('panel', `${quietRow};return {quiet:!!q,alone:!!row&&row.children.length===1&&row.firstElementChild===q,summaries:!!d.querySelector('[data-testid^="summary-open-"]'),buttons:row?[...row.querySelectorAll('button')].length:-1}`);
+      check(`panel-empty-${locale}-quiet-row-holds-only-hide-quiet`, row.quiet && row.alone && !row.summaries && row.buttons === 0, row);
+    }
     await click(surface, settings);
     for (const id of ['language', 'setup', 'troubleshooting']) check(`${surface}-${mode}-${id}`, await guest(surface, `return !!d.querySelector('[data-menu-id="${id}"]')`));
     await shot(`${surface}-${mode}-${locale}-more`);
