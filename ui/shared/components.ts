@@ -1071,14 +1071,22 @@ function linkedWorkMenu(links: AddressedLink[], name: string, kinds: (typeof HOS
   };
   trigger.addEventListener('click', () => popup.hidden ? show() : close());
   trigger.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); show(e.key === 'ArrowUp'); } });
-  root.addEventListener('focusout', e => { if (!popup.hidden && !(e.relatedTarget instanceof Node && root.contains(e.relatedTarget))) close(); });
+  // Tab or Shift+Tab from a row closes the menu wherever focus lands, the trigger included; the
+  // key's own focus movement is left alone, so the menu closes on the focusout it causes.
+  let tabbing = false;
+  root.addEventListener('focusout', e => {
+    const leaving = !(e.relatedTarget instanceof Node && root.contains(e.relatedTarget));
+    if (!popup.hidden && (tabbing || leaving)) close();
+    tabbing = false;
+  });
   popup.addEventListener('keydown', e => {
+    tabbing = e.key === 'Tab';
     const index = rows.indexOf(document.activeElement as HTMLButtonElement);
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) { e.preventDefault(); focus(e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : index + (e.key === 'ArrowDown' ? 1 : -1)); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
   });
   root.append(trigger, popup);
-  return { root, trigger, face };
+  return { root, trigger, face, close, place: () => { if (!popup.hidden) place(); } };
 }
 
 /**
@@ -1148,6 +1156,17 @@ export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
     if (hidden === chips.length) { label.classList.add('ap-sr'); setControl(hidden, true); }
     // A focused chip that no longer fits hands focus to the control that lists it, never to a sibling.
     if (focused instanceof HTMLElement && focused.hidden && chips.includes(focused as HTMLButtonElement)) menu.trigger.focus({ preventScroll: true });
+    const inControl = focused instanceof HTMLElement && menu.root.contains(focused);
+    if (menu.root.hidden) {
+      // Every link fits again and the control goes: its menu closes, and keyboard focus on it (or
+      // in that menu) moves to the last chip, the one nearest where the control was.
+      menu.close();
+      if (inControl) chips.findLast(chip => !chip.hidden)?.focus({ preventScroll: true });
+    } else {
+      // Measuring hides the control for a moment; keep focus where it was and the menu in place.
+      if (inControl && document.activeElement !== focused) focused.focus({ preventScroll: true });
+      menu.place();
+    }
   };
   // A repaint replaces the header; the replaced group's observer stops once it has left the page.
   let attached = false;

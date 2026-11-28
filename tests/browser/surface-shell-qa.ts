@@ -262,6 +262,20 @@ try {
     await wait('page', menuOpen);
     await key('Escape');
     check('board-overflow-escape-returns-focus', await guest('page', `return !(${menuOpen}) && d.activeElement===d.querySelector(${js(more)})`));
+    // Tab and Shift+Tab from a menu row close the menu and let focus move on as usual.
+    const tabFacts = `const a=d.activeElement,m=d.querySelector('[data-testid="linked-work-menu"]');return {open:!m.hidden,expanded:d.querySelector(${js(more)}).getAttribute('aria-expanded'),testid:a?.dataset.testid??a?.tagName,trigger:a===d.querySelector(${js(more)}),inMenu:m.contains(a),body:a===d.body}`;
+    await key('ArrowDown');
+    await wait('page', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    await key('Tab', true);
+    await settle('page');
+    const shiftTab = await guest<any>('page', tabFacts);
+    check('board-overflow-shift-tab-closes-to-trigger', !shiftTab.open && shiftTab.expanded === 'false' && shiftTab.trigger, shiftTab);
+    await key('ArrowDown');
+    await wait('page', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    await key('Tab');
+    await settle('page');
+    const tab = await guest<any>('page', tabFacts);
+    check('board-overflow-tab-closes-and-moves-on', !tab.open && tab.expanded === 'false' && !tab.trigger && !tab.inMenu && !tab.body, tab);
     // Rail at 320 CSS px (1280 px at 400% zoom), phone pointer: no chip fits beside the label, so
     // one "N+ linked" control, the label kept as the group's name.
     await viewport(320, 844, true);
@@ -308,6 +322,31 @@ try {
     const r390 = await row('panel');
     check('rail-390-more-variant-matches-chips', r390.oneRow && r390.inside && r390.docFits && r390.visible > 0 && r390.more === `${r390.total - r390.visible}+ more` && chipSized(r390, true), r390);
     await capture('rail-390-more-variant', 390, 520);
+    // Widening until every link fits retires the overflow control: keyboard focus on it (or in its
+    // open menu) moves to a visible chip, and the menu closes. Four links, so no host "more".
+    await setLinks(short.slice(0, 4)); await push('panel');
+    await viewport(1280, 844, false);
+    const resizeFacts = `const a=d.activeElement,m=d.querySelector(${js(more)}),p=d.querySelector('[data-testid="linked-work-menu"]');return {testid:a?.dataset.testid??a?.tagName,visible:!!a?.checkVisibility(),chip:a?.dataset.testid==='linked-work-link'&&a.checkVisibility(),control:!!m?.checkVisibility(),open:!!p&&!p.hidden,expanded:m?.getAttribute('aria-expanded')}`;
+    const narrowWithControl = async () => {
+      await evaluate(`qa.show('panel',320);true`);
+      await wait('panel', `w.innerWidth===320 && ${chipCount(4)} && !!d.querySelector(${js(more)})?.checkVisibility()`);
+      await settle('panel');
+      check('rail-resize-tab-reaches-overflow', await tabTo('panel', `d.activeElement===d.querySelector(${js(more)})`));
+    };
+    const widen = async () => {
+      await evaluate(`qa.show('panel',900);true`);
+      await wait('panel', `w.innerWidth===900 && !d.querySelector(${js(more)})?.checkVisibility()`);
+      await settle('panel');
+      return guest<any>('panel', resizeFacts);
+    };
+    await narrowWithControl();
+    const fromControl = await widen();
+    check('rail-resize-focused-overflow-hands-focus-to-a-chip', fromControl.chip && !fromControl.control, fromControl);
+    await narrowWithControl();
+    await key('ArrowDown');
+    await wait('panel', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    const fromMenu390 = await widen();
+    check('rail-resize-open-menu-closes-and-hands-focus-to-a-chip', fromMenu390.chip && !fromMenu390.open && fromMenu390.expanded === 'false', fromMenu390);
     await setLinks(owner); await push('panel'); await push('page');
     // Localized label, names and refusal feedback.
     await viewport(1280, 844, false);

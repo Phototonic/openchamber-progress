@@ -549,7 +549,8 @@ order as `linked-work-menu-item` rows with the same glyph, spoken kind and full,
 wrapping title, followed by **More links are available in the host.** when the host
 held more. It follows the More menu's keyboard model: Enter, Space or Arrow Down opens
 it on the first row (Arrow Up on the last), arrows, Home and End move, Escape closes back
-to the control, and Tab, focus leaving or an outside press closes it. It opens below the
+to the control, and Tab or Shift+Tab (even back onto the control), focus leaving or an
+outside press closes it; Tab keeps its usual focus movement. It opens below the
 control and shifts back inside a narrow frame. Choosing a row closes the menu, returns
 focus to the control and opens that address exactly as its chip does. While it is open,
 background repaints wait, as for other host popups. No state, number or provider is inferred from a title,
@@ -561,7 +562,10 @@ returns keyboard focus to the chip that opens the same address, even after links
 added or reordered. When the focused chip's link is gone, focus never moves to another
 chip; the ordinary repaint rule applies. When the one-row fit hides the focused chip (a
 narrower frame, or links added before it), focus moves to the overflow control that lists
-it, never to a sibling chip.
+it, never to a sibling chip. When a wider frame lets every link fit and the overflow
+control goes, its menu closes, and keyboard focus on the control or in its menu moves to
+the last chip, the one nearest where the control was; measuring never drops focus from a
+control that stays.
 
 Pointer, Enter or Space activation sends that chip's admitted address to
 `host.openUrl` once; the host owns the destination. There is no `href`,
@@ -590,7 +594,10 @@ on a 1280 px board (a shortened long title, **N+ more** matching the hidden chip
 390 px phone rail with short titles (chips, then **N+ more**), that the overflow control has
 the chips' face size with a 44 px coarse-pointer hit area, that the menu
 lists all five plus the host note inside the frame with 44 px rows, opens one address per
-choice by pointer and keyboard, and returns focus on Escape.
+choice by pointer and keyboard, returns focus on Escape, and closes on Tab and Shift+Tab
+from a row with focus moving on as usual. Widening a 320 px rail until four links fit
+moves focus from the overflow control, or from its open menu, to a visible chip and
+closes the menu.
 It proves guest behaviour against a recording host, not native host routing or the
 destination page.
 
