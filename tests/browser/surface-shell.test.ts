@@ -55,7 +55,7 @@ function fixture(locale = 'en', saved: number | null = null) {
             mount(holder: Element) { holder.append(root); }, refresh() {}, dispose() { options.open = false; },
           };
         },
-        segmentedBar: () => new Element('div'), warningBadge: () => new Element('span'),
+        segmentedBar: () => new Element('div'), warningBadge: () => new Element('span'), icon: () => new Element('span'),
       },
       '@openchamber/sdk/ui': { mountButton(root: Element, o: any) { const b = new Element('button'); b.textContent = o.label; b.listeners.click = o.onClick; root.append(b); buttons.push(b); } },
     } as Record<string, unknown>)[path] ?? {},
@@ -147,6 +147,38 @@ test('same-reading reset retires Setup presentation but keeps the panel, not oth
   f.shell.reset(true);
   assert.equal(f.paint().opened, false, 'other panels still close on data reset');
 });
+const walk = (n: Element, out: Element[] = []): Element[] => { out.push(n); n.children.forEach(child => walk(child, out)); return out; };
+const linkedSnapshot = (ownerLinks: live.LiveSessionLink[]) => {
+  const session = (id: string, parentId: string | null, links: live.LiveSessionLink[]) => ({ id, title: id, projectId: 'alpha', directory: '/fixture/Alpha', parentId, archivedAt: null, worktree: null, activity: 'idle', outcome: null, ...(links.length ? { links } : {}) });
+  return { ...live.EMPTY_LIVE, projectsState: 'ready', projects: [{ id: 'alpha', name: 'Alpha', directory: '/fixture/Alpha' }],
+    sessions: new Map([['alpha', { state: 'ready', records: [session(P1.sessionId, null, ownerLinks), session('ses_fixture_child_C1', P1.sessionId, [{ title: 'Child-only change', kind: 'change', url: 'https://example.invalid/child' }])] }]]) };
+};
+for (const board of [false, true]) test(`${board ? 'board' : 'rail'} header shows only the main session's addressable links and drops them on a link-only update`, () => {
+  const f = fixture();
+  f.options.board = board;
+  const opened: string[] = [];
+  f.vc.env.openLinkedWorkUrl = (url: string) => opened.push(url);
+  f.vc.env.live = linkedSnapshot([
+    { title: 'PR #95', kind: 'change', url: 'https://example.invalid/change/95' },
+    { title: 'Issue #12', kind: 'issue', url: 'https://example.invalid/issue/12' },
+    { title: 'Text-only issue', kind: 'issue' },
+  ]);
+  const header = () => walk(f.paint(f.plan).root).find(n => n.dataset.testid === 'surface-header')!;
+  const chips = (head: Element) => walk(head).filter(n => n.dataset.testid === 'linked-work-link');
+  const first = chips(header());
+  assert.deepEqual(first.map(b => walk(b).find(n => n.className === 'ap-work-link-title')?.textContent), ['PR #95', 'Issue #12']);
+  assert.deepEqual(first.map(b => b.dataset.kind), ['change', 'issue']);
+  assert.deepEqual(first.map(b => b.dataset.focusKey), ['https://example.invalid/change/95', 'https://example.invalid/issue/12'], 'each chip has its own focus identity');
+  assert.deepEqual(opened, [], 'rendering opens nothing');
+  first[1]!.listeners.click();
+  assert.deepEqual(opened, ['https://example.invalid/issue/12'], 'one activation, one open');
+  f.vc.env.live = linkedSnapshot([]);
+  const head = header();
+  assert.equal(chips(head).length, 0);
+  assert.equal(walk(head).some(n => n.dataset.testid === 'linked-work'), false, 'no empty group or placeholder');
+  assert.ok(walk(head).some(n => n.dataset.testid === 'plan-title'), 'the title remains');
+});
+
 test('plan and settings menus do not duplicate the four views, summary or cleanup actions', () => {
   const f = fixture();
   f.paint(f.plan);

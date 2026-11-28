@@ -333,6 +333,8 @@ export interface Env {
   view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
   openDocumentUrl?: (url: string) => void;
+  /** For explicit activation of an admitted live session link. */
+  openLinkedWorkUrl?: (url: string) => void;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -778,6 +780,8 @@ export class ProgressShell {
       else if (plan.lifecycle === 'active' && vc.env.now - Date.parse(plan.reportedAt) > 3_600_000) meta.append(age(plan.reportedAt, vc.env, say('Updated ', vc.env.locale)));
       if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
       if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
+      const linked = linkedWorkChips(plan, vc.env);
+      if (linked) meta.append(linked);
       root.append(head);
       if (summary && options.railActions) root.append(summaries);
       const s = summarize(plan, ready);
@@ -988,6 +992,50 @@ const HOST_LINK_LABELS: Record<InterfaceLanguage, { agent: string; issue: string
   ru: { agent: 'Агент по данным хоста', issue: 'Задача, связанная в хосте', change: 'Изменение, связанное в хосте', more: 'В хосте есть другие связи.' },
   'zh-CN': { agent: '宿主报告的智能体', issue: '宿主关联的问题', change: '宿主关联的变更', more: '宿主中还有更多关联。' },
 };
+
+const LINKED_WORK_COPY: Record<InterfaceLanguage, { label: string; more: string }> = {
+  en: { label: 'Linked in OpenChamber', more: 'and more' },
+  ru: { label: 'Связано в OpenChamber', more: 'и другие' },
+  'zh-CN': { label: 'OpenChamber 中的关联', more: '还有更多' },
+};
+let linkedWorkIds = 0;
+
+/**
+ * Header chips for the selected plan's own main session: only its verified, unambiguous current
+ * host session (never the visible chat or a participant), and only links with an admitted address.
+ * Titles stay literal text; activation hands the address to the host opener, nothing else.
+ */
+export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
+  const open = env.openLinkedWorkUrl;
+  if (!open || !trustedSource(plan, env) || env.unverifiedSources?.has(plan.sourceId)) return null;
+  const cov = coverageFor(plan.ownerSessionId, plan.directory, env.live);
+  if (cov.kind !== 'live') return null;
+  const links = (cov.session.links ?? []).filter((link): link is typeof link & { url: string } => typeof link.url === 'string' && !!link.url);
+  if (!links.length) return null;
+  const copy = LINKED_WORK_COPY[env.locale], kinds = HOST_LINK_LABELS[env.locale];
+  const group = testid(el('span', 'ap-work-links'), 'linked-work');
+  const label = el('span', 'ap-work-links-label', copy.label);
+  label.id = `ap-linked-work-${++linkedWorkIds}`;
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-labelledby', label.id);
+  group.append(label);
+  for (const link of links) {
+    const b = testid(el('button', 'ap-work-link'), 'linked-work-link');
+    b.type = 'button';
+    b.dataset.kind = link.kind;
+    // Focus identity across repaints: the admitted address this chip opens, so a repaint can
+    // return focus only to a chip that opens the same address, never to a sibling.
+    b.dataset.focusKey = link.url;
+    // The visible title is shortened only by CSS; the spoken name keeps the kind and full title.
+    b.title = link.title;
+    b.append(icon(link.kind), el('span', 'ap-sr', `${kinds[link.kind]}: `), el('span', 'ap-work-link-title', link.title));
+    const url = link.url;
+    b.addEventListener('click', () => open(url));
+    group.append(b);
+  }
+  if (cov.session.moreLinks) group.append(testid(el('span', 'ap-work-links-more', copy.more), 'linked-work-more'));
+  return group;
+}
 
 /**
  * Who is involved. `compact`: one footer row for the main session (live state and a verified Open),

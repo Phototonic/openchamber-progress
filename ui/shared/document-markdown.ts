@@ -1,5 +1,8 @@
 import MarkdownIt, { type Env, type StateBlock, type StateInline, type Token } from 'markdown-it';
 import type { InterfaceLanguage } from './i18n.ts';
+import { webDocumentUrl } from './web-url.ts';
+
+export { webDocumentUrl };
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 // Keep destinations as data until the DOM renderer decides whether to offer navigation.
@@ -43,16 +46,6 @@ export function parseDocumentMarkdown(text: string): Token[] | null {
   } catch (error) {
     if (error === budgetExceeded) return null;
     throw error;
-  }
-}
-
-export function webDocumentUrl(destination: string): string | null {
-  if (destination.length > 2048 || !/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
-  try {
-    const url = new URL(destination);
-    return url.hostname && !url.username && !url.password ? url.href : null;
-  } catch {
-    return null;
   }
 }
 

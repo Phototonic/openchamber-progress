@@ -434,14 +434,28 @@ test('held action reads cannot continue or restore after replacement, account ch
   }
 });
 
-test('optional host work context is bounded, literal, URL-free and independent of session identity', () => {
+test('optional host work context keeps only bounded, literal links with admitted destinations', () => {
   assert.deepEqual(hostWorkContext({}), {});
   assert.deepEqual(hostWorkContext({ agent: 42, links: 'bad' }), {});
-  const links = Array.from({ length: 8 }, () => ({ title: '<img src=x>'.repeat(30), url: 'https://example.invalid/issue', kind: 'issue', linkedAt: 1 }));
-  const result = hostWorkContext({ agent: '<script>'.repeat(20), links });
+  const issue = { title: '<img src=x>'.repeat(30), url: 'https://example.invalid/issue', kind: 'issue', linkedAt: 1 };
+  const change = { title: 'Change', url: 'HTTP://example.invalid', kind: 'change', linkedAt: 2 };
+  assert.deepEqual(hostWorkContext({ links: [issue, change] }), {
+    links: [{ ...issue, title: issue.title.slice(0, 200) }, { ...change, url: 'http://example.invalid/' }],
+  });
+  const result = hostWorkContext({ agent: '<script>'.repeat(20), links: Array(8).fill(issue) });
   assert.equal(result.agent?.length, 80); assert.equal(result.links?.length, 5); assert.equal(result.links?.[0].title.length, 200); assert.equal(result.moreLinks, true);
-  assert.ok(result.links?.[0].title.startsWith('<img')); assert.equal(JSON.stringify(result).includes('https:'), false);
-  assert.deepEqual(hostWorkContext({ links: [{ ...links[0], url: 'javascript:alert(1)' }, { ...links[0], linkedAt: 'bad' }, { ...links[0], kind: 'unknown' }] }), {});
+  const invalid = [
+    ...['javascript:alert(1)', 'https://user:pass@example.invalid/', 'https://example.invalid/a b',
+      'https://example.invalid/\\issue', 'https://example.invalid/\u0001issue', 'https:example.invalid',
+      `https://example.invalid/${'x'.repeat(2048)}`].map(url => ({ ...issue, url })),
+    { ...issue, kind: 'unknown' },
+    ...['bad', -1, Infinity].map(linkedAt => ({ ...issue, linkedAt })),
+  ];
+  assert.deepEqual(hostWorkContext({ links: invalid }), {});
+  assert.deepEqual(hostWorkContext({ links: [...Array(5).fill(issue), ...invalid] }), {
+    links: Array(5).fill({ ...issue, title: issue.title.slice(0, 200) }),
+  });
+  assert.deepEqual(hostWorkContext({ links: [...Array(100).fill(null), issue] }), {});
 });
 
 test('live adapter exposes optional host context without altering session identity or activity', async () => {
@@ -457,7 +471,13 @@ test('live adapter exposes optional host context without altering session identi
     const raw = { ...actionLive().sessions.get('project')!.records[0], createdAt: 1, updatedAt: 1, items: [], agent: 'Host agent', links: [{ title: 'Host issue', kind: 'issue', url: 'https://example.invalid/issue', linkedAt: 1 }] };
     callbacks.get('sessions')!({ state: 'ready', sessions: [raw], coverage: [{ directory: '/fixture/Alpha', state: 'ready' }] });
     const saved = workspace.snapshot.sessions.get('project')!.records[0];
-    assert.equal(saved.id, 'A'); assert.equal(saved.activity, 'idle'); assert.equal(saved.agent, 'Host agent'); assert.equal(saved.links?.[0].title, 'Host issue');
+    assert.equal(saved.id, 'A'); assert.equal(saved.activity, 'idle'); assert.equal(saved.agent, 'Host agent'); assert.deepEqual(saved.links, raw.links);
+    const replacement = [{ title: 'Host change', kind: 'change', url: 'https://example.invalid/change', linkedAt: 2 }];
+    callbacks.get('sessions')!({ state: 'ready', sessions: [{ ...raw, links: replacement }] });
+    assert.deepEqual(workspace.snapshot.sessions.get('project')!.records[0].links, replacement);
+    callbacks.get('sessions')!({ state: 'ready', sessions: [{ ...raw, links: undefined }] });
+    const removed = workspace.snapshot.sessions.get('project')!.records[0];
+    assert.equal(removed.id, 'A'); assert.equal(removed.links, undefined);
     callbacks.get('sessions')!({ state: 'ready', sessions: [{ ...raw, agent: {}, links: {} }] });
     const malformed = workspace.snapshot.sessions.get('project')!.records[0];
     assert.equal(malformed.id, 'A'); assert.equal(malformed.activity, 'idle'); assert.equal(malformed.agent, undefined); assert.equal(malformed.links, undefined);

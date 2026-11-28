@@ -53,7 +53,7 @@ const APP_EN = {
   loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
   copyFailed: 'Clipboard unavailable. Select and copy the preview text below.',
   sessionFailed: 'That session could not be opened here.',
-  documentLinkFailed: 'Could not open this link.',
+  linkFailed: 'Could not open this link.',
   nearbyFocus: 'The row you were on is no longer shown, so focus moved to a nearby row.',
   removedFocus: (tasks: boolean) => `The task you were on was removed, so focus moved to ${tasks ? 'Tasks' : 'its group'}.`,
   focusSuffix: (notice: string, name: string) => `${notice}, so focus moved to ${name}.`,
@@ -62,7 +62,7 @@ const APP_RU: typeof APP_EN = {
   loading: 'Загрузка полного плана…', copying: 'Копирование…', copied: 'Markdown скопирован.',
   copyFailed: 'Буфер обмена недоступен. Выделите и скопируйте текст сводки ниже.',
   sessionFailed: 'Не удалось открыть эту сессию здесь.',
-  documentLinkFailed: 'Не удалось открыть ссылку.',
+  linkFailed: 'Не удалось открыть ссылку.',
   nearbyFocus: 'Строка больше не отображается, поэтому фокус перемещён на соседнюю строку.',
   removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
   focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
@@ -71,7 +71,7 @@ const APP_ZH: typeof APP_EN = {
   loading: '正在加载完整计划…', copying: '正在复制…', copied: '已复制 Markdown。',
   copyFailed: '剪贴板不可用，请选择并复制下方预览文本。',
   sessionFailed: '无法在此处打开该会话。',
-  documentLinkFailed: '无法打开此链接。',
+  linkFailed: '无法打开此链接。',
   nearbyFocus: '原先所在行已不再显示，焦点已移到附近的行。',
   removedFocus: (tasks) => `原来所在的任务已移除，焦点已移至${tasks ? '任务' : '其分组'}。`,
   focusSuffix: (notice, name) => `${notice}，因此焦点已移至${name}。`,
@@ -312,7 +312,9 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
   if (!owner) return null;
   const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const picker = owner.dataset.testid === 'plan-selector';
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
+  // `data-focus-key` tells apart repeated controls that share one hook (for example linked-work chips):
+  // restoration returns only to the control with the same key, never to its first sibling.
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null, key: owner.dataset.focusKey ?? null };
 };
 
 /** Count controls removed by a successful read/dismissal hand focus on within the same scope only. */
@@ -1540,6 +1542,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
+    const openWebUrl = (url: string) => {
+      void host.openUrl(url).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].linkFailed }).catch(() => {}));
+    };
     const env: Env = {
       device: ctx?.device,
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
@@ -1548,7 +1553,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       view: { fresh: !failure, captureEnabled: read?.captureEnabled ?? false },
       // Components offer this only for sessions the host currently lists and the verified bound source.
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
-      openDocumentUrl: (url) => { void host.openUrl(url).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].documentLinkFailed }).catch(() => {})); },
+      openDocumentUrl: openWebUrl,
+      openLinkedWorkUrl: openWebUrl,
     };
     const view: ViewContext<U> = {
       host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null,
@@ -1917,7 +1923,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
       const f = back;
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
-      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
+      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info && (n.dataset.focusKey ?? null) === f.key);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       const landing = target ?? backFallback ?? (coverage && back === focus ? coverageLanding(root, coverage) : null);
       if (landing) restoreFocus(landing);
