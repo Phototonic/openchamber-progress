@@ -143,9 +143,8 @@ export async function verifyIncompleteCounts(h: Harness) {
   for (const surface of ['panel', 'page']) {
     await show(surface, 1100);
     await wait(surface, `d.querySelector('[data-testid="subagent-activity"]')`);
-    await click(surface, '[data-testid="more-trigger"]');
-    await guest(surface, `const n=[...d.querySelectorAll('[role="menuitem"]')].find(n=>n.textContent.includes('Troubleshooting'));n.dataset.testid='qa-troubleshooting';return true`);
-    await click(surface, '[data-testid="qa-troubleshooting"]');
+    await click(surface, '[data-testid="settings-trigger"]');
+    await click(surface, '[data-testid="more-troubleshooting"]');
     await wait(surface, `d.querySelector('[data-testid="reporting-support-preview"]')`);
     await click(surface, '[data-testid="advanced-details"] summary');
     const total = await evaluate<number>(`qa.runs.A.history.push({...qa.runs.A.history[0],id:'review-${surface}',childSessionId:'review-${surface}'});qa.lose();qa.bump();qa.runs.A.history.length`);

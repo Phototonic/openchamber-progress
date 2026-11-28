@@ -154,8 +154,8 @@ try {
   const boardDetail = async () => {
     await wait('page', `d.querySelector('[data-testid="plan-row-P-phone"]')`, 'board rows');
     if (!(await guest<boolean>('page', `return d.querySelector('[data-testid="plan-row-P-phone"]')?.getAttribute('aria-selected')==='true'||!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-P-phone"]')`))) await click('page', '[data-testid="plan-row-P-phone"]');
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [data-id="progress"]')`, 'detail tabs');
-    if (!(await guest<boolean>('page', `return !!d.querySelector('[data-testid="plan-detail"] .ap-tasks[data-complete]')`))) await click('page', '[data-testid="detail-tabs"] [data-id="progress"]');
+    await wait('page', `d.querySelector('[data-testid="plan-view-list"] button')`, 'plan view switch');
+    if (!(await guest<boolean>('page', `return !!d.querySelector('[data-testid="plan-detail"] .ap-tasks[data-complete]')`))) await click('page', '[data-testid="plan-view-list"] button');
     await wait('page', `d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-P-phone"] .ap-tasks[data-complete]')`, 'board progress complete');
   };
   const layout = async (f: string, id: string, targets = true) => {
@@ -163,10 +163,43 @@ try {
     check(`${id}:no-horizontal-overflow`, o.ok, o);
     if (targets) { const small = await smallTargets(f); check(`${id}:touch-targets-44`, small.length === 0, small); }
   };
+  const origin = `http://127.0.0.1:${fx.port}/`;
+  const loaded = (url: string) => Promise.all([c.once('Page.loadEventFired'), c.send('Page.navigate', { url })]);
+  const actualZoom = async () => {
+    // Native browser zoom, not pinch magnification, CSS zoom or a layout-size proxy.
+    // The Chromium settings page belongs to our disposable profile, never a user's.
+    for (const [factor, pixels] of [[2, 780], [4, 1280]]) {
+      await c.send('Runtime.disable'); // Don't collect Chrome settings console output as guest errors.
+      await loaded('chrome://settings/appearance');
+      const saved = await evaluate<number>(`new Promise(resolve=>{chrome.settingsPrivate.setDefaultZoom(${factor});chrome.settingsPrivate.getDefaultZoom(resolve)})`);
+      check(`browser-zoom-${factor}:setting-applied`, Math.abs(saved - factor) < 0.01, { saved });
+      await viewport({ width: pixels, height: 1000, touch: false, scale: 1 });
+      await loaded(origin);
+      await c.send('Runtime.enable');
+      const size = await evaluate<{ width: number; height: number; ratio: number }>('({width:innerWidth,height:innerHeight,ratio:devicePixelRatio})');
+      check(`browser-zoom-${factor}:css-reflow`, size.width === pixels / factor && Math.abs(size.ratio - factor) < 0.01, size);
+      for (const f of ['panel', 'page']) {
+        await evaluate(`qa.show(${js(f)},${size.width},${size.height});true`);
+        await wait(f, `d.querySelector('[data-testid="plan-view"]')&&w.innerWidth===${size.width}`, 'reading at actual browser zoom');
+        await layout(f, `${f}-browser-zoom-${factor}`, false);
+        for (const owner of ['settings', 'more']) {
+          const hook = `[data-testid="${owner}-trigger"]`;
+          await guest(f, `w.focus();d.querySelector(${js(hook)}).focus();return true`);
+          await key('ArrowDown');
+          await wait(f, `!d.querySelector('[data-testid="${owner}-popup"]').hidden&&d.activeElement.matches('[role="menuitem"]')`, 'keyboard menu at actual browser zoom');
+          check(`${f}-browser-zoom-${factor}-${owner}-fits`, (await overflow(f)).ok);
+          await key('Escape');
+          check(`${f}-browser-zoom-${factor}-${owner}-returns-focus`, await guest(f, `return d.activeElement===d.querySelector(${js(hook)})`));
+        }
+        await shot(`${f}-browser-zoom-${factor * 100}`);
+      }
+    }
+  };
 
+  if (!process.argv.includes('--actual-zoom-only')) {
   // ============================================================ 390 x 844 phone, light, English
   await viewport({ width: 390, height: 844, touch: true });
-  await c.send('Page.navigate', { url: `http://127.0.0.1:${fx.port}/` });
+  await c.send('Page.navigate', { url: origin });
   await evaluate(`new Promise(r=>{const t=()=>window.qa&&frame('panel')?.contentDocument?.querySelector('[data-testid="progress-root"]')&&frame('page')?.contentDocument?.querySelector('[data-testid="progress-root"]')?r(true):setTimeout(t,50);t()})`);
   await show('panel');
   check('env:coarse-pointer-emulated', await guest<boolean>('panel', `return w.matchMedia('(pointer: coarse)').matches&&w.matchMedia('(prefers-reduced-motion: reduce)').matches`));
@@ -204,12 +237,14 @@ try {
   await listPanel();
 
   // Sheet from ⋯ (Sessions): opens with its heading focused, closes with a visible labelled control.
-  await progressUi.action('panel', 'sessions');
-  await wait('panel', `d.querySelector('.ap-panel') && d.activeElement?.closest('.ap-panel')`, 'sessions sheet focused');
-  const sheet = await guest<any>('panel', `const p=d.querySelector('.ap-panel'),b=[...p.querySelectorAll('.ap-panel-head button')];b.forEach(n=>n.setAttribute('data-qa-close','1'));return {close:b.map(n=>n.textContent||n.getAttribute('aria-label')),focus:d.activeElement.tagName}`);
+  await click('panel', '[data-testid="more-trigger"]');
+  await wait('panel', `!d.querySelector('[data-testid="more-popup"]').hidden`, 'plan More open');
+  await click('panel', '[data-testid="more-sessions"]');
+  await wait('panel', `d.activeElement?.closest('[data-testid="surface-panel-sessions"]')`, 'sessions sheet focused');
+  const sheet = await guest<any>('panel', `const p=d.querySelector('[data-testid="surface-panel-sessions"]'),b=[...p.querySelectorAll('[data-testid="surface-panel-back"] button')];return {close:b.map(n=>n.textContent||n.getAttribute('aria-label')),focus:d.activeElement.tagName}`);
   check('panel-390:sheet-close-visible', sheet.close.length === 1 && !!sheet.close[0], sheet);
   await layout('panel', 'panel-390-sheet');
-  await click('panel', '[data-qa-close]');
+  await click('panel', '[data-testid="surface-panel-back"] button');
   await wait('panel', `!d.querySelector('.ap-panel')`, 'sheet closed');
   const after = await guest<any>('panel', `const a=d.activeElement;return {tag:a?.tagName,testid:a?.closest('[data-testid]')?.dataset.testid??null,inRoot:!!a?.closest('[data-testid="progress-root"]')}`);
   check('panel-390:focus-after-sheet', after.inRoot && after.tag !== 'BODY', after);
@@ -262,8 +297,8 @@ try {
     // The host's 47 px top inset replaces the normal 14/12 px top padding; first content starts below it.
     check(`${f}-insets:top-inset-respected`, pad.top === 47 && pad.first >= 47, pad);
     // The last essential control can be scrolled above the occluded band.
-    const last = await guest<any>(f, `w.scrollTo(0,d.documentElement.scrollHeight);const n=d.querySelector('[data-testid="interface-language"] button,[data-testid="interface-language"]');const r=n.getBoundingClientRect();return {bottom:r.bottom,limit:w.innerHeight-334}`);
-    check(`${f}-keyboard:last-control-above-keyboard`, last.bottom <= last.limit, last);
+    const last = await guest<any>(f, `const n=[...d.querySelectorAll('button:not(:disabled),summary,input:not(:disabled)')].filter(n=>n.getClientRects().length&&!n.closest('.ap-sr,[hidden]')).at(-1);n?.scrollIntoView({block:'end',behavior:'instant'});return new Promise(resolve=>w.requestAnimationFrame(()=>{const r=n?.getBoundingClientRect();resolve({top:r?.top,bottom:r?.bottom,limit:w.innerHeight-334,hook:n?.closest('[data-testid]')?.dataset.testid})}))`);
+    check(`${f}-keyboard:last-control-above-keyboard`, last.top >= -1 && last.bottom <= last.limit + 1, last);
   }
   // Keyboard focus walk: the focused control is kept out of the occluded band by scroll padding.
   await show('page');
@@ -298,13 +333,18 @@ try {
   await layout('panel', 'panel-ru-dark');
   await shot('panel-ru-dark');
   await show('page'); await boardDetail();
-  await wait('page', `d.querySelector('[data-testid="detail-tabs"]')?.textContent.match(/[А-Яа-я]/)`, 'Russian board');
+  await wait('page', `d.querySelector('[data-testid="plan-view"]')?.textContent.match(/[А-Яа-я]/)`, 'Russian board');
   await layout('page', 'board-ru-dark');
   await shot('board-ru-dark'); await shot('board-ru-dark-full', true);
 
   // ============================================================ Simplified Chinese, 390 px
   await evaluate(`qa.setLocale('zh-CN');true`);
   await wait('page', `d.documentElement.lang==='zh-CN'`, 'Chinese board');
+  await click('page', '#ap-search-q');
+  await c.send('Input.insertText', { text: '审阅计划' });
+  await wait('page', `d.querySelector('#ap-search-q')?.value==='审阅计划'`, 'Chinese search input');
+  check('board-zh-CN-accepts-input', true);
+  await key('Escape');
   await layout('page', 'board-zh-CN-dark');
   await shot('board-zh-CN-dark'); await shot('board-zh-CN-dark-full', true);
   await show('panel'); await listPanel();
@@ -313,12 +353,24 @@ try {
   await shot('panel-zh-CN-dark');
 
   // ============================================================ 200% / 400% reflow (no hints)
-  for (const [w, label] of [[195, 'phone-200'], [320, 'desktop-400']] as const) {
-    await viewport({ width: w, height: 640, touch: false, scale: 2 });
+  for (const [w, scale, label] of [[195, 2, 'phone-200'], [320, 4, 'desktop-400']] as const) {
+    await viewport({ width: w, height: 640, touch: false, scale });
     for (const f of ['panel', 'page']) {
       await show(f);
       if (f === 'panel') await listPanel(); else await boardDetail();
       await layout(f, `${f}-${label}`, false);
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+      const settings = '[data-testid="settings-trigger"]', more = '[data-testid="more-trigger"]';
+      for (const [trigger, popup] of [[settings, 'settings-popup'], [more, 'more-popup']]) {
+        await click(f, trigger);
+        await wait(f, `!d.querySelector('[data-testid="${popup}"]').hidden`, 'open menu in forced colours');
+        check(`${f}-${label}-${popup}-focus-visible`, await guest(f, `const n=d.activeElement;return n?.matches('[role="menuitem"]')&&w.getComputedStyle(n).outlineStyle==='solid'`));
+        await key('Escape');
+        check(`${f}-${label}-${popup}-focus-return`, await guest(f, `return d.activeElement===d.querySelector(${js(trigger)})`));
+      }
+      check(`${f}-${label}-forced-selection`, await guest(f, `const n=d.querySelector('[data-testid="plan-view"] [aria-pressed="true"]');return !!n&&w.getComputedStyle(n).borderTopStyle==='solid'&&w.getComputedStyle(n).outlineStyle==='solid'`));
+      await shot(`${f}-${label}-forced-colors`);
+      await c.send('Emulation.setEmulatedMedia', { features: [] });
     }
   }
   await shot('board-reflow-200');
@@ -327,8 +379,8 @@ try {
   await evaluate(`qa.theme('light');qa.setLocale('en');true`);
   await viewport({ width: 1100, height: 850, touch: false });
   await show('page'); await boardDetail();
-  const desk = await guest<any>('page', `const g=w.getComputedStyle(d.querySelector('.ap-board')).gridTemplateColumns.split(' ').length,row=d.querySelector('article[data-testid="plan-P-phone"] details[data-testid="item-toggle-extra-2"]>summary').getBoundingClientRect().height,chip=d.querySelector('.ap-state-chip').getBoundingClientRect().height,root=w.getComputedStyle(d.querySelector('[data-testid="progress-root"]'));return {coarse:w.matchMedia('(pointer: coarse)').matches,columns:g,row,chip,pad:[root.paddingTop,root.paddingRight,root.paddingBottom,root.paddingLeft]}`);
-  check('desktop:two-column-fine-pointer-sizes', !desk.coarse && desk.columns === 2 && desk.row < 44 && desk.chip < 44 && desk.pad.join(' ') === '18px 22px 22px 22px', desk);
+  const desk = await guest<any>('page', `const g=w.getComputedStyle(d.querySelector('.ap-board')).gridTemplateColumns.split(' ').length,row=d.querySelector('article[data-testid="plan-P-phone"] details[data-testid="item-toggle-extra-2"]>summary').getBoundingClientRect().height,view=d.querySelector('[data-testid="plan-view-list"] button').getBoundingClientRect().height,root=w.getComputedStyle(d.querySelector('[data-testid="progress-root"]'));return {coarse:w.matchMedia('(pointer: coarse)').matches,columns:g,row,view,pad:[root.paddingTop,root.paddingRight,root.paddingBottom,root.paddingLeft]}`);
+  check('desktop:two-column-fine-pointer-sizes', !desk.coarse && desk.columns === 2 && desk.row < 44 && desk.view < 44 && desk.pad.join(' ') === '18px 22px 22px 22px', desk);
   await layout('page', 'board-desktop', false);
   await shot('board-desktop');
   await viewport({ width: 360, height: 800, touch: false });
@@ -357,8 +409,10 @@ try {
   check('requests:no-writes', all.every((q) => q.method === 'GET'), all.filter((q) => q.method !== 'GET').map((q) => q.path));
   const surfaces = await evaluate<any[]>(`qa.messages.filter(m=>m.type==='open-surface').map(m=>m.payload)`);
   check('host:no-guessed-open-surface-payload', surfaces.every((p) => p && Object.keys(p).join() === 'surfaceId'), surfaces);
-  check('runtime:no-console-errors', c.errors.length === 0, c.errors);
   void mark;
+  }
+  await actualZoom();
+  check('runtime:no-console-errors', c.errors.length === 0, c.errors);
 } catch (error) {
   failure = String((error as Error)?.stack ?? error).slice(0, 2000);
 } finally {

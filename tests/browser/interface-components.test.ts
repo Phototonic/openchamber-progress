@@ -247,7 +247,7 @@ test('inline document repaint retains a read error without automatic retry, but 
   assert.equal(requests, 1, 'data and language repaints keep the cached failure');
   assert.match(english.textContent, /progress is busy/i);
   assert.match(russian.textContent, /Прогресс занят/);
-  russian.children[1].children[0].children[1].listeners.click();
+  russian.children[0].children[0].children[1].listeners.click();
   assert.equal(requests, 2, 'explicit Retry starts exactly one additional read');
 });
 

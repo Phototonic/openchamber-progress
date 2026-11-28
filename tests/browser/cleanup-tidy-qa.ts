@@ -143,10 +143,7 @@ try {
     check(id + '-result-status', await guest(s, `return d.querySelector('[data-testid="tidy-result"]').getAttribute('role')==='status'`));
     await shot(id + '-result');
     await wait(s, `!!d.activeElement?.closest('[data-testid="tidy-open"]')`);
-    // The board's new Select control follows Tidy; the result's Undo follows the
-    // selection bar. Keep this order explicit rather than skipping to Undo by hook.
-    await key('Tab');
-    check(id + '-keyboard-order-select', await guest(s, `return !!d.activeElement?.closest('[data-testid="selection-mode"]')`));
+    // Undo follows the library's Tidy control; Select is in the list heading.
     await key('Tab');
     check(id + '-keyboard-order-undo', await guest(s, `return !!d.activeElement?.closest('[data-testid="tidy-undo"]')`));
     await key('Enter');

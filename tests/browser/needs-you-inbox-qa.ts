@@ -200,11 +200,9 @@ try {
   const reload = await evaluate<number>(`qa.reload('panel')`);
   await wait('panel', `w.location.search==='?reload=${reload}' && ${count(1)}`);
   check('reload-remembers-hidden-and-expanded-not-open-item', await guest('panel', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='true' && !d.querySelector('.ap-inbox-facts:not([hidden])')`));
-  await click('panel', '[data-testid="more-trigger"]');
-  await wait('panel', `!!d.querySelector('[data-testid="more-needs-you-hidden"]')`);
-  await click('panel', '[data-testid="more-needs-you-hidden"]');
+  await click('panel', '[data-testid="needs-you-hidden-count"] button');
   await wait('panel', `!!d.querySelector('[data-testid="needs-you-hidden-row"]')`);
-  check('hidden-menu-reaches-unhide', await guest('panel', `return d.querySelector('[data-testid="needs-you-hidden-row"]').textContent.includes('Choose CSV or JSON')`));
+  check('hidden-disclosure-reaches-unhide', await guest('panel', `return d.querySelector('[data-testid="needs-you-hidden-row"]').textContent.includes('Choose CSV or JSON')`));
   await click('panel', '[data-testid="needs-you-unhide"] button'); await wait('panel', count(2));
   await click('panel', open('task-a')); await click('panel', `${row('task-a')} [data-testid="needs-you-hide"] button`); await wait('panel', count(1));
   const revision = await guest<number>('panel', `return Number(d.querySelector(${js(row('task-b'))}).dataset.revision)`);

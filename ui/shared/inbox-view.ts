@@ -230,9 +230,9 @@ export class CompactInbox {
   undo: string | null = null;
   expanded: boolean | null = null;
   matches(identity: string) { return this.identity === identity; }
-  reconcile(identity: string) {
+  reconcile(identity: string, all = false) {
     if (identity === this.identity) return;
-    this.identity = identity; this.all = false; this.opened = null; this.showHidden = false; this.undo = null; this.expanded = null;
+    this.identity = identity; this.all = all; this.opened = null; this.showHidden = false; this.undo = null; this.expanded = null;
   }
 }
 
@@ -369,24 +369,23 @@ export interface CompactInboxOptions {
   plans: PlanView[];
   shownPlan?: string | null;
   retry?: () => void;
+  /** Board owns the opener in its top bar, above the one inline reading. */
+  triggerMount?: HTMLElement;
 }
-export function hiddenInboxAction(panel: InboxPanel | null, state: CompactInbox, locale: string, changed: () => void, surface: ViewSurface) {
-  const n = panel?.model.needsYou.filter(row => panel.device?.hidden(hiddenItemKey(panel.storeId ?? '', row))).length ?? 0;
-  return n ? [{ id: 'needs-you-hidden', label: compactInboxCopy(locale).hidden(n), run: () => { state.showHidden = true; state.expanded = true; void panel?.device?.setExpanded(surface, true); changed(); } }] : [];
-}
-
 /** One disclosure, scoped rows and one in-place reading. No task or host composer writes. */
 export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxOptions) {
   const { state, surface } = options, device = panel.device;
-  state.reconcile(options.identity);
+  state.reconcile(options.identity, surface === 'page');
+  if (surface === 'page' && !options.shownPlan) state.all = true;
   const t = inboxCopy(env.locale), c = compactInboxCopy(env.locale);
   const isHidden = (row: InboxRowView) => device?.hidden(hiddenItemKey(panel.storeId ?? '', row)) ?? false;
-  const m = scopeInbox(panel.model, state.all ? null : options.keys, options.stale === null && (state.all || options.scopeComplete), device, panel.storeId).model;
-  const other = scopeInbox(panel.model, options.keys, options.scopeComplete, device, panel.storeId).other;
+  const scoped = scopeInbox(panel.model, state.all ? null : options.keys, options.stale === null && (state.all || options.scopeComplete), device, panel.storeId);
+  const { model: m, other } = scoped;
+  const countModel = surface === 'page' && !state.all ? scopeInbox(panel.model, null, options.stale === null, device, panel.storeId).model : m;
   const hidden = panel.model.needsYou.filter(isHidden);
   if (state.opened && !m.needsYou.some(row => row.rowKey === state.opened)) state.opened = null;
   if (state.undo && !device?.hidden(state.undo)) state.undo = null;
-  const expanded = state.expanded ?? device?.expanded(surface) ?? surface === 'page';
+  const expanded = state.expanded ?? device?.expanded(surface) ?? false;
   const box = testid(el('section', 'ap-inbox ap-inbox-compact'), ATTENTION_HOOKS.inbox);
   box.dataset.availability = m.availability;
   if (surface === 'panel' && m.availability === 'ready' && m.complete && !m.counts.needsYou && !other && !hidden.length && options.stale === null && !device?.error) box.hidden = true;
@@ -395,23 +394,35 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
   toggle.type = 'button'; toggle.id = 'ap-inbox-h';
   toggle.setAttribute('aria-expanded', String(expanded)); toggle.setAttribute('aria-controls', 'ap-inbox-content');
   toggle.append(el('span', '', t.heading));
-  if (m.availability === 'ready' && m.counts.needsYou > 0) {
-    const count = testid(el('span', 'ap-inbox-count', `${m.counts.needsYou}${m.complete ? '' : '+'}`), ATTENTION_HOOKS.count);
-    Object.assign(count.dataset, { count: String(m.counts.needsYou), exact: String(m.complete) });
-    if (m.counts.needsYou) count.dataset.tone = 'attention';
-    if (m.loadingMore || m.rechecking) count.setAttribute('aria-busy', 'true');
+  const oldest = m.needsYou.reduce<InboxRowView | null>((old, row) => row.wait && (!old?.wait || elapsedAt(row.wait, env.mono) > elapsedAt(old.wait, env.mono)) ? row : old, null);
+  const oldestWait = () => {
+    if (!oldest?.wait) return null;
+    const row = !m.complete ? { ...oldest, wait: { ...oldest.wait, kind: 'lower-bound' as const } } : oldest;
+    return waitLabel(row, m, env);
+  };
+  if (countModel.availability === 'ready' && (countModel.counts.needsYou > 0 || surface === 'page' && countModel.complete)) {
+    const n = countModel.counts.needsYou;
+    const count = testid(el('span', 'ap-inbox-count', `${n}${countModel.complete ? '' : '+'}`), ATTENTION_HOOKS.count);
+    Object.assign(count.dataset, { count: String(n), exact: String(countModel.complete) });
+    if (n) count.dataset.tone = 'attention';
+    if (countModel.loadingMore || countModel.rechecking) count.setAttribute('aria-busy', 'true');
     toggle.append(count);
-    const oldest = m.needsYou.filter(row => row.wait).sort((a, b) => elapsedAt(b.wait!, env.mono) - elapsedAt(a.wait!, env.mono))[0];
-    if (oldest) {
-      const minimum = !m.complete && oldest.wait ? { ...oldest, wait: { ...oldest.wait, kind: 'lower-bound' as const } } : oldest;
-      const wait = waitLabel(minimum, m, env); wait.classList.add('ap-inbox-oldest'); toggle.append(wait);
-    }
+    const wait = surface === 'panel' ? oldestWait() : null;
+    if (wait) { wait.classList.add('ap-inbox-oldest'); toggle.append(wait); }
   }
   toggle.addEventListener('click', () => {
+    if (!expanded && surface === 'page') { state.all = true; state.opened = null; }
     if (device && device.error !== 'read') void device.setExpanded(surface, !expanded).then(ok => { if (ok && state.matches(options.identity)) { state.expanded = null; options.changed(); } }); else state.expanded = !expanded;
     options.changed();
   });
-  const h = testid(el('h2', 'ap-inbox-title'), 'needs-you-heading'); h.append(toggle); box.append(h);
+  if (options.triggerMount) {
+    options.triggerMount.append(toggle);
+    toggle.setAttribute('aria-controls', 'ap-inbox-reading');
+    box.id = 'ap-inbox-reading';
+    box.hidden = !expanded;
+  } else {
+    const h = testid(el('h2', 'ap-inbox-title'), 'needs-you-heading'); h.append(toggle); box.append(h);
+  }
   if (m.availability !== 'ready') {
     box.append(testid(warningLine(m.availability === 'unsupported' ? t.unsupported : m.availability === 'unverified' ? t.unverified : t.invalid, 'info', 'p'), 'needs-you-unavailable'));
     if (options.retry) button(box, 'needs-you-retry', t.retry, options.retry, 'ghost');
@@ -422,15 +433,22 @@ export function inboxSection(panel: InboxPanel, env: Env, options: CompactInboxO
     if (options.retry) button(box, 'needs-you-retry', t.retry, options.retry, 'ghost');
   }
   // Recording state belongs to the surface's one non-dismissible recording line.
-  if (!m.counts.needsYou && !state.all && other) button(box, 'needs-you-other-plans', c.other(`${other}${panel.model.complete && options.stale === null ? '' : '+'}`), () => { state.all = true; state.expanded = true; void device?.setExpanded(surface, true); options.changed(); }, 'ghost');
+  if (surface === 'panel' && !m.counts.needsYou && !state.all && other) button(box, 'needs-you-other-plans', c.other(`${other}${panel.model.complete && options.stale === null ? '' : '+'}`), () => { state.all = true; state.expanded = true; void device?.setExpanded(surface, true); options.changed(); }, 'ghost');
   const body = testid(el('div', 'ap-inbox-content'), 'needs-you-content'); body.id = 'ap-inbox-content'; body.hidden = !expanded;
   box.append(body);
   const scopes = testid(el('div', 'ap-row ap-inbox-scopes'), 'needs-you-scope');
-  for (const [all, label] of [[false, surface === 'panel' ? c.session : c.plan], [true, c.all]] as const) {
+  const scopesBySurface = surface === 'page' ? [[true, c.all], [false, c.plan]] as const : [[false, c.session], [true, c.all]] as const;
+  for (const [all, label] of scopesBySurface) {
+    if (!all && surface === 'page' && !options.shownPlan) continue;
     const b = button(scopes, `needs-you-scope-${all ? 'all' : 'current'}`, label, () => { state.all = all; state.opened = null; options.changed(); }, 'ghost');
     b.querySelector('button')!.setAttribute('aria-pressed', String(state.all === all));
   }
   body.append(scopes);
+  const wait = surface === 'page' && expanded ? oldestWait() : null;
+  if (wait) {
+    const label = { en: 'Longest known wait: ', ru: 'Самое долгое известное ожидание: ', 'zh-CN': '最长已知等待时间：' }[resolveLanguage('auto', env.locale)];
+    const line = el('p', 'ap-note', label); line.append(wait); body.append(line);
+  }
   if (device?.error) {
     box.append(testid(warningLine(device.error === 'read' ? c.readFailed : c.savedFailed, 'warning', 'p'), 'needs-you-device-error'));
     button(box, 'needs-you-device-retry', t.retry, () => { void device.refresh(true); }, 'ghost');

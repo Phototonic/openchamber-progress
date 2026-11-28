@@ -93,7 +93,7 @@ export const MAP_CSS = `
 .ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .ap-map-viewport[data-interactive]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-3px}
 .ap-map-toolbar{position:relative;display:flex;flex-wrap:nowrap;align-items:center;gap:4px;min-width:0;padding:4px;border:1px solid var(--oc-border);border-bottom:0;border-radius:var(--oc-radius,10px) var(--oc-radius,10px) 0 0;background:var(--oc-muted-surface)}
-.ap-map-toolbar>[data-testid="plan-view"]{display:flex;flex-wrap:wrap;gap:0;margin-right:auto;min-width:min-content}
+.ap-map-toolbar>[data-testid="plan-view"]{display:flex;flex-wrap:wrap;gap:0;margin-right:auto;min-width:0}
 .ap-map-toolbar>[data-testid="plan-view"] .oc-sdk-btn{padding-inline:6px}
 .ap-map-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:12px;color:var(--oc-muted)}
 .ap-map-opening-hint{padding-top:6px}

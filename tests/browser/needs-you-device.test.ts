@@ -22,7 +22,7 @@ test('device view defaults and unsupported host send no storage requests', async
   const f = fixture();
   await f.state.refresh(false);
   assert.equal(f.state.expanded('panel'), false);
-  assert.equal(f.state.expanded('page'), true);
+  assert.equal(f.state.expanded('page'), false);
   assert.equal(f.state.canHide, false);
   assert.equal(await f.state.hide(key(1)), false);
   await f.state.setExpanded('panel', true);

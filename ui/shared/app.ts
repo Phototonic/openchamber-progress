@@ -205,7 +205,7 @@ export type Freshness = (service: ServiceHost) => Promise<FreshnessResult>;
 export type SummaryMode = 'progress' | 'handoff';
 export interface SummaryView {
   preview: { generation: number; mode: SummaryMode; text: string | null; message: string; canRetry: boolean; canSummaryOnly: boolean; copying: boolean; status: string } | null;
-  open: (mode: SummaryMode) => void;
+  open: (mode: SummaryMode, opener?: string) => void;
   close: () => void;
   copy: () => void;
   retry: () => void;
@@ -658,7 +658,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
   type PreviewBinding = { selection: string; key: string; plan: PlanView };
-  type Preview = Omit<NonNullable<SummaryView['preview']>, 'status'> & { binding: PreviewBinding; language: InterfaceLanguage; copyState: 'idle' | 'copying' | 'copied' | 'failed'; result?: DetailResult; historical?: DetailSnapshot; summaryOnly?: boolean };
+  type Preview = Omit<NonNullable<SummaryView['preview']>, 'status'> & { binding: PreviewBinding; opener: string; language: InterfaceLanguage; copyState: 'idle' | 'copying' | 'copied' | 'failed'; result?: DetailResult; historical?: DetailSnapshot; summaryOnly?: boolean };
   let preview: Preview | null = null;
   let previewGeneration = 0;
   let previewScopeKey: string | null = null;
@@ -681,9 +681,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     const p = target && vc.read?.plans.find((p) => p.key === target.plan);
     return p ? previewBinding(vc, p) : null;
   }
-  function freshPreview(binding: PreviewBinding, mode: SummaryMode): Preview {
+  function freshPreview(binding: PreviewBinding, mode: SummaryMode, opener = 'plan-actions'): Preview {
     const locale = language.snapshot().language;
-    return { binding, mode, language: locale, generation: ++previewGeneration, text: null, message: APP_COPY[locale].loading, canRetry: false, canSummaryOnly: false, copying: false, copyState: 'idle' };
+    return { binding, mode, opener, language: locale, generation: ++previewGeneration, text: null, message: APP_COPY[locale].loading, canRetry: false, canSummaryOnly: false, copying: false, copyState: 'idle' };
   }
   /** Synchronous retirement also covers two selection changes before the next paint. */
   function reconcilePreview() {
@@ -697,7 +697,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if ((binding?.key ?? null) !== previewScopeKey) { previewScopeKey = binding?.key ?? null; previewGeneration++; }
     if (!preview) return;
     if (!binding || binding.selection !== preview.binding.selection) { preview = null; previewFocus = null; previewGeneration++; }
-    else if (binding.key !== preview.binding.key) preview = freshPreview(binding, preview.mode);
+    else if (binding.key !== preview.binding.key) preview = freshPreview(binding, preview.mode, preview.opener);
   }
   function matchesSnapshot(s: DetailSnapshot, p: PlanView) {
     return !!read && s.identity.storeId === read.storeId && s.identity.binding.sourceId === read.binding.sourceId && s.identity.binding.verified === read.binding.verified && s.identity.sourceId === p.sourceId && s.identity.planId === p.id;
@@ -747,16 +747,16 @@ export function startView<U>(spec: ViewSpec<U>) {
     const status = !shown || shown.copyState === 'idle' ? '' : shown.copyState === 'copying' ? copy.copying : shown.copyState === 'copied' ? copy.copied : copy.copyFailed;
     return {
       preview: shown ? { generation: shown.generation, mode: shown.mode, text, message: shown.message, canRetry: shown.canRetry, canSummaryOnly: shown.canSummaryOnly, copying: shown.copying, status } : null,
-      open: (mode) => { if (current()) { preview = freshPreview(binding, mode); versions.ui++; schedule(); } },
+      open: (mode, opener) => { if (current()) { preview = freshPreview(binding, mode, opener); versions.ui++; schedule(); } },
       close: () => {
         if (!active()) return;
-        previewFocus = { selection: binding.selection, hook: 'plan-actions' };
+        previewFocus = { selection: binding.selection, hook: bound!.opener };
         preview = null; previewGeneration++; versions.ui++; schedule();
       },
       retry: () => {
         if (!active() || !bound!.canRetry) return;
         // Reuse the existing detail queue; preserve only its validated historical summary.
-        preview = freshPreview(binding, bound!.mode); loadDetails([p], true); versions.ui++; schedule(); retry();
+        preview = freshPreview(binding, bound!.mode, bound!.opener); loadDetails([p], true); versions.ui++; schedule(); retry();
       },
       summaryOnly: () => {
         if (!active() || !bound!.canSummaryOnly || !bound!.historical || !bound!.result || bound!.result.ok || !matchesSnapshot(bound!.historical, p)) return;
@@ -787,7 +787,9 @@ export function startView<U>(spec: ViewSpec<U>) {
    * over, when the identity changes; cleared with the caches on authority resets and disposal.
    */
   /** `parked`/`parkedControl`: a task row or a task-view control whose focus waits at Tasks during a loading paint. */
-  type Reading = { key: string; plan: string; state: ReadingState; open: Map<string, boolean>; anchor: Anchor | null; parked: Logical | null; parkedControl: FocusKey | null; then: ((root: HTMLElement) => void)[] };
+  type Reading = { key: string; plan: string; state: ReadingState; open: Map<string, boolean>; anchor: Anchor | null; parked: Logical | null; parkedControl: FocusKey | null; then: ((root: HTMLElement) => void)[];
+    positionId?: string; pagePositions?: Map<string, number>; documentPosition?: { key: string; top: number };
+  };
   let reading: Reading | null = null;
   /** The reading the current DOM was painted under: only its own paint is harvested. */
   let paintedReading: Reading | null = null;
@@ -858,7 +860,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   const retireParts = () => {
     activity = null;
     cacheGeneration++; detailQueue = Promise.resolve();
-    if (preview) preview = freshPreview(preview.binding, preview.mode);
+    if (preview) preview = freshPreview(preview.binding, preview.mode, preview.opener);
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key); else if (value.refreshing) details.set(key, { ...value, refreshing: undefined });
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
@@ -1790,6 +1792,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
     const scrolls = new Map([...mount!.querySelectorAll<HTMLElement>('[data-scroll-key]')].map((n) => [n.dataset.scrollKey!, n.scrollTop]));
     const pageScroll = document.scrollingElement?.scrollTop ?? 0;
+    const oldMode = mount!.querySelector<HTMLElement>('[data-reading-mode]')?.dataset.readingMode;
+    if (reading && oldMode && oldMode !== 'history' && (oldMode !== 'progress' || oldArticle?.querySelector(COMPLETE_TASKS))) {
+      (reading.pagePositions ??= new Map()).set(oldMode, pageScroll);
+      const capture = mount!.querySelector<HTMLElement>('.ap-document-view [data-testid="document-text"]');
+      if (oldMode === 'document' && capture?.dataset.scrollKey) reading.documentPosition = { key: capture.dataset.scrollKey, top: capture.scrollTop };
+    }
     const values = new Map([...mount!.querySelectorAll<HTMLInputElement>('input[data-keep]')].map((n) => [n.dataset.keep!, n.value]));
 
     // Equal plan and item IDs never carry reading state into another integration account, store, binding or scope.
@@ -1800,6 +1808,13 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (reading || readingKey) retireReadingUi();
       reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
       vc.reading = readingView();
+    }
+    const positionPlan = reading && spec.actionPlan?.(vc);
+    const positionId = positionPlan ? JSON.stringify([positionPlan.cleanup?.state, positionPlan.cleanup?.revision ?? 0, positionPlan.document?.captureId]) : undefined;
+    const samePosition = sameReading && reading?.positionId === positionId;
+    if (reading && !samePosition) {
+      reading.positionId = positionId;
+      reading.anchor = null; reading.pagePositions = undefined; reading.documentPosition = undefined;
     }
     // Only take follow-ups whose state is reflected in this paint. A reveal requested
     // by afterPaint can clear filters, but its callback must wait for the next List.
@@ -1829,6 +1844,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
     const list = article?.querySelector<HTMLElement>('ul.ap-items') ?? null;
     const complete = !!article?.querySelector(COMPLETE_TASKS);
+    const nextMode = root.dataset.readingMode ?? root.querySelector<HTMLElement>('[data-reading-mode]')?.dataset.readingMode;
     for (const d of root.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) {
       const was = d.closest(READING) ? reading?.open.get(d.dataset.testid!) : open.get(d.dataset.testid!);
       if (was !== undefined && was !== d.open) {
@@ -1866,10 +1882,15 @@ export function startView<U>(spec: ViewSpec<U>) {
     commitInfoPaint(infoRoot);
     alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
-      const top = scrolls.get(n.dataset.scrollKey!);
+      const position = samePosition ? reading?.documentPosition : undefined;
+      const top = n.closest('.ap-document-view') ? (position?.key === n.dataset.scrollKey ? position?.top : undefined) : scrolls.get(n.dataset.scrollKey!);
       if (top) n.scrollTop = top;
     }
-    if (document.scrollingElement) document.scrollingElement.scrollTop = pageScroll;
+    if (document.scrollingElement) {
+      // Keep ordinary repaint scroll; changing views resumes only the current reading's actual positions.
+      document.scrollingElement.scrollTop = nextMode && (!samePosition || oldMode !== nextMode)
+        ? (samePosition ? reading?.pagePositions?.get(nextMode) ?? 0 : 0) : pageScroll;
+    }
     // Logical task focus: restored without scrolling, parked at Tasks across a loading gap and
     // brought back only while focus is still parked there.
     let restored = false;

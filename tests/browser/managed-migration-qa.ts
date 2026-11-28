@@ -196,8 +196,8 @@ try {
     await viewport(width, height);
     await evaluate(`(()=>{try{frame().contentWindow.__stale=true}catch{}return true})()`);
     await evaluate(`qa.load(${literal(locale)},${literal(mode)})`);
-    await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="more-trigger"]')`, 'surface menu');
-    await click('[data-testid="more-trigger"]');
+    await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="settings-trigger"]')`, 'settings menu');
+    await click('[data-testid="settings-trigger"]');
     await click('[data-testid="more-setup"]');
     await wait(`!frame().contentWindow.__stale&&d.readyState==='complete'&&d.querySelector('[data-testid="setup-panel"][data-steps="1"],[data-testid="setup-panel"][data-phase]')`, 'setup panel');
     await watchAlerts();
@@ -268,7 +268,7 @@ try {
     if (close === 'Back') await click('[data-testid="surface-panel-back"] button');
     else await key('Escape');
     await wait(`!d.querySelector('[data-testid="surface-panel-setup"]')`, `${close} closes Setup`);
-    check(`panel-${close}:focus-returns-to-more`, await focused() === 'more-trigger', await focused());
+    check(`panel-${close}:focus-returns-to-settings`, await focused() === 'settings-trigger', await focused());
     releaseClosed();
     for (const end = Date.now() + 10_000; engine.progress?.step?.name !== 'remove-discovery'; await sleep(40)) {
       if (Date.now() > end) throw new Error('held operation did not settle after panel close');
@@ -276,7 +276,7 @@ try {
     await frames();
     check(`panel-${close}:operation-settles-without-control-request`, engine.progress?.capture.state === 'off' && stepCalls() === sentBefore);
     await idle(`panel-${close}:no-unattended-continuation`);
-    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="settings-trigger"]');
     await click('[data-testid="more-setup"]');
     await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-step="remove-discovery"][data-capture="off"][data-driving="false"]')&&d.querySelector('[data-testid="setup-migration-continue"]')`, 'reopened current durable state');
     check(`panel-${close}:reopen-is-read-only`, stepCalls() === sentBefore);
@@ -514,7 +514,7 @@ try {
   const readAt = log.length;
   holdSetupRead = new Promise<void>(resolve => { releaseStatus = resolve; });
   try {
-    await click('[data-testid="more-trigger"]');
+    await click('[data-testid="settings-trigger"]');
     await click('[data-testid="more-setup"]');
     await click('[data-testid="setup-inspect"] button');
     await wait(`d.querySelector('[data-testid="setup-migration-inspecting"]')`, 'review waiting for the panel status read');

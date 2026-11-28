@@ -115,16 +115,11 @@ try {
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames(); };
   const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
-  const more = '[data-testid="more-trigger"]';
-  const item = (id: string) => `[role="menuitem"][data-menu-id="${id}"]`;
-  const activeItem = (id: string) => `d.activeElement?.matches('${item(id)}')`;
+  const action = (id: string) => `[data-testid="${id.replace(/^summary-/, 'summary-open-')}"] button`;
   const progressUi = {
     async action(s: string, id: string) {
-      await wait(s, `!!d.querySelector('${more}')`);
-      await click(s, more);
-      await wait(s, `!!d.querySelector('${item(id)}')?.getClientRects().length`, `More: ${id}`);
-      await click(s, item(id));
-      await wait(s, `!d.querySelector('[role="menu"]:not([hidden])')`);
+      await wait(s, `!!d.querySelector('${action(id)}')?.getClientRects().length`, `Plan action: ${id}`);
+      await click(s, action(id));
     },
     async list(s: string, identity?: { id: string; source: string }) {
       if (identity) {
@@ -138,7 +133,7 @@ try {
   };
   const scope = (s: string) => (s === 'page' ? '[data-testid="plan-detail"] ' : '');
   const hook = (s: string, id: string) => `${scope(s)}[data-testid="${id}"]`;
-  const has = (s: string, id: string) => `!!d.querySelector('${hook(s, id)}')`;
+  const has = (s: string, id: string) => `!!d.querySelector('${hook(s, id === 'plan-actions' ? 'summary-open-progress' : id)}')`;
   const text = (s: string) => guest<string | null>(s, `return d.querySelector('${hook(s, 'summary-text')}')?.value??null`);
   const status = (s: string) => guest<string>(s, `return d.querySelector('${hook(s, 'summary-preview')}')?.textContent??''`);
   const copyEnabled = (s: string) => `d.querySelector('${hook(s, 'summary-copy')}')?.disabled===false`;
@@ -258,24 +253,20 @@ try {
   await show('panel', 280);
   await wait('panel', `${has('panel', 'plan-actions')}&&getComputedStyle(d.body).backgroundColor!=='rgb(250, 250, 250)'`, 'dark rail');
   await quiet('S3:keyboard', async () => {
-    const active = () => guest<string>('panel', `return d.activeElement?.matches('${more}')?'plan-actions':d.activeElement?.closest('[data-testid]')?.dataset.testid??d.activeElement?.tagName??''`);
+    const active = () => guest<string>('panel', `return d.activeElement?.closest('[data-testid]')?.dataset.testid??d.activeElement?.tagName??''`);
     await guest('panel', `w.focus();d.activeElement?.blur?.();d.querySelector('article.ap-plan').scrollIntoView({block:'start'});return true`);
     let steps = 0;
-    while ((await active()) !== 'plan-actions' && steps < 40) { await key('Tab'); steps++; }
-    check('S3:tab-reaches-actions', (await active()) === 'plan-actions', ['Reached Plan actions by Tab']);
+    while ((await active()) !== 'summary-open-progress' && steps < 40) { await key('Tab'); steps++; }
+    check('S3:tab-reaches-actions', (await active()) === 'summary-open-progress', ['Reached Copy update by Tab']);
     const ring = () => guest<boolean>('panel', `const n=d.activeElement,cs=getComputedStyle(n);return n.matches(':focus-visible')&&(cs.boxShadow!=='none'||cs.outlineStyle!=='none')`);
     check('S3:focus-visible-progress', await ring());
-    await key('Enter');
-    await wait('panel', `d.querySelector('[role="menu"]:not([hidden])')`, 'More opened by Enter');
-    await key('Home');
-    await wait('panel', activeItem('summary-progress'));
-    await key('ArrowDown');
-    check('S3:arrow-reaches-handoff', await guest('panel', `return ${activeItem('summary-handoff')}`));
-    await key('Home');
+    await key('Tab');
+    check('S3:tab-reaches-handoff', (await active()) === 'summary-open-handoff');
+    await key('Tab', 1, 8);
     await key('Enter');
     const expected = (await fx.expected('P-summary', 'progress'))!;
     await wait('panel', showsText('panel', expected), 'Enter opens progress preview');
-    check('S3:enter-opens-progress', (await active()) === 'plan-actions', ['Focus returns to the surviving menu trigger']);
+    check('S3:enter-opens-progress', (await active()) === 'summary-open-progress');
     for (let n=0;n<40&&(await active())!=='summary-text';n++) await key('Tab');
     check('S3:tab-reaches-text', (await active()) === 'summary-text');
     await key('Tab');
@@ -289,15 +280,13 @@ try {
     check('S3:focus-kept-after-copy', (await active()) === 'summary-copy', ['Focus is on Copy after keyboard activation completes (no Tab-walk)'], await active());
     const wrap = await guest('panel', `const t=d.querySelector('${hook('panel', 'summary-text')}'),cs=getComputedStyle(t);return {wraps:cs.whiteSpace!=='pre'&&cs.whiteSpace!=='nowrap'&&t.scrollWidth<=t.clientWidth+1,width:d.documentElement.clientWidth}`);
     check('S3:narrow-wraps-no-overflow', wrap.wraps && wrap.width === 280 && await noOverflow('panel'), ['280px: preview text wraps, no horizontal overflow, controls inside width'], wrap);
-    await shot('panel', 'preview-narrow-keyboard', 'article.ap-plan .ap-summary');
+    await shot('panel', 'preview-narrow-keyboard', '.ap-summary');
     await key('Tab');
     check('S3:tab-reaches-close', (await active()) === 'summary-close');
     await key('Enter');
-    await wait('panel', `!${has('panel', 'summary-preview')}&&!!d.activeElement?.closest('[data-testid="plan-actions"]')`, 'Close returns focus');
-    results.push({ id: 'S3:close-returns-focus', pass: true, facts: ['Enter on Close returns focus to Plan actions'] });
-    await key(' ');
-    await wait('panel', `d.querySelector('[role="menu"]:not([hidden])')`);
-    await key('Home'); await key('ArrowDown'); await key(' ');
+    await wait('panel', `!${has('panel', 'summary-preview')}&&!!d.activeElement?.closest('[data-testid="summary-open-progress"]')`, 'Close returns focus');
+    results.push({ id: 'S3:close-returns-focus', pass: true, facts: ['Enter on Close returns focus to Copy update'] });
+    await key('Tab'); await key(' ');
     const handoffText = (await fx.expected('P-summary', 'handoff'))!;
     await wait('panel', showsText('panel', handoffText), 'Space opens handoff preview');
     for (let n=0;n<40&&(await active())!=='summary-text';n++) await key('Tab');
