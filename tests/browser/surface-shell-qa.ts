@@ -1,5 +1,6 @@
 // Synthetic SDK shell and isolated real-service map, not native-host/physical-phone certification.
 // Usage: node --experimental-strip-types tests/browser/surface-shell-qa.ts --source --chromium <path> --artifacts <dir>
+// Focused: add --linked-work-only for the header's host-linked work chips (board and rail) alone.
 // Real CDP pointer and keyboard input; no click/focus dispatch from page JavaScript.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
 import { failureCopy, shellCopy } from '../../ui/shared/components.ts';
 import { managedCopy } from '../../ui/shared/managed-copy.ts';
 import { startLanguageFixture } from './interface-language-fixture.ts';
+import { S } from './fixtures.ts';
 import { startPhoneShell } from './phone-layout-shell.ts';
 import { startDigestShell } from './change-digests-shell.ts';
 import { chromiumPath, launchChromium } from './phone-cdp.ts';
@@ -38,11 +40,11 @@ try {
     const ok = await evaluate(`(async()=>{const end=performance.now()+10000;while(performance.now()<end){try{const w=frame(${js(surface)}).contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>requestAnimationFrame(r))}return false})()`);
     if (!ok) throw Error(`Timed out (${surface}): ${condition}; ` + await guest(surface, 'return d.body.innerText.slice(0,600)'));
   };
-  let width = 390;
-  const viewport = async (w: number, height = 844) => {
-    width = w;
-    await c.send('Emulation.setDeviceMetricsOverride', { width: w, height, deviceScaleFactor: 1, mobile: w === 390 });
-    await c.send('Emulation.setTouchEmulationEnabled', { enabled: w === 390 });
+  let width = 390, touch = true;
+  const viewport = async (w: number, height = 844, phone = w === 390) => {
+    width = w; touch = phone;
+    await c.send('Emulation.setDeviceMetricsOverride', { width: w, height, deviceScaleFactor: 1, mobile: phone });
+    await c.send('Emulation.setTouchEmulationEnabled', { enabled: phone });
   };
   const key = async (key: string, shift = false) => {
     const codes: Record<string, number> = { Tab: 9, Enter: 13, Escape: 27, Home: 36, End: 35, ArrowDown: 40, ArrowUp: 38, ArrowRight: 39, ArrowLeft: 37 };
@@ -55,7 +57,7 @@ try {
     await guest(surface, 'return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
     const point = await guest<[number, number]>(surface, `const n=d.querySelector(${js(selector)});if(!n)throw Error('Missing control');const r=n.getBoundingClientRect(),o=w.frameElement.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]`);
     const [x, y] = point;
-    if (width === 390) {
+    if (touch) {
       await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] });
       await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     } else for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
@@ -68,8 +70,150 @@ try {
     await click(surface, '[data-testid="surface-panel-back"] button');
     await wait(surface, `!d.querySelector('[data-testid="surface-panel-heading"]') && d.activeElement?.dataset.testid===${js(opener)}`);
   };
+  // Host-linked work: real guest entries over the synthetic workspace bridge. The recording host
+  // never visits a destination; it only records (or refuses) each open-url request.
+  const linkedWork = async () => {
+    type Link = { title: string; kind: 'issue' | 'change'; url: string; linkedAt: number };
+    const owner: Link[] = [{ title: 'PR #95', kind: 'change', url: 'https://example.invalid/review/95', linkedAt: 2 }, { title: 'Issue #12', kind: 'issue', url: 'https://example.invalid/tracker/12', linkedAt: 1 }];
+    const child: Link[] = [{ title: 'Child-only change', kind: 'change', url: 'https://example.invalid/review/child', linkedAt: 3 }];
+    const sessions = (ownerLinks: Link[]) => [[S.M, null, ownerLinks], [S.C1, S.M, child]].map(([id, parentId, links]) => ({
+      id, title: id === S.M ? 'Example main session' : 'Example child session', projectId: 'alpha', directory: '/fixture/Alpha', parentId,
+      createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [], ...((links as Link[]).length ? { links } : {}),
+    }));
+    const setLinks = (links: Link[]) => evaluate(`qa.linkSessions=${js(sessions(links))};true`);
+    const push = (surface: string) => evaluate<number>(`qa.pushWorkspace(${js(surface)})`);
+    const chips = '[data-testid="surface-header"] [data-testid="linked-work-link"]';
+    const chipCount = (n: number) => `d.querySelectorAll(${js(chips)}).length===${n}`;
+    const capture = async (name: string, w: number, height = 640) => {
+      const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: w, height, scale: 1 } });
+      writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64')); screenshots.push(`${name}.png`);
+    };
+    const settle = (surface: string) => guest(surface, 'w.scrollTo(0,0);return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
+    const axNames = async (surface: string) => {
+      const tree = await c.send('Page.getFrameTree');
+      const frameId = tree.frameTree.childFrames.find((f: any) => f.frame.url.includes(`/ui/${surface}/`)).frame.id;
+      return (await c.send('Accessibility.getFullAXTree', { frameId })).nodes.filter((n: any) => ['button', 'group'].includes(n.role?.value)).map((n: any) => `${n.role.value}:${n.name?.value ?? ''}`) as string[];
+    };
+    const space = async () => {
+      for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: ' ', code: 'Space', windowsVirtualKeyCode: 32, ...(type === 'keyDown' ? { text: ' ' } : {}) });
+    };
+    const tabTo = async (surface: string, condition: string) => {
+      for (let i = 0; i < 60 && !await guest(surface, `return ${condition}`); i++) await key('Tab');
+      return guest<boolean>(surface, `return ${condition}`);
+    };
+    const opens = () => evaluate<{ surface: string; url: string }[]>('qa.opens');
+    const noOverflow = (surface: string) => guest<boolean>(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth');
+
+    await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture!.port}/` });
+    await wait('panel', `!!d.querySelector('[data-testid="settings-trigger"]')`);
+    await setLinks(owner);
+    const projects = { kind: 'projects', state: 'ready', projects: [{ id: 'alpha', name: 'Alpha', directory: '/fixture/Alpha' }] };
+    await evaluate(`document.querySelector('#outside').hidden=true;document.querySelectorAll('section').forEach(n=>n.style.margin='0');
+      qa.workspace=q=>q.kind==='projects'?${js(projects)}:{kind:q.kind,state:'ready',projectId:q.projectId,worktrees:[],coverage:[{directory:'/fixture/Alpha',state:'ready'}],sessions:q.kind==='sessions'&&q.projectId==='alpha'?structuredClone(qa.linkSessions):[]};
+      qa.context(${js(S.M)});qa.reload('panel');qa.reload('page');true`);
+    const views = [['page', 'board', 1280], ['panel', 'rail', 390]] as const;
+    // Light first (the fixture's dark switch is one-way), then the dark matrix with the interactions.
+    for (const [surface, name, size] of views) {
+      await viewport(size, 844, false);
+      await evaluate(`qa.show(${js(surface)},${size});true`);
+      await wait(surface, `${chipCount(2)} && !!d.querySelector('.ap-tasks[data-complete]')`);
+      await settle(surface);
+      await capture(`${name}-with-links-light`, size);
+    }
+    await evaluate(`qa.dark();document.body.style.background='#191b20';true`);
+    for (const [surface, name, size] of views) {
+      await viewport(size, 844, false);
+      await evaluate(`qa.show(${js(surface)},${size});true`);
+      await wait(surface, `${chipCount(2)} && getComputedStyle(d.body).backgroundColor==='rgb(25, 27, 32)' && !!d.querySelector('.ap-tasks[data-complete]')`);
+      const header = await guest<{ titles: string[]; kinds: string[]; text: string; label: boolean; total: number }>(surface, `const h=d.querySelector('[data-testid="surface-header"]'),b=[...h.querySelectorAll('[data-testid="linked-work-link"]')];return {
+        titles:b.map(n=>n.querySelector('.ap-work-link-title').textContent),kinds:b.map(n=>n.dataset.kind),text:h.textContent,
+        label:h.querySelector('.ap-work-links-label').checkVisibility(),total:d.querySelectorAll('[data-testid="linked-work-link"]').length}`);
+      check(`${name}-owner-links-only`, header.titles.join('|') === 'PR #95|Issue #12' && header.kinds.join('|') === 'change|issue' && !header.text.includes('Child-only') && header.total === 2 && header.label, header);
+      check(`${name}-no-open-on-render`, (await opens()).length === 0, await opens());
+      const names = await axNames(surface);
+      check(`${name}-accessible-names`, ['group:Linked in OpenChamber', 'button:Host-linked change: PR #95', 'button:Host-linked issue: Issue #12'].every(n => names.includes(n)), names.filter(n => /Linked|Host-linked/.test(n)));
+      check(`${name}-with-links-no-overflow`, await noOverflow(surface));
+      await settle(surface);
+      await capture(`${name}-with-links`, size);
+      const location = await guest<string>(surface, 'return w.location.href');
+      const toasts = await evaluate<number>('qa.toasts.length');
+      await click(surface, chips);
+      await evaluate('new Promise(r=>setTimeout(r,150))');
+      check(`${name}-pointer-opens-once`, JSON.stringify(await opens()) === JSON.stringify([{ surface, url: owner[0]!.url }]), await opens());
+      const second = `d.activeElement?.dataset.testid==='linked-work-link' && d.activeElement.dataset.kind==='issue'`;
+      check(`${name}-keyboard-reaches-chip`, await tabTo(surface, second));
+      const ring = await guest<{ style: string; width: string }>(surface, 'const s=w.getComputedStyle(d.activeElement);return {style:s.outlineStyle,width:s.outlineWidth}');
+      check(`${name}-focus-visible`, ring.style === 'solid' && ring.width === '2px', ring);
+      await key('Enter');
+      await evaluate('new Promise(r=>setTimeout(r,150))');
+      await space();
+      await evaluate('new Promise(r=>setTimeout(r,150))');
+      const keyed = (await opens()).slice(1);
+      check(`${name}-keyboard-opens-once-per-activation`, keyed.length === 2 && keyed.every(o => o.surface === surface && o.url === owner[1]!.url), keyed);
+      check(`${name}-no-toast-on-success`, await evaluate<number>('qa.toasts.length') === toasts);
+      await evaluate('qa.refuseOpens=1;true');
+      await click(surface, chips);
+      await evaluate(`(async()=>{const end=performance.now()+5000;while(qa.toasts.length===${toasts}&&performance.now()<end)await new Promise(requestAnimationFrame);return true})()`);
+      await evaluate('new Promise(r=>setTimeout(r,150))');
+      const refusal = await evaluate<{ opens: number; toasts: any[]; refuse: number }>(`({opens:qa.opens.length,toasts:qa.toasts.slice(${toasts}),refuse:qa.refuseOpens})`);
+      check(`${name}-refusal-feedback-no-fallback`, refusal.opens === 4 && refusal.refuse === 0 && refusal.toasts.length === 1 && refusal.toasts[0].kind === 'error' && refusal.toasts[0].message === 'Could not open this link.' &&
+        await guest(surface, `return w.location.href===${js(location)} && ${chipCount(2)} && !!d.querySelector('[data-testid="plan-title"]')`), refusal);
+      // A link-only host update, with no progress revision, request or resubscription.
+      const before = await evaluate<{ requests: number; subscribes: number }>(`({requests:qa.requests.length,subscribes:qa.messages.filter(m=>m.type==='workspace-subscribe').length})`);
+      await setLinks([]);
+      check(`${name}-pushed-without-reload`, await push(surface) > 0);
+      await wait(surface, chipCount(0));
+      const after = await guest<any>(surface, `return {group:!!d.querySelector('[data-testid="linked-work"]'),title:d.querySelector('[data-testid="plan-title"]')?.textContent,
+        progress:!!d.querySelector('[data-testid="progress-legend"]'),more:!!d.querySelector('[data-testid="more-trigger"]'),requests:parent.qa.requests.length,subscribes:parent.qa.messages.filter(m=>m.type==='workspace-subscribe').length}`);
+      check(`${name}-link-removal-keeps-header`, !after.group && after.title === 'Alpha implementation' && after.progress && after.more && after.requests === before.requests && after.subscribes === before.subscribes, { before, after });
+      check(`${name}-without-links-no-overflow`, await noOverflow(surface));
+      await settle(surface);
+      await capture(`${name}-without-links`, size);
+      await setLinks(owner); await push(surface);
+      await wait(surface, chipCount(2));
+      await evaluate('qa.opens=[];true');
+    }
+    // A long title and more links than shown, at 320 CSS px (1280 px at 400% zoom) on a phone rail.
+    const long = `Very long linked change title ${'that keeps going and going '.repeat(7)}end`.slice(0, 200);
+    const many: Link[] = [{ title: long, kind: 'change', url: 'https://example.invalid/review/long', linkedAt: 9 }, ...Array.from({ length: 5 }, (_, i) => ({ title: `Issue #${20 + i}`, kind: 'issue' as const, url: `https://example.invalid/tracker/${20 + i}`, linkedAt: i }))];
+    await setLinks(many); await push('panel');
+    await viewport(320, 844, true);
+    await evaluate(`qa.show('panel',320);true`);
+    await wait('panel', `${chipCount(5)} && !!d.querySelector('[data-testid="linked-work-more"]')`);
+    const narrow = await guest<any>('panel', `const b=d.querySelector(${js(chips)}),t=b.querySelector('.ap-work-link-title'),r=b.getBoundingClientRect();return {
+      ellipsis:t.scrollWidth>t.clientWidth,inside:r.right<=d.documentElement.clientWidth,tall:[...d.querySelectorAll(${js(chips)})].every(n=>n.getBoundingClientRect().height>=44),
+      more:d.querySelector('[data-testid="linked-work-more"]').textContent,title:b.title}`);
+    check('rail-320-long-title-truncates-and-fits', narrow.ellipsis && narrow.inside && narrow.tall && narrow.more === 'and more' && narrow.title === long && await noOverflow('panel'), narrow);
+    check('rail-320-full-title-spoken', (await axNames('panel')).includes(`button:Host-linked change: ${long}`));
+    await settle('panel');
+    await capture('rail-320-long-title', 320, 700);
+    await setLinks(owner); await push('panel');
+    // Localized label, names and refusal feedback.
+    await viewport(1280, 844, false);
+    await evaluate(`qa.show('page',1280);true`);
+    for (const [locale, label, name, failed] of [['ru', 'Связано в OpenChamber', 'Изменение, связанное в хосте: PR #95', 'Не удалось открыть ссылку.'], ['zh-CN', 'OpenChamber 中的关联', '宿主关联的变更: PR #95', '无法打开此链接。']] as const) {
+      await evaluate(`qa.ready('page',{locale:${js(locale)}});true`);
+      await wait('page', `d.documentElement.lang===${js(locale)} && ${chipCount(2)}`);
+      const names = await axNames('page');
+      const toasts = await evaluate<number>('qa.toasts.length');
+      await evaluate('qa.refuseOpens=1;true');
+      await click('page', chips);
+      await evaluate(`(async()=>{const end=performance.now()+5000;while(qa.toasts.length===${toasts}&&performance.now()<end)await new Promise(requestAnimationFrame);return true})()`);
+      const toast = await evaluate<any>(`qa.toasts[${toasts}]`);
+      check(`board-${locale}-localized`, names.includes(`group:${label}`) && names.includes(`button:${name}`) && toast?.message === failed && await noOverflow('page'), { names: names.filter(n => n.includes('PR #95') || n.startsWith('group:')), toast });
+    }
+    await evaluate(`qa.ready('page',{locale:'en'});true`);
+    // Forced colours: system-colour outline on each chip.
+    await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+    const forced = await guest<any>('page', `const s=w.getComputedStyle(d.querySelector(${js(chips)}));return {style:s.borderTopStyle,width:s.borderTopWidth,color:s.borderTopColor}`);
+    check('board-forced-colors-outline', forced.style === 'solid' && forced.width === '1px' && forced.color !== 'rgba(0, 0, 0, 0)', forced);
+    await c.send('Emulation.setEmulatedMedia', { features: [] });
+    check('linked-work-no-guest-errors', browser!.page.errors.length === 0, browser!.page.errors);
+  };
+  const linkedOnly = process.argv.includes('--linked-work-only');
+  if (linkedOnly) await linkedWork();
   // Focused iteration mode; the ordinary invocation still runs the full shell matrix.
-  if (!process.argv.includes('--review-only')) {
+  if (!process.argv.includes('--review-only') && !linkedOnly) {
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture.port}/` });
   await wait('panel', `!!d.querySelector('[data-testid="settings-trigger"]')`);
   // Only fixture chrome changes here, never guest styles or control state.
@@ -288,6 +432,7 @@ try {
   check('unsupported-language', await guest('panel', `return [...d.querySelectorAll('[role="menuitemradio"]')].every(n=>n.disabled)`));
   check('no-guest-errors', browser.page.errors.length === 0, browser.page.errors);
   }
+  if (!linkedOnly) {
   // Map order uses the real service fixture; no R/N/M behaviour is substituted here.
   maps = await startPhoneShell({ source: process.argv.includes('--source') });
   await c.send('Page.navigate', { url: `http://127.0.0.1:${maps.port}/` });
@@ -465,6 +610,7 @@ try {
   await wait('panel', `!!d.querySelector('[data-testid="history-P-digest"] [data-testid^="revision-"]')`);
   check('rail-history-selected-revisions-no-digest-or-checkpoint', await evaluate(`qa.requests.some(q=>q.frame==='panel'&&q.path==='/v1/history'&&q.query.plan==='P-digest')&&!qa.requests.some(q=>q.frame==='panel'&&q.path==='/v1/change-digest')&&!qa.storageLog.some(q=>q.frame==='panel'&&(q.op==='keys'||q.key?.startsWith('rv1.'))) && !qa.storageLog.some(q=>q.op==='set'&&q.key?.startsWith('rv1.'))`));
   await shot('panel-390-history-revisions');
+  }
   check('no-final-guest-errors', browser.page.errors.length === 0, browser.page.errors);
 } catch (error) { failure = String(error); }
 finally {
