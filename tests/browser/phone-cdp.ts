@@ -20,7 +20,8 @@ async function connect(url: string): Promise<Cdp> {
     if (w) { waiting.delete(m.id); if (m.error) w.reject(new Error(m.error.message)); else w.resolve(m.result); }
     else if (m.method === 'Runtime.exceptionThrown') errors.push(String(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text).slice(0, 300));
     else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args.map((a: any) => a.value ?? a.description ?? '').join(' ').slice(0, 300));
-    if (m.method) events.get(m.method)?.(m.params);
+    const handler = typeof m.method === 'string' ? events.get(m.method) : undefined;
+    if (typeof handler === 'function') handler(m.params);
   };
   return {
     errors,
