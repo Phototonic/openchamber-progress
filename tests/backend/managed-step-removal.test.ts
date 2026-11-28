@@ -5,12 +5,13 @@ import path from 'node:path';
 import {syncBuiltinESMExports} from 'node:module';
 import cp from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-import {lifecycle,migrationEvidence,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded} from '../../setup/lifecycle.ts';
+import {lifecycle,migrationEvidence,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded,migrationRemovalComplete} from '../../setup/lifecycle.ts';
 import {Store,canonical,digest} from '../../shared/store.ts';
 import {parseManagedStepJournal,managedTargetDigest,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
 import {createManagedBindingDirectory,publishPrivateJson} from '../../shared/managed-binding.ts';
 import {migrationFile} from '../../setup/managed-migration.ts';
+import type {ManagedVolumeIdentityReader} from '../../setup/managed-volume-identity.ts';
 
 function fixture(){
   const root=fs.mkdtempSync('/tmp/opencode/step-removal-'),env=isolatedEnvironment(root);
@@ -29,8 +30,8 @@ function fixture(){
   const legacyRoot=path.join(targets.configRoot,'plugins','agent-progress'),history=path.join(targets.storeRoot,'installation-history.jsonl');
   return {root,env,targets,journal,legacyRoot,history,store,cleanup(){store.close();fs.rmSync(root,{recursive:true,force:true});}};
 }
-function authorize(journal:ManagedStepJournal){
-  const layout=validateMigrationRemoval(journal),file=layout.file(journal.migration.step)!;
+function authorize(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader){
+  const layout=validateMigrationRemoval(journal,read),file=layout.file(journal.migration.step)!;
   const m=journal.migration;m.state='running';m.capture=layout.capture;
   m.intent={requestDigest:'4'.repeat(64),expectedSequence:m.sequence,step:m.step!,effect:'intent',before:[layout.claims.get(file)!],
     after:[{path:file,kind:'absent',object:null,digest:null}],captureBefore:layout.capture,captureReviewSequence:null};
@@ -43,15 +44,106 @@ function complete(journal:ManagedStepJournal){
   m.lastCompleted=m.step;m.step=m.plan[index+1]!;m.intent=null;m.state='pending';
   parseManagedStepJournal(JSON.stringify(journal));
 }
-function readyRecord(journal:ManagedStepJournal){
-  while(journal.migration.step!.name==='remove-discovery'){authorize(journal);removeMigrationFile(journal);complete(journal);}
+function readyRecord(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader){
+  while(journal.migration.step!.name==='remove-discovery'){authorize(journal,read);removeMigrationFile(journal,undefined,read);complete(journal);}
 }
-function authorizeRecord(journal:ManagedStepJournal){
-  const claims=migrationRemovalRecordClaims(journal),m=journal.migration;
+function authorizeRecord(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader){
+  const claims=migrationRemovalRecordClaims(journal,read),m=journal.migration;
   m.state='running';m.intent={requestDigest:'6'.repeat(64),expectedSequence:m.sequence,step:m.step!,effect:'intent',
     before:claims.before,after:claims.after,captureBefore:claims.capture,captureReviewSequence:null};
   parseManagedStepJournal(JSON.stringify(journal));
 }
+
+function volumeFixture(f:ReturnType<typeof fixture>,renumber:boolean){
+  // Independent proofs for discovery, retained Store and its history. A swap
+  // can change just one target's proof without changing any lstat/byte facts.
+  const m=f.journal.migration,paths=[
+    ...m.legacy.claims.map(c=>{
+      if(renumber&&c.object)c.object.device=String(BigInt(c.object.device)+1n);
+      return {path:c.path,fingerprint:(c.path.startsWith(f.targets.storeRoot+path.sep)||c.path===f.targets.storeRoot?'b':'a').repeat(64)};
+    }),
+    {path:f.journal.database,fingerprint:'b'.repeat(64)},
+    {path:f.history,fingerprint:'c'.repeat(64)},
+  ];
+  m.legacy.volumeIdentity={version:1,paths};
+  m.consent.targetDigest=managedTargetDigest(f.journal);
+  const observed=new Map(paths.map(p=>[p.path,p.fingerprint]));
+  const read:ManagedVolumeIdentityReader=({path})=>{
+    const fingerprint=observed.get(path);
+    return fingerprint?{kind:'verified',fingerprint}:{kind:'unavailable'};
+  };
+  return {observed,read};
+}
+
+test('matching proofs after renumbering reconcile removal and exact history despite later appends',()=>{
+  const f=fixture();try{
+    const {observed,read}=volumeFixture(f,true);
+    const priorHistory=fs.readFileSync(f.history);
+    const file=authorize(f.journal,read);
+    assert.throws(()=>removeMigrationFile(f.journal),{code:'installation-changed'});
+    assert.ok(fs.existsSync(file));
+    assert.equal(removeMigrationFile(f.journal,undefined,read).removed,true);
+    assert.equal(removeMigrationFile(f.journal,undefined,read).removed,false);
+    complete(f.journal);readyRecord(f.journal,read);authorizeRecord(f.journal,read);
+    // Simulate an interruption with history's original device captured in the
+    // intent. Its before and after claims must still agree exactly.
+    const {before,after}=f.journal.migration.intent!;
+    const saved=before[1]!.object!,afterLive=after[1]!.object!;
+    before[1]!.object={...saved,device:String(BigInt(saved.device)+1n)};
+    assert.throws(()=>recordMigrationRemoval(f.journal,undefined,read),{code:'managed-step-conflict'});
+    assert.ok(fs.existsSync(f.legacyRoot));
+    assert.deepEqual(fs.readFileSync(f.history),priorHistory);
+    after[1]!.object={...afterLive,device:before[1]!.object!.device};
+    assert.equal(recordMigrationRemoval(f.journal,undefined,read).recorded,true);
+    const prefix=fs.readFileSync(f.history);
+    assert.deepEqual(prefix.subarray(0,priorHistory.length),priorHistory);
+    assert.equal(prefix.subarray(priorHistory.length).toString().trim().split('\n').length,1);
+    fs.appendFileSync(f.history,'{"action":"later"}\n');
+    const appended=fs.readFileSync(f.history);
+    assert.equal(migrationRemovalRecorded(f.journal,read),true);
+    assert.equal(recordMigrationRemoval(f.journal,undefined,read).recorded,false);
+    assert.deepEqual(fs.readFileSync(f.history),appended);
+    complete(f.journal);
+    assert.equal(migrationRemovalComplete(f.journal,read),true);
+    observed.set(f.history,'e'.repeat(64));
+    assert.throws(()=>migrationRemovalComplete(f.journal,read),{code:'installation-changed'});
+    assert.deepEqual(fs.readFileSync(f.history),appended);
+    assert.equal(fs.existsSync(f.legacyRoot),false);
+  }finally{f.cleanup();}
+});
+
+for(const proof of ['different','unavailable'] as const)test(`removal refuses ${proof} proof on just its target despite a reused device`,()=>{
+  const f=fixture();try{
+    const {observed,read}=volumeFixture(f,false);
+    const first=authorize(f.journal,read);removeMigrationFile(f.journal,undefined,read);complete(f.journal);
+    const next=authorize(f.journal,read),bytes=fs.readFileSync(next),history=fs.readFileSync(f.history),prior=structuredClone(f.journal);
+    if(proof==='different')observed.set(next,'d'.repeat(64));else observed.delete(next);
+    assert.throws(()=>removeMigrationFile(f.journal,undefined,read),{code:'installation-changed'});
+    assert.deepEqual(fs.readFileSync(next),bytes);
+    assert.equal(fs.existsSync(first),false);
+    assert.deepEqual(fs.readFileSync(f.history),history);
+    assert.deepEqual(f.journal,prior);
+  }finally{f.cleanup();}
+});
+
+test('a history-only swap between rmdir and append refuses without undoing the directory removal',t=>{
+  const f=fixture();try{
+    const {observed,read}=volumeFixture(f,false);
+    readyRecord(f.journal,read);authorizeRecord(f.journal,read);
+    const original=fs.rmdirSync,bytes=fs.readFileSync(f.history),prior=structuredClone(f.journal);
+    const mock=t.mock.method(fs,'rmdirSync',((p:any,options:any)=>{
+      original(p,options);if(String(p)===f.legacyRoot)observed.set(f.history,'e'.repeat(64));
+    }) as typeof fs.rmdirSync);syncBuiltinESMExports();
+    try{assert.throws(()=>recordMigrationRemoval(f.journal,undefined,read),{code:'installation-changed'});}
+    finally{mock.mock.restore();syncBuiltinESMExports();}
+    assert.equal(fs.existsSync(f.legacyRoot),false);
+    assert.deepEqual(fs.readFileSync(f.history),bytes);
+    assert.deepEqual(f.journal,prior);
+    observed.set(f.history,'c'.repeat(64));
+    assert.equal(recordMigrationRemoval(f.journal,undefined,read).removed,false);
+    assert.equal(migrationRemovalRecorded(f.journal,read),true);
+  }finally{f.cleanup();}
+});
 
 test('lifecycle owner removes one frozen file at a time, keeps manifest last, retains payloads/history',()=>{
   const f=fixture();try{
