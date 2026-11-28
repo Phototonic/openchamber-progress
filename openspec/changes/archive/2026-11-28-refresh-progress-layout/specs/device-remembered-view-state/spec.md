@@ -15,3 +15,7 @@ The extension SHALL continue to remember hidden Needs you items, rail/board Need
 #### Scenario: Other reading state
 - **WHEN** the reader changes a map filter or viewport, scrolls a list or document, or opens an item, then reloads
 - **THEN** none of those reading positions, filters or opened items is restored from storage
+
+#### Scenario: Quiet filter only lasts in this view
+- **WHEN** the host does not support device storage
+- **THEN** the quiet switch remains reversible in the current frame, and its tooltip and accessible description explain the choice is temporary without an extra line of copy

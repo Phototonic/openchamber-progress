@@ -88,7 +88,7 @@ Migration and fresh setup SHALL retain private pending/progress records and suff
 - **WHEN** progress is persisted or resumed
 - **THEN** restart/interruption SHALL permit explicit same-target resume with fresh validation and single-writer fencing; changed, reordered or competing requests SHALL not advance stale progress
 - **AND** fresh setup SHALL use an explicitly discriminated format-3 journal at the existing location, without fabricated legacy identity or removal evidence
-- **AND** format-1 recovery and format-2 migration behavior SHALL remain supported unchanged
+- **AND** format-1 recovery and format-2 migration remain supported; an older operation without separately recorded volume evidence retains its exact historical device checks
 - **AND** partial creation that cannot be proven safe SHALL be retained and refused, not repaired or adopted
 
 #### Scenario: Reply lost after mutation
@@ -343,8 +343,8 @@ On all supported platforms, read-only Setup status for a validated terminal form
 
 #### Scenario: Terminal status evidence is missing
 - **WHEN** the journal is unfinished or there is no matching selected binding
-- **THEN** the device-number exception does not apply, and no selection or recovery authority is inferred
-- **AND** inspection, review, Resume, migration and removal keep their existing identity checks
+- **THEN** the terminal device-number exception does not apply, and no selection or recovery authority is inferred
+- **AND** unfinished work requires its own same-target proof, independently of any status result
 
 ### Requirement: The panel distinguishes a Setup refusal from an outage
 
@@ -358,3 +358,37 @@ When a responding service identifies a Setup admission refusal, the rail panel S
 #### Scenario: The service did not identify a Setup problem
 - **WHEN** the host cannot reach the service, or a reply identifies a busy, corrupt or incompatible Store
 - **THEN** the panel retains the corresponding transport or Store failure instead of diagnosing a Setup conflict
+
+### Requirement: Unfinished Setup recognizes a proven original mounted subvolume
+
+On eligible directly mounted, single-device Linux btrfs storage, Setup SHALL bind private backing-volume and subvolume evidence to a new operation's reviewed targets. Setup SHALL allow explicit continuation after a device-number-only change only when it freshly proves each affected target is on its original storage and all existing object, consent, intent and writer checks pass.
+
+#### Scenario: Fresh Setup continues after reboot
+- **WHEN** a new creation with a settled checkpoint or a retained-Store reconnection is interrupted, only the device number changes, and the reviewed backing volume, subvolume and other facts still match
+- **THEN** cold observation performs no writes and the existing explicit step flow can finish the same operation from the next legal step
+- **AND** historical claims and consent remain unchanged; reconnection preserves capture and completed steps are not repeated
+
+#### Scenario: Manifest-based migration is interrupted during removal
+- **WHEN** a supported volume is renumbered during migration and the remaining owned set, original manifest, same-target evidence and exact removal intent or checkpoints verify anew
+- **THEN** explicit continuation reconciles only the recorded removal and can complete without deleting a replacement or recording a duplicate event
+- **AND** identity must still verify between removing the empty directory and appending its history event
+
+#### Scenario: A retained removal receipt survives a device-number change
+- **WHEN** a newly recorded receipt-based operation resumes on its verified original storage after renumbering, with discovery still absent and the exact event in the same owned history file
+- **THEN** later valid appends do not prevent continuation of the shorter plan
+- **AND** Setup does not repeat disabling, discovery removal or the history append
+
+#### Scenario: A snapshot or copied volume appears at the selected path
+- **WHEN** a writable snapshot with the original inode and birth time, or a block copy on another backing disk or partition with copied filesystem identifiers, is presented at the same path
+- **THEN** different backing or subvolume evidence refuses unfinished work even if the device number is reused and the journal, Store ID, source and history bytes match
+- **AND** that refusal does not advance or rewrite progress, publish a binding, change recording, unlink files or append history
+
+#### Scenario: The mount cannot prove the target
+- **WHEN** a path is in an unmounted nested subvolume, the containing mount is ambiguous, recorded evidence is unavailable or inconsistent, or a different object/unsafe link appears
+- **THEN** Setup does not use a containing mount's identity, another claim's identity or user confirmation as a substitute
+- **AND** the unchanged strict path may continue ordinary unanchored work but cannot excuse a different historical device; a missing or mismatched recorded witness cannot fall back to that path
+
+#### Scenario: Compatibility and privacy
+- **WHEN** a witness is absent from an older journal, unreadable by an older build, or the platform is not eligible
+- **THEN** Setup does not upgrade, discard or repair saved evidence to make a changed target acceptable; Windows and macOS device comparison behavior is unchanged
+- **AND** collecting or comparing evidence starts no process, changes no permissions and exposes no new disk, mount or hardware identifiers over Setup, health or support output
