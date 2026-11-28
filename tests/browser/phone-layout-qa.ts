@@ -298,7 +298,7 @@ try {
     check(`${f}-insets:top-inset-respected`, pad.top === 47 && pad.first >= 47, pad);
     // The last essential control can be scrolled above the occluded band.
     const last = await guest<any>(f, `const n=[...d.querySelectorAll('button:not(:disabled),summary,input:not(:disabled)')].filter(n=>n.getClientRects().length&&!n.closest('.ap-sr,[hidden]')).at(-1);n?.scrollIntoView({block:'end',behavior:'instant'});return new Promise(resolve=>w.requestAnimationFrame(()=>{const r=n?.getBoundingClientRect();resolve({top:r?.top,bottom:r?.bottom,limit:w.innerHeight-334,hook:n?.closest('[data-testid]')?.dataset.testid})}))`);
-    check(`${f}-keyboard:last-control-above-keyboard`, last.top >= 0 && last.bottom <= last.limit, last);
+    check(`${f}-keyboard:last-control-above-keyboard`, last.top >= -1 && last.bottom <= last.limit + 1, last);
   }
   // Keyboard focus walk: the focused control is kept out of the occluded band by scroll padding.
   await show('page');

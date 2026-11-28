@@ -464,7 +464,9 @@ try {
       await wait('n?.scrollTop>0&&n.scrollHeight-n.clientHeight-n.scrollTop<2', 'end of the saved capture');
       const savedDocument = await guest<number>('return n.scrollTop');
       const old = f.store.get(fx.source, id)!;
-      f.store.apply({ op: 'change', plan: id, oid: oid(id), rev: old.revision, changes: [{ id: 'T0', status: 'working' }] }, actor);
+      const unchanged = await captureDocument(file(captureName), f.root, async () => {}, old.document);
+      f.store.apply({ op: 'change', plan: id, oid: oid(id), rev: old.revision, changes: [{ id: 'T0', status: 'working' }] }, actor, unchanged);
+      assert.equal(f.store.get(fx.source, id)!.document.captureId, old.document.captureId, 'fixture revision keeps the same capture');
       await wait(`!!${has('[data-testid="progress-legend"]')}?.textContent.includes('1 in progress')&&n?.scrollTop>=${savedDocument - 2}`, 'unrelated revision with retained Document position');
       check(`${s}: same capture retains offset on progress-only revision`, true, { savedDocument });
       await report(id, captureName, '# Replacement capture\n\n' + longText);
