@@ -1,0 +1,96 @@
+name: Native Setup storage
+
+on:
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  native-btrfs:
+    name: Native btrfs Setup identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Get proposed merge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select native Setup changes
+        id: select
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          selected=true
+          files=$(mktemp)
+          trap 'rm -f -- "$files"' EXIT
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+             base=$(git merge-base --all "$BASE_SHA" "$HEAD_SHA") &&
+             [[ "$base" =~ ^[0-9a-f]{40}$ ]] &&
+             git diff --name-only --no-renames -z "$base" "$HEAD_SHA" -- >"$files" &&
+             [[ -s "$files" ]]; then
+            selected=false
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                setup/*|shared/managed-*|shared/platform.ts|shared/binding.ts|shared/store.ts|service/*|plugin/*|scripts/*|tests/*|.github/workflows/*|package.json|bun.lock|mise.toml|tsconfig*.json|*/tsconfig*.json|build/*|docs/setup.md|openspec/changes/resume-volume-identity/*)
+                  selected=true
+                  break ;;
+                shared/*|ui/*|background/*|docs/*|openspec/*|README.md|CONTRIBUTING.md|AGENTS.md|.github/PULL_REQUEST_TEMPLATE.md) ;;
+                *)
+                  selected=true
+                  break ;;
+              esac
+            done <"$files"
+          fi
+          echo "selected=$selected" >>"$GITHUB_OUTPUT"
+          if [[ "$selected" == false ]]; then
+            echo "not selected"
+            echo "not selected" >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Set up Node.js
+        if: steps.select.outputs.selected == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.19.0
+      - name: Set up Bun
+        if: steps.select.outputs.selected == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Install project dependencies
+        if: steps.select.outputs.selected == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Build runtime entries
+        if: steps.select.outputs.selected == 'true'
+        run: bun run build:all
+      - name: Install native fixture tools
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          if (sudo apt-get update &&
+              sudo apt-get install -y btrfs-progs targetcli-fb e2fsprogs util-linux) >/dev/null 2>&1; then
+            echo "native_tools=true"
+          else
+            echo "native_tools=false"
+            exit 1
+          fi
+          if sudo modprobe tcm_loop >/dev/null 2>&1 ||
+             (sudo apt-get install -y "linux-modules-extra-$(uname -r)" &&
+              sudo modprobe tcm_loop) >/dev/null 2>&1; then
+            echo "tcm_loop=true"
+          else
+            echo "tcm_loop=false"
+            exit 1
+          fi
+      - name: Run native storage journey
+        if: steps.select.outputs.selected == 'true'
+        run: bash scripts/run-setup-btrfs-qa.sh --ci
