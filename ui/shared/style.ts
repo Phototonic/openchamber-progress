@@ -269,6 +269,9 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-sub-part[data-kind="interrupted"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-warning)}
 .ap-sub-part[data-kind="unknown"] .ap-obs-mark{border-style:dashed}
 .ap-sub-part[data-kind="unknown"]{color:var(--oc-muted)}
+.ap-sub-part[data-kind="none"]{color:var(--oc-muted)}
+/* Finished and unknown counts open the Show more disclosure, above its rows. */
+.ap-obs-more>.ap-sub-later{margin:2px 0 6px}
 .ap-obs-list{display:flex;flex-direction:column;min-width:0}
 .ap-obs-row{position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;padding:7px 0 7px calc((var(--depth,1) - 1) * 14px)}
 .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}
@@ -456,12 +459,30 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Host-linked work of the plan's main session: quiet outlined chips on the meta line. The kind
    cue is a muted glyph; long titles shorten visually and keep their full text in the name. */
 .ap-work-links{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;max-width:100%}
-.ap-work-link{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:min(30ch,100%);min-height:22px;padding:1px 8px 1px 5px;border:1px solid var(--oc-border);border-radius:9999px;background:transparent;color:var(--oc-fg);font-size:11.5px;line-height:1.3;cursor:pointer}
-.ap-work-link:hover{background:var(--oc-hover)}
-.ap-work-link:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
-.ap-work-link>.ap-icon{width:13px;height:13px;color:var(--oc-muted)}
+/* The button is the hit area (44 px tall on coarse pointers, phone-layout.ts); the visible chip is
+   its face, the same 22 px pill for every link and for the overflow control at every pointer. */
+.ap-work-link{display:inline-flex;align-items:center;min-width:0;max-width:min(30ch,100%);padding:0;border:0;border-radius:9999px;background:transparent;color:var(--oc-fg);font-size:11.5px;line-height:1.3;cursor:pointer}
+.ap-work-link-face{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;min-height:22px;padding:1px 8px 1px 5px;border:1px solid var(--oc-border);border-radius:9999px}
+.ap-work-link{-webkit-tap-highlight-color:transparent}
+.ap-work-link:is(:hover,:active)>.ap-work-link-face{background:var(--oc-hover)}
+.ap-work-link:focus-visible{outline:none}
+.ap-work-link:focus-visible>.ap-work-link-face{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-work-link-face>.ap-icon{width:13px;height:13px;color:var(--oc-muted)}
 .ap-work-link-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(forced-colors:active){.ap-work-link{border-color:ButtonText;color:ButtonText}.ap-work-link:focus-visible{outline-color:Highlight}}
+@media(forced-colors:active){.ap-work-link-face{border-color:ButtonText;color:ButtonText}.ap-work-link:focus-visible>.ap-work-link-face{outline-color:Highlight}}
+/* One row: the group takes the meta line's remaining room (or its own line) and never wraps;
+   chips that do not fit are hidden and listed in the single overflow menu. */
+.ap-work-links[data-fit]{display:flex;flex:1 1 min(18rem,100%);flex-wrap:nowrap}
+.ap-work-links[data-fit]>*,.ap-work-links-label{flex:none;white-space:nowrap}
+.ap-work-link[hidden],.ap-work-links-menu[hidden]{display:none}
+.ap-work-links-menu{position:relative;display:inline-flex}
+.ap-work-links-more{font-variant-numeric:tabular-nums}
+.ap-work-links-more>.ap-work-link-face{padding:1px 8px}
+.ap-work-links-more[aria-expanded="true"]>.ap-work-link-face{background:var(--oc-hover)}
+.ap-work-links-popup{left:0;right:auto;color:var(--oc-fg);font-size:13px;white-space:normal}
+.ap-work-links-row{display:flex;align-items:flex-start;gap:6px;color:var(--oc-fg)}
+.ap-work-links-row>.ap-icon{flex:none;width:13px;height:13px;margin-top:3px;color:var(--oc-muted)}
+.ap-work-links-row>.ap-work-link-title{white-space:normal;overflow-wrap:anywhere}
 /* Title-picker: the SDK select, drawn as a quiet "⌄ 1 of 3" beside the title (its name says which plan) */
 .ap-title-picker{display:inline-flex;min-width:0}
 .ap-title-picker .oc-sdk-select{display:inline-flex;width:auto}
@@ -804,9 +825,11 @@ ${PHONE_CSS}
 .ap-rail-bar{display:grid;gap:2px}
 .ap-rail-chooser{justify-content:flex-end}
 .ap-rail-chooser>.ap-picker{flex:1 1 auto;min-width:0}
-.ap-rail-bar>.ap-quiet-check{justify-self:start}
-.ap-rail-summaries{display:grid;gap:4px}
-.ap-rail-summaries button{width:100%}
+/* Hide quiet at the start; the plan's two summary buttons stay small at the end and wrap below it when narrow */
+.ap-rail-tools{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+.ap-rail-tools>.ap-quiet-check{min-width:0}
+.ap-rail-summaries{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;margin-inline-start:auto;min-width:0;max-width:100%}
+.ap-rail-summaries .oc-sdk-btn[data-size]{white-space:normal;height:auto;min-height:28px;padding-inline:8px;overflow-wrap:anywhere}
 .ap-library-actions{margin-inline-start:auto}
 .ap-library-actions .ap-inbox-toggle{width:auto;min-height:32px;padding:0 8px;border-radius:calc(var(--oc-radius,9px) - 2px);white-space:nowrap}
 .ap-library-actions .ap-inbox-toggle:hover{background:var(--oc-hover)}
@@ -816,11 +839,11 @@ ${PHONE_CSS}
 .ap-plan-list-head .ap-region-h{padding-inline:8px;font-size:13px;font-weight:600;color:var(--oc-fg)}
 /* Shell buttons share one text size and the kit's control corner, whatever their kit size */
 :is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries,.ap-plan-list-head,.ap-library-tidy,.ap-document-heading,.ap-list-help,[data-testid="cleanup-modes"]) .oc-sdk-btn[data-size]{font-size:12px;border-radius:calc(var(--oc-radius,9px) - 2px)}
-:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) .oc-sdk-btn{padding-inline:12px}
+.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn{padding-inline:12px}
 .ap[data-surface="panel"]{gap:10px}
 .ap-detail>.ap-plan-head,.ap-detail>.ap-progress-line,.ap-detail>.ap-progress-legend{margin-block-end:8px}
 .ap-plan-top>[data-testid="surface-more"]{gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:100%;margin-inline-start:auto}
-:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) .oc-sdk-btn{white-space:normal;height:auto;min-height:32px}
+.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn{white-space:normal;height:auto;min-height:32px}
 :is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-plan-top .ap-plan-title{font-size:16px;line-height:1.3}
 /* One segmented control, drawn like the kit's tracked tabs: a faint track, the chosen view raised */
@@ -848,6 +871,11 @@ ${PHONE_CSS}
 .ap-doc-table :is(th,td){min-width:min(8rem,50vw)}
 .ap:is([data-surface="panel"][data-reading-mode="document"],[data-surface="page"]:has(.ap-document-view)){min-block-size:100dvh;block-size:calc(100dvh - var(--ap-keyboard-height,0px))}
 .ap[data-surface="page"]:has(.ap-document-view)>.ap-board{flex:1 1 auto;min-height:0}
+/* That board may be shorter than the plan list, which must stay inside it so nothing after the
+   board (the incomplete-counts note) is drawn over the list: beside the document the list
+   scrolls within the row; narrow Select hides the document, so the page flows normally there */
+@media(min-width:820px){.ap[data-surface="page"]:has(.ap-document-view)>.ap-board{grid-template-rows:minmax(0,1fr)}.ap[data-surface="page"]:has(.ap-document-view)>.ap-board>.ap-plan-list{max-height:100%}}
+@media(max-width:819px){.ap[data-surface="page"]:has(>.ap-board.ap-selecting){min-block-size:0;block-size:auto}.ap[data-surface="page"]>.ap-board.ap-selecting{flex:none;grid-template-rows:none}}
 .ap-detail:has(.ap-document-view){display:flex;flex-direction:column;align-self:stretch;min-height:0;gap:6px}
 .ap-detail:has(.ap-document-view)>:not(.ap-document-view){flex-shrink:0}
 .ap:has(.ap-document-view)>:not(.ap-board,.ap-document-view){flex-shrink:0}
@@ -878,8 +906,8 @@ ${PHONE_CSS}
 @media(max-width:500px){.ap-board-bar .ap-search-field,.ap-library-title{flex-basis:100%}.ap-library-actions{gap:2px}.ap-more-popup{max-width:min(232px,calc(100vw - 40px))}}
 @media(max-width:320px){.ap-library-actions{justify-content:flex-end;flex:1 1 auto}.ap-board-bar .ap-search-row{gap:4px}.ap-filters-trigger{padding-inline:6px}}
 @media(max-width:240px){.ap[data-surface="panel"] .ap-surface-view-switch{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn{min-height:44px;min-width:44px}}
-[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn){min-height:44px;min-width:44px}
+@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn[data-size]{min-height:44px;min-width:44px}}
+[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn[data-size]){min-height:44px;min-width:44px}
 @media(forced-colors:active){
 .ap-more-popup,.ap-more .ap-actions-btn,.ap-surface-view-switch .oc-sdk-btn{border:1px solid ButtonText}
 .ap-surface-view-switch .oc-sdk-btn[aria-pressed="true"],.ap-more-row[aria-checked="true"]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-2px}

@@ -692,6 +692,19 @@ test('coverage gate: idle-now and running-again need current coverage too; a tas
   assert.deepEqual([c1.ran.kind, c1.ran.label, c1.accepted?.tasks.length], ['unknown', 'Current activity unavailable', 2]);
 });
 
+test('idle-only task-linked children with no recorded runs: a section with no count part, qualified only when coverage is incomplete', () => {
+  // The view still leads it with the nothing-running words (incomplete-counts-view.test.ts).
+  const facts = planFacts(plan, { state: 'ready', value: detail([items[0], items[1], items[2]]) }, plan.sourceId);
+  const records = [rec('A', null), rec('C1', 'A')];
+  for (const [coverage, livePartial, kind] of [['ready', false, 'idle'], ['loading', true, 'unknown']] as const) {
+    const census = censusFor('A', alpha.directory, snap(records, {}, [{ directory: alpha.directory, state: coverage }]));
+    const r = rosterFor(input({ census, facts, runs: panel(readOf([])) }));
+    assert.ok(r, coverage);
+    assert.deepEqual([r.summary, r.livePartial], [[], livePartial], coverage);
+    assert.deepEqual(r.featured.map((e) => [e.sessionId, e.ran.kind]), [['C1', kind]], coverage);
+  }
+});
+
 test('coverage gate: a same-subscription reload of a complete snapshot stays current; loss, incomplete retained rows and failed reload coverage do not', async () => {
   const { ws, emit, roster } = await oneSubscription();
   const live = run('running', { childSessionId: 'K1' });
@@ -1032,6 +1045,28 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   // Every recorded child loaded: a host-only child really is unrecorded and is counted (once).
   const extra = censusFor('A', alpha.directory, snap([rec('A', null), rec('K0', 'A', { activity: 'running' }), rec('X1', 'A', { activity: 'running' }), rec('X2', 'A', { activity: 'waiting-permission' })]));
   assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting for you', '2 running']);
+});
+
+test('summary: a resumed child on an unloaded page shows as Running, so the running count never reads as nothing', () => {
+  // 51 recorded children, all finished (one also failed); the useful view loaded 50. The host lists
+  // the unloaded K50 as running now (it was resumed): a host-only Running row that may be recorded.
+  const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
+  for (const failed of [0, 1]) {
+    const rows = markLatest(kids.map((k, i) => run(i < failed ? 'failed' : 'succeeded', { childSessionId: k })));
+    const read = readOf(rows.slice(0, 50), { succeeded: 51 - failed, failed, runs: 51, children: 51 }, { nextCursor: 'next' });
+    const census = censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k, i) => rec(k, 'A', { activity: i === 50 ? 'running' : 'idle' }))]));
+    for (const surface of ['panel', 'page'] as const) {
+      const r = rosterFor(input({ surface, census, runs: panel(read, [], { hasMore: true }) }))!;
+      const label = `${surface}, ${failed} failed`;
+      assert.deepEqual(r.featured.filter((e) => e.ran.kind === 'active').map((e) => [e.sessionId, e.runId]), [['K50', null]], `${label}: the Running row is shown`);
+      // Raised to the Running rows shown, never added on top of them; possibly low, so qualified.
+      assert.deepEqual(r.summary.map((s) => s.text), ['1+ running', `${51 - failed} finished`, ...(failed ? ['1 failed'] : [])], label);
+    }
+    // Once every recorded child is loaded, the record speaks: its finished run, not the host's word.
+    const all = rosterFor(input({ census, runs: panel(read, [rows[50]]) }))!;
+    assert.deepEqual(all.summary.map((s) => s.text), [`${51 - failed} finished`, ...(failed ? ['1 failed'] : [])], `${failed} failed, all loaded`);
+    assert.ok(![...all.featured, ...all.earlier].some((e) => e.ran.kind === 'active' || e.now?.kind === 'active'), 'and no Running row is left to contradict');
+  }
 });
 
 test('host row limit: a truncated host census is disclosed and host-only counts are not presented as complete', () => {
