@@ -803,7 +803,9 @@ boundaries and after awaits, not polled: an off/on transition entirely between
 observations is not guaranteed to be observed. The final authoritative Store read
 excludes closed, archived, deleted or no-longer-assigned work. Already dispatched
 text cannot be retracted and remains last-known, subject to the unchanged explicit
-read/expected-revision mutation protocol. No plan payload is cached across turns.
+read/expected-revision mutation protocol. No plan payload is cached across turns;
+the companion keeps delivered note text in memory, never on disk, bounded to 128
+sessions, 256 carriers and 128 KiB of note text per session.
 Unavailable recovery observation or lookup suppresses the capsule without
 suppressing otherwise eligible generic guidance or possible-plan-file hints.
 
