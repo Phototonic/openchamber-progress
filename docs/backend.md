@@ -554,8 +554,38 @@ claim: full fresh lifecycle/Store checks and writer fencing remain engine duties
 Cold progress projection reports capture as unknown unless supplied a fresh
 observation. Both journal families are integrated through the same worker/fence;
 format 2 stays migration-only and neither parser accepts the other family. Older
-readers refuse format 3, even complete records. Rollback retains all state and
-requires a fresh-capable build for recovery, with no journal down-conversion.
+readers that predate format 3 refuse it, even complete records. Readers that
+predate volume evidence also refuse enriched format 2 or 3 rather than treating
+the journal as absent.
+
+New reviews can bind private, versioned volume evidence into the format-2/3
+target digest. On Linux, bounded unprivileged Node filesystem reads correlate
+each derived path to a directly mounted btrfs subvolume and its single backing
+device. The evidence combines filesystem UUID, persistent subvolume ID and
+independent backing-disk identity, including the partition extent when applicable.
+A mount path or filesystem UUID alone is insufficient. A nested subvolume gets
+no proof from its parent's mount. Ambiguous or unprovable layouts, including bare
+loop and multi-device mounts, do not enroll. The reader starts no process, opens
+no raw block device and exposes no mount or hardware identifiers in public
+output. Other filesystems and Windows/macOS retain their existing checks.
+
+Only a historical-to-live comparison can accept a changed device number, and
+only with a fresh positive match for that path and all other checks intact.
+A snapshot differs by subvolume; a block copy on another disk or partition
+differs by backing identity. This is not detection of an image restored in place
+on the same backing extent. Missing or mismatched recorded evidence refuses
+even if the device number is reused; unanchored objects and older journals keep
+strict comparisons. A batch may share observations but cannot share authority
+between targets or across writes. Live race checks and saved-to-saved comparisons
+remain exact. The completed format-3 status exception is still observation only,
+never proof for an effect.
+
+This applies to fresh creation/reconnection, publication and retained objects,
+as well as migration discovery, removal and receipt validation. Keep the state
+and retry explicitly only after original storage is verifiable at the reviewed
+paths. A code rollback retains all state; roll forward to a compatible build
+without rewriting or down-converting the journal. See
+[Setup recovery](setup.md#continuing-unfinished-setup-after-a-device-number-changes).
 
 The lifecycle owner exposes a one-file removal foundation, using the frozen
 original manifest and native claims. Every request validates the remaining full
