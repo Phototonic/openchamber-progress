@@ -1,6 +1,6 @@
 {
   "name": "openchamber-agent-progress-probe",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "license": "MIT",
   "type": "module",
