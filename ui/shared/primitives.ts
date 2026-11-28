@@ -60,7 +60,7 @@ const LABELS: Record<InterfaceLanguage, { marks: Record<MarkStatus, string>; act
 };
 
 /** Plain interface icons (never status). Decorative unless given a name. */
-export type IconName = 'info' | 'more' | 'settings' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external' | 'filter';
+export type IconName = 'info' | 'more' | 'settings' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external' | 'filter' | 'issue' | 'change';
 
 const ICON_SHAPES: Record<IconName, Part[]> = {
   info: [['circle', { cx: 8, cy: 8, r: 6.3, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4 }], ['path', { d: 'M8 7.3v3.6', ...LINE, 'stroke-width': 1.6 }], ['circle', { cx: 8, cy: 5.1, r: 0.95, fill: 'currentColor' }]],
@@ -72,6 +72,9 @@ const ICON_SHAPES: Record<IconName, Part[]> = {
   filter: [['path', { d: 'M2.5 4.5h11M4.5 8h7M6.5 11.5h3', ...LINE, 'stroke-width': 1.6 }]],
   copy: [['path', { d: 'M5.5 5.5h8v8h-8z', ...LINE, 'stroke-width': 1.4 }], ['path', { d: 'M10.5 3.6V2.3H2.5v8.2h1.4', ...LINE, 'stroke-width': 1.4 }]],
   external: [['path', { d: 'M9 2.8h4.2V7M13 3 7.6 8.4M11.5 9.6v2.6a1 1 0 0 1-1 1H3.8a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.6', ...LINE, 'stroke-width': 1.4 }]],
+  // Linked-work kind cues: an issue ring, and a change (pull, merge or change request) glyph.
+  issue: [['circle', { cx: 8, cy: 8, r: 5.6, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4 }], ['circle', { cx: 8, cy: 8, r: 1.5, fill: 'currentColor' }]],
+  change: [['circle', { cx: 4.5, cy: 3.8, r: 1.6, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3 }], ['circle', { cx: 4.5, cy: 12.2, r: 1.6, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3 }], ['circle', { cx: 11.5, cy: 12.2, r: 1.6, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3 }], ['path', { d: 'M4.5 5.4v5.2M11.5 10.6V6.8a2 2 0 0 0-2-2H7.6M9 3.2 7.4 4.8 9 6.4', ...LINE, 'stroke-width': 1.3 }]],
 };
 
 /** A decorative inline SVG: hidden from accessibility, never focusable. */

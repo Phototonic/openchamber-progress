@@ -437,7 +437,7 @@ The below-320-pixel default is applied only while a new reading settles, not on 
 
 Map, List, Document and History are the four views on both surfaces. History shows the selected plan's recorded revisions; only the board adds the change digest. Document opens at its heading; Back or an unused Escape returns to the preceding view and focuses the Document selector. Back or Escape from Sessions returns focus to More; from Setup or Troubleshooting it returns to Settings. The board's History dot uses the existing device review point and listed revision, not a digest read. It appears only for a valid saved older point. Device checkpoints refresh on the existing read cadence; explicit review updates the known checkpoint.
 
-Stable hooks: `surface-header`, `progress-legend`, `settings-trigger`, `settings-popup`, `more-trigger`, `more-popup`, `history-new`, `more-<action-id>`, `more-language-<auto|en|ru|zh-CN>`, `surface-panel-<sessions|setup|troubleshooting>`, `surface-panel-heading`, `surface-panel-back`, `document-view`, `document-heading`, `document-back`, `plan-view-<map|list|document|history>`, `summary-open-<progress|handoff>`, `list-help-filters`, `list-filter-all`, `list-filter-unfinished`.
+Stable hooks: `surface-header`, `linked-work`, `linked-work-link`, `linked-work-more`, `progress-legend`, `settings-trigger`, `settings-popup`, `more-trigger`, `more-popup`, `history-new`, `more-<action-id>`, `more-language-<auto|en|ru|zh-CN>`, `surface-panel-<sessions|setup|troubleshooting>`, `surface-panel-heading`, `surface-panel-back`, `document-view`, `document-heading`, `document-back`, `plan-view-<map|list|document|history>`, `summary-open-<progress|handoff>`, `list-help-filters`, `list-filter-all`, `list-filter-unfinished`.
 
 **Visible focus (all surfaces).** Kit buttons and triggers whose own focus mark is only the hover tint get an inset host focus-token outline: the task-view buttons, Clear task filters, Open progress, Set up, Try again in failure/stale banners and the rail plan picker (Work Status and participant pickers already had one). App controls keep their existing rings.
 
@@ -512,10 +512,42 @@ Session details may show **Host-reported agent** (up to 80 code units) and up to
 five **Host-linked issue/change** titles (up to 200 each), with a more-links
 qualification. These are bounded literal host context, not assignment, task
 authority, completion or workflow selection. Missing data is ordinary; malformed
-optional data is omitted without invalidating session identity. No URLs are
-fetched or made executable and no new polling/cache is introduced. Extension
-explanations and accessible names support English/Russian/Chinese; native action labels
-are host-owned fixed text.
+optional data is omitted without invalidating session identity. Sessions details
+stay plain text for every participant, including a child session's own links;
+nothing there is clickable. No URLs are fetched and no new polling/cache is
+introduced. Extension explanations and accessible names support
+English/Russian/Chinese; native action labels are host-owned fixed text.
+
+**Linked work in the plan header.** The board and rail header's meta line shows the
+selected plan's **main session** links as small outlined chips after a short visible
+label, **Linked in OpenChamber** (**Связано в OpenChamber**, **OpenChamber 中的关联**).
+The data is the host session snapshot's optional `links` (`title`, `kind` of `issue`
+or `change`, `url`, `linkedAt`) delivered through the existing `sessions` grant and
+`onSessions` updates; `change` covers pull, merge and change requests. Only links
+whose address passed the document web-link policy (absolute HTTP(S), at most 2,048
+code units, a host, no credentials, whitespace, controls or backslashes) become
+chips; text-only links stay in Sessions details. The session must be the plan's
+recorded owner, resolved unambiguously in current coverage, for a plan of the
+verified bound source. The visible chat, contributors, a same-spelled session in
+another source or an ambiguous match never supply chips. Each chip is a native
+button (`linked-work-link`, `data-kind`) inside a labelled group (`linked-work`):
+a muted kind glyph and the literal host title, shortened visually at about 30
+characters with the full title on hover. Its accessible name is the kind and the
+full title, for example “Host-linked change: PR #95”. When the host had more than
+five usable links, a muted **and more** (`linked-work-more`) qualifies the group
+without claiming a total. No state, number or provider is inferred from a title,
+`linkedAt` or the plan; a link is context from OpenChamber, not proof that work
+shipped.
+
+Pointer, Enter or Space activation sends that chip's admitted address to
+`host.openUrl` once; the host owns the destination. There is no `href`,
+`window.open`, preview fetch or fallback opener. A refusal shows the short localized
+**Could not open this link.** toast used for document links and nothing else. Links
+appear, change or disappear with the next session snapshot, without a progress
+revision; with no usable links the header has no group, placeholder or notice.
+Chips use host tokens only (border, hover and focus ring), wrap at narrow widths
+and 200%/400% zoom, keep 44 px targets on coarse pointers and use system colours in
+forced-colours mode. Work Status, list rows and the Sessions list get no chips.
 
 There is no **Open Workflows** action: SDK 2.7.0 supplies no supported Workflows
 destination or availability contract. `openSurface(string)` does not establish
@@ -540,7 +572,7 @@ Presentation-only building blocks for all three surfaces. They read nothing, sto
 
 One calm progress story per plan, built from the shared canonical projection (`progress-projection.ts`) of complete matching detail. Every task appears once, as one canonical row; details open in the row. It reads nothing new and stores nothing: every choice below is frame-local reading state (see Task view › Reading identity).
 
-- **Header.** Supplied once by the surface shell above either view: title (`plan-title`, `tabindex=-1`), picker, closed lifecycle and More. The board adds location, Main session and a gated Open session; the rail omits that row. Source/trust warnings remain visible.
+- **Header.** Supplied once by the surface shell above either view: title (`plan-title`, `tabindex=-1`), picker, closed lifecycle and More. The board adds location, Main session and a gated Open session; the rail omits that row. Source/trust warnings remain visible. Both may end the meta line with the main session's host-linked work chips (see Native session entry and optional host context).
 - **Progress line.** A segmented bar followed by "3/8" (spoken "3/8 done, 5 remaining"), with no percentage. A zero total says "No tasks reported". The noninteractive text legend shows nonzero in-progress, blocked, not-started and skipped counts; every task done reads All done in the success colour. Counts always cover the whole plan.
 - **Qualifications.** Failed viewer/detail reads, recording off and other-install facts remain distinct. Detailed recording, document, identity and observation facts live under Troubleshooting → Advanced details; incomplete-count presentation has its own mount after Sub-agents.
 - **Groups (default attention order).** **Now** (reported working), **Blocked** (all reported blocked tasks), **Up next** (pending: ready or waiting), then **Done · N** and **Skipped · N**, folded. Rows keep recorded item order inside each group. On closed plans and invalid readiness the groups say Reported working / Reported blocked / Pending / Done / Skipped. A group with no shown row is not drawn. Choosing the done or skipped chip unfolds its group without expanding any row; the folds' open state belongs to the reading (`doneOpen`, `skippedOpen`). **Plan order** shows the recorded hierarchy instead, groups with their done/total and in-progress/blocked counts and every task its one canonical row; a plan with only groups always shows its hierarchy. The two views are never drawn together.
