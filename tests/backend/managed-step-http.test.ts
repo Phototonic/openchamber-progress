@@ -14,6 +14,7 @@ import {nativeService} from '../fixtures/windows-service-driver.ts';
 import {lifecycle,migrationEvidence} from '../../setup/lifecycle.ts';
 import {createManagedBindingDirectory,managedBindingFile,readManagedExpectation,writeManagedExpectation} from '../../shared/managed-binding.ts';
 import {writeMigration,readManagedStepJournal,readManagedFreshStepJournal,migrationFile} from '../../setup/managed-migration.ts';
+import {managedRequestDigest,managedTargetDigest} from '../../setup/managed-step-journal.ts';
 import {Store,digest} from '../../shared/store.ts';
 import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress,ManagedFreshStepRequest,ManagedFreshStepResponse,ManagedFreshStepProgress,ManagedSetupStepRequest} from '../../shared/managed-steps.ts';
 import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/shared/setup-steps.ts';
@@ -50,9 +51,10 @@ before(async()=>{
   source=source.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+source.slice(end);fs.writeFileSync(platform,source);
   const engine=path.join(projection,'setup/managed-step-engine.ts');source=fs.readFileSync(engine,'utf8');
   const crash=(step:string,order:string)=>`if(process.env.TEST_CRASH_STEP===${step}&&process.env.TEST_CRASH_ORDER==='${order}')process.exit(17);`;
-  assert.ok(source.includes('    const created=applyManagedStepEffect(env,payload,running,freshCapture);'));
-  source=source.replace('    const created=applyManagedStepEffect(env,payload,running,freshCapture);',
-    `${crash('m.step!.name','before')}\n    const created=applyManagedStepEffect(env,payload,running,freshCapture);\n${crash('m.step!.name','after')}\nif(process.env.TEST_EFFECT_ERROR==='1')throw new Error('synthetic effect interruption');`);
+  const effect='    const created=applyManagedStepEffect(env,payload,running,freshCapture,read);';
+  assert.ok(source.includes(effect));
+  source=source.replace(effect,
+    `${crash('m.step!.name','before')}\n${effect}\n${crash('m.step!.name','after')}\nif(process.env.TEST_EFFECT_ERROR==='1')throw new Error('synthetic effect interruption');`);
   source=source.replace('    createManagedBindingDirectory(env);',`${crash("'prepare'",'before')}\n    createManagedBindingDirectory(env);`);
   source=source.replace("  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};",`${crash("'prepare'",'after')}\n  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};`);
   fs.writeFileSync(engine,source);
@@ -137,13 +139,16 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest',r
     const r=await fetch(url+q.path,{method:q.method,body:q.body,headers:{authorization:'Bearer synthetic-http-fixture'},signal:AbortSignal.timeout(22000)});
     return {status:r.status,body:await r.text()};
   }};
-  return {root,env,setup,http,url,host,step,inspect,begin,status,advance,control,until,fault,capture,counts,targets,
-    async close(){await new Promise<void>(r=>server.close(()=>r()));setup.close();fs.rmSync(root,{recursive:true,force:true});}};
+  let stopped=false;
+  const stop=async()=>{if(stopped)return;stopped=true;await new Promise<void>(r=>server.close(()=>r()));setup.close();};
+  return {root,env,setup,http,url,host,step,inspect,begin,status,advance,control,until,fault,capture,counts,targets,stop,
+    async close(){await stop();fs.rmSync(root,{recursive:true,force:true});}};
 }
 
-async function freshHttpFixture(kind:'default'|'custom'|'retained-new'|'retained-reuse'='custom',enabled=false,routes:'windows'|'native'='windows'){
+async function freshHttpFixture(kind:'default'|'custom'|'retained-new'|'retained-reuse'='custom',enabled=false,routes:'windows'|'native'='windows',storeRoot?:string){
   const f=await fixture('empty',routes);
   if(kind==='default')f.targets.storeRoot=path.join(f.targets.dataRoot,'openchamber-progress');
+  if(storeRoot)f.targets.storeRoot=storeRoot;
   const database=path.join(f.targets.storeRoot,'progress.sqlite');
   if(kind.startsWith('retained')){
     fs.mkdirSync(f.targets.storeRoot,{mode:0o700});const s=new Store(database,{create:true});try{
@@ -191,6 +196,111 @@ async function coldHttp(env:NodeJS.ProcessEnv) {
     return {http,step:(request:ManagedSetupStepRequest)=>http('/v1/setup/managed-step',request),close};
   }catch(error){await close();throw error;}
 }
+
+async function coldNativeHttp(f:Awaited<ReturnType<typeof freshHttpFixture>>){
+  await f.stop();
+  const setup=new SetupController({env:f.env},()=>payload);
+  const server=createProgressServer(undefined,'synthetic-http-fixture',undefined,setup);
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+  const http=async(route:string,body?:ManagedSetupStepRequest)=>{
+    const response=await fetch(url+route,{method:body?'POST':'GET',
+      headers:{authorization:'Bearer synthetic-http-fixture','content-type':'application/json'},
+      body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(22_000)});
+    const value=await response.json();
+    assert.ok(!JSON.stringify(value).includes('volumeIdentity'));
+    return {status:response.status,body:value};
+  };
+  return {http,step:(body:ManagedSetupStepRequest)=>http('/v1/setup/managed-step',body),
+    async close(){await new Promise<void>(r=>server.close(()=>r()));setup.close();}};
+}
+
+for(const scenario of ['old-record','strict-device','unavailable-witness'] as const)
+test(`cold native fresh Setup: ${scenario}`,{skip:process.platform!=='linux'},async()=>{
+  // tmpfs can never provide a btrfs witness, regardless of the filesystem
+  // backing the source checkout or the ordinary temporary directory.
+  assert.equal(fs.statfsSync('/dev/shm').type,0x01021994);
+  const storeParent=fs.mkdtempSync('/dev/shm/managed-http-');
+  const f=await freshHttpFixture('custom',false,'native',path.join(storeParent,'store'));
+  let cold:Awaited<ReturnType<typeof coldNativeHttp>>|undefined;
+  try{
+    assert.equal((await f.begin()).status,200);
+    const creation=await f.until('create-store'),created=await f.advance(creation);
+    assert.equal(created.status,200);
+    const pending=created.body.progress!,paused=await f.control('pause',pending);
+    assert.equal(paused.status,200);
+    const file=migrationFile(f.env),selector=managedBindingFile(f.env),history=path.join(f.targets.storeRoot,'installation-history.jsonl');
+    const journal=readManagedFreshStepJournal(f.env)!;
+    assert.equal(journal.migration.fresh.volumeIdentity,undefined);
+    assert.equal(journal.migration.consent.targetDigest,managedTargetDigest(journal));
+    assert.equal(journal.migration.fresh.capturePolicy,'enable-new');
+    const request={version:2,action:'resume',operationId,expectedSequence:paused.body.progress!.sequence} as const;
+    if(scenario!=='old-record'){
+      // Synthetic private-state fixture only. In the unavailable case the
+      // current device matches, but the required witness cannot be observed.
+      if(scenario==='strict-device'){
+        const object=journal.migration.created.database!.object!;
+        object.device=String(BigInt(object.device)+1n);
+      }else{
+        journal.migration.fresh.volumeIdentity={version:1,paths:[{path:f.database,fingerprint:'a'.repeat(64)}]};
+        journal.migration.consent.targetDigest=managedTargetDigest(journal);
+        journal.migration.receipt!.requestDigest=managedRequestDigest({version:2,action:'pause',operationId,expectedSequence:pending.sequence},journal);
+      }
+      fs.writeFileSync(file,JSON.stringify(journal));
+      assert.deepEqual(readManagedFreshStepJournal(f.env),journal);
+    }
+    const effects=()=>{
+      const files=[file,selector,history,...fs.readdirSync(f.targets.storeRoot).sort().map(name=>path.join(f.targets.storeRoot,name))];
+      return files.map(name=>{
+        const stat=fs.lstatSync(name,{bigint:true,throwIfNoEntry:false});
+        return stat&&[name,stat.ino,stat.ctimeNs,stat.mtimeNs,digest(fs.readFileSync(name))];
+      });
+    };
+    const before=effects();
+    assert.equal(fs.existsSync(selector),false);assert.equal(fs.existsSync(history),false);
+    cold=await coldNativeHttp(f);
+    const status=await cold.http('/v1/setup'),p=status.body.delivery.freshProgress;
+    const cause=scenario==='old-record'?null:scenario==='strict-device'?'managed-migration-conflict':'managed-path-unverified';
+    assert.equal(status.status,200);assert.equal(status.body.configured,false);assert.equal(status.body.verified,false);
+    assert.equal(status.body.captureEnabled,cause?null:false);
+    assert.deepEqual(status.body.diagnostics,cause?[cause]:[]);
+    assert.equal(status.body.delivery.migrationProgress,undefined);
+    assert.equal(p.operationId,operationId);assert.equal(p.sequence,request.expectedSequence);assert.equal(p.state,'paused');
+    assert.equal(p.capturePolicy,journal.migration.fresh.capturePolicy);
+    assert.deepEqual(effects(),before);
+    const wrongWire=await cold.step({...request,version:1});
+    assert.equal(wrongWire.status,409);assert.equal(wrongWire.body.version,1);
+    assert.equal(wrongWire.body.error.code,'managed-journal-unsupported');
+    assert.deepEqual(effects(),before);
+    const resumed=await cold.step(request);
+    assert.equal(resumed.body.version,2);assert.equal(resumed.body.accounting.securitySpawns,0);
+    assert.equal(resumed.body.progress.operationId,operationId);
+    if(cause){
+      assert.equal(resumed.status,409);assert.equal(resumed.body.disposition,'refused');
+      assert.equal(resumed.body.error.code,cause);
+      assert.equal(resumed.body.progress.sequence,p.sequence);
+      assert.deepEqual(effects(),before);
+    }else{
+      assert.equal(resumed.status,200);assert.equal(resumed.body.disposition,'applied');
+      assert.equal(resumed.body.progress.sequence,p.sequence+1);
+      assert.equal(resumed.body.progress.state,'pending');assert.equal(resumed.body.progress.capture.state,'off');
+      assert.deepEqual(resumed.body.progress.lastCompleted,p.lastCompleted);
+      assert.deepEqual(effects().slice(1),before.slice(1),'resume itself has no Store or selector effect');
+      const advance={version:2,action:'advance',operationId,expectedSequence:resumed.body.progress.sequence,step:p.step} as const;
+      const result=await cold.step(advance);assert.equal(result.status,200);
+      assert.deepEqual(result.body.progress.lastCompleted,p.step);
+      const after=effects(),replay=await cold.step(advance);
+      assert.equal(replay.status,200);assert.equal(replay.body.disposition,'replayed');
+      assert.equal(replay.body.progress.sequence,result.body.progress.sequence);
+      assert.deepEqual(effects(),after);
+      const current=readManagedFreshStepJournal(f.env)!;
+      assert.deepEqual(current.migration.consent,journal.migration.consent);
+      assert.deepEqual(current.migration.fresh,journal.migration.fresh);
+    }
+    const store=new Store(f.database,{readOnly:true});
+    try{assert.equal(store.list().captureEnabled,false);}finally{store.close();}
+  }finally{await cold?.close();await f.close();fs.rmSync(storeParent,{recursive:true,force:true});}
+});
 
 test('cold migration begin settles only the proven first journal pair',async()=>{
   const f=await fixture();let cold:Awaited<ReturnType<typeof coldHttp>>|undefined;

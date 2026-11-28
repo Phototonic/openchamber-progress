@@ -84,6 +84,8 @@ admin() { sudo -n "$@"; }
 settle() { admin udevadm settle --timeout=15; }
 
 [[ $(uname -s) == Linux && -f scripts/run-setup-btrfs-qa.sh ]]
+driver=tests/fixtures/setup-btrfs-native.test.ts
+[[ -f $driver ]]
 for tool in btrfs mkfs.btrfs targetcli mkfs.ext4 losetup mount umount mountpoint \
   findmnt blkid blockdev modprobe udevadm node timeout sudo; do
   command -v "$tool" >/dev/null
@@ -109,9 +111,6 @@ top="$root/top"
 spacer="$root/spacer"
 control_mount="$root/control"
 store="$direct/store"
-driver=tests/fixtures/setup-btrfs-native.test.ts
-driver_present=false
-if [[ -f $driver ]]; then driver_present=true; fi
 actions=()
 objects=()
 lun_sysfs=
@@ -235,15 +234,6 @@ pass
 run_phase() {
   local phase=$1 profile="$root/profiles/$2" phase_store=$3 control=${4:-}
   local tap="$root/phase.tap" counts tests ok skipped todo
-  if [[ $driver_present == false ]]; then
-    # The initial feasibility PR can run before the product integration driver
-    # exists. Its only phase is the built-in preflight result, never acceptance.
-    if [[ $phase == preflight ]]; then
-      printf 'preflight_only=true\n'
-    fi
-    return 0
-  fi
-  if [[ $phase == preflight ]]; then return 0; fi
   [[ -f $driver ]]
   mkdir -p -- "$profile"/{home,config,data,state,cache,runtime,tmp}
   if ! env -i PATH="$PATH" HOME="$profile/home" TMPDIR="$profile/tmp" \
@@ -503,6 +493,3 @@ make_store "$control_store"
 run_phase controls tmpfs "$control_store" tmpfs
 release mount "$control_mount"
 pass
-
-case_name=preflight
-run_phase preflight main "$store"
