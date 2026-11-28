@@ -333,6 +333,8 @@ export interface Env {
   view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
   openDocumentUrl?: (url: string) => void;
+  /** For explicit activation of an admitted live session link. */
+  openLinkedWorkUrl?: (url: string) => void;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
