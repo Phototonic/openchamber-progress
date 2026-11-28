@@ -8,7 +8,7 @@ import {managedSourceRoots,managedBindingFile,managedPath,readManagedBinding,man
 import {windows,windowsPaths,privatePaths,isOwned} from '../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_STEP_LIMITS,type ManagedInspection,type ManagedCaptureObservation,type ManagedStepProgress} from '../shared/managed-steps.ts';
 import type {ManagedReview} from '../shared/progress.ts';
-import {SetupError,discoverMigrationPaths,migrationEvidence,validateMigrationRemoval,type Payload} from './lifecycle.ts';
+import {SetupError,discoverMigrationPaths,migrationEvidence,managedRemovalPlacementClaims,validateMigrationRemoval,type Payload} from './lifecycle.ts';
 import {migrationFile,readMigration,readManagedStepJournal,readRemovalReceipt,managedJournalPaths,type MigrationRecord} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,managedTargetDigest,type ManagedStepJournal,type ManagedPathClaim} from './managed-step-journal.ts';
 import {ManagedStepFailure} from './managed-diagnostic.ts';
@@ -70,15 +70,16 @@ function storePaths(binding:Binding) {
   return [path.dirname(binding.database),binding.database,...['-journal','-wal','-shm'].map(s=>binding.database+s),
     managedExpectationFile(binding),path.join(path.dirname(binding.database),'installation-history.jsonl')];
 }
-function fixedVolumeTarget(binding:Binding,file:string,initialPair=false):ManagedVolumeTarget|undefined {
+function volumeTarget(binding:Binding,file:string,initialPair=false,layoutKind?:ManagedVolumeTarget['kind']):ManagedVolumeTarget|undefined {
   try{managedPath(file,true);}
   catch(error){if(error instanceof ManagedBindingError&&error.code==='managed-path-unverified')return;throw error;}
   const stat=lstatSync(file,{bigint:true,throwIfNoEntry:false});
   if(!stat)return {path:file,kind:'absent',object:null};
   const {configRoot,dataRoot}=binding.source;
   const publicRoot=file===configRoot||file===dataRoot;
-  const directory=publicRoot||file===path.dirname(binding.database)||file===path.join(dataRoot,'agent-progress-managed')||
-    file===path.join(configRoot,'plugins','agent-progress');
+  const directory=layoutKind!==undefined?layoutKind==='directory':
+    publicRoot||file===path.dirname(binding.database)||file===path.join(dataRoot,'agent-progress-managed')||
+      file===path.join(configRoot,'plugins','agent-progress');
   const paired=initialPair&&file===path.join(dataRoot,'agent-progress-managed','migration.json');
   if(stat.isSymbolicLink()||(directory?!stat.isDirectory():!stat.isFile()||stat.nlink!==(paired?2n:1n))||
     !(publicRoot?isOwned(file):privatePaths([file])))return;
@@ -91,7 +92,7 @@ function enrollVolumeIdentity(binding:Binding,read:ManagedVolumeIdentityReader,m
   const targets=new Map<string,ManagedVolumeTarget>(manifest.map(c=>[c.path,c]));
   for(const file of managedVolumeFixedPaths(binding)){
     if(targets.has(file))continue;
-    const target=fixedVolumeTarget(binding,file);
+    const target=volumeTarget(binding,file);
     if(target)targets.set(file,target);
   }
   const paths:ManagedVolumeIdentityEvidence['paths']=[];
@@ -116,9 +117,28 @@ export function validateManagedFixedPlacement(journal:ManagedSetupStepJournal,re
     if(m.format===2&&file!==managedRoot&&path.dirname(file)!==managedRoot&&file!==managedExpectationFile(journal))continue;
     // Fresh Store objects have their own checked observations below.
     if(m.format===3&&[m.fresh.directory.path,m.fresh.database.path,...m.fresh.sidecars.map(c=>c.path)].includes(file))continue;
-    const current=fixedVolumeTarget(journal,file,initialPair);
-    if(!current)throw new ManagedVolumePlacementError('managed-migration-conflict');
-    requireSameManagedVolume(compareManagedVolumePlacement(current,volume,read));
+    validateVolumeTarget(journal,file,volume,read,initialPair);
+  }
+}
+function validateVolumeTarget(journal:ManagedSetupStepJournal,file:string,volume:ManagedVolumeIdentityEvidence,read:ManagedVolumeIdentityReader,
+  initialPair=false,layoutKind?:ManagedVolumeTarget['kind']) {
+  const current=volumeTarget(journal,file,initialPair,layoutKind);
+  if(!current)throw new ManagedVolumePlacementError('managed-migration-conflict');
+  requireSameManagedVolume(compareManagedVolumePlacement(current,volume,read));
+}
+/** Failure settlement has no successful effect to reconcile. Check every
+ * witnessed location without asserting old/new presence, history or Store
+ * contents, and never let the witness nominate a path to read. */
+export function validateManagedFailurePlacement(journal:ManagedSetupStepJournal,read:ManagedVolumeIdentityReader) {
+  const m=journal.migration,volume=m.format===3?m.fresh.volumeIdentity:m.legacy.volumeIdentity;
+  if(!volume)return;
+  const paths=new Map<string,ManagedVolumeTarget['kind']|undefined>(managedVolumeFixedPaths(journal).map(file=>[file,undefined]));
+  if(m.format===2&&m.legacy.kind==='manifest'){
+    for(const claim of managedRemovalPlacementClaims(journal as ManagedStepJournal))paths.set(claim.path,claim.kind);
+  }
+  for(const {path:file} of volume.paths){
+    if(!paths.has(file))throw new ManagedVolumePlacementError('managed-migration-conflict');
+    validateVolumeTarget(journal,file,volume,read,false,paths.get(file));
   }
 }
 function paths(session:ManagedInspectionSession) {

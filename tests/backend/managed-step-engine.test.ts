@@ -257,6 +257,51 @@ test('a fresh directory created before proof loss is retained without claiming i
   }finally{f.cleanup();}
 });
 
+for(const [target,proof] of [
+  ['directory','lost'],['directory','copy'],['database','lost'],['database','copy'],['sidecar','lost'],['sidecar','copy'],['directory','original'],
+] as const)test(
+  `fresh ${proof==='original'?'settles failure':'retains its running intent'} after EIO with ${proof} ${target} placement`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),f=freshFixture('absent',false,volume.read);
+    volume.select(file=>file===(target==='directory'?f.storeRoot:target==='database'?f.database:f.database+'-wal'));
+    try{
+      f.begin();
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env);
+      const {mkdirSync}=fs;
+      let published:Buffer|undefined;
+      const mock=t.mock.method(fs,'mkdirSync',((p,options)=>{
+        if(String(p)!==f.storeRoot)return mkdirSync(p,options);
+        published=fs.readFileSync(file);
+        volume.setProof(proof);
+        throw Object.assign(new Error('synthetic mkdir failure'),{code:'EIO'});
+      }) as typeof mkdirSync);syncBuiltinESMExports();
+      let observed:ReturnType<typeof f.advance>;
+      try{observed=f.advance(request);}
+      finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published);
+      assert.equal(observed.disposition,'refused');
+      assert.equal(fs.existsSync(f.storeRoot),false);
+      assert.equal(fs.existsSync(managedBindingFile(f.env)),false);
+      assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(),['.ownership.json','migration.json']);
+      if(proof==='original'){
+        assert.equal(f.journal().migration.state,'failed');
+        assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+        assert.equal(f.advance(request).disposition,'replayed');
+        return;
+      }
+      assert.equal(f.journal().migration.state,'running');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence);
+      assert.deepEqual(f.journal().migration.receipt,prior.migration.receipt);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.equal(observed.error?.code,proof==='lost'?'managed-path-unverified':'managed-migration-conflict');
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
+      assert.equal(fs.existsSync(f.database),false);
+      assert.equal(fs.statSync(f.storeRoot).isDirectory(),true);
+      assert.equal(f.advance(request).disposition,'replayed');
+    }finally{f.cleanup();}
+  });
+
 for(const kind of ['absent','directory','new-source','reuse'] as const)for(const enabled of [false,true])test(`fresh ${kind} completes its frozen plan and preserves retained capture ${enabled}`,()=>{
   const f=freshFixture(kind,enabled);try{
     const review=f.review(),initial=review.candidate!,old=fs.existsSync(f.database)?fs.readFileSync(f.database):null;
@@ -648,6 +693,44 @@ for(const receipt of [false,true])for(const proof of ['lost','copy'])test(
       assert.equal(f.journal().migration.intent,null);
       if(receipt)assert.ok(fs.existsSync(managedExpectationFile(prior)));
       else assert.equal(fs.existsSync(target),false);
+    }finally{f.cleanup();}
+  });
+
+for(const receipt of [false,true])test(
+  `migration ${receipt?'receipt':'manifest'} does not checkpoint an EIO after placement is lost during the effect`,nativeVolumeFixture,t=>{
+    const volume=fixtureVolume(),targetName=receipt?'progress.sqlite':'SKILL.md';
+    volume.select(file=>path.basename(file)===targetName&&(receipt||path.basename(path.dirname(file))==='agent-progress'));
+    const f=fixture(receipt,volume.read);
+    try{
+      if(!receipt)f.until('remove-discovery');
+      const prior=f.journal(),request=f.request(),file=migrationFile(f.env),expected=managedExpectationFile(prior);
+      const {renameSync,unlinkSync,linkSync}=fs;
+      let published:Buffer|undefined;
+      const abort=()=>{assert.ok(published);volume.setProof('lost');throw Object.assign(new Error('synthetic effect failure'),{code:'EIO'});};
+      const mocks=[
+        t.mock.method(fs,'renameSync',((from,to)=>{
+          renameSync(from,to);if(String(to)===file&&!published)published=fs.readFileSync(file);
+        }) as typeof renameSync),
+        t.mock.method(fs,'unlinkSync',((p)=>{
+          if(!receipt&&path.dirname(String(p))===path.join(f.targets.configRoot,'plugins','agent-progress'))abort();
+          return unlinkSync(p);
+        }) as typeof unlinkSync),
+        t.mock.method(fs,'linkSync',((from,to)=>{
+          if(receipt&&String(to)===expected)abort();
+          return linkSync(from,to);
+        }) as typeof linkSync),
+      ];syncBuiltinESMExports();
+      try{
+        const observed=f.advance(request);
+        assert.equal(observed.disposition,'refused');assert.equal(observed.error?.code,'managed-path-unverified');
+      }finally{for(const mock of mocks)mock.mock.restore();syncBuiltinESMExports();}
+      assert.ok(published);
+      assert.deepEqual(fs.readFileSync(file),published);
+      assert.equal(f.journal().migration.state,'running');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence);
+      volume.setProof('original');
+      assert.equal(f.advance(request).disposition,'applied');
+      assert.equal(f.journal().migration.sequence,request.expectedSequence+1);
     }finally{f.cleanup();}
   });
 

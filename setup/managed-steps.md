@@ -479,6 +479,9 @@ The state machine is `MANAGED_OPERATION_TRANSITIONS` plus the ordered step plan:
 - Failure enters failed and retains current step/intent, bounded diagnostic and
   the actual capture observation (unknown when unverified). A failed settlement
   increments once; inability to persist that settlement leaves running/uncertain.
+  Before writing a failure checkpoint, recheck every recorded volume placement,
+  without treating an incomplete effect as successful. Missing or different
+  proof leaves the durable running intent and sequence unchanged.
 - Pause/abandon enter their named states without changing step or intent. Explicit
   resume enters pending at that same step, never skips to the next effect.
   Pause is legal from pending, failed, or fenced running; abandon additionally

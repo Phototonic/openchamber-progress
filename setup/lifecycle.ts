@@ -232,6 +232,10 @@ function removalLayout(journal:ManagedStepJournal) {
     m.intent.after.some(c=>c.path===p&&c.kind==='absent'&&c.object===null&&c.digest===null);
   return {targets,root,manifest,selectors,discovery,paths,claims,file,completed,removed,intentFor};
 }
+/** Paths and kinds from the verified manifest layout, not from the witness. */
+export function managedRemovalPlacementClaims(journal:ManagedStepJournal) {
+  return removalLayout(journal).claims.values();
+}
 /** Full fresh remaining-set validation. Missing files are recognized only from
  * this operation's ordered completion or its exact before/after removal intent.
  * The journal itself grants no path/object/Store authority. */

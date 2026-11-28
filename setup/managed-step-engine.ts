@@ -4,7 +4,7 @@ import {managedSourceRoots,createManagedBindingDirectory} from '../shared/manage
 import {windows,windowsPaths,STEP_HEADROOM_MS,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
 import {managedJournalProgress,managedFreshJournalProgress,managedRequestDigest,parseManagedStepJournal,parseManagedFreshStepJournal,sameManagedStep,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedCaptureRenewal,type ManagedFreshCaptureRenewal,type ManagedFreshStepIntent} from './managed-step-journal.ts';
 import {readManagedStepJournal,readManagedFreshStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths,observeInitialJournalSave,settleInitialJournalSave} from './managed-migration.ts';
-import {validateManagedInspectionReview,validateManagedFreshInspectionReview,validateManagedFixedPlacement,
+import {validateManagedInspectionReview,validateManagedFreshInspectionReview,validateManagedFailurePlacement,
   type ManagedInspectionSession,type ManagedFreshInspectionSession} from './managed-inspection.ts';
 import {type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedCaptureObservation} from '../shared/managed-steps.ts';
 import {canonical} from '../shared/store.ts';
@@ -261,7 +261,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
       // Metadata-only failure settlement cannot assert the failed effect's
       // authority or roll it back. The journal owner still checks private paths,
       // exact current bytes and legal immutable-target evolution.
-      budget.require();writeManagedStepJournal(env,failed,running,()=>validateManagedFixedPlacement(running,read));
+      budget.require();writeManagedStepJournal(env,failed,running,()=>validateManagedFailurePlacement(running,read));
       return result(failed,'refused',unknownCapture,failure);
     }catch(settlement){return result(running,'refused',unknownCapture,diagnostic(settlement,running,true));}
   }
