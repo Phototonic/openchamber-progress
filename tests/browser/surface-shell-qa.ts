@@ -426,7 +426,8 @@ try {
   await wait('page', `!!d.querySelector('button[data-testid^="plan-row-"]')`);
   await click('page', '[data-testid="tidy-open"] button');
   await wait('page', `!!d.querySelector('[data-testid="tidy-confirm"]')&&d.activeElement?.closest('[data-testid="tidy-cancel"]')`);
-  check('tidy-one-library-opener-with-two-projects', await guest('page', `return d.querySelectorAll('[data-testid="tidy-open"]').length===1&&!d.querySelector('[data-testid="tidy-open"]').closest('[data-testid="board-project"]')&&d.querySelector('#tidy-heading').textContent.includes('2 closed plans')`));
+  const tidy = await guest<{ singleLibraryOpener: boolean; count: string }>('page', `return {singleLibraryOpener:d.querySelectorAll('[data-testid="tidy-open"]').length===1&&!d.querySelector('[data-testid="tidy-open"]').closest('[data-testid="board-project"]'),count:d.querySelector('#tidy-heading').textContent}`);
+  check('tidy-one-library-opener-with-two-projects', tidy.singleLibraryOpener && tidy.count.includes(`${digest.layoutClosedCount()} closed plans`), tidy);
   await key('Escape');
   await wait('page', `d.activeElement?.closest('[data-testid="tidy-open"]')&&!d.querySelector('[data-testid="tidy-confirm"]')`);
   check('tidy-cancel-read-only', await evaluate(`qa.requests.every(q=>q.method==='GET')`));

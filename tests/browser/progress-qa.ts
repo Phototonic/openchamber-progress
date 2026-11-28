@@ -37,8 +37,8 @@ export function progressInput(d: ProgressDriver) {
       const { id, source } = identity;
       await d.wait(surface, `d.querySelector('article[data-testid="plan-${id}"][data-source="${source}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${source}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${id}')`, 'Selected reading before choosing List');
     }
-    await d.wait(surface, `d.querySelector('[data-testid="plan-view-list"] button,[data-testid="detail-tabs"] [data-id="progress"]')`, 'List entry');
-    await d.click(surface, surface === 'page' ? '[data-testid="detail-tabs"] [data-id="progress"]' : '[data-testid="plan-view-list"] button');
+    await d.wait(surface, `d.querySelector('[data-testid="plan-view-list"] button')`, 'List entry');
+    await d.click(surface, '[data-testid="plan-view-list"] button');
   };
   const controls = async (surface: string) => {
     if (!(await d.guest<boolean>(surface, `return !!d.querySelector('[data-testid="focus-controls"]')`))) await action(surface, 'task-view');

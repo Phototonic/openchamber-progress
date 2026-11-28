@@ -297,7 +297,7 @@ try {
     // The host's 47 px top inset replaces the normal 14/12 px top padding; first content starts below it.
     check(`${f}-insets:top-inset-respected`, pad.top === 47 && pad.first >= 47, pad);
     // The last essential control can be scrolled above the occluded band.
-    const last = await guest<any>(f, `w.scrollTo(0,d.documentElement.scrollHeight);const n=[...d.querySelectorAll('button:not(:disabled),summary,input:not(:disabled)')].filter(n=>n.getClientRects().length&&!n.closest('.ap-sr,[hidden]')).at(-1);const r=n?.getBoundingClientRect();return {top:r?.top,bottom:r?.bottom,limit:w.innerHeight-334}`);
+    const last = await guest<any>(f, `const n=[...d.querySelectorAll('button:not(:disabled),summary,input:not(:disabled)')].filter(n=>n.getClientRects().length&&!n.closest('.ap-sr,[hidden]')).at(-1);n?.scrollIntoView({block:'end',behavior:'instant'});return new Promise(resolve=>w.requestAnimationFrame(()=>{const r=n?.getBoundingClientRect();resolve({top:r?.top,bottom:r?.bottom,limit:w.innerHeight-334,hook:n?.closest('[data-testid]')?.dataset.testid})}))`);
     check(`${f}-keyboard:last-control-above-keyboard`, last.top >= 0 && last.bottom <= last.limit, last);
   }
   // Keyboard focus walk: the focused control is kept out of the occluded band by scroll padding.

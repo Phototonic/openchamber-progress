@@ -66,7 +66,7 @@ function revealPagePlan(id: string) {
 function choosePicker(surface: string, id: string) {
   const picker = `[data-testid="${surface === 'status' ? 'status-plan-selector' : 'plan-selector'}"] button`;
   wait(surface, `d.querySelector('${picker}')`);
-  guest(surface, `const b=d.querySelector('${picker}');b.scrollIntoView({block:'nearest'});b.focus();return new Promise(r=>d.defaultView.requestAnimationFrame(()=>d.defaultView.requestAnimationFrame(()=>r(true))));`);
+  guest(surface, `const b=d.querySelector('${picker}');d.defaultView.focus();b.scrollIntoView({block:'nearest'});b.focus();return new Promise(r=>d.defaultView.requestAnimationFrame(()=>d.defaultView.requestAnimationFrame(()=>r(true))));`);
   key('Enter');
   wait(surface, `d.querySelector('[role="listbox"]')`);
   const index = guest(surface, `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].findIndex(n=>n.id.endsWith('-source-fixture/${id}'));`);

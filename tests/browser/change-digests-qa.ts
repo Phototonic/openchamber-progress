@@ -195,7 +195,8 @@ try {
   const unchanged = (a: unknown, b: unknown) => same(a, b);
   const progressUi = progressInput({ guest, wait, click, key });
 
-  await evaluate(`new Promise(r=>{const t=()=>window.qa&&frame('page').contentDocument?.querySelector('[data-testid="progress-root"]')&&frame('panel').contentDocument?.querySelector('[data-testid="progress-root"]')?r(true):setTimeout(t,50);t()})`);
+  await wait('page', `!!d.querySelector('[data-testid="progress-root"]')`, 'page guest mounted');
+  await wait('panel', `!!d.querySelector('[data-testid="progress-root"]')`, 'panel guest mounted');
   await theme('light');
 
   if (only === 'prerequisites') {

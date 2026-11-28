@@ -164,6 +164,7 @@ export async function startDigestShell(built = false, layout = false) {
   };
   return {
     port, storeId: s0.body().storeId, revision: rev, state, cleanup,
+    layoutClosedCount: () => s0.store.list().data.filter(p => p.lifecycle !== 'active').length,
     exists: (plan: string) => !!s0.store.get(SOURCE, plan),
     fixtureWrites: () => fixtureWrites,
     /** V1 sequence on P-digest: blocked, same-status repeat (fresh oid), identical replay, working, done, add D. */

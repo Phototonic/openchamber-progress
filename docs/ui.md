@@ -387,7 +387,7 @@ quiet plans say **No reports for N days**, with an absolute report time on the
 label. This describes a recorded timestamp, not actual activity or an outcome.
 The existing visible refresh reevaluates age without another service read.
 
-**Hide quiet** (named **Hide plans with no reports for 7 days** for assistive technology) is on initially. It is beside the rail chooser
+**Hide quiet** (with a description of the seven-day rule for assistive technology) is on initially. It is beside the rail chooser
 (even without a selected plan) and the board Filters trigger, and applies to their choices
 and plan lists, but not to Work Status or Needs you. When a saved rail plan is
 hidden, the displayed choice falls back without replacing the saved one.

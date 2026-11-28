@@ -410,7 +410,7 @@ export function quietCheck<U>(vc: ViewContext<U>) {
   control.type = 'checkbox'; control.checked = vc.quiet.hide; control.disabled = vc.quiet.saving;
   control.setAttribute('role', 'switch');
   label.title = quietCopy(vc.env.locale).filter;
-  control.setAttribute('aria-label', label.title);
+  control.setAttribute('aria-description', label.title);
   control.addEventListener('change', () => { const choice = control.checked; control.checked = vc.quiet.hide; void vc.quiet.choose(choice); });
   const track = el('span', 'ap-quiet-track'); track.setAttribute('aria-hidden', 'true');
   const short = { en: 'Hide quiet', ru: 'Скрыть без отчётов', 'zh-CN': '隐藏久未更新' }[resolveLanguage('auto', vc.env.locale)];
