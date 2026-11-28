@@ -119,6 +119,7 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 :is([data-testid="plan-title"],[data-testid="status-plan-title"],[data-testid="setup-status-heading"],[data-testid="setup-needed"],[data-testid="empty-state"],[data-testid="unscoped-state"]):focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 .ap-handoff-notice{margin:0}
 /* SDK widgets mark focus only with the hover tint (or not at all): the app adds a focus-token ring */
+.ap .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-plan-list [role="listbox"]:focus-visible [role="option"][data-active="true"]{box-shadow:inset 0 0 0 2px var(--oc-focus)}
 .ap-plan-list [role="listbox"]:focus-visible:not(:has([role="option"][data-active="true"])){outline:2px solid var(--oc-focus);outline-offset:-2px;border-radius:8px}
 [data-testid="detail-tabs"] [role="tab"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
@@ -776,11 +777,13 @@ ${PHONE_CSS}
 .ap-more{position:relative;flex:none}
 .ap-more button{color:var(--oc-fg);font:inherit}
 .ap-more .ap-actions-btn{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;border:0;border-radius:4px;background:transparent;cursor:pointer}
-.ap-more .ap-actions-btn:hover{background:var(--oc-hover)}
+.ap-more .ap-actions-btn:is(:hover,[aria-expanded="true"]){background:var(--oc-hover)}
 .ap-more-popup[hidden]{display:none}
 .ap-more-popup{position:absolute;z-index:100;right:0;top:calc(100% + 4px);display:flex;flex-direction:column;width:max-content;min-width:min(220px,calc(100vw - 40px));max-width:min(300px,calc(100vw - 40px));max-height:min(640px,70vh);overflow:auto;padding:6px;background:var(--oc-elevated,var(--oc-bg));border:1px solid var(--oc-border);border-radius:8px;box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 12%,transparent)}
 .ap-more-row{border:0;border-radius:4px;background:none;text-align:start;padding:8px 12px;min-height:36px;white-space:normal;cursor:pointer}
-.ap-more-row:hover,.ap-more-row:focus{background:var(--oc-hover);outline:2px solid var(--oc-focus);outline-offset:-2px}
+/* Pointer hover and pointer-opened focus take the hover fill; only keyboard focus adds the ring */
+.ap-more-row:hover,.ap-more-row:focus{background:var(--oc-hover);outline:none}
+.ap-more-row:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-more-row:disabled{opacity:.55;cursor:default}
 .ap-more-row[data-destructive]{color:var(--oc-error-text,var(--oc-error))}
 .ap-more-row[aria-checked="true"]::before{content:'✓ ';color:var(--oc-primary-text,var(--oc-primary))}
@@ -871,10 +874,14 @@ ${PHONE_CSS}
 @media(forced-colors:active){
 .ap-more-popup,.ap-more .ap-actions-btn,.ap-surface-view-switch .oc-sdk-btn{border:1px solid ButtonText}
 .ap-surface-view-switch .oc-sdk-btn[aria-pressed="true"],.ap-more-row[aria-checked="true"]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-2px}
-.ap-more-row:focus-visible,.ap-more .ap-actions-btn:focus-visible,.ap-surface-view-switch button:focus-visible,.ap-doc-table:focus-visible,:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
+.ap-more-row:focus,.ap-more .ap-actions-btn:focus-visible,.ap-surface-view-switch button:focus-visible,.ap-doc-table:focus-visible,:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
 .ap-history-dot{forced-color-adjust:none;background:Highlight}
 .ap-quiet-track{border-color:ButtonText}
 .ap-quiet-check input:checked+.ap-quiet-track{border-color:Highlight;color:Highlight}
 .ap-quiet-check:has(:focus-visible){outline-color:Highlight}
+/* Fills vanish here: keep the field edges and the chosen plan visible */
+.ap .oc-sdk-input{outline:1px solid CanvasText;outline-offset:-1px}
+.ap .oc-sdk-input:focus{outline:2px solid Highlight;outline-offset:-2px}
+.ap-plan-list .oc-sdk-row[aria-selected="true"],.ap-selection-row[aria-pressed="true"],.ap-hit-plan[aria-pressed="true"]{outline:2px solid Highlight;outline-offset:-2px}
 }
 }`;
