@@ -1,6 +1,7 @@
 // Synthetic SDK shell and isolated real-service map, not native-host/physical-phone certification.
 // Usage: node --experimental-strip-types tests/browser/surface-shell-qa.ts --source --chromium <path> --artifacts <dir>
-// Focused: add --linked-work-only for the header's host-linked work chips (board and rail) alone.
+// Focused: add --linked-work-only for the header's host-linked work chips (board and rail) alone,
+// including the one-row overflow control and its menu at 1280 and 320 CSS px.
 // Real CDP pointer and keyboard input; no click/focus dispatch from page JavaScript.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -142,7 +143,7 @@ try {
       check(`${name}-pointer-opens-once`, JSON.stringify(await opens()) === JSON.stringify([{ surface, url: owner[0]!.url }]), await opens());
       const second = `d.activeElement?.dataset.testid==='linked-work-link' && d.activeElement.dataset.kind==='issue'`;
       check(`${name}-keyboard-reaches-chip`, await tabTo(surface, second));
-      const ring = await guest<{ style: string; width: string }>(surface, 'const s=w.getComputedStyle(d.activeElement);return {style:s.outlineStyle,width:s.outlineWidth}');
+      const ring = await guest<{ style: string; width: string }>(surface, 'const s=w.getComputedStyle(d.activeElement.querySelector(".ap-work-link-face"));return {style:s.outlineStyle,width:s.outlineWidth}');
       check(`${name}-focus-visible`, ring.style === 'solid' && ring.width === '2px', ring);
       await key('Enter');
       await evaluate('new Promise(r=>setTimeout(r,150))');
@@ -156,9 +157,20 @@ try {
       const added: Link = { title: 'PR #96', kind: 'change', url: 'https://example.invalid/review/96', linkedAt: 4 };
       await setLinks([added, owner[1]!, owner[0]!]); await push(surface);
       await wait(surface, `${chipCount(3)} && d.querySelector(${js(chips)})?.dataset.focusKey===${js(added.url)}`);
-      const kept = await guest<any>(surface, `const a=d.activeElement;return {testid:a?.dataset.testid,url:a?.dataset.focusKey,index:[...d.querySelectorAll(${js(chips)})].indexOf(a)}`);
-      check(`${name}-repaint-keeps-focused-chip`, kept.testid === 'linked-work-link' && kept.url === owner[1]!.url && kept.index === 1, kept);
+      await settle(surface);
+      const kept = await guest<any>(surface, `const a=d.activeElement,same=[...d.querySelectorAll(${js(chips)})].find(n=>n.dataset.focusKey===${js(owner[1]!.url)});
+        return {testid:a?.dataset.testid,url:a?.dataset.focusKey,index:[...d.querySelectorAll(${js(chips)})].indexOf(a),sameShown:!!same?.checkVisibility()}`);
+      // When the one-row fit hides that chip (the 390 px rail), focus goes to the control that
+      // lists it, never to a sibling chip; its menu then opens the same address.
+      const viaControl = !kept.sameShown && kept.testid === 'linked-work-more';
+      check(`${name}-repaint-keeps-focused-chip`, (kept.testid === 'linked-work-link' && kept.url === owner[1]!.url && kept.index === 1) || viaControl, kept);
       const opened = (await opens()).length;
+      if (viaControl) {
+        await key('Enter');
+        await wait(surface, `!d.querySelector('[data-testid="linked-work-menu"]').hidden`);
+        const at = await guest<number>(surface, `return [...d.querySelectorAll('[data-testid="linked-work-menu-item"] .ap-work-link-title')].findIndex(n=>n.textContent===${js(owner[1]!.title)})`);
+        for (let i = 0; i < at; i++) await key('ArrowDown');
+      }
       await key('Enter');
       await evaluate('new Promise(r=>setTimeout(r,150))');
       const reopened = (await opens()).slice(opened);
@@ -195,18 +207,147 @@ try {
     // A long title and more links than shown, at 320 CSS px (1280 px at 400% zoom) on a phone rail.
     const long = `Very long linked change title ${'that keeps going and going '.repeat(7)}end`.slice(0, 200);
     const many: Link[] = [{ title: long, kind: 'change', url: 'https://example.invalid/review/long', linkedAt: 9 }, ...Array.from({ length: 5 }, (_, i) => ({ title: `Issue #${20 + i}`, kind: 'issue' as const, url: `https://example.invalid/tracker/${20 + i}`, linkedAt: i }))];
-    await setLinks(many); await push('panel');
+    await setLinks(many); await push('panel'); await push('page');
+    // One row: the chips that fit, then one menu button whose count is the hidden chips (with the
+    // host's "+" qualifier) or, when no chip fits beside the label, every link.
+    const more = '[data-testid="surface-header"] [data-testid="linked-work-more"]';
+    const menuOpen = `!d.querySelector('[data-testid="linked-work-menu"]').hidden`;
+    const face = `const face=n=>{const e=n.querySelector('.ap-work-link-face'),s=getComputedStyle(e),r=e.getBoundingClientRect();return {h:Math.round(r.height),pad:s.paddingTop+' '+s.paddingBottom,font:s.fontSize,weight:s.fontWeight,radius:s.borderTopLeftRadius,border:s.borderTopWidth,hit:Math.round(n.getBoundingClientRect().height)}};`;
+    const row = (surface: string) => guest<any>(surface, `${face}const g=d.querySelector('[data-testid="surface-header"] [data-testid="linked-work"]'),cw=d.documentElement.clientWidth;
+      const shown=[...g.children].filter(n=>n.checkVisibility()&&getComputedStyle(n).position!=='absolute'),boxes=shown.map(n=>n.getBoundingClientRect());
+      const chipsIn=[...g.querySelectorAll('[data-testid="linked-work-link"]')],visible=chipsIn.filter(n=>n.checkVisibility()),m=g.querySelector('[data-testid="linked-work-more"]');
+      return {oneRow:boxes.every(b=>b.top<boxes[0].bottom-1&&b.bottom>boxes[0].top+1),inside:boxes.every(b=>b.left>=-0.5&&b.right<=cw+0.5),
+        visible:visible.length,total:chipsIn.length,first:visible[0]?{ellipsis:visible[0].querySelector('.ap-work-link-title').scrollWidth>visible[0].querySelector('.ap-work-link-title').clientWidth,title:visible[0].title}:null,
+        label:g.querySelector('.ap-work-links-label').checkVisibility()&&getComputedStyle(g.querySelector('.ap-work-links-label')).position!=='absolute',
+        more:m?.checkVisibility()?m.textContent:null,docFits:d.documentElement.scrollWidth<=cw,
+        moreFace:m?.checkVisibility()?face(m):null,chipFaces:visible.map(face),refChip:face(chipsIn[0])}`);
+    // The overflow control is drawn as one more chip: the same face (height, vertical padding, font,
+    // weight, radius, border) as a link chip; a coarse pointer only enlarges the button around it.
+    const chipSized = (f: any, coarse: boolean) => {
+      const m = f.moreFace, ref = f.refChip;
+      return !!m && ['pad', 'font', 'weight', 'radius', 'border'].every(k => m[k] === ref[k]) && m.h >= 20 && m.h <= 26 &&
+        f.chipFaces.every((c: any) => Math.abs(c.h - m.h) <= 1) && (!coarse || [m, ...f.chipFaces].every((c: any) => c.hit >= 44));
+    };
+    const menu = (surface: string) => guest<any>(surface, `const p=d.querySelector('[data-testid="linked-work-menu"]'),r=p.getBoundingClientRect(),items=[...p.querySelectorAll('[role="menuitem"]')];
+      return {open:!p.hidden,items:items.map(n=>n.querySelector('.ap-work-link-title').textContent),inside:r.left>=0&&r.right<=d.documentElement.clientWidth,tall:items.every(n=>n.getBoundingClientRect().height>=44),
+        note:p.querySelector('.ap-note')?.textContent??null,active:items.indexOf(d.activeElement),expanded:d.querySelector(${js(more)}).getAttribute('aria-expanded')}`);
+    const titles = many.slice(0, 5).map(l => l.title);
+    const hostNote = 'More links are available in the host.';
+    // Board at 1280: some chips beside the label, the rest behind "N+ more"; the long title shortens.
+    await viewport(1280, 844, false);
+    await evaluate(`qa.show('page',1280);true`);
+    await wait('page', `${chipCount(5)} && !!d.querySelector(${js(more)})?.checkVisibility()`);
+    await settle('page');
+    const wide = await row('page');
+    const wideHidden = wide.total - wide.visible;
+    check('board-many-links-one-row', wide.oneRow && wide.inside && wide.docFits && wide.label && wide.visible > 0 && wideHidden > 0 && wide.first?.ellipsis && wide.first.title === long, wide);
+    check('board-overflow-count', wide.more === `${wideHidden}+ more`, wide);
+    check('board-overflow-same-size-as-chips', chipSized(wide, false), wide);
+    await capture('board-many-links-one-row', 1280, 420);
+    const beforeMenu = (await opens()).length;
+    await click('page', more);
+    await wait('page', menuOpen);
+    const wideMenu = await menu('page');
+    check('board-overflow-opens-full-list', wideMenu.open && wideMenu.expanded === 'true' && wideMenu.items.join('|') === titles.join('|') && wideMenu.note === hostNote && wideMenu.inside && wideMenu.active === 0, wideMenu);
+    check('board-overflow-menu-names', (await c.send('Accessibility.getFullAXTree', { frameId: (await c.send('Page.getFrameTree')).frameTree.childFrames.find((f: any) => f.frame.url.includes('/ui/page/')).frame.id })).nodes
+      .some((n: any) => n.role?.value === 'menu' && n.name?.value === 'Linked in OpenChamber'));
+    await capture('board-many-links-menu', 1280, 520);
+    await key('End'); await key('Enter');
+    await wait('page', `!(${menuOpen}) && d.activeElement===d.querySelector(${js(more)})`);
+    await evaluate('new Promise(r=>setTimeout(r,150))');
+    const fromMenu = (await opens()).slice(beforeMenu);
+    check('board-overflow-item-opens-once', fromMenu.length === 1 && fromMenu[0]!.url === many[4]!.url, fromMenu);
+    // Keyboard: the control opens with ArrowDown, Escape closes back to it.
+    await key('ArrowDown');
+    await wait('page', menuOpen);
+    await key('Escape');
+    check('board-overflow-escape-returns-focus', await guest('page', `return !(${menuOpen}) && d.activeElement===d.querySelector(${js(more)})`));
+    // Tab and Shift+Tab from a menu row close the menu and let focus move on as usual.
+    const tabFacts = `const a=d.activeElement,m=d.querySelector('[data-testid="linked-work-menu"]');return {open:!m.hidden,expanded:d.querySelector(${js(more)}).getAttribute('aria-expanded'),testid:a?.dataset.testid??a?.tagName,trigger:a===d.querySelector(${js(more)}),inMenu:m.contains(a),body:a===d.body}`;
+    await key('ArrowDown');
+    await wait('page', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    await key('Tab', true);
+    await settle('page');
+    const shiftTab = await guest<any>('page', tabFacts);
+    check('board-overflow-shift-tab-closes-to-trigger', !shiftTab.open && shiftTab.expanded === 'false' && shiftTab.trigger, shiftTab);
+    await key('ArrowDown');
+    await wait('page', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    await key('Tab');
+    await settle('page');
+    const tab = await guest<any>('page', tabFacts);
+    check('board-overflow-tab-closes-and-moves-on', !tab.open && tab.expanded === 'false' && !tab.trigger && !tab.inMenu && !tab.body, tab);
+    // Rail at 320 CSS px (1280 px at 400% zoom), phone pointer: no chip fits beside the label, so
+    // one "N+ linked" control, the label kept as the group's name.
     await viewport(320, 844, true);
     await evaluate(`qa.show('panel',320);true`);
-    await wait('panel', `${chipCount(5)} && !!d.querySelector('[data-testid="linked-work-more"]')`);
-    const narrow = await guest<any>('panel', `const b=d.querySelector(${js(chips)}),t=b.querySelector('.ap-work-link-title'),r=b.getBoundingClientRect();return {
-      ellipsis:t.scrollWidth>t.clientWidth,inside:r.right<=d.documentElement.clientWidth,tall:[...d.querySelectorAll(${js(chips)})].every(n=>n.getBoundingClientRect().height>=44),
-      more:d.querySelector('[data-testid="linked-work-more"]').textContent,title:b.title}`);
-    check('rail-320-long-title-truncates-and-fits', narrow.ellipsis && narrow.inside && narrow.tall && narrow.more === 'and more' && narrow.title === long && await noOverflow('panel'), narrow);
-    check('rail-320-full-title-spoken', (await axNames('panel')).includes(`button:Host-linked change: ${long}`));
+    await wait('panel', `${chipCount(5)} && !!d.querySelector(${js(more)})?.checkVisibility()`);
     await settle('panel');
-    await capture('rail-320-long-title', 320, 700);
-    await setLinks(owner); await push('panel');
+    const narrow = await row('panel');
+    check('rail-320-one-row', narrow.oneRow && narrow.inside && narrow.docFits, narrow);
+    check('rail-320-overflow-looks-like-a-chip-with-44px-hit', chipSized(narrow, true), narrow);
+    check('rail-320-overflow-count', narrow.visible === 0 ? narrow.more === '5+ linked' && !narrow.label : narrow.more === `${narrow.total - narrow.visible}+ more`, narrow);
+    check('rail-320-group-keeps-name', (await axNames('panel')).includes('group:Linked in OpenChamber'));
+    await capture('rail-320-long-title', 320, 520);
+    const beforeRail = (await opens()).length;
+    await click('panel', more);
+    await wait('panel', menuOpen);
+    const railMenu = await menu('panel');
+    check('rail-320-overflow-opens-full-list', railMenu.open && railMenu.items.join('|') === titles.join('|') && railMenu.note === hostNote && railMenu.inside && railMenu.tall, railMenu);
+    check('rail-320-full-title-spoken', (await c.send('Accessibility.getFullAXTree', { frameId: (await c.send('Page.getFrameTree')).frameTree.childFrames.find((f: any) => f.frame.url.includes('/ui/panel/')).frame.id })).nodes
+      .some((n: any) => n.role?.value === 'menuitem' && n.name?.value === `Host-linked change: ${long}`));
+    await capture('rail-320-overflow-menu', 320, 700);
+    await click('panel', '[data-testid="linked-work-menu"] [role="menuitem"]');
+    await wait('panel', `!(${menuOpen})`);
+    await evaluate('new Promise(r=>setTimeout(r,150))');
+    const railOpened = (await opens()).slice(beforeRail);
+    check('rail-320-overflow-item-opens-once', railOpened.length === 1 && railOpened[0]!.url === many[0]!.url, railOpened);
+    // Translated labels keep one row and the same chip-sized control.
+    for (const [locale, compact, hidden] of [['ru', 'Связи: 5+', (n: number) => `ещё ${n}+`], ['zh-CN', '5+ 个关联', (n: number) => `还有 ${n}+ 个`]] as const) {
+      await evaluate(`qa.ready('panel',{locale:${js(locale)}});true`);
+      await wait('panel', `d.documentElement.lang===${js(locale)} && ${chipCount(5)} && !!d.querySelector(${js(more)})?.checkVisibility()`);
+      await settle('panel');
+      const l = await row('panel');
+      check(`rail-320-${locale}-one-row`, l.oneRow && l.inside && l.docFits && (l.visible === 0 ? l.more === compact : l.more === hidden(l.total - l.visible)) && chipSized(l, true), l);
+      await capture(`rail-320-${locale}-one-row`, 320, 520);
+    }
+    await evaluate(`qa.ready('panel',{locale:'en'});true`);
+    await wait('panel', `d.documentElement.lang==='en'`);
+    // 390 px phone rail with short titles: chips beside the label, then "N+ more", all the same size.
+    const short: Link[] = Array.from({ length: 6 }, (_, i) => ({ title: `Issue #${30 + i}`, kind: 'issue' as const, url: `https://example.invalid/tracker/${30 + i}`, linkedAt: i }));
+    await setLinks(short); await push('panel');
+    await viewport(390, 844, true);
+    await evaluate(`qa.show('panel',390);true`);
+    await wait('panel', `${chipCount(5)} && d.querySelector(${js(chips)})?.title==='Issue #30' && !!d.querySelector(${js(more)})?.checkVisibility()`);
+    await settle('panel');
+    const r390 = await row('panel');
+    check('rail-390-more-variant-matches-chips', r390.oneRow && r390.inside && r390.docFits && r390.visible > 0 && r390.more === `${r390.total - r390.visible}+ more` && chipSized(r390, true), r390);
+    await capture('rail-390-more-variant', 390, 520);
+    // Widening until every link fits retires the overflow control: keyboard focus on it (or in its
+    // open menu) moves to a visible chip, and the menu closes. Four links, so no host "more".
+    await setLinks(short.slice(0, 4)); await push('panel');
+    await viewport(1280, 844, false);
+    const resizeFacts = `const a=d.activeElement,m=d.querySelector(${js(more)}),p=d.querySelector('[data-testid="linked-work-menu"]');return {testid:a?.dataset.testid??a?.tagName,visible:!!a?.checkVisibility(),chip:a?.dataset.testid==='linked-work-link'&&a.checkVisibility(),control:!!m?.checkVisibility(),open:!!p&&!p.hidden,expanded:m?.getAttribute('aria-expanded')}`;
+    const narrowWithControl = async () => {
+      await evaluate(`qa.show('panel',320);true`);
+      await wait('panel', `w.innerWidth===320 && ${chipCount(4)} && !!d.querySelector(${js(more)})?.checkVisibility()`);
+      await settle('panel');
+      check('rail-resize-tab-reaches-overflow', await tabTo('panel', `d.activeElement===d.querySelector(${js(more)})`));
+    };
+    const widen = async () => {
+      await evaluate(`qa.show('panel',900);true`);
+      await wait('panel', `w.innerWidth===900 && !d.querySelector(${js(more)})?.checkVisibility()`);
+      await settle('panel');
+      return guest<any>('panel', resizeFacts);
+    };
+    await narrowWithControl();
+    const fromControl = await widen();
+    check('rail-resize-focused-overflow-hands-focus-to-a-chip', fromControl.chip && !fromControl.control, fromControl);
+    await narrowWithControl();
+    await key('ArrowDown');
+    await wait('panel', `${menuOpen} && d.activeElement?.dataset.testid==='linked-work-menu-item'`);
+    const fromMenu390 = await widen();
+    check('rail-resize-open-menu-closes-and-hands-focus-to-a-chip', fromMenu390.chip && !fromMenu390.open && fromMenu390.expanded === 'false', fromMenu390);
+    await setLinks(owner); await push('panel'); await push('page');
     // Localized label, names and refusal feedback.
     await viewport(1280, 844, false);
     await evaluate(`qa.show('page',1280);true`);
@@ -224,7 +365,7 @@ try {
     await evaluate(`qa.ready('page',{locale:'en'});true`);
     // Forced colours: system-colour outline on each chip.
     await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
-    const forced = await guest<any>('page', `const s=w.getComputedStyle(d.querySelector(${js(chips)}));return {style:s.borderTopStyle,width:s.borderTopWidth,color:s.borderTopColor}`);
+    const forced = await guest<any>('page', `const s=w.getComputedStyle(d.querySelector(${js(chips)}).querySelector('.ap-work-link-face'));return {style:s.borderTopStyle,width:s.borderTopWidth,color:s.borderTopColor}`);
     check('board-forced-colors-outline', forced.style === 'solid' && forced.width === '1px' && forced.color !== 'rgba(0, 0, 0, 0)', forced);
     await c.send('Emulation.setEmulatedMedia', { features: [] });
     check('linked-work-no-guest-errors', browser!.page.errors.length === 0, browser!.page.errors);

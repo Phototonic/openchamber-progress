@@ -437,7 +437,7 @@ The below-320-pixel default is applied only while a new reading settles, not on 
 
 Map, List, Document and History are the four views on both surfaces. History shows the selected plan's recorded revisions; only the board adds the change digest. Document opens at its heading; Back or an unused Escape returns to the preceding view and focuses the Document selector. Back or Escape from Sessions returns focus to More; from Setup or Troubleshooting it returns to Settings. The board's History dot uses the existing device review point and listed revision, not a digest read. It appears only for a valid saved older point. Device checkpoints refresh on the existing read cadence; explicit review updates the known checkpoint.
 
-Stable hooks: `surface-header`, `linked-work`, `linked-work-link`, `linked-work-more`, `progress-legend`, `settings-trigger`, `settings-popup`, `more-trigger`, `more-popup`, `history-new`, `more-<action-id>`, `more-language-<auto|en|ru|zh-CN>`, `surface-panel-<sessions|setup|troubleshooting>`, `surface-panel-heading`, `surface-panel-back`, `document-view`, `document-heading`, `document-back`, `plan-view-<map|list|document|history>`, `summary-open-<progress|handoff>`, `list-help-filters`, `list-filter-all`, `list-filter-unfinished`.
+Stable hooks: `surface-header`, `linked-work`, `linked-work-link`, `linked-work-more`, `linked-work-menu`, `linked-work-menu-item`, `progress-legend`, `settings-trigger`, `settings-popup`, `more-trigger`, `more-popup`, `history-new`, `more-<action-id>`, `more-language-<auto|en|ru|zh-CN>`, `surface-panel-<sessions|setup|troubleshooting>`, `surface-panel-heading`, `surface-panel-back`, `document-view`, `document-heading`, `document-back`, `plan-view-<map|list|document|history>`, `summary-open-<progress|handoff>`, `list-help-filters`, `list-filter-all`, `list-filter-unfinished`.
 
 **Visible focus (all surfaces).** Kit buttons and triggers whose own focus mark is only the hover tint get an inset host focus-token outline: the task-view buttons, Clear task filters, Open progress, Set up, Try again in failure/stale banners and the rail plan picker (Work Status and participant pickers already had one). App controls keep their existing rings.
 
@@ -533,16 +533,39 @@ another source or an ambiguous match never supply chips. Each chip is a native
 button (`linked-work-link`, `data-kind`) inside a labelled group (`linked-work`):
 a muted kind glyph and the literal host title, shortened visually at about 30
 characters with the full title on hover. Its accessible name is the kind and the
-full title, for example “Host-linked change: PR #95”. When the host had more than
-five usable links, a muted **and more** (`linked-work-more`) qualifies the group
-without claiming a total. No state, number or provider is inferred from a title,
+full title, for example “Host-linked change: PR #95”.
+
+The group keeps to **one row**. It takes the rest of the meta line (or a line of its
+own when less than about 18rem is left) and, after layout and before paint, shows the
+chips that fit beside the label, then one overflow control (`linked-work-more`) naming
+the chips it hides: **2 more** (**ещё 2**, **还有 2 个**). When no chip fits beside the
+label, as on a 320 px rail, the label becomes visually hidden (it still names the group)
+and the single control names every link: **5 linked** (**Связи: 5**, **5 个关联**).
+When the host had more than five usable links, the count carries the usual **+**
+(**2+ more**) and, with nothing hidden, the control reads **and more**; it never claims
+a total. The control is a native menu button (`aria-haspopup="menu"`) styled like a
+chip; its menu (`linked-work-menu`, named like the group) lists every link in host
+order as `linked-work-menu-item` rows with the same glyph, spoken kind and full,
+wrapping title, followed by **More links are available in the host.** when the host
+held more. It follows the More menu's keyboard model: Enter, Space or Arrow Down opens
+it on the first row (Arrow Up on the last), arrows, Home and End move, Escape closes back
+to the control, and Tab or Shift+Tab (even back onto the control), focus leaving or an
+outside press closes it; Tab keeps its usual focus movement. It opens below the
+control and shifts back inside a narrow frame. Choosing a row closes the menu, returns
+focus to the control and opens that address exactly as its chip does. While it is open,
+background repaints wait, as for other host popups. No state, number or provider is inferred from a title,
 `linkedAt` or the plan; a link is context from OpenChamber, not proof that work
 shipped.
 
 Each chip's focus identity is its admitted address (`data-focus-key`), so a repaint
 returns keyboard focus to the chip that opens the same address, even after links are
 added or reordered. When the focused chip's link is gone, focus never moves to another
-chip; the ordinary repaint rule applies.
+chip; the ordinary repaint rule applies. When the one-row fit hides the focused chip (a
+narrower frame, or links added before it), focus moves to the overflow control that lists
+it, never to a sibling chip. When a wider frame lets every link fit and the overflow
+control goes, its menu closes, and keyboard focus on the control or in its menu moves to
+the last chip, the one nearest where the control was; measuring never drops focus from a
+control that stays.
 
 Pointer, Enter or Space activation sends that chip's admitted address to
 `host.openUrl` once; the host owns the destination. There is no `href`,
@@ -550,9 +573,13 @@ Pointer, Enter or Space activation sends that chip's admitted address to
 **Could not open this link.** toast used for document links and nothing else. Links
 appear, change or disappear with the next session snapshot, without a progress
 revision; with no usable links the header has no group, placeholder or notice.
-Chips use host tokens only (border, hover and focus ring), wrap at narrow widths
-and 200%/400% zoom, keep 44 px targets on coarse pointers and use system colours in
-forced-colours mode. Work Status, list rows and the Sessions list get no chips.
+Chips, the overflow control and its menu use host tokens only (border, hover and focus
+ring), stay on one row at narrow widths and 200%/400% zoom, keep 44 px targets on coarse
+pointers and use system colours in forced-colours mode. Every chip, the overflow control
+included, draws the same 22 px outlined face (`.ap-work-link-face`: padding, 11.5 px text,
+weight, radius and border); on a coarse pointer only the button around that face grows to
+the 44 px target, so the control reads as one more chip, never a larger button. Work Status, list rows and the
+Sessions list get no chips.
 
 Verification: `tests/browser/session-context.test.ts` covers the bounded projection,
 `tests/browser/interface-components.test.ts` and `surface-shell.test.ts` cover owner-only
@@ -560,8 +587,17 @@ chips, literal titles, localized names and link-only removal, and
 `tests/browser/surface-shell-qa.ts --linked-work-only --chromium <path> --artifacts <dir>`
 drives built guests over the synthetic host in isolated Chromium. That run pushes
 link-only session snapshots without reloading, records each `open-url` request,
-refuses one, and checks pointer, Enter and Space activation, focus (also kept on the second chip across a link-only repaint), refusal toasts,
-removal, a 320 px rail with a long title, Russian/Chinese names and forced colours.
+refuses one, and checks pointer, Enter and Space activation, focus (also kept on the second chip across a link-only repaint, or on the overflow control when the rail's fit hides it), refusal toasts,
+removal, Russian/Chinese names and forced colours. With six host links it checks one row
+on a 1280 px board (a shortened long title, **N+ more** matching the hidden chips) and a
+320 px phone rail in English, Russian and Chinese (the single **5+ linked** control), a
+390 px phone rail with short titles (chips, then **N+ more**), that the overflow control has
+the chips' face size with a 44 px coarse-pointer hit area, that the menu
+lists all five plus the host note inside the frame with 44 px rows, opens one address per
+choice by pointer and keyboard, returns focus on Escape, and closes on Tab and Shift+Tab
+from a row with focus moving on as usual. Widening a 320 px rail until four links fit
+moves focus from the overflow control, or from its open menu, to a visible chip and
+closes the menu.
 It proves guest behaviour against a recording host, not native host routing or the
 destination page.
 
