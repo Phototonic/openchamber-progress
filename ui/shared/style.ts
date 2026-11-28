@@ -442,8 +442,10 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
    primary and focus. No motion beyond the existing reported-progress gate. */
 .ap-plan{gap:12px}
 .ap-plan-head{gap:3px}
-.ap-plan-top{display:flex;align-items:flex-start;gap:4px 6px;min-width:0}
-.ap-plan-lead{flex:1 1 auto;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px;min-width:0}
+/* The title keeps a readable measure: on a narrow board the actions wrap below it instead of
+   squeezing it to a few letters per line. */
+.ap-plan-top{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;min-width:0}
+.ap-plan-lead{flex:1 1 14rem;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px;min-width:0}
 .ap-plan-lead .ap-plan-title{min-width:0;overflow-wrap:anywhere}
 .ap-plan-title-pick{cursor:pointer}
 .ap-plan-top>.ap-info,.ap-plan-top>.ap-actions,.ap-actions-hold{flex:none}
