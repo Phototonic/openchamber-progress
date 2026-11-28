@@ -151,12 +151,31 @@ try {
       const keyed = (await opens()).slice(1);
       check(`${name}-keyboard-opens-once-per-activation`, keyed.length === 2 && keyed.every(o => o.surface === surface && o.url === owner[1]!.url), keyed);
       check(`${name}-no-toast-on-success`, await evaluate<number>('qa.toasts.length') === toasts);
+      // Focus identity across a link-only repaint: the focused second chip keeps focus even when a
+      // new link is added before it and the order changes; Enter then opens that same address.
+      const added: Link = { title: 'PR #96', kind: 'change', url: 'https://example.invalid/review/96', linkedAt: 4 };
+      await setLinks([added, owner[1]!, owner[0]!]); await push(surface);
+      await wait(surface, `${chipCount(3)} && d.querySelector(${js(chips)})?.dataset.focusKey===${js(added.url)}`);
+      const kept = await guest<any>(surface, `const a=d.activeElement;return {testid:a?.dataset.testid,url:a?.dataset.focusKey,index:[...d.querySelectorAll(${js(chips)})].indexOf(a)}`);
+      check(`${name}-repaint-keeps-focused-chip`, kept.testid === 'linked-work-link' && kept.url === owner[1]!.url && kept.index === 1, kept);
+      const opened = (await opens()).length;
+      await key('Enter');
+      await evaluate('new Promise(r=>setTimeout(r,150))');
+      const reopened = (await opens()).slice(opened);
+      check(`${name}-repaint-enter-opens-same-address`, reopened.length === 1 && reopened[0]!.url === owner[1]!.url, reopened);
+      // The focused chip's link removed: focus never lands on a sibling chip.
+      await setLinks([added, owner[0]!]); await push(surface);
+      await wait(surface, `${chipCount(2)} && ![...d.querySelectorAll(${js(chips)})].some(n=>n.dataset.focusKey===${js(owner[1]!.url)})`);
+      check(`${name}-removed-chip-no-sibling-focus`, await guest(surface, `return !d.activeElement?.closest('[data-testid="linked-work"]')`));
+      await setLinks(owner); await push(surface);
+      await wait(surface, `${chipCount(2)} && d.querySelector(${js(chips)})?.dataset.focusKey===${js(owner[0]!.url)}`);
+      const beforeRefusal = (await opens()).length;
       await evaluate('qa.refuseOpens=1;true');
       await click(surface, chips);
       await evaluate(`(async()=>{const end=performance.now()+5000;while(qa.toasts.length===${toasts}&&performance.now()<end)await new Promise(requestAnimationFrame);return true})()`);
       await evaluate('new Promise(r=>setTimeout(r,150))');
       const refusal = await evaluate<{ opens: number; toasts: any[]; refuse: number }>(`({opens:qa.opens.length,toasts:qa.toasts.slice(${toasts}),refuse:qa.refuseOpens})`);
-      check(`${name}-refusal-feedback-no-fallback`, refusal.opens === 4 && refusal.refuse === 0 && refusal.toasts.length === 1 && refusal.toasts[0].kind === 'error' && refusal.toasts[0].message === 'Could not open this link.' &&
+      check(`${name}-refusal-feedback-no-fallback`, refusal.opens === beforeRefusal + 1 && refusal.refuse === 0 && refusal.toasts.length === 1 && refusal.toasts[0].kind === 'error' && refusal.toasts[0].message === 'Could not open this link.' &&
         await guest(surface, `return w.location.href===${js(location)} && ${chipCount(2)} && !!d.querySelector('[data-testid="plan-title"]')`), refusal);
       // A link-only host update, with no progress revision, request or resubscription.
       const before = await evaluate<{ requests: number; subscribes: number }>(`({requests:qa.requests.length,subscribes:qa.messages.filter(m=>m.type==='workspace-subscribe').length})`);

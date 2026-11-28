@@ -312,7 +312,9 @@ const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElem
   if (!owner) return null;
   const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const picker = owner.dataset.testid === 'plan-selector';
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
+  // `data-focus-key` tells apart repeated controls that share one hook (for example linked-work chips):
+  // restoration returns only to the control with the same key, never to its first sibling.
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null, key: owner.dataset.focusKey ?? null };
 };
 
 /** Count controls removed by a successful read/dismissal hand focus on within the same scope only. */
@@ -1921,7 +1923,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
       const f = back;
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
-      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
+      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info && (n.dataset.focusKey ?? null) === f.key);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       const landing = target ?? backFallback ?? (coverage && back === focus ? coverageLanding(root, coverage) : null);
       if (landing) restoreFocus(landing);

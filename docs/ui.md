@@ -539,6 +539,11 @@ without claiming a total. No state, number or provider is inferred from a title,
 `linkedAt` or the plan; a link is context from OpenChamber, not proof that work
 shipped.
 
+Each chip's focus identity is its admitted address (`data-focus-key`), so a repaint
+returns keyboard focus to the chip that opens the same address, even after links are
+added or reordered. When the focused chip's link is gone, focus never moves to another
+chip; the ordinary repaint rule applies.
+
 Pointer, Enter or Space activation sends that chip's admitted address to
 `host.openUrl` once; the host owns the destination. There is no `href`,
 `window.open`, preview fetch or fallback opener. A refusal shows the short localized
@@ -555,7 +560,7 @@ chips, literal titles, localized names and link-only removal, and
 `tests/browser/surface-shell-qa.ts --linked-work-only --chromium <path> --artifacts <dir>`
 drives built guests over the synthetic host in isolated Chromium. That run pushes
 link-only session snapshots without reloading, records each `open-url` request,
-refuses one, and checks pointer, Enter and Space activation, focus, refusal toasts,
+refuses one, and checks pointer, Enter and Space activation, focus (also kept on the second chip across a link-only repaint), refusal toasts,
 removal, a 320 px rail with a long title, Russian/Chinese names and forced colours.
 It proves guest behaviour against a recording host, not native host routing or the
 destination page.

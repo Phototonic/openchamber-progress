@@ -1023,6 +1023,9 @@ export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
     const b = testid(el('button', 'ap-work-link'), 'linked-work-link');
     b.type = 'button';
     b.dataset.kind = link.kind;
+    // Focus identity across repaints: the admitted address this chip opens, so a repaint can
+    // return focus only to a chip that opens the same address, never to a sibling.
+    b.dataset.focusKey = link.url;
     // The visible title is shortened only by CSS; the spoken name keeps the kind and full title.
     b.title = link.title;
     b.append(icon(link.kind), el('span', 'ap-sr', `${kinds[link.kind]}: `), el('span', 'ap-work-link-title', link.title));

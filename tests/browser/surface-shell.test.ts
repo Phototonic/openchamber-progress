@@ -168,6 +168,7 @@ for (const board of [false, true]) test(`${board ? 'board' : 'rail'} header show
   const first = chips(header());
   assert.deepEqual(first.map(b => walk(b).find(n => n.className === 'ap-work-link-title')?.textContent), ['PR #95', 'Issue #12']);
   assert.deepEqual(first.map(b => b.dataset.kind), ['change', 'issue']);
+  assert.deepEqual(first.map(b => b.dataset.focusKey), ['https://example.invalid/change/95', 'https://example.invalid/issue/12'], 'each chip has its own focus identity');
   assert.deepEqual(opened, [], 'rendering opens nothing');
   first[1]!.listeners.click();
   assert.deepEqual(opened, ['https://example.invalid/issue/12'], 'one activation, one open');
