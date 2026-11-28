@@ -121,17 +121,12 @@ try {
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const history = '[data-testid="surface-panel-history"]';
+  const history = '[data-reading-mode="history"]';
   const D = (plan: string) => `.ap-board:has([data-testid="plan-row-${plan}"][aria-selected="true"]) ${history} [data-testid="change-digest"]`;
   const H = (plan: string, id: string) => `${D(plan)} [data-testid="${id}"]`;
   const row = (plan: string) => `[data-testid="plan-row-${plan}"][data-source="${SOURCE}"]`;
-  const historyHeading = `${history} [data-testid="surface-panel-heading"]`;
-  const more = async (f: string, action: string) => {
-    const item = `[role="menu"]:not([hidden]) [data-menu-id="${action}"]`;
-    await click(f, '[data-testid="more-trigger"]');
-    await wait(f, `d.querySelector('${item}')?.disabled===false`);
-    await click(f, item);
-  };
+  const historyHeading = `${history} [data-testid="plan-title"]`;
+  const cleanup = (f: string, action: string) => click(f, `[data-testid="${action}"] button`);
   const view = async (f: string, kind: 'history' | 'progress') => {
     const back = '[data-testid="surface-panel-back"] button';
     if (await guest(f, `return !!d.querySelector('${back}')`)) {
@@ -142,7 +137,7 @@ try {
     if (kind === 'progress') {
       await click(f, '[data-testid="plan-view-list"] button');
     } else {
-      await more(f, 'history');
+      await click(f, '[data-testid="plan-view-history"] button');
       await wait(f, `!!d.querySelector('${history}')`);
     }
   };
@@ -647,7 +642,7 @@ try {
     await click('page', H('P-release', 'digest-mark-reviewed'));
     await wait('page', `d.querySelector('${D('P-release')}')?.dataset.review==='saved'`);
     const releaseRev = String(fx.revision('P-release'));
-    await more('page', 'cleanup-archive');
+    await cleanup('page', 'cleanup-archive');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'archived');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-archived"] button');
@@ -655,7 +650,7 @@ try {
     const arch = await digestState('page', 'P-release');
     check('S6:archived-history-inspectable', arch?.state === 'comparison' && arch.after === releaseRev && (await text('page', H('P-release', 'digest-coverage'))).includes('No changes since your last review.'), ['Archived plan keeps its shared baseline; cleanup changed, progress did not'], arch);
     await shot('page', 'archived-history', '[data-testid="plan-detail"]');
-    await more('page', 'cleanup-restore');
+    await cleanup('page', 'cleanup-restore');
     await wait('page', `!d.querySelector('${row('P-release')}')`, 'restored');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-visible"] button');
@@ -665,7 +660,7 @@ try {
     await evaluate(`qa.holds.push({tag:'delete',frame:'page',path:'/v1/change-digest',plan:'P-release'});true`);
     await click('page', H('P-release', 'digest-refresh'));
     await wait('page', `qa.held.some(h=>h.tag==='delete')`);
-    await more('page', 'cleanup-delete');
+    await cleanup('page', 'cleanup-delete');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-confirm-delete"] button')`);
     await click('page', '[data-testid="cleanup-confirm-delete"] button');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'deleted', 15_000);

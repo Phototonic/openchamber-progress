@@ -65,8 +65,8 @@ try {
   };
   const focus = async (selector: string) => { await guest(`const n=d.querySelector(${literal(selector)});n.scrollIntoView({block:'center'});n.focus();return true`); await frames(); };
   const popup = '.oc-sdk-popup [role="listbox"]';
-  const trigger = '[data-testid="more-trigger"]';
-  const panel = (kind: string) => `[data-testid="surface-panel-${kind}"]`;
+  const trigger = '[data-testid="settings-trigger"]';
+  const panel = (kind: string) => `[data-testid="${kind === 'document' ? 'document-view' : `surface-panel-${kind}`}"]`;
   const back = async () => {
     if (await guest(`return !!d.querySelector('[data-testid="surface-panel-back"]')`)) {
       await click('[data-testid="surface-panel-back"] button');
@@ -104,8 +104,7 @@ try {
   };
   const openView = async (id: 'document' | 'history' | 'progress' | 'map') => {
     await back();
-    if (id === 'history') await openMore(id);
-    else await click(`[data-testid="plan-view-${id === 'progress' ? 'list' : id}"] button`);
+    await click(`[data-testid="plan-view-${id === 'progress' ? 'list' : id}"] button`);
   };
   const openPlan = async (id: string) => { await back(); await click(`[data-testid="plan-row-${id}"]`); await wait(condition(`d.querySelector('[data-testid="plan-row-${id}"]')?.getAttribute('aria-selected')==='true'`), 'selected plan'); };
   await send('Runtime.enable'); await send('Page.enable'); await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
@@ -129,6 +128,7 @@ try {
       await key('Home'); await key('ArrowDown'); await key('Enter');
       await wait(condition(`!!d.querySelector('[data-testid="board-filters-trigger"]')`), 'owner board committed');
       if (await guest(`return d.querySelector('[data-testid="board-filters-trigger"]').getAttribute('aria-expanded')!=='true'`)) await click('[data-testid="board-filters-trigger"]');
+      await wait(condition(`d.querySelector('[data-testid="filter-session"] button')?.textContent.includes('Owner A')`), 'selected session title committed after the location repaint');
       check('result-only-session:literal-prior-owner', await guest(`return d.querySelector('[data-testid="filter-session"] button')?.textContent.includes('Owner A')`));
       await click('[data-testid="board-filters-close"]');
       await focus('#ap-search-q'); await send('Input.insertText', { text: 'Resultonly' }); await key('Enter');
@@ -285,8 +285,8 @@ try {
   const detailReads = await evaluate<number>(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/plan').length`);
   await click('[data-testid="detail-loading"] button');
   await wait(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/plan').length>${detailReads}&&${condition(`!!d.querySelector('[data-testid="detail-loading"] button')`)}`, 'current-visit historical snapshot');
-  await wait(condition(`!!d.querySelector('[data-testid="plan-actions"] button')`), 'historical actions');
-  await openMore('summary-progress');
+  await wait(condition(`!!d.querySelector('[data-testid="summary-open-progress"] button')`), 'historical actions');
+  await click('[data-testid="summary-open-progress"] button');
   await wait(condition(`!!d.querySelector('button[data-testid="summary-only"]')`), 'summary-only choice');
   await click('button[data-testid="summary-only"]');
   const historical = await guest(`return d.querySelector('[data-testid="summary-text"]')?.value`);

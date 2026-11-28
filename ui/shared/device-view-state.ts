@@ -63,7 +63,7 @@ export class DeviceViewState {
   hidden(key: string) { return this.record.hidden.includes(key); }
   /** Read-only input identity for bounded inbox derivations; never persisted by the caller. */
   get hiddenKeys(): readonly string[] { return this.record.hidden; }
-  expanded(surface: ViewSurface) { return this.record.expanded[surface] ?? surface === 'page'; }
+  expanded(surface: ViewSurface) { return this.record.expanded[surface] ?? false; }
   dismissed(surface: ViewSurface, identity: string) { return this.record.dismissed[surface] === identity; }
   async refresh(supported: boolean) {
     const snapshot = () => JSON.stringify([this.record, this.loaded, this.error, this.quiet]);

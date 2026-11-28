@@ -52,10 +52,12 @@ export const draftDiffers = (text: string, draft: SearchDraft, c: SearchCriteria
   !!c && (text.trim() !== c.q.trim() || draft.lifecycle !== c.lifecycle || draft.status !== c.status || draft.source !== c.source);
 
 export interface BoardBarHooks {
-  tidy?: { label: string; run: () => void; disabled: boolean } | null;
+  title: HTMLElement;
+  quiet: HTMLElement;
+  trailing: HTMLElement;
   /** Reject input from a synchronously retired board paint. */
   current?: () => boolean;
-  /** Current plans / Archived plans, always visible beside the search field. */
+  /** Current plans / Archived plans, inside Filters. */
   modes: HTMLElement;
   /** The search form's hooks; null when this service can't search (only the location filters remain). */
   search: SearchFormHooks | null;
@@ -90,6 +92,7 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
     form.addEventListener('submit', (event) => { event.preventDefault(); s.submit(); });
   }
   const row = el('div', 'ap-search-row');
+  row.append(h.title);
   let pending = () => {};
   if (s) {
     const field = el('div', 'ap-search-field');
@@ -188,8 +191,9 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
     if (h.open && next instanceof Node && !owner.contains(next)) h.setOpen(false, null);
   });
   owner.append(trigger, panel);
-  row.append(owner);
-  if (h.tidy) button(row, 'tidy-open', h.tidy.label, h.tidy.run, 'outline', h.tidy.disabled);
+  const filterGroup = el('div', 'ap-library-filters');
+  filterGroup.append(h.quiet, owner);
+  row.append(filterGroup, h.trailing);
   form.append(row);
   bar.append(form);
   const box = el('div', 'ap-board-bar-wrap');

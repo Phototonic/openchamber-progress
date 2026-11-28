@@ -21,6 +21,7 @@ import { currentIntent, type CurrentIntent } from './intent.ts';
 import { quietCopy, quietDays, quietLabel } from './quiet-plans.ts';
 import type { MoreMenuItem } from './primitives.ts';
 import { cancelCopy } from './plan-user-cancel.ts';
+import type { DetailView } from './default-view.ts';
 
 /** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
  * device hints; CSS remains responsive without hints.
@@ -366,12 +367,13 @@ export function languageBlock(language: ViewContext<unknown>['language'], locale
   return wrap;
 }
 
-export function age(iso: string, env: Env, prefix = '') {
+export function age(iso: string, env: Env, prefix = '', compact = false) {
   const t = el('time');
   t.dateTime = iso;
   t.dataset.age = prefix;
+  if (compact) t.dataset.ageCompact = '';
   t.title = absoluteTime(iso, env.locale);
-  t.textContent = `${prefix}${relativeAge(iso, env.now, env.locale)}`;
+  t.textContent = `${prefix}${relativeAge(iso, env.now, env.locale, compact ? 'narrow' : 'long')}`;
   return t;
 }
 
@@ -403,11 +405,16 @@ export function quietEmpty<U>(vc: ViewContext<U>) {
 }
 
 export function quietCheck<U>(vc: ViewContext<U>) {
-  const label = el('label', 'ap-row');
-  const control = testid(el('input'), 'quiet-plan-filter');
+  const label = el('label', 'ap-quiet-check');
+  const control = testid(el('input', 'ap-sr'), 'quiet-plan-filter');
   control.type = 'checkbox'; control.checked = vc.quiet.hide; control.disabled = vc.quiet.saving;
+  control.setAttribute('role', 'switch');
+  label.title = quietCopy(vc.env.locale).filter;
+  control.setAttribute('aria-label', label.title);
   control.addEventListener('change', () => { const choice = control.checked; control.checked = vc.quiet.hide; void vc.quiet.choose(choice); });
-  label.append(control, el('span', '', quietCopy(vc.env.locale).filter));
+  const track = el('span', 'ap-quiet-track'); track.setAttribute('aria-hidden', 'true');
+  const short = { en: 'Hide quiet', ru: 'Скрыть без отчётов', 'zh-CN': '隐藏久未更新' }[resolveLanguage('auto', vc.env.locale)];
+  label.append(control, track, el('span', '', short));
   return label;
 }
 
@@ -450,7 +457,7 @@ export function refreshLabels(root: ParentNode, locale: string, now = Date.now()
   // Only time text moves here. Activity and run state never change from elapsed time: no label
   // expires, so a steady Running row stays Running until the host reports something else.
   for (const t of root.querySelectorAll<HTMLTimeElement>('time[data-age]')) {
-    const text = `${t.dataset.age ?? ''}${relativeAge(t.dateTime, now, locale)}`;
+    const text = `${t.dataset.age ?? ''}${relativeAge(t.dateTime, now, locale, t.dataset.ageCompact !== undefined ? 'narrow' : 'long')}`;
     if (t.textContent !== text) t.textContent = text;
     t.title = absoluteTime(t.dateTime, locale);
   }
@@ -579,25 +586,6 @@ function navButton(plan: PlanView, sessionId: string, cov: Coverage, env: Env) {
 export interface PlanAction { id: string; label: string; run: () => void; disabled?: boolean; destructive?: boolean }
 
 /**
- * The ⋯ of the plan detail painted for one reading view (a fresh object every paint), so actions
- * rendered later in the same paint (cleanup) can join it. A paint without that detail (Map,
- * Document, History) has none, and the caller keeps its own controls.
- */
-const MENU_SLOTS = new WeakMap<object, { plan: string; add: (actions: PlanAction[], focusHook?: string) => void }>();
-
-/**
- * Adds secondary actions to this paint's ⋯ Plan actions for `plan`. `focusHook` names the ⋯ holder
- * for a controller that returns focus to that hook (for example after a cancelled confirmation).
- * False when this paint has no plan detail menu for `plan`.
- */
-export function offerPlanActions(reading: object | null, plan: PlanView, actions: PlanAction[], focusHook?: string) {
-  const slot = reading ? MENU_SLOTS.get(reading) : undefined;
-  if (!slot || slot.plan !== plan.key) return false;
-  slot.add(actions, focusHook);
-  return true;
-}
-
-/**
  * The plan header: one title (the rail's title-picker trigger sits beside it), lifecycle, the ⋯
  * plan actions and an optional ⓘ; then one compact meta line. Source warnings stay visible.
  */
@@ -632,8 +620,11 @@ const SHELL_COPY = {
   ru: { more: 'Ещё', back: 'Назад', document: 'Документ плана', history: 'История', sessions: 'Сессии', setup: 'Настройка', troubleshooting: 'Устранение неполадок', language: 'Язык', automatic: 'Автоматически (OpenChamber)', unsupported: 'В этой версии используется язык OpenChamber.', progress: 'Скопировать прогресс…', handoff: 'Скопировать заметку для передачи…', advanced: 'Дополнительные сведения', newHistory: 'Ещё, есть новая история', help: 'Справка и фильтры', all: 'Показать всё', unfinished: 'Незавершённые', pending: 'не начато', working: 'в работе', blocked: 'заблокировано', skipped: 'пропущено', done: 'Всё выполнено' },
   'zh-CN': { more: '更多', back: '返回', document: '计划文档', history: '历史', sessions: '会话', setup: '设置', troubleshooting: '故障排查', language: '语言', automatic: '自动（OpenChamber）', unsupported: '此版本跟随 OpenChamber 的语言。', progress: '复制进度更新…', handoff: '复制交接备注…', advanced: '高级详情', newHistory: '更多，有新历史', help: '帮助与筛选', all: '显示全部', unfinished: '未完成', pending: '未开始', working: '进行中', blocked: '受阻', skipped: '已跳过', done: '全部完成' },
 } satisfies Record<InterfaceLanguage, Record<string, string>>;
-export const shellCopy = (locale: string) => SHELL_COPY[resolveLanguage('auto', locale)];
-export type SurfacePanel = 'document' | 'history' | 'sessions' | 'setup' | 'troubleshooting';
+export const shellCopy = (locale: string) => {
+  const language = resolveLanguage('auto', locale);
+  return { ...SHELL_COPY[language], settings: { en: 'Settings', ru: 'Настройки', 'zh-CN': '设置' }[language] };
+};
+export type SurfacePanel = 'sessions' | 'setup' | 'troubleshooting';
 /** Hidden same-origin fixture/host frames can report a provisional 300 px viewport.
  * Do not turn that unallocated size into a latched choice. Cross-origin guests have no
  * frameElement and use their ordinary allocated viewport. */
@@ -641,8 +632,7 @@ export function narrowSurface() {
   return window.innerWidth > 0 && window.innerWidth < 320 && window.frameElement?.getBoundingClientRect().width !== 0;
 }
 
-/** One frame's shell. Later features join through menuActions and the content mounts in the
- * entry files; they must not create a second menu or own the surface's navigation state. */
+/** One frame's plan header, Settings and More menus, and temporary panels. */
 export class ProgressShell {
   private key = '';
   private panel: SurfacePanel | null = null;
@@ -653,15 +643,18 @@ export class ProgressShell {
     if (previous && previous !== panel) this.closePanel?.(previous);
   }
   private menu: ReturnType<typeof moreMenu> | null = null;
-  private focus: 'heading' | 'more' | 'document' | null = null;
+  private settings: ReturnType<typeof moreMenu> | null = null;
+  private focus: 'heading' | 'more' | 'settings' | 'document' | 'document-heading' | null = null;
+  private previousView: Exclude<DetailView, 'document'> = 'list';
   private review: { key: string; revision: number | null } | null = null;
+  private newHistory = false;
   reset(keepSetup = false) {
     // Same-reading data refreshes (including capture changes) keep Setup usable.
     // Reconcile still closes Setup and More if the account, authority or selection changes.
     if (keepSetup && this.panel === 'setup') this.closePanel?.('setup');
     else { this.setPanel(null); this.closePanel = undefined; }
-    if (!keepSetup) { this.key = ''; this.menu?.dispose(); this.menu = null; }
-    this.review = null; this.focus = null;
+    if (!keepSetup) { this.key = ''; this.menu?.dispose(); this.menu = null; this.settings?.dispose(); this.settings = null; }
+    this.review = null; this.newHistory = false; this.focus = null; this.previousView = 'list';
   }
   get activePanel() { return this.panel; }
   /** Reconcile selection before callers decide which view is active, not only during paint. */
@@ -670,25 +663,56 @@ export class ProgressShell {
     if (key !== this.key) { this.reset(); this.key = key; }
   }
   showView<U>(vc: ViewContext<U>) { this.setPanel(null); vc.setUi({}); }
-  openDocument<U>(vc: ViewContext<U>) {
-    this.setPanel('document'); this.focus = 'heading'; vc.setUi({});
+  visit(view: DetailView, next: DetailView) {
+    if (next === 'document' && view !== 'document') {
+      this.previousView = view;
+      this.focus = 'document-heading';
+    }
+  }
+  documentBack(change: (view: DetailView) => void) {
+    return () => { this.focus = 'document'; change(this.previousView); };
+  }
+  switchView(view: DetailView, change: (view: DetailView) => void, locale: string) {
+    const key = this.key;
+    return surfaceViewSwitch(view, next => { if (this.key === key) { this.visit(view, next); change(next); } }, locale, this.newHistory);
   }
   reviewedThrough(revision: number | null) { if (this.review && revision !== null) this.review.revision = revision; }
   /** Called after root replacement, not before (focus must land on a connected control). */
   afterPaint(root: HTMLElement) {
     if (this.menu && !root.contains(this.menu.root)) { this.menu.dispose(); this.menu = null; }
+    if (this.settings && !root.contains(this.settings.root)) { this.settings.dispose(); this.settings = null; }
     this.menu?.refresh();
+    this.settings?.refresh();
     const target = this.focus && {
-      heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', document: '[data-testid="plan-view-document"] button',
+      heading: '[data-testid="surface-panel-heading"]', more: '[data-testid="more-trigger"]', settings: '[data-testid="settings-trigger"]',
+      document: '[data-testid="plan-view-document"] button', 'document-heading': '[data-testid="document-heading"]',
     }[this.focus];
     this.focus = null;
     if (target) root.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
   }
+  private open<U>(vc: ViewContext<U>, kind: SurfacePanel, key: string, openPanel?: (kind: SurfacePanel) => void) {
+    if (this.key !== key) return;
+    this.setPanel(kind); this.focus = 'heading'; openPanel?.(kind); vc.setUi({});
+  }
+  settingsButton<U>(vc: ViewContext<U>, openPanel?: (kind: SurfacePanel) => void) {
+    const t = shellCopy(vc.env.locale), key = this.key;
+    const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
+    const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
+    const options = {
+      label: t.settings, settings: true, onOpen: () => this.menu?.close(),
+      items: [{ id: 'language', label: t.language + ' ›' }, { id: 'setup', label: t.setup }, { id: 'troubleshooting', label: t.troubleshooting }],
+      onSelect: (id: string) => { if (id === 'setup' || id === 'troubleshooting') this.open(vc, id, key, openPanel); },
+      languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language,
+    };
+    const settings = this.settings ??= moreMenu(options);
+    settings.setOptions(options);
+    const holder = testid(el('div', 'ap-actions-hold'), 'surface-settings');
+    settings.mount(holder);
+    return holder;
+  }
   paint<U>(root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, options: {
-    board?: boolean; scope?: string; picker?: HTMLElement | null;
+    board?: boolean; scope?: string; picker?: HTMLElement | null; railActions?: HTMLElement;
     renderPanel: (kind: SurfacePanel) => HTMLElement;
-    menuActions?: PlanAction[];
-    openPanel?: (kind: SurfacePanel) => void;
     closePanel?: (kind: SurfacePanel) => void;
   }) {
     this.reconcile(vc, plan, options);
@@ -700,35 +724,12 @@ export class ProgressShell {
     const ready = detail?.state === 'ready' && detail.value.revision === plan?.revision ? detail.value : null;
     const items: MoreMenuItem[] = [], runs = new Map<string, () => void>();
     const add = (id: string, label: string, run: () => void) => { items.push({ id, label }); runs.set(id, run); };
-    const open = (kind: SurfacePanel) => {
-      if (this.key !== key) return;
-      this.setPanel(kind); this.focus = 'heading'; options.openPanel?.(kind);
-      vc.setUi({});
-    };
     const summary = plan ? vc.summary(plan) : null;
-    if (summary) {
-      add('summary-progress', t.progress, () => summary.open('progress'));
-      add('summary-handoff', t.handoff, () => summary.open('handoff'));
-      items.push({ separator: true });
-    }
     if (plan) {
-      if (options.board) add('history', t.history, () => open('history'));
       const count = participants(plan, ready).length;
-      add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => open('sessions'));
-      items.push({ separator: true });
+      add('sessions', count > 1 ? `${t.sessions} (${displayCount(count, vc.env.locale)})` : t.sessions, () => this.open(vc, 'sessions', key));
     }
-    // Hidden-items owner supplies applicable actions here; bulk cleanup is board-only.
-    const menuActions = [...(options.menuActions ?? [])];
-    for (const action of menuActions) { items.push({ ...action }); runs.set(action.id, action.run); }
     if (cancellation?.eligible && !cancellation.confirmation) add('finish-cancelled', cancelCopy(vc.env.locale).action, cancellation.open);
-    if (menuActions.length) items.push({ separator: true });
-    if (!options.board) {
-      items.push({ id: 'quiet-plan-filter', label: quietCopy(vc.env.locale).filter, checked: vc.quiet.hide, disabled: vc.quiet.saving });
-      runs.set('quiet-plan-filter', () => { if (this.key === key) void vc.quiet.choose(!vc.quiet.hide); });
-    }
-    add('language', t.language + ' ›', () => {});
-    add('setup', t.setup, () => open('setup'));
-    add('troubleshooting', t.troubleshooting, () => open('troubleshooting'));
     const reviewKey = options.board && plan && vc.read && vc.ctx.features?.deviceStorage === true ? JSON.stringify([key, vc.read.storeId, vc.read.binding, vc.refreshSerial]) : null;
     if (reviewKey && this.review?.key !== reviewKey) {
       this.review = { key: reviewKey, revision: this.review?.revision ?? null };
@@ -739,28 +740,22 @@ export class ProgressShell {
         if (this.review.revision !== revision) { this.review.revision = revision; vc.setUi({}); }
       });
     }
-    const newHistory = !!(plan && reviewKey && this.review?.revision !== null && this.review?.revision !== undefined && this.review.revision < plan.revision);
-    const lm = languageMessages(resolveLanguage('auto', vc.env.locale));
-    const languageStatus = vc.language.pending ? lm.saving : vc.language.writeError ? lm.saveFailed : vc.language.readError ? lm.readFailed : vc.language.saveStatus === 'saved' ? lm.saved : '';
-    const menuOptions: Parameters<typeof moreMenu>[0] = { label: newHistory ? t.newHistory : t.more, newHistory, items, onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, languageStatus, language: vc.language };
-    const menu = this.menu ??= moreMenu(menuOptions);
-    menu.setOptions(menuOptions);
-    const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
-    menu.mount(holder);
-    if (plan && vc.reading) MENU_SLOTS.set(vc.reading, {
-      plan: plan.key, add: (actions, focusHook) => {
-        // Per-plan archive/restore before settings; destructive actions remain last.
-        const normal = actions.filter(a => !a.destructive), destructive = actions.filter(a => a.destructive);
-        const settings = items.findIndex(i => !('separator' in i) && i.id === 'language');
-        if (normal.length) items.splice(settings, 0, ...normal.map(a => ({ id: a.id, label: a.label, disabled: a.disabled })), { separator: true });
-        if (destructive.length) items.push({ separator: true }, ...destructive.map(a => ({ id: a.id, label: a.label, disabled: a.disabled, destructive: true })));
-        for (const action of actions) runs.set(action.id, action.run);
-        if (focusHook) holder.dataset.testid = focusHook;
-        // More refreshes after this paint, once all the action owners have contributed.
-      },
-    });
+    this.newHistory = !!(plan && reviewKey && this.review?.revision != null && this.review.revision < plan.revision);
     if (plan) {
-      const head = planHeader(plan, vc.env, 'h2', { picker: options.picker, actions: holder });
+      const menuOptions: Parameters<typeof moreMenu>[0] = { label: t.more, items, onOpen: () => this.settings?.close(), onSelect: id => runs.get(id)?.(), languageLabel: t.language, automatic: t.automatic, unsupported: t.unsupported, language: vc.language };
+      const menu = this.menu ??= moreMenu(menuOptions);
+      menu.setOptions(menuOptions);
+      const holder = testid(el('div', 'ap-actions-hold'), 'surface-more');
+      const summaries = options.railActions ? el('div', 'ap-rail-summaries') : holder;
+      if (summary) {
+        const labels = { en: ['Copy update', 'Handoff note'], ru: ['Копировать отчёт', 'Заметка для передачи'], 'zh-CN': ['复制更新', '交接备注'] }[resolveLanguage('auto', vc.env.locale)];
+        for (const [i, mode] of (['progress', 'handoff'] as const).entries()) {
+          const opener = `summary-open-${mode}`;
+          button(summaries, opener, labels[i]!, () => summary.open(mode, opener), mode === 'progress' ? 'default' : 'outline');
+        }
+      }
+      menu.mount(options.railActions ?? holder);
+      const head = planHeader(plan, vc.env, 'h2', { picker: options.picker, actions: options.railActions ? null : holder });
       head.dataset.testid = 'surface-header';
       // Rail has no location row. Board keeps location and the gated main-session action.
       const meta = head.querySelector<HTMLElement>('.ap-meta')!;
@@ -775,6 +770,7 @@ export class ProgressShell {
       if (plan.sourceId !== vc.env.boundSource) meta.append(warningBadge(say('From another OpenCode setup', vc.env.locale), 'info'));
       if (vc.env.unverifiedSources.has(plan.sourceId)) meta.append(warningBadge(say('OpenCode install not connected', vc.env.locale)));
       root.append(head);
+      if (summary && options.railActions) root.append(summaries);
       const s = summarize(plan, ready);
       root.append(progressBlock(s, false, vc.env.locale));
       const legend = testid(el('p', 'ap-progress-legend'), 'progress-legend');
@@ -783,8 +779,7 @@ export class ProgressShell {
       legend.textContent = s.total > 0 && s.remaining === 0 && !s.skipped ? t.done : [[s.working, t.working], [s.blocked, t.blocked], [pending, t.pending], [s.skipped, t.skipped]].filter(([n]) => Number(n) > 0).map(([n, word]) => `${displayCount(Number(n), vc.env.locale)} ${word}`).join(' · ');
       root.append(legend);
       if (summary) { const preview = summaryBlock(summary, vc.env.locale); if (preview) root.append(preview); }
-    } else { const row = el('div', 'ap-surface-settings'); row.append(holder); root.append(row); }
-    if (!options.board) { const notice = quietNotice(vc); if (notice) root.append(notice); }
+    }
     const confirmation = cancellation?.confirmation;
     if (confirmation) {
       const copy = cancelCopy(vc.env.locale);
@@ -810,7 +805,7 @@ export class ProgressShell {
     const kind = this.panel;
     const box = testid(el('section', 'ap-panel ap-surface-panel'), `surface-panel-${kind}`);
     box.setAttribute('aria-label', t[kind]);
-    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = kind === 'document' ? 'document' : 'more'; vc.setUi({}); };
+    const back = () => { if (this.key !== key) return; this.setPanel(null); this.focus = kind === 'sessions' ? 'more' : 'settings'; vc.setUi({}); };
     button(box, 'surface-panel-back', t.back, back, 'ghost');
     const h = testid(el('h2', 'ap-h', t[kind]), 'surface-panel-heading'); h.tabIndex = -1;
     box.append(h, options.renderPanel(kind));
@@ -831,16 +826,39 @@ export function listFilters(reading: ReadingView | null, locale: string) {
   return box;
 }
 
-export function surfaceViewSwitch(view: 'map' | 'list', change: (view: 'map' | 'list') => void, locale: string, openDocument: () => void) {
+export function surfaceViewSwitch(view: DetailView, change: (view: DetailView) => void, locale: string, newHistory = false) {
   const language = resolveLanguage('auto', locale);
   const names = { en: ['Map', 'List', 'Plan view'], ru: ['Карта', 'Список', 'Вид плана'], 'zh-CN': ['依赖图', '列表', '计划视图'] }[language];
   const box = testid(el('div', 'ap-surface-view-switch'), 'plan-view');
   box.setAttribute('role', 'group'); box.setAttribute('aria-label', names[2]!);
-  for (const [index, mode] of ['map', 'list'].entries()) {
-    const holder = button(box, `plan-view-${mode}`, names[index]!, () => change(mode as 'map' | 'list'), view === mode ? 'outline' : 'ghost');
-    const b = holder.querySelector('button'); b?.setAttribute('aria-pressed', String(view === mode)); b?.setAttribute('data-map-focus-owner', '');
+  const t = shellCopy(locale);
+  const documentLabel = { en: 'Document', ru: 'Документ', 'zh-CN': '文档' }[language];
+  for (const [mode, label] of [['map', names[0]!], ['list', names[1]!], ['document', documentLabel], ['history', t.history]] as const) {
+    const holder = button(box, `plan-view-${mode}`, label, () => change(mode), view === mode ? 'outline' : 'ghost');
+    const b = holder.querySelector('button')!;
+    b.setAttribute('aria-pressed', String(view === mode)); b.setAttribute('data-map-focus-owner', '');
+    if (mode === 'history' && newHistory) {
+      b.setAttribute('aria-label', { en: 'History, new revisions', ru: 'История, новые версии', 'zh-CN': '历史，有新版本' }[language]);
+      const dot = testid(el('span', 'ap-history-dot'), 'history-new'); dot.setAttribute('aria-hidden', 'true'); b.append(dot);
+    }
   }
-  button(box, 'plan-view-document', shellCopy(locale).document, openDocument, 'ghost');
+  return box;
+}
+
+export function documentView(owner: HTMLElement, locale: string, back: () => void, documentBlock: HTMLElement, comparison?: HTMLElement) {
+  const box = testid(el('section', 'ap-document-view'), 'document-view');
+  const head = el('header', 'ap-document-heading');
+  button(head, 'document-back', shellCopy(locale).back, back, 'ghost');
+  const fallback = { en: 'Document', ru: 'Документ', 'zh-CN': '文档' }[resolveLanguage('auto', locale)];
+  const title = testid(el('h3', 'ap-doc-title', documentBlock.dataset.captureName || fallback), 'document-heading');
+  title.tabIndex = -1;
+  head.append(title);
+  box.append(head, documentBlock);
+  if (comparison) box.append(comparison);
+  owner.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || (event.target as Element).closest('[role="menu"],[role="listbox"]')) return;
+    event.preventDefault(); back();
+  });
   return box;
 }
 
@@ -1027,7 +1045,6 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
   wrap.dataset.state = ref.state;
   const label = `${say('Plan document', env.locale)}${ref.path ? ` · ${baseName(ref.path)}` : ''}`;
   if (mode === 'disclosure') wrap.append(el('summary', '', label));
-  else wrap.append(el('h3', 'ap-doc-title', label));
   if (ref.state === 'unbound') { wrap.append(el('p', 'ap-note', documentStateText('unbound', env.locale))); return wrap; }
   if (ref.state !== 'captured') wrap.append(testid(el('p', 'ap-doc-warn', documentStateText(ref.state, env.locale)), 'document-state'));
   if (ref.captureId === undefined) {
@@ -1040,21 +1057,27 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
     const value = doc.get();
     if (!value || value.state !== 'ready') { body.append(partState('document-loading', say('the document', env.locale), value, doc.request, env.locale)); return; }
     const d = value.value;
+    if (d.ref.path) wrap.dataset.captureName = baseName(d.ref.path);
     if (d.text === null) { body.append(el('p', 'ap-note', say('The captured text is not available.', env.locale))); return; }
     const tokens = isMarkdownDocument(d.ref.path) ? parseDocumentMarkdown(d.text) : null;
     const preview = testid(tokens ? el('div', 'ap-doc-markdown') : el('pre'), 'document-text');
     preview.tabIndex = 0;
-    preview.dataset.scrollKey = `doc-${plan.key}`;
+    preview.dataset.scrollKey = `doc-${plan.key}-${d.captureId ?? d.ref.captureId ?? ''}`;
     if (tokens) renderDocumentMarkdown(preview, tokens, env.locale, env.openDocumentUrl);
     else preview.textContent = d.text;
     if (d.historical) body.append(testid(el('p', 'ap-doc-warn', say('A newer capture was recorded while this loaded. This is the earlier capture.', env.locale)), 'document-historical'));
-    body.append(preview);
-    const note = el('p', 'ap-note');
-    if (d.ref.capturedAt) note.append(age(d.ref.capturedAt, env, say(ref.state === 'captured' ? 'Captured ' : 'Last good capture ', env.locale)), document.createTextNode('. '));
-    note.append(document.createTextNode(say(ref.state !== 'captured'
-      ? 'This is the last successful capture, not the current file.'
-      : d.ref.checklistSynchronized ? 'The task list was confirmed against this capture. The current file has not been rechecked since.' : 'The current file has not been rechecked since this capture.', env.locale)));
+    const language = resolveLanguage('auto', env.locale);
+    const labels = {
+      en: ['Saved ', 'Last good capture · ', 'Current file not rechecked', 'Task list confirmed', 'Not the current file'],
+      ru: ['Сохранено ', 'Последний успешный снимок · ', 'Текущий файл не перепроверен', 'Список задач сверен', 'Не текущий файл'],
+      'zh-CN': ['保存于', '上次成功采集 · ', '当前文件未复查', '任务列表已确认', '不是当前文件'],
+    }[language];
+    const note = el('p', 'ap-note ap-doc-facts');
+    if (d.ref.capturedAt) note.append(age(d.ref.capturedAt, env, ref.state === 'captured' ? labels[0] : labels[1], true));
+    if (d.ref.checklistSynchronized) note.append(el('span', '', labels[3]));
+    note.append(el('span', '', ref.state === 'captured' ? labels[2] : labels[4]));
     body.append(note);
+    body.append(preview);
   };
   if (mode === 'disclosure') {
     wrap.addEventListener('toggle', () => {
@@ -1875,26 +1898,8 @@ function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 
   if (p && fallback.reading) { panels.push({ id: 'sessions', label: say('Sessions', locale) }); runs.set('sessions', () => openPanel(p, 'sessions')); }
   for (const a of extra) { panels.push({ id: a.id, label: a.label, disabled: a.disabled }); runs.set(a.id, a.run); }
   if (panels.length) { if (items.length) items.push({ separator: true }); items.push(...panels); }
-  // A holder, so later actions of the same paint can join (or create) the menu.
   const holder = el('span', 'ap-actions-hold');
-  let menu: ReturnType<typeof planActions> | null = null;
-  const mount = () => {
-    if (!items.length) return;
-    if (menu) { menu.menu.update({ items: [...items] }); return; }
-    menu = planActions({ items: [...items], locale, onSelect: (id) => runs.get(id)?.() });
-    holder.append(menu.root);
-  };
-  mount();
-  if (fallback.reading) MENU_SLOTS.set(fallback.reading, {
-    plan: plan.key,
-    add: (actions, focusHook) => {
-      if (!actions.length) return;
-      if (items.length) items.push({ separator: true });
-      for (const a of actions) { items.push({ id: a.id, label: a.label, disabled: a.disabled, destructive: a.destructive }); runs.set(a.id, a.run); }
-      if (focusHook) holder.dataset.testid = focusHook;
-      mount();
-    },
-  });
+  if (items.length) holder.append(planActions({ items, locale, onSelect: (id) => runs.get(id)?.() }).root);
   return holder;
 }
 
@@ -1999,7 +2004,7 @@ function summaryBlock(view: SummaryView, locale: InterfaceLanguage) {
   action(controls, 'summary-copy', say('Copy Markdown', locale), view.copy, state.text === null || state.copying);
   if (state.canRetry) action(controls, 'summary-retry', say('Retry', locale), view.retry);
   if (state.canSummaryOnly) action(controls, 'summary-only', say('Preview summary only', locale), view.summaryOnly);
-  // Close returns to the surviving ⋯ trigger (the menu item that opened it is gone).
+  // The summary owner returns focus to the original opener.
   const close = action(controls, 'summary-close', say('Close', locale), () => {
     close?.closest('article.ap-plan')?.querySelector<HTMLElement>('[data-testid="plan-actions"] button')?.focus({ preventScroll: true });
     view.close();
@@ -2108,10 +2113,10 @@ export function planActivityBlock(plan: PlanView, view: PlanActivityView, env: E
   return section;
 }
 
-export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null, env: Env) {
+export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null, env: Env, retry?: () => void) {
   const section = testid(el('section', 'ap-section'), `history-${plan.id}`);
   section.append(el('h3', 'ap-h', say('Revisions', env.locale)));
-  if (!value || value.state !== 'ready') { section.append(partState('history-loading', say('history', env.locale), value, undefined, env.locale)); return section; }
+  if (!value || value.state !== 'ready') { section.append(partState('history-loading', say('history', env.locale), value, retry, env.locale)); return section; }
   const ul = el('ul', 'ap-history');
   const entries = value.value.entries;
   const kind = (i: number) => say(entries[i].revision === 1 ? 'plan reported' : i === 0 ? 'progress update' : entries[i].structuralRevision !== entries[i - 1].structuralRevision ? 'tasks revised' : entries[i].lifecycle !== entries[i - 1].lifecycle ? 'outcome reported' : 'progress update', env.locale);
@@ -2211,7 +2216,7 @@ export const FAILURE_COPY: Record<ReadFailure['kind'], { title: string; body: st
   invalid: { title: 'Progress could not be read', body: 'The progress service sent a reply this view could not use.' },
   'not-found': { title: 'That plan is no longer available', body: 'Choose another plan.' },
   'setup-lost': { title: 'Progress setup can’t be read right now', body: 'Check Setup; nothing was changed or deleted.' },
-  'setup-refused': { title: 'Progress couldn’t verify this setup', body: 'Open More → Setup to see what needs attention.' },
+  'setup-refused': { title: 'Progress couldn’t verify this setup', body: 'Open Settings → Setup to see what needs attention.' },
 };
 const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
   en: FAILURE_COPY,
@@ -2226,7 +2231,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
     'not-found': { title: 'Этот план больше недоступен', body: 'Выберите другой план.' },
     'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Проверьте настройку; ничего не изменено и не удалено.' },
-    'setup-refused': { title: 'Не удалось проверить настройку прогресса', body: 'Откройте «Ещё» → «Настройка», чтобы узнать причину.' },
+    'setup-refused': { title: 'Не удалось проверить настройку прогресса', body: 'Откройте «Настройки» → «Настройка», чтобы узнать причину.' },
   },
   'zh-CN': {
     'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
@@ -2239,7 +2244,7 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
     'not-found': { title: '该计划已不再可用', body: '请选择其他计划。' },
     'setup-lost': { title: '暂时无法读取进度设置', body: '请检查设置，未更改或删除任何内容。' },
-    'setup-refused': { title: '无法验证进度设置', body: '请打开「更多」→「设置」查看原因。' },
+    'setup-refused': { title: '无法验证进度设置', body: '请从齿轮菜单打开「设置」查看原因。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];

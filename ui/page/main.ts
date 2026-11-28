@@ -2,13 +2,13 @@ import { mountList, type Tone } from '@openchamber/sdk/ui';
 import { mountLiveSelect, preserveLiveSelects } from '../shared/live-select.ts';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
-  advancedDetails, button, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, narrowSurface, partState, peopleBlock, planDetail, planHeader, planPicker, ProgressShell, recordedLabel, retryRead, revealCurrentTask, staleBlock, surfaceViewSwitch, testid, type Env,
+  advancedDetails, button, documentBlock, documentView, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, narrowSurface, partState, peopleBlock, planDetail, planPicker, ProgressShell, recordedLabel, retryRead, revealCurrentTask, staleBlock, testid, type Env,
 } from '../shared/components.ts';
 import type { DigestPanel } from '../shared/change-digest.ts';
 import { CaptureController } from '../shared/capture-comparison.ts';
 import { captureComparisonBlock } from '../shared/capture-comparison-view.ts';
 import { digestBlock } from '../shared/change-digest-view.ts';
-import { plural } from '../shared/format.ts';
+import { formatCount, plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
@@ -28,9 +28,9 @@ import { cleanupBlock, cleanupNotice, selectionBar } from '../shared/cleanup-vie
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
-import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { DefaultViewChoice, resolveDefaultView, viewReadingKey, type DetailView } from '../shared/default-view.ts';
 import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '../shared/primitives.ts';
-import { CompactInbox, hiddenInboxAction, inboxCopy, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
+import { CompactInbox, inboxCopy, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
 import { InboxPartition, partitionInbox, planInboxComplete, scopeInbox } from '../shared/inbox.ts';
 import { quietAge, quietCheck, quietEmpty, quietNotice } from '../shared/components.ts';
@@ -395,7 +395,9 @@ startView<Ui>({
   },
   wantDetails: (vc) => {
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
-    const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
+    // The selected plan's header/legend uses complete detail in all four views, including when
+    // Document or History is shown instead of List. Keep the ordinary detail cadence.
+    const p = selectedPlan(vc); return p ? [p] : [];
   },
   refreshDetails: (vc) => {
     // Search-state has no delegation token: revalidate the open plan on this same cadence.
@@ -434,16 +436,14 @@ startView<Ui>({
     const mapPlan = read ? selectedPlan(vc) : null;
     shell.reconcile(vc, mapPlan, { board: true, scope: readingScope(vc) });
     boardMap.sync(vc, mapPlan, readingScope(vc), ui.tab === 'map' && !!mapPlan && !shell.activePanel);
-    root.append(el('h1', 'ap-sr', t.heading));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
     const mode = (archived: boolean) => { endSearch(); vc.setUi({ archived, selected: null, filters: NO_FILTERS, reveal: 0, search: null, draft: NO_DRAFT, problem: null }); };
     button(modes, 'cleanup-visible', t.current, () => mode(false), ui.archived ? 'ghost' : 'outline');
     button(modes, 'cleanup-archived', t.archived, () => mode(true), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
     modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
-    const notice = cleanupNotice(vc);
     if (!read) {
-      root.append(modes);
-      if (notice) root.append(notice);
+      root.append(boardTop(vc, null, modes, null, false));
+      root.append(cleanupNotice(vc));
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
       else if (vc.health && !vc.health.ready) root.append(emptyBlock('setup-needed', t.setup, t.pickHelp));
       else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock(env.locale));
@@ -479,7 +479,6 @@ startView<Ui>({
     // The bar first (Current / Archived, search, Filters); concrete states right below it.
     const controls = boardTop(vc, v, modes, locations, capable);
     root.append(controls);
-    if (notice) controls.append(notice);
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
@@ -491,7 +490,10 @@ startView<Ui>({
     }
     if (v) { root.append(searchStrip(v)); searchBoard(root, vc, v); footer(root, vc, selectedPlan(vc)); return; }
     if (empty) {
+      const select = selectionControl(vc); if (select) root.append(select);
       root.append(emptyBlock('empty-state', ui.archived ? t.noArchived : t.noPlans, ui.archived ? t.archivedHelp : t.plansHelp));
+      const tidy = tidyControl(vc); if (tidy) root.append(tidy);
+      root.append(cleanupNotice(vc));
       footer(root, vc, null);
       return;
     }
@@ -512,7 +514,6 @@ startView<Ui>({
     const board = el('div', `ap-board${selection.mode ? ' ap-selecting' : ''}`);
     board.dataset.retainKey = 'board';
     const list = planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: ++reveals }), ui.archived, b);
-    list.prepend(controls);
     board.append(list);
     const detail = testid(el('section', 'ap-detail'), 'plan-detail');
     detail.setAttribute('aria-label', t.detail);
@@ -574,12 +575,12 @@ function openInbox(vc: ViewContext<Ui>, row: InboxRowView) {
   revealInboxTask(vc.reading, selectedPlan(vc), row, id => boardMap.revealTask(id));
 }
 const compactInbox = new CompactInbox();
-function compactInboxSection(vc: ViewContext<Ui>) {
+function compactInboxSection(vc: ViewContext<Ui>, triggerMount: HTMLElement) {
   const plan = selectedPlan(vc);
   return inboxSection(vc.inbox!, vc.env, {
     open: row => openInbox(vc, row), stale: vc.failure && vc.lastGoodAt ? vc.lastGoodAt : null,
     state: compactInbox, surface: 'page', keys: new Set(plan ? [plan.key] : []), scopeComplete: true,
-    identity: JSON.stringify([vc.identity, plan?.key]), plans: vc.read?.plans ?? [], shownPlan: plan?.key, changed: () => vc.setUi({}), retry: vc.retry,
+    identity: ownerOf(vc), plans: vc.read?.plans ?? [], shownPlan: plan?.key, changed: () => vc.setUi({}), retry: vc.retry, triggerMount,
     focus: hook => vc.handoff({ to: hook }),
   });
 }
@@ -693,18 +694,17 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
     board.filtersOpen = open; boardFocus = focus ? { to: focus } : null; frame?.updateUi(() => ({}));
   };
   const area = testid(el('section', 'ap-search-area'), capable ? 'search' : 'board-bar');
-  if (b.filtersOpen) {
-    const options = el('div', 'ap-stack');
-    if (locations) options.append(locations);
-    options.append(quietCheck(vc));
-    const notice = quietNotice(vc); if (notice) options.append(notice);
-    locations = options;
-  }
+  const trailing = el('div', 'ap-library-actions');
+  const inbox = vc.inbox ? compactInboxSection(vc, trailing) : null;
+  trailing.append(shell.settingsButton(vc, kind => {
+    if (kind === 'setup') vc.requestSetup();
+    if (kind === 'troubleshooting') { const p = reportingClaim(vc, selectedPlan(vc)); if (!p.open) p.toggle(); else p.refresh(); }
+  }));
   area.setAttribute('aria-label', capable ? copy(vc.env.locale).search : copy(vc.env.locale).filter);
   area.append(boardBar({
     current: () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch,
     modes, locations, active, open: b.filtersOpen, setOpen,
-    tidy: vc.health?.planCleanup === 1 && vc.read && bulkCleanupAvailable(vc) ? { label: tidyCopy(vc.env.locale).menu, run: vc.requestTidy, disabled: vc.cleanup.pending || !!vc.failure } : null,
+    title: el('h1', 'ap-library-title', copy(vc.env.locale).heading), quiet: quietCheck(vc), trailing,
     scope: capable ? scopeLine(submitted, vc.ui.archived, vc.env.locale) : null,
     search: capable ? {
       text: () => draftText(vc), setText: (q) => setText(vc, q),
@@ -720,18 +720,29 @@ function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLEle
       submitted, problem: vc.ui.problem ? (vc.ui.problem.kind === 'query' ? queryProblem(vc.ui.problem.q, vc.env.locale) : copy(vc.env.locale).emptyQuery) : null, sources: vc.read?.sources ?? [], archived: vc.ui.archived,
     } : null,
   }, vc.env.locale));
-  if (vc.health?.planCleanup === 1 && vc.read && bulkCleanupAvailable(vc)) {
-    const scope = selectionScope(vc);
-    const current = () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch;
-    area.querySelector('.ap-board-bar')?.append(selectionBar(selection, vc.env.locale, vc.ui.archived,
-      () => { if (current()) selectionChanged(); },
-      action => { if (current()) vc.requestSelection(action, { ...selection.snapshot(), scope }); },
-      vc.cleanup.pending || !!vc.failure));
-  }
   const popup = area.querySelector<HTMLElement>('[data-live-popup]');
   if (popup) popup.dataset.livePopup = filtersKey;
-  if (!capable) area.append(unavailableNote(vc.env.locale));
+  if (!capable && vc.read) area.append(unavailableNote(vc.env.locale));
+  const notice = quietNotice(vc); if (notice) area.append(notice);
+  if (inbox) area.append(inbox);
   return area;
+}
+
+function selectionControl(vc: ViewContext<Ui>) {
+  if (vc.health?.planCleanup !== 1 || !vc.read || !bulkCleanupAvailable(vc)) return null;
+  const scope = selectionScope(vc), epoch = boardEpoch;
+  return selectionBar(selection, vc.env.locale, vc.ui.archived,
+    () => { if (boardEpoch === epoch) selectionChanged(); },
+    action => { if (boardEpoch === epoch) vc.requestSelection(action, { ...selection.snapshot(), scope }); },
+    vc.cleanup.pending || !!vc.failure);
+}
+
+function tidyControl(vc: ViewContext<Ui>) {
+  if (vc.health?.planCleanup !== 1 || !vc.read || !bulkCleanupAvailable(vc)) return null;
+  const row = el('div', 'ap-library-tidy'), epoch = boardEpoch;
+  button(row, 'tidy-open', tidyCopy(vc.env.locale).menu,
+    () => { if (row.isConnected && boardEpoch === epoch) vc.requestTidy(); }, 'outline', vc.cleanup.pending || !!vc.failure);
+  return row;
 }
 
 /** While searching: the removable constraint chips and the last explicit outcome, outside Filters. */
@@ -751,7 +762,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
   const c = v.criteria;
   const selected = selectedPlan(vc);
   const board = el('div', `ap-board${selection.mode ? ' ap-selecting' : ''}`);
-  board.append(resultsBlock(v, env, {
+  const results = resultsBlock(v, env, {
     selection: selection.mode ? { has: key => selection.has(key), disabled: vc.cleanup.pending, toggle: plan => { if (boardEpoch === epoch) { selection.toggle(plan); selectionChanged(); } } } : undefined,
     selected: openedHit && openedHit.key === ui.selected ? openedHit : null,
     openPlan: (hit) => openHit(vc, v, hit, null),
@@ -767,7 +778,11 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
     page: (delta) => { search.showPage(delta); vc.retry(); },
     removeLocation: (part) => removeChip(part),
     clearAll,
-  }));
+  });
+  const select = selectionControl(vc); if (select) results.prepend(select);
+  const tidy = tidyControl(vc); if (tidy) results.append(tidy);
+  results.append(cleanupNotice(vc));
+  board.append(results);
   const detail = testid(el('section', 'ap-detail'), 'plan-detail');
   detail.setAttribute('aria-label', copy(env.locale).detail);
   const request = search.selectedPlan();
@@ -800,7 +815,6 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
 /** Progress / Document / History of one selected plan (board browsing and search alike). */
 function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, compareSession: string | null) {
   const { env, ui } = vc;
-  const t = copy(env.locale);
   // Layout hook only: the Map tab uses the full detail column, the text tabs a reading width.
   detail.dataset.tab = ui.tab;
   // Keep count observations current even when a surface panel replaces the ordinary DOM.
@@ -808,12 +822,14 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
   const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest, census ?? undefined) : null;
   if (surface(detail, vc, plan)) { detail.append(cleanupBlock(vc, plan)); return; }
-  const viewSwitch = surfaceViewSwitch(ui.tab === 'map' ? 'map' : 'list', mode => {
+  const change = (mode: DetailView) => {
     if (mode === 'list' && ui.tab === 'map') { boardMap.leave(true); return; }
     if (mode === 'map') boardMap.enter(); else boardMap.leave();
-    chooseTab(vc, mode === 'list' ? 'progress' : 'map');
-  }, env.locale, () => shell.openDocument(vc));
+    chooseTab(vc, mode === 'list' ? 'progress' : mode);
+  };
+  const viewSwitch = shell.switchView(ui.tab === 'progress' ? 'list' : ui.tab, change, env.locale);
   if (ui.tab !== 'map') detail.append(viewSwitch);
+  detail.dataset.readingMode = ui.tab;
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.
   const roster = () => (census && vc.read ? subagentsBlock({
@@ -825,24 +841,24 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     detail.append(host);
     boardMap.paint(host, vc, { plan, viewSwitch, scope: readingScope(vc), runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(plan.ownerSessionId, plan.directory, vc.live) });
   } else if (ui.tab === 'document') {
-    const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
-    article.dataset.source = plan.sourceId;
-    article.append(planHeader(plan, env), documentBlock(plan, env, 'inline', docHooks));
-    if (vc.read) article.append(captureComparisonBlock(captures.claim({
+    const document = documentBlock(plan, env, 'inline', docHooks);
+    const comparison = vc.read ? captureComparisonBlock(captures.claim({
       owner: JSON.stringify([ownerOf(vc),vc.ui.search?.key ?? null,vc.ui.filters]),
       request: { storeId: vc.read.storeId, binding: vc.read.binding, source: plan.sourceId, plan: plan.id, cleanupRev: plan.cleanup?.revision ?? 0 },
       revision: plan.revision, capable: vc.health?.documentCaptureComparison === 1,
-    }), env.locale));
-    detail.append(article);
+    }), env.locale) : undefined;
+    detail.append(documentView(detail, env.locale, shell.documentBack(change), document, comparison ?? undefined));
   } else if (ui.tab === 'history') {
     const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
     article.dataset.source = plan.sourceId;
-    vc.requestHistory(plan);
-    article.append(planHeader(plan, env));
+    if (!vc.history(plan)) vc.requestHistory(plan);
     // Full-page History only: the digest sits above the existing metadata Revisions.
     const panel = shownDigest = vc.digest(plan);
-    if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title))); }));
-    article.append(historyBlock(plan, vc.history(plan), env));
+    if (panel) {
+      shell.reviewedThrough(panel.reviewedThrough);
+      article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title))); }));
+    }
+    article.append(historyBlock(plan, vc.history(plan), env, () => vc.requestHistory(plan)));
     detail.append(article);
   } else {
     // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
@@ -856,8 +872,6 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     detail.append(article);
     // Rooted in this plan's verified coordinator session; a plan from another setup borrows nothing.
   }
-  // Needs-you owner supplies the selected-plan scope here, after either view.
-  if (vc.inbox) detail.append(compactInboxSection(vc));
   const r = roster(); if (r) detail.append(r);
   // Incomplete-count indicator mounts last, after the roster.
   detail.append(cleanupBlock(vc, plan));
@@ -879,7 +893,7 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
   if (!intent) return;
   // A delayed reveal belongs to its originating reading, not a replacement panel.
   const panel = shell.activePanel;
-  if (intent.stage === 'detail' ? panel !== 'history' : panel !== null) { pendingTask = null; return; }
+  if (panel || intent.stage === 'detail' && vc.ui.tab !== 'history') { pendingTask = null; return; }
   if (intent.stage === 'search') {
     // Search reveal: the same run and selection, complete current detail, same archive mode.
     const v = searching(vc);
@@ -924,16 +938,14 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
 
 /** Footer zone: collapsed Setup and Details, after the progress story. */
 function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
-  if (!plan) {
-    surface(root, vc, null);
-    // The held inbox is source-wide, independent of search/browse selection.
-    if (vc.inbox) root.append(compactInboxSection(vc));
-  }
+  if (!plan) surface(root, vc, null);
 }
 
+function reportingClaim(vc: ViewContext<Ui>, plan: PlanView | null) {
+  return reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
+}
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   const t = copy(vc.env.locale);
-  const claim = () => reporting.claim({ key: JSON.stringify([ownerOf(vc), vc.read?.captureEnabled, !!vc.failure, plan?.key, plan?.revision]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
   const plans = visiblePlans(vc);
   const picker = plan && !isSearching(vc) && plans.length > 1 ? planPicker({ title: plan.title, index: plans.indexOf(plan) + 1, count: plans.length, incomplete: vc.read?.truncated, value: plan.key, locale: vc.env.locale, options: plans.map(p => {
     const days = quietDays(p, vc.env.now);
@@ -942,13 +954,11 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
   if (picker) picker.classList.add('ap-board-picker');
   return shell.paint(root, vc, plan, {
     board: true, scope: readingScope(vc), picker,
-    menuActions: hiddenInboxAction(vc.inbox, compactInbox, vc.env.locale, () => shell.showView(vc), 'page'),
-    openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
     closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
       if (kind === 'setup') return setupBlock(vc);
       if (kind === 'troubleshooting') {
-        const p = claim(); if (!p.open) p.toggle();
+        const p = reportingClaim(vc, plan); if (!p.open) p.toggle();
         const body = advancedDetails(vc, plan, [[t.loaded, String(vc.read?.plans.length ?? 0)], [t.watched, String(vc.sessionSubscriptions)], ...failureFacts(vc.failure, vc.env.locale)]);
         const gap = coverageGap(visiblePlans(vc), derivedBoard(vc).live, vc.env.boundSource);
         if (gap.missing) body.append(el('p', 'ap-note', t.missing(gap.missing)));
@@ -957,26 +967,8 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) 
         if (vc.read?.truncated) body.append(el('p', 'ap-note', t.truncated));
         return reportingHealthBlock(p, vc.env.locale, body);
       }
-      if (!plan) return el('div');
-      if (kind === 'sessions') { const detail = vc.detail(plan); return peopleBlock(plan, detail?.state === 'ready' ? detail.value : null, vc.env); }
-      const body = el('div');
-      if (kind === 'document') {
-        body.append(documentBlock(plan, vc.env, 'inline', { get: () => vc.document(plan), request: () => vc.requestDocument(plan) }));
-        if (vc.read) body.append(captureComparisonBlock(captures.claim({ owner: ownerOf(vc), request: { storeId: vc.read.storeId, binding: vc.read.binding, source: plan.sourceId, plan: plan.id, cleanupRev: plan.cleanup?.revision ?? 0 }, revision: plan.revision, capable: vc.health?.documentCaptureComparison === 1 }), vc.env.locale));
-      } else if (kind === 'history') {
-        vc.requestHistory(plan);
-        const panel = shownDigest = vc.digest(plan);
-        if (panel) {
-          shell.reviewedThrough(panel.reviewedThrough);
-          body.append(digestBlock(panel, vc.env, (item, title) => {
-            pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' };
-            // Announcing schedules the paint that consumes the intent, even when the list is unchanged.
-            panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title)));
-          }));
-        }
-        body.append(historyBlock(plan, vc.history(plan), vc.env));
-      }
-      return body;
+      const detail = plan ? vc.detail(plan) : null;
+      return plan ? peopleBlock(plan, detail?.state === 'ready' ? detail.value : null, vc.env) : el('div');
     },
   });
 }
@@ -1111,9 +1103,15 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   wrap.setAttribute('aria-label', t.plans);
   wrap.dataset.scrollKey = 'plan-list';
   // Owning heading of the list region (focus target after Clear all and similar; never a Tab stop).
-  const heading = testid(el('h2', 'ap-region-h', t.plans), 'plan-list-heading');
+  const n = plans.filter(p => p.lifecycle === 'active').length;
+  const number = `${formatCount(n, resolveLanguage('auto', env.locale))}${frame?.read?.truncated ? '+' : ''}`;
+  const active = { en: `${number} active`, ru: `Активных: ${number}`, 'zh-CN': `${number} 个活跃计划` }[resolveLanguage('auto', env.locale)];
+  const header = el('div', 'ap-row ap-plan-list-head');
+  const heading = testid(el('h2', 'ap-region-h', archived ? t.plans : `${t.plans} · ${active}`), 'plan-list-heading');
   heading.tabIndex = -1;
-  wrap.append(heading);
+  header.append(heading);
+  const select = frame && selectionControl(frame); if (select) header.append(select);
+  wrap.append(header);
   const { groups, quietExcluded } = derivedBoard(frame!);
   const boardKey = b.key;
   wrap.dataset.boardReading = boardKey;
@@ -1156,6 +1154,8 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
     wrap.append(section);
   }
   if (!plans.length && !quietExcluded) wrap.append(testid(el('p', 'ap-note', t.listEmpty), 'list-empty'));
+  const tidy = frame && tidyControl(frame); if (tidy) wrap.append(tidy);
+  if (frame) wrap.append(cleanupNotice(frame));
   return wrap;
 }
 

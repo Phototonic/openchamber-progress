@@ -1630,7 +1630,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
     refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
   });
-  const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; canvasWidth = mapWidth = 0; awaitingOpeningMeasurement = false; reveal = null; };
+  let graphKey: string | null = null;
+  const forget = (forgetGraph = true) => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); if (forgetGraph) { map.reset(); graphKey = null; } geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; canvasWidth = mapWidth = 0; awaitingOpeningMeasurement = false; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.invalidate(); });
   // Without a host device hint the coarse presentation follows the pointer media query; repaint when it
   // changes (a hint change already repaints through the ready context).
@@ -1647,10 +1648,13 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       latest = vc;
       if (!plan || !vc.read) { shown = false; forget(); return; }
       shown = want;
-      const identity = mapReadingKey(claimOf(vc, plan, scope));
+      const claim = claimOf(vc, plan, scope);
+      const nextGraphKey = mapReadingKey(claim);
+      const identity = mapReadingKey(claim, true);
       // Layout retains survivor columns by task ID, so every reading-owned cache
       // must retire together at the full identity boundary, not just interaction.
-      if (identity !== interaction.value.identity) forget();
+      if (identity !== interaction.value.identity) forget(nextGraphKey !== graphKey);
+      graphKey = nextGraphKey;
       interaction.identify(identity);
       if (want && !interaction.value.active) interaction.enter(false);
       if (!want) { view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); if (interaction.value.active) interaction.leave(); map.pause(); }
@@ -1689,7 +1693,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         try {
           const items = snapshot.picture.detail.detail.items, guidance = snapshot.current && snapshot.picture.detail.plan.lifecycle === 'active';
           interaction.reconcile({
-            identity: mapReadingKey(claimOf(vc, input.plan, input.scope)), layout, items, current: snapshot.current, guidance,
+            identity: mapReadingKey(claimOf(vc, input.plan, input.scope), true), layout, items, current: snapshot.current, guidance,
             working: guidance ? items.filter(n => n.kind === 'task' && n.status === 'working').map(n => n.id) : [],
             needsYou: guidance && snapshot.picture.detail.plan.sourceId === vc.env.boundSource ? items.filter(n => itemNeedsYou(snapshot.picture!.detail.plan, n)).map(n => n.id) : [],
             ready: guidance ? [...snapshot.picture.facts.tasks].filter(([, f]) => f.group === 'ready').map(([id]) => id) : [],

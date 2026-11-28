@@ -27,10 +27,10 @@ const runs=[
 const checks:string[]=[], screenshots:string[]=[], exceptions:string[]=[];
 let shell:Awaited<ReturnType<typeof startLanguageFixture>>|undefined, browser:Awaited<ReturnType<typeof launchChromium>>|undefined;
 let didPass=false, loseReply=false, posts=0, phase='startup';
-const more='[data-testid="more-trigger"]', finish='[data-menu-id="finish-cancelled"]', history='[data-menu-id="history"]';
+const more='[data-testid="more-trigger"]', finish='[data-menu-id="finish-cancelled"]', history='[data-testid="plan-view-history"] button';
 const keep='[data-testid="plan-cancel-keep"] button', confirm='[data-testid="plan-cancel-confirm"] button';
 const filtered='[data-testid="quiet-plans-empty"]', show='[data-testid="quiet-show-all"] button';
-const menuFilter='[data-menu-id="quiet-plan-filter"]', heading='[data-testid="plan-title"]';
+const quietFilter='[data-testid="quiet-plan-filter"]', heading='[data-testid="plan-title"]';
 const by=(selector:string)=>`d.querySelector(${js(selector)})`;
 const mark=(id:string)=>checks.push(id);
 try{
@@ -119,7 +119,7 @@ try{
     await wait(`${by('[data-testid="status-plan-title"]')}?.textContent===${js(title)}`);
     mark(`${prefix}: one filter empty message on rail and board; Work Status unchanged`);
     await select('panel',lang);
-    await menu();await wait(`${by(menuFilter)}?.getAttribute('aria-checked')==='true'`);
+    await wait(`${by(quietFilter)}?.checked===true`);
     await escape();await click(show);await exists('[data-testid="quiet-plan-age"]');
     await evaluate(`qa.reload('panel');true`);
     await wait(`w.location.search.startsWith('?reload=') && !!${by(heading)} && !${by(filtered)}`);
@@ -147,7 +147,7 @@ try{
 
     phase=`${lang}: resumed report`;
     await select('panel',lang);
-    await menu();await click(menuFilter);await exists(filtered);
+    await click('.ap-quiet-check');await exists(filtered);
     f.store.apply({op:'change',plan,oid:`resume-${lang}`,rev,changes:[{id:'check',status:'working'}]},f.actor);
     await evaluate(`qa.focus('panel');qa.tick('panel');true`);await exists(heading);
     assert.equal(await guest(`return !!${by('[data-testid="quiet-plan-age"]')}`),false);
@@ -173,7 +173,7 @@ try{
     await exists(fold);
     if(await guest(`return ${by(fold)}.getAttribute('aria-expanded')==='false'`))await click(fold);
     await click(`[data-testid="plan-row-${plan}"][data-lifecycle="cancelled"]`);
-    await exists(heading);await menu();await click(history);
+    await exists(heading);await click(history);
     const entry=`[data-testid="revision-${rev+2}"]`;
     await wait(`${by(entry)}?.textContent.includes(${js(userHistory)})`);
     await shot(`${prefix}-cancelled-history`);

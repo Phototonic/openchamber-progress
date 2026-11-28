@@ -1238,8 +1238,9 @@ it does not change the meaning of `planCleanup:1`. Missing capability means
 unavailable, not an empty archive. Guests send the acknowledgement only when
 `planCleanupActive:1` is advertised. No report-tool operation is added.
 
-The full page's **Tidy** action composes these per-plan routes; it adds no bulk
-service route or capability revision. It covers finished, cancelled and failed
+The full page's single library-scoped **Tidy** action composes these per-plan
+routes; its placement next to the Finished area does not scope it to one
+project. It adds no bulk service route or capability revision and covers finished, cancelled and failed
 plans matching the current search and filters, including unloaded plans, or all
 closed plans in the current view with no narrowing. It never targets an active
 plan or sends the active acknowledgement. Neither the rail nor More has a bulk

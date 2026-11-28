@@ -60,11 +60,12 @@ const LABELS: Record<InterfaceLanguage, { marks: Record<MarkStatus, string>; act
 };
 
 /** Plain interface icons (never status). Decorative unless given a name. */
-export type IconName = 'info' | 'more' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external' | 'filter';
+export type IconName = 'info' | 'more' | 'settings' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external' | 'filter';
 
 const ICON_SHAPES: Record<IconName, Part[]> = {
   info: [['circle', { cx: 8, cy: 8, r: 6.3, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4 }], ['path', { d: 'M8 7.3v3.6', ...LINE, 'stroke-width': 1.6 }], ['circle', { cx: 8, cy: 5.1, r: 0.95, fill: 'currentColor' }]],
   more: [['circle', { cx: 3.5, cy: 8, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 8, cy: 8, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 12.5, cy: 8, r: 1.3, fill: 'currentColor' }]],
+  settings: [['path', { d: 'M6.5 2h3l.5 2 1 .6 2-.6 1.5 2.6L13 8l.1 1.2 1.4 1.3-1.5 2.6-2-.6-1 .6-.5 2h-3L6 13l-1-.5-2 .6-1.5-2.6L3 9.2 3 8 1.5 6.6 3 4l2 .6L6 4z', ...LINE, 'stroke-width': 1.2 }], ['circle', { cx: 8, cy: 8.5, r: 2, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3 }]],
   'chevron-down': [['path', { d: 'M4.5 6.2 8 9.8l3.5-3.6', ...LINE, 'stroke-width': 1.6 }]],
   close: [['path', { d: 'm4 4 8 8M12 4l-8 8', ...LINE, 'stroke-width': 1.6 }]],
   warning: [['path', { d: 'M8 2.4 14.2 13H1.8z', ...LINE, 'stroke-width': 1.4 }], ['path', { d: 'M8 6.4v3', ...LINE, 'stroke-width': 1.6 }], ['circle', { cx: 8, cy: 11.2, r: 0.9, fill: 'currentColor' }]],
@@ -391,27 +392,24 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
  * It owns no reads or persistence; the caller supplies the device-language controller. */
 export type MoreMenuItem = MenuItem | { id: string; label: string; checked: boolean; disabled?: boolean; destructive?: boolean };
 export function moreMenu(options: {
-  label: string; newHistory?: boolean; items: MoreMenuItem[]; onSelect: (id: string) => void;
+  label: string; settings?: boolean; items: MoreMenuItem[]; onSelect: (id: string) => void;
+  onOpen?: () => void;
   languageLabel: string; automatic: string; unsupported: string; languageStatus?: string;
   language: { preference: string; supported: boolean; pending: boolean; choose: (value: 'auto' | 'en' | 'ru' | 'zh-CN') => void };
 }) {
   const root = node('div', 'ap-more');
-  root.dataset.testid = 'more-menu';
+  root.dataset.testid = options.settings ? 'settings-menu' : 'more-menu';
   // Keep the old focus seam for summary and cleanup controllers.
   const holder = node('div');
-  holder.dataset.testid = 'plan-actions';
   const trigger = node('button', 'ap-actions-btn');
   trigger.type = 'button';
-  trigger.dataset.testid = 'more-trigger';
+  trigger.dataset.testid = options.settings ? 'settings-trigger' : 'more-trigger';
   trigger.setAttribute('aria-label', options.label);
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
-  trigger.append(icon('more'));
-  const dot = node('span', 'ap-history-dot');
-  dot.dataset.testid = 'more-history-dot';
-  dot.setAttribute('aria-hidden', 'true');
+  trigger.append(icon(options.settings ? 'settings' : 'more'));
   const popup = node('div', 'ap-more-popup');
-  popup.dataset.testid = 'more-popup';
+  popup.dataset.testid = options.settings ? 'settings-popup' : 'more-popup';
   popup.setAttribute('role', 'menu');
   popup.setAttribute('aria-label', options.label);
   popup.hidden = true;
@@ -492,7 +490,7 @@ export function moreMenu(options: {
     rendered = next;
     painting = false;
   };
-  const open = (last = false) => { if (disposed) return; submenu = false; prefix = ''; paint(); popup.hidden = false; trigger.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); focus(last ? rows().length - 1 : 0); };
+  const open = (last = false) => { if (disposed) return; options.onOpen?.(); submenu = false; prefix = ''; paint(); popup.hidden = false; trigger.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); focus(last ? rows().length - 1 : 0); };
   trigger.addEventListener('click', () => popup.hidden ? open() : close());
   trigger.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(e.key === 'ArrowUp'); } });
   root.addEventListener('focusout', e => { if (painting || (e.relatedTarget instanceof Node && root.contains(e.relatedTarget))) return; close(); });
@@ -511,11 +509,10 @@ export function moreMenu(options: {
   });
   return {
     root,
+    close,
     setOptions(next: typeof options) {
       options = next;
       trigger.setAttribute('aria-label', options.label);
-      if (options.newHistory && !dot.parentNode) trigger.append(dot);
-      else if (!options.newHistory) dot.remove();
     },
     mount(parent: HTMLElement) {
       // The shell is built off-document. Preserve the menu across this internal

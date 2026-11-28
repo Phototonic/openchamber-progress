@@ -724,9 +724,9 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-board-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-width:0}
 .ap-board-bar>[data-testid="cleanup-modes"]{flex:none;gap:2px}
 .ap-board-bar .ap-search{flex:1 1 22rem;min-width:0}
-.ap-board-bar .ap-search-row{position:relative;flex-wrap:nowrap;align-items:center;gap:6px}
-.ap-board-bar .ap-search-field{flex:1 1 auto;min-width:0}
-.ap-filters-owner{flex:none;margin-left:auto}
+.ap-board-bar .ap-search-row{position:relative;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.ap-board-bar .ap-search-field{flex:1 1 13rem;min-width:0}
+.ap-filters-owner{flex:none}
 .ap-filters-trigger{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--oc-border);border-radius:7px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12.5px;white-space:nowrap;cursor:pointer}
 .ap-filters-trigger:hover{background:var(--oc-hover)}
 .ap-filters-trigger[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover))}
@@ -776,7 +776,7 @@ ${PHONE_CSS}
 .ap-more .ap-actions-btn{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;border:0;border-radius:4px;background:transparent;cursor:pointer}
 .ap-more .ap-actions-btn:hover{background:var(--oc-hover)}
 .ap-more-popup[hidden]{display:none}
-.ap-more-popup{position:absolute;z-index:100;right:0;top:calc(100% + 4px);display:flex;flex-direction:column;width:max-content;min-width:220px;max-width:min(320px,calc(100vw - 32px));max-height:min(640px,70vh);overflow:auto;padding:6px;background:var(--oc-elevated,var(--oc-bg));border:1px solid var(--oc-border);border-radius:8px;box-shadow:0 8px 24px #0002}
+.ap-more-popup{position:absolute;z-index:100;right:0;top:calc(100% + 4px);display:flex;flex-direction:column;width:max-content;min-width:min(220px,calc(100vw - 40px));max-width:min(300px,calc(100vw - 40px));max-height:min(640px,70vh);overflow:auto;padding:6px;background:var(--oc-elevated,var(--oc-bg));border:1px solid var(--oc-border);border-radius:8px;box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 12%,transparent)}
 .ap-more-row{border:0;border-radius:4px;background:none;text-align:start;padding:8px 12px;min-height:36px;white-space:normal;cursor:pointer}
 .ap-more-row:hover,.ap-more-row:focus{background:var(--oc-hover);outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-more-row:disabled{opacity:.55;cursor:default}
@@ -784,25 +784,82 @@ ${PHONE_CSS}
 .ap-more-row[aria-checked="true"]::before{content:'✓ ';color:var(--oc-primary-text,var(--oc-primary))}
 .ap-more-separator{height:1px;background:var(--oc-border);margin:5px 4px}
 .ap-more-popup .ap-note{padding:8px 12px;max-width:28ch}
-.ap-surface-settings{display:flex;justify-content:flex-end}
+.ap-library-title{font-size:16px;font-weight:650}
+.ap-library-filters,.ap-library-actions,.ap-rail-chooser{display:flex;align-items:center;gap:6px 10px}
+.ap-library-filters{flex-wrap:wrap;min-width:0}
+.ap-rail-bar{display:grid;gap:2px}
+.ap-rail-chooser{justify-content:flex-end}
+.ap-rail-chooser>.ap-picker{flex:1 1 auto;min-width:0}
+.ap-rail-bar>.ap-quiet-check{justify-self:start}
+.ap-rail-summaries{display:grid;gap:4px}
+.ap-rail-summaries button{width:100%}
+.ap-library-actions{margin-inline-start:auto}
+.ap-library-actions .ap-inbox-toggle{width:auto;min-height:32px;padding:0 8px;border-radius:6px;white-space:nowrap}
+.ap-library-actions .ap-inbox-toggle:hover{background:var(--oc-hover)}
+.ap-library-tidy{align-self:flex-start}
+.ap-plan-list-head{justify-content:space-between;flex-wrap:wrap}
+.ap-plan-list-head .ap-region-h{font-size:13px;font-weight:650;color:var(--oc-fg)}
+.ap[data-surface="panel"]{gap:10px}
+.ap-detail>.ap-plan-head,.ap-detail>.ap-progress-line,.ap-detail>.ap-progress-legend{margin-block-end:8px}
+.ap-plan-top>[data-testid="surface-more"]{gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:100%;margin-inline-start:auto}
+:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) .oc-sdk-btn{white-space:normal;height:auto;min-height:32px}
+:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-plan-top .ap-plan-title{font-size:16px;line-height:1.3}
+.ap-surface-view-switch .oc-sdk-btn{position:relative;white-space:normal;min-height:32px;height:auto;max-width:100%;overflow-wrap:anywhere;color:var(--oc-fg)}
+.ap-surface-view-switch .oc-sdk-btn[aria-pressed="true"]{background:var(--oc-selection,var(--oc-hover));border-color:var(--oc-border);font-weight:650}
+.ap[data-surface="panel"] .ap-surface-view-switch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%}
+.ap[data-surface="panel"] .ap-surface-view-switch .oc-sdk-btn{width:100%;padding-inline:4px}
+.ap[data-surface="panel"] .ap-map-toolbar{flex-wrap:wrap}
+.ap[data-surface="panel"] .ap-map-toolbar>.ap-surface-view-switch{flex-basis:100%}
+.ap-quiet-check{display:inline-flex;align-items:center;gap:5px;min-height:32px;font-size:12px;color:var(--oc-fg);cursor:pointer}
+.ap-quiet-check:has(:focus-visible){outline:2px solid var(--oc-focus);outline-offset:2px;border-radius:4px}
+.ap-quiet-track{display:flex;align-items:center;flex:none;width:26px;height:15px;border:1px solid var(--oc-border);border-radius:999px;padding:2px;color:var(--oc-muted)}
+.ap-quiet-track::before{content:'';width:9px;height:9px;border:1px solid currentColor;border-radius:50%;background:currentColor}
+.ap-quiet-check input:checked+.ap-quiet-track{justify-content:flex-end;color:var(--oc-primary);border-color:currentColor}
+.ap-document-heading{display:flex;align-items:center;gap:8px}
+.ap-document-heading .ap-doc-title{min-width:0;overflow-wrap:anywhere;font-size:13px}
+.ap-document-view,.ap-document-view>.ap-doc,.ap-document-view .ap-doc-body{display:flex;flex:1 1 auto;min-height:0;min-width:0;flex-direction:column;gap:6px}
+.ap-document-view .ap-doc-facts{display:flex;gap:2px 10px;flex-wrap:wrap;margin:0}
+.ap-document-view .ap-doc-facts>*+*::before{content:'·';margin-inline-end:6px}
+.ap-document-view [data-testid=document-text]{max-height:none;min-height:min(9rem,45dvh);flex:1 1 0;overscroll-behavior:contain}
+.ap-doc-table{overflow-x:auto;max-width:100%}
+.ap-doc-table:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-doc-table table{border-collapse:collapse}
+.ap-doc-table :is(th,td){min-width:min(8rem,50vw)}
+.ap:is([data-surface="panel"][data-reading-mode="document"],[data-surface="page"]:has(.ap-document-view)){min-block-size:100dvh;block-size:calc(100dvh - var(--ap-keyboard-height,0px))}
+.ap[data-surface="page"]:has(.ap-document-view)>.ap-board{flex:1 1 auto;min-height:0}
+.ap-detail:has(.ap-document-view){display:flex;flex-direction:column;align-self:stretch;min-height:0;gap:6px}
+.ap-detail:has(.ap-document-view)>:not(.ap-document-view){flex-shrink:0}
+.ap:has(.ap-document-view)>:not(.ap-board,.ap-document-view){flex-shrink:0}
 .ap-surface-panel{display:flex;flex-direction:column;gap:14px}
 .ap-surface-panel>.ap-h{text-transform:none;letter-spacing:0;font-size:15px}
 .ap-surface-view-switch{display:flex;flex-wrap:wrap;gap:2px;align-items:center}
 .ap-surface-view-switch button:focus-visible,.ap-more .ap-actions-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
-.ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5}
+.ap-progress-legend{font-size:12px;color:var(--oc-muted);line-height:1.5;min-block-size:1lh}
 .ap-progress-line .ap-seg{order:0}
 .ap-progress-line .ap-fraction{order:1}
 .ap-progress-line .ap-fraction strong{font-size:15px;letter-spacing:0}
 .ap-history-dot{display:block;width:6px;height:6px;border-radius:50%;background:var(--oc-primary);position:absolute;right:3px;top:3px}
 .ap-list-help>summary{cursor:pointer;color:var(--oc-muted);min-height:32px}
 .ap-board-picker{display:none}
-.ap-plan-list>[data-testid="plan-list-heading"]{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 /* The shell supplies the plan header, counts and single view switch. The map owner retains
    its region label and unavailable/error states; its controls are simplified separately. */
 .ap-map-host .ap-map[data-tasks]:not([data-tasks="0"]) .ap-map-top,
 .ap-map-host .ap-map-summary{display:none}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,300px) minmax(0,1fr)}}
-@media(max-width:819px){.ap-board-picker{display:block}.ap-board>.ap-plan-list>.ap-board-project{display:none}}
-@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary{min-height:44px;min-width:44px}}
-[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary){min-height:44px;min-width:44px}
+@media(max-width:819px){.ap-board-picker{display:block}.ap-board>.ap-plan-list>.ap-board-project{display:none}.ap-board:has(.ap-document-view){grid-template-rows:auto minmax(0,1fr)}}
+@media(max-width:500px){.ap-board-bar .ap-search-field,.ap-library-title{flex-basis:100%}.ap-library-actions{gap:2px}.ap-more-popup{max-width:min(232px,calc(100vw - 40px))}}
+@media(max-width:320px){.ap-library-actions{justify-content:flex-end;flex:1 1 auto}.ap-board-bar .ap-search-row{gap:4px}.ap-filters-trigger{padding-inline:6px}}
+@media(max-width:240px){.ap[data-surface="panel"] .ap-surface-view-switch{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(pointer:coarse){.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn{min-height:44px;min-width:44px}}
+[data-device-pointer="coarse"] :is(.ap-more-row,.ap-more .ap-actions-btn,.ap-list-help>summary,.ap-quiet-check,.ap-library-actions .ap-inbox-toggle,.ap-surface-view-switch .oc-sdk-btn,.ap-plan-top>[data-testid="surface-more"] .oc-sdk-btn,.ap-rail-summaries .oc-sdk-btn){min-height:44px;min-width:44px}
+@media(forced-colors:active){
+.ap-more-popup,.ap-more .ap-actions-btn,.ap-surface-view-switch .oc-sdk-btn{border:1px solid ButtonText}
+.ap-surface-view-switch .oc-sdk-btn[aria-pressed="true"],.ap-more-row[aria-checked="true"]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-2px}
+.ap-more-row:focus-visible,.ap-more .ap-actions-btn:focus-visible,.ap-surface-view-switch button:focus-visible,.ap-doc-table:focus-visible,:is(.ap-plan-top>[data-testid="surface-more"],.ap-rail-summaries) button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
+.ap-history-dot{forced-color-adjust:none;background:Highlight}
+.ap-quiet-track{border-color:ButtonText}
+.ap-quiet-check input:checked+.ap-quiet-track{border-color:Highlight;color:Highlight}
+.ap-quiet-check:has(:focus-visible){outline-color:Highlight}
+}
 }`;

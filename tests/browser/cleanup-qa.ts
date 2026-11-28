@@ -29,14 +29,6 @@ function click(surface: string, selector: string) {
   const point = evaluate(`(async()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),d=f.contentDocument,s=${javascriptLiteral(selector)};d.querySelector(s)?.scrollIntoView({block:'nearest'});f.scrollIntoView({block:'nearest'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const n=d.querySelector(s);if(!n)throw Error('Missing control: '+s);const a=n.getBoundingClientRect(),o=f.getBoundingClientRect(),x=a.x+Math.min(a.width/2,30),y=a.y+a.height/2;if(!n.contains(d.elementFromPoint(x,y)))throw Error('Control is not reachable: '+s);return [x+o.x,y+o.y]})()`);
   cdp('click', ...point.map(String));
 }
-const menuItem = (id: string) => `[role="menuitem"][data-menu-id="${id}"]`;
-const openMenu = '[role="menu"]:not([hidden])';
-function more(surface: string, id: string) {
-  click(surface, '[data-testid="more-trigger"]');
-  wait(surface, `d.querySelector('${menuItem(id)}')`);
-  click(surface, menuItem(id));
-  wait(surface, `!d.querySelector('${openMenu}')`);
-}
 function button(surface: string, id: string) {
   if (surface === 'page' && ['filter-project', 'filter-worktree', 'filter-session', 'cleanup-visible', 'cleanup-archived'].includes(id)) {
     if (!guest('page', `return !!d.querySelector('[data-testid="${id}"] button')?.getClientRects().length`)) {
@@ -45,11 +37,7 @@ function button(surface: string, id: string) {
     }
   }
   if (['cleanup-archive', 'cleanup-restore', 'cleanup-delete'].includes(id)) {
-    if (!guest(surface, `return !!d.querySelector('[data-testid="plan-actions"] button')`)) {
-      click(surface, `[data-testid="${id}"] button`);
-      return;
-    }
-    more(surface, id);
+    click(surface, `[data-testid="${id}"] button`);
     if (id === 'cleanup-delete') {
       wait(surface, `d.querySelector('[data-testid="cleanup-confirm"]')`);
       assert.equal(guest(surface, `return !!d.querySelector('[data-testid="cleanup-confirm"]')?.closest('[role="menu"]')`), false);
@@ -103,8 +91,7 @@ function tabBack(surface: string) {
 }
 function tab(surface: string, text: string) {
   tabBack(surface);
-  if (text === 'document') button(surface, 'plan-view-document');
-  else more(surface, text);
+  button(surface, `plan-view-${text}`);
 }
 
 // Each explicit run starts fresh disposable stores, not a retry of a destructive action.
@@ -127,21 +114,17 @@ console.log(JSON.stringify(result, null, 2));
 async function individualCleanup() {
 const before = await state(); const secondBefore = await state('P-done', 1);
 for (const id of ['P-active']) {
-  choosePage(id); click('page', '[data-testid="plan-actions"] button');
-  wait('page', `d.querySelector('${openMenu}')`);
-  assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-archive')},${menuItem('cleanup-delete')}');`), false);
-  key('Escape');
+  choosePage(id);
+  assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]');`), false);
 }
 evaluate('qa.dark();true');
 for (const id of ['P-cancelled', 'P-failed']) {
   for (const width of [900, 390]) {
     if (width === 900) { show('page', width); choosePage(id); }
     else { show('page', width); selected('page', id); }
-    click('page', '[data-testid="plan-actions"] button');
-    wait('page', `d.querySelector('${menuItem('cleanup-archive')}')`);
-    assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-delete')}')`), true);
+    wait('page', `d.querySelector('[data-testid="cleanup-archive"] button:not(:disabled)')`);
+    assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-delete"] button:not(:disabled)')`), true);
     noOverflow('page'); shot(`${id}-${width}-dark-actions`, 'page');
-    key('Escape');
     button('page', 'cleanup-delete');
     wait('page', `d.activeElement?.closest('[data-testid="cleanup-cancel"]')`);
     noOverflow('page'); shot(`${id}-${width}-dark-confirm`, 'page', '[data-testid="cleanup-confirm"]');
@@ -171,7 +154,7 @@ const originalPosts = posts();
 button('page', 'cleanup-delete');
 wait('page', `d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.closest('[data-testid="cleanup-cancel"]')`);
 key('Enter'); // Cancel is the initial/default keyboard action.
-wait('page', `!d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.matches('[data-testid="more-trigger"]')`);
+wait('page', `!d.querySelector('[data-testid="cleanup-confirm"]') && d.activeElement?.closest('[data-testid="cleanup-delete"]')`);
 assert.equal(posts(), originalPosts); assert.deepEqual(await state(), before);
 
 // Archive against real built service. Other open surfaces converge on normal polls.
@@ -187,10 +170,8 @@ evaluate(`qa.context('M');true`);
 button('page', 'cleanup-archived');
 wait('page', `d.querySelector('[data-testid="plan-row-P-done"][data-source="source-fixture"]')`);
 choosePage('P-done');
-click('page','[data-testid="plan-actions"] button');
-wait('page', `d.querySelector('${menuItem('cleanup-restore')}')`);
-assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-delete')}')`),true);
-key('Escape');
+wait('page', `d.querySelector('[data-testid="cleanup-restore"] button:not(:disabled)')`);
+assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-delete"] button:not(:disabled)')`),true);
 selected('page', 'P-done'); tab('page', 'document'); wait('page', `d.querySelector('[data-testid="document-text"]')?.textContent.includes('Recorded finish')`);
 tab('page', 'history'); wait('page', `d.querySelector('[data-testid="revision-2"]')`);
 shot('archived', 'page', '[data-testid="plan-detail"]');
@@ -249,8 +230,7 @@ evaluate('qa.old=true;true');
 click('page', '[data-testid="board-filters-trigger"]');
 wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.disabled===true`);
 assert.equal(guest('page', `return d.querySelector('[data-testid="cleanup-archived"] button').disabled`), true);
-click('page', '[data-testid="plan-actions"] button'); wait('page', `d.querySelector('${openMenu}')`);
-assert.equal(guest('page', `return !!d.querySelector('${menuItem('cleanup-archive')},${menuItem('cleanup-delete')}')`), false); key('Escape');
+assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]')`), false);
 evaluate('qa.old=false;true'); wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.disabled===false`);
 
 // Capture narrow light + dark confirmation; retained picker remains usable in rail.

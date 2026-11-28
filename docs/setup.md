@@ -90,9 +90,9 @@ access, delivery, lifecycle and managed coverage. A differing loaded version or
 fingerprint still gives a visible warning. Fresh review retains **What Setup
 changes on this computer** and its visible consent line, whether or not that
 disclosure was opened.
-**More → Setup** opens it without leaving the current session;
-**Back** returns to the plan and the More button. Language follows **More →
-Language**, including before setup is complete; changing it never confirms a
+The **Settings** gear opens **Setup** without leaving the current session,
+even when there is no readable plan. **Back** returns focus to the gear.
+Language follows **Settings → Language**, including before setup is complete; changing it never confirms a
 Setup action. Troubleshooting's Advanced details and copied support summary
 retain the diagnostic vocabulary needed for support.
 

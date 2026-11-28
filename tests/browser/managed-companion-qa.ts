@@ -151,8 +151,8 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await guestClick(surface,`[data-testid="more-${item}"]`,async()=>{
         // The shell can replace the transient menu when live progress repaints.
         // Open only a known closed menu before looking for its actionable row.
-        if(await guest(surface,'document.querySelector("[data-testid=more-trigger]")?.getAttribute("aria-expanded")==="false"'))
-          await guestClick(surface,'[data-testid="more-trigger"]');
+        if(await guest(surface,'document.querySelector("[data-testid=settings-trigger]")?.getAttribute("aria-expanded")==="false"'))
+          await guestClick(surface,'[data-testid="settings-trigger"]');
       });
     };
     const language=async(surface:'panel'|'page',value:'en'|'ru'|'zh-CN')=>{

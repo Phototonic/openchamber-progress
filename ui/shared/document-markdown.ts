@@ -99,7 +99,14 @@ function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLangu
           const start = String(token.attrGet('start') ?? '');
           if (/^\d{1,9}$/.test(start)) node.setAttribute('start', start);
         }
-        parent.append(node);
+        if (token.type === 'table_open') {
+          const scroll = document.createElement('div');
+          scroll.className = 'ap-doc-table';
+          scroll.tabIndex = 0;
+          scroll.setAttribute('role', 'group');
+          scroll.setAttribute('aria-label', { en: 'Scrollable table', ru: 'Прокручиваемая таблица', 'zh-CN': '可滚动表格' }[locale]);
+          scroll.append(node); parent.append(scroll);
+        } else parent.append(node);
       }
       stack.push(node ?? parent);
       continue;
