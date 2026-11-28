@@ -254,6 +254,41 @@ test('fresh prepare publishes without a retained stage when birthtime follows ct
   }finally{f.cleanup();}
 });
 
+test('cold fresh begin settles a retained first journal when birthtime follows ctime',t=>{
+  const f=freshFixture();try{
+    const session=f.review(),{operationId}=f.begin(session).progress;
+    const request={version:2,action:'begin',operationId,confirmed:true,expected:session.review!.expected} as const;
+    const file=migrationFile(f.env),bytes=fs.readFileSync(file),stage=`${file}.stage-prepare-${digest(bytes)}`;
+    fs.linkSync(file,stage);
+    const {fstatSync,lstatSync}=fs,first=lstatSync(file,{bigint:true});
+    // Model the statx fallback on the real journal inode. The link count
+    // provides a deterministic ctime change when recovery removes the stage.
+    const fallback=(stat:fs.BigIntStats)=>{
+      if(stat.dev===first.dev&&stat.ino===first.ino)stat.birthtimeNs=stat.ctimeNs=stat.nlink;
+      return stat;
+    };
+    const fstat=t.mock.method(fs,'fstatSync',((fd,options)=>{
+      const stat=fstatSync(fd,options);
+      return options?.bigint?fallback(stat as fs.BigIntStats):stat;
+    }) as typeof fstatSync);
+    const lstat=t.mock.method(fs,'lstatSync',((name,options)=>{
+      const stat=lstatSync(name,options);
+      return stat&&options?.bigint?fallback(stat as fs.BigIntStats):stat;
+    }) as typeof lstatSync);
+    syncBuiltinESMExports();
+    try{
+      const targets=[writerTarget('scope',f.roots.dataRoot),writerTarget('store',f.storeRoot)];
+      const budget=new PlatformRequestBudget(undefined,{targets});
+      const retry=withPlatformRequestBudget(budget,()=>beginManagedStep(f.env,payload,request,budget));
+      assert.equal(retry.disposition,'replayed');assert.equal(retry.progress.sequence,1);
+      const final=fs.lstatSync(file,{bigint:true});
+      assert.equal(final.dev,first.dev);assert.equal(final.ino,first.ino);assert.equal(final.nlink,1n);
+      assert.deepEqual(fs.readFileSync(file),bytes);
+      assert.equal(fs.existsSync(stage),false);assert.equal(fs.existsSync(f.storeRoot),false);
+    }finally{lstat.mock.restore();fstat.mock.restore();syncBuiltinESMExports();}
+  }finally{f.cleanup();}
+});
+
 for(const publication of ['journal','expectation','binding'] as const)for(const linked of [false,true])test(`fresh ${publication} retained ${linked?'two-link':'stage'} publication refuses without cleanup`,()=>{
   const f=freshFixture();try{
     f.begin();if(publication!=='journal')f.until(publication==='expectation'?'register-source':'enable');
