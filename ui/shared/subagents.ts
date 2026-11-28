@@ -109,6 +109,11 @@ export interface Roster {
   /** Earlier rows known to exist (loaded or not). */
   earlierTotal: number;
   summary: SummaryPart[];
+  /**
+   * Current activity (running, waiting) may be undercounted: the same qualification its parts carry,
+   * kept for a zero, which has no part. Rail and board then say "None seen running", never "0+".
+   */
+  livePartial: boolean;
   /** The counts cover recorded runs; `false` when the read is unavailable and only host rows are counted. */
   recorded: boolean;
   /** History reconciliation is still running or incomplete, so counts may grow. */
@@ -331,12 +336,13 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
   const activeHost = [...entries, ...hostOnly].filter((e) => liveKind(e) !== null && countable(e) && (!e.runId || runRows.find((r) => r.id === e.runId)?.ran.state !== 'running'));
   const pendingShown = [...entries].filter((e) => (e.ran.kind === 'active' || e.ran.kind === 'waiting') && runRows.find((r) => r.id === e.runId)?.ran.state === 'unknown').length;
   const summary: SummaryPart[] = [];
+  // Current activity and recorded history have independent coverage. A history gap cannot
+  // hide a currently active child when the host and every recorded child are fully loaded. A
+  // truncated run traversal limits the recorded counts themselves, so it still qualifies them.
+  const livePartial = !isComplete(v.census) || !!read && (read.counts.children > loadedChildren || read.coverage.reasons.includes('traversal-limit'));
   const add = (kind: SummaryPart['kind'], count: number) => {
-    // Current activity and recorded history have independent coverage. A history gap cannot
-    // hide a currently active child when the host and every recorded child are fully loaded. A
-    // truncated run traversal limits the recorded counts themselves, so it still qualifies them.
     const partial = kind === 'waiting' || kind === 'running'
-      ? !isComplete(v.census) || !!read && (read.counts.children > loadedChildren || read.coverage.reasons.includes('traversal-limit'))
+      ? livePartial
       : !!read && (!read.coverage.complete || read.capture.loss || read.recovery.state !== 'complete' || !!runs?.reconciling);
     if (count > 0) summary.push({ kind, count, partial, text: c.summary[kind](partial ? `${count}+` : count) });
   };
@@ -389,5 +395,5 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
   // loading, an unavailable read) never make one appear.
   if (!featured.length && !earlierTotal && !summary.length) return null;
   const soFar = !!read && (read.recovery.state === 'pending' || read.recovery.state === 'running' || !!runs?.reconciling);
-  return { featured, earlier, earlierTotal, summary, recorded: !!read, soFar, hostTruncated, notes, canPage: !!runs?.hasMore };
+  return { featured, earlier, earlierTotal, summary, livePartial, recorded: !!read, soFar, hostTruncated, notes, canPage: !!runs?.hasMore };
 }
