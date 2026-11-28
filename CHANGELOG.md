@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-28
+
+The board and rail put plan actions and views in reach, and the selected plan can show its main session's linked pull requests and issues. Unfinished Setup can continue after a btrfs device number changes when the original disk and subvolume can be verified. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- The selected plan's board and rail headers show up to five admitted pull request or issue links from its verified main session, with an overflow marker when there are more. Titles stay literal, and explicit activation asks the host to open the URL. A refused open shows a localized message; links do not establish plan identity, assignment or progress (#219).
+- The **Native btrfs Setup identity** CI workflow exercises real device renumbering, no-write refusal of a writable snapshot and an offline copy, and strict checks on unsupported storage layouts (#221).
+
+### Changed
+
+- The board top bar holds plan/task search, **Hide quiet**, **Filters**, the all-plans **Needs you** entry and **Settings**. The sidebar groups plans by project, with **Select** in the list header and **Tidy** by Finished. Both surfaces expose **Copy update** and **Handoff note** in the plan header; plan More holds only **Sessions** and eligible **Finish as cancelled**, while Settings holds **Language**, **Setup** and **Troubleshooting** (#215).
+- A shared Map/List/Document/History control keeps History scoped to the selected plan; digest and review actions remain board-only. Document fills the available height, with a one-line header, a short saved-age note and independently scrollable wide tables. Map, List and Document retain separate in-frame positions for the same plan and capture, resetting when either changes. The legend reserves its space so History's Refresh does not shift, and the unsaved quiet-filter explanation moves to the switch's tooltip and accessible description (#215).
+- Clarified that the companion retains bounded delivered note text in memory per session, not plan payloads, and does not persist that note text to disk. Documentation only (#217).
+- Stabilized the subagent run pagination test, synchronized the managed-host release journey with the current controls and reporting state, and bounded the change-digest driver's Chromium shutdown and DevTools calls. Test-only; no runtime behavior changed (#218).
+
+### Fixed
+
+- Newly reviewed Setup operations can explicitly continue after a device-number change on directly mounted single-device Linux btrfs with kernel 6.7+ and an OS-reported disk WWN. Setup requires matching per-path evidence for the backing device or partition and exact subvolume before writing. Snapshots, block copies on different storage, and missing or mismatched recorded proof cannot be approved past the check. Older journals without evidence and unsupported layouts keep strict checks; completed read-only status is unchanged (#221, follow-up to #195 and #191).
+- On systems without `statx`, Setup no longer reports **Waiting for another setup action** after successfully recovering an interrupted first journal save. After unlinking the verified staging name, it checks device, inode and the remaining link count rather than a timestamp that can change during unlink; pre-unlink validation and the journal reread are unchanged (#216).
+
 ## [1.6.0] - 2026-11-27
 
 The rail and board can show captured plan documents as read-only previews, hide quiet plans, close plans deliberately, and show recorded activity. Setup can recover a proven interruption during its first save and keep completed setups working after device renumbering. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -403,7 +424,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.0...v1.5.1

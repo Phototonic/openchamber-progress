@@ -4,7 +4,7 @@
 
 The board puts search, filtering and cleanup together above the plan list. The rail and board hide common copy actions alongside settings in More. Reading the saved document uses only part of a tall frame, and changing views can lose the reader's place.
 
-## What Changes: layout option B
+## What Changes
 
 | Surface | Layout |
 |---|---|
