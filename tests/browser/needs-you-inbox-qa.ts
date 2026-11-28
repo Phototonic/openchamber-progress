@@ -11,6 +11,7 @@ import { inboxIntegration } from '../fixtures/inbox-integration.ts';
 import { needsYouMembershipIntegration } from '../fixtures/needs-you-membership.ts';
 import { S, SRC } from './fixtures.ts';
 import { internalCopy } from './interface-copy.ts';
+import { progressInput } from './progress-qa.ts';
 
 const arg = (key: string) => process.argv[process.argv.indexOf(key) + 1];
 const artifacts = arg('--artifacts'), chromium = arg('--chromium');
@@ -95,6 +96,7 @@ const click = async (f: string, selector: string, touch = false, duringPress?: (
   }
 };
 const tabTo = async (f: string, selector: string, backwards = false) => { await guest(f, 'w.focus();return true'); for (let i = 0; i < 100; i++) { if (await guest<boolean>(f, `return !!d.activeElement?.matches(${js(selector)})`)) return; await key('Tab', backwards); } throw Error(`Tab never reached ${selector}`); };
+const progressUi = progressInput({ guest, wait: (surface, condition, _label, ms) => wait(surface, condition, ms), click });
 const shot = async (name: string) => { const r = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); writeFileSync(join(artifacts, `${name}.png`), Buffer.from(r.data, 'base64')); };
 const count = (n: number) => `d.querySelector('[data-testid="needs-you-count"]')?.dataset.count==='${n}'`;
 const row = (id: string) => `[data-testid="needs-you-row"][data-task="${id}"]`;
@@ -200,6 +202,9 @@ try {
   const reload = await evaluate<number>(`qa.reload('panel')`);
   await wait('panel', `w.location.search==='?reload=${reload}' && ${count(1)}`);
   check('reload-remembers-hidden-and-expanded-not-open-item', await guest('panel', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='true' && !d.querySelector('.ap-inbox-facts:not([hidden])')`));
+  // The fresh List lays out above the inbox; let its initial detail paint
+  // finish before measuring the hidden disclosure's pointer target.
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]') && d.querySelector('[data-testid="needs-you-hidden-count"] button')?.checkVisibility()`);
   await click('panel', '[data-testid="needs-you-hidden-count"] button');
   await wait('panel', `!!d.querySelector('[data-testid="needs-you-hidden-row"]')`);
   check('hidden-disclosure-reaches-unhide', await guest('panel', `return d.querySelector('[data-testid="needs-you-hidden-row"]').textContent.includes('Choose CSV or JSON')`));
@@ -247,8 +252,11 @@ try {
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(`qa.locale='en';qa.dark=false;qa.phone=false;qa.ready();qa.show('page',1200);true`);
-  await wait('page', count(2));
-  check('board-default-selected-plan-expanded', await guest('page', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='true' && !!d.querySelector('[data-testid="plan-needs-you-count"]')`));
+  await wait('page', count(3));
+  check('board-default-global-collapsed', await guest('page', `return d.querySelector('[data-testid="needs-you-toggle"]').getAttribute('aria-expanded')==='false' && !!d.querySelector('[data-testid="plan-needs-you-count"]') && d.querySelector('[data-testid="needs-you-inbox"]').hidden`));
+  await click('page', '[data-testid="needs-you-toggle"]');
+  await wait('page', `!d.querySelector('[data-testid="needs-you-inbox"]').hidden && d.querySelector(${js(row('task-d'))})`);
+  check('board-opens-all-plans', await guest('page', `return ${count(3)} && d.querySelector('[data-testid="needs-you-scope-all"] button').getAttribute('aria-pressed')==='true'`));
   await shot('desktop-board');
   await evaluate(`qa.show('panel',600);qa.session='session-with-no-plans';qa.ready();true`);
   await wait('panel', `!!d.querySelector('[data-testid="needs-you-other-plans"] button') && !d.querySelector('[data-testid="needs-you-count"]')`);
@@ -347,7 +355,7 @@ try {
   await wait('panel', `d.querySelector('[data-testid="map-inspector"]')?.textContent.includes('Parent must supply the sample')`);
   check('excluded-map-retains-blocker', await guest('panel', `return d.querySelector('[data-testid="map-card-direct"]').dataset.status==='blocked'`));
   await shot('rule-map');
-  await click('panel', '[data-testid="plan-view-list"] button');
+  await progressUi.view('panel', 'list');
   await wait('panel', `!!d.querySelector('[data-testid="item-direct"]')`);
   await click('panel', '[data-testid="item-toggle-direct"] > summary');
   await wait('panel', `d.querySelector('[data-testid="item-direct"]').textContent.includes('Parent must supply the sample')`);
@@ -355,7 +363,7 @@ try {
   await shot('rule-list');
   for (const surface of ['panel', 'page']) {
     await evaluate(`qa.show(${js(surface)},${surface === 'panel' ? 600 : 1200});true`);
-    if (surface === 'page') await click(surface, '[data-testid="plan-view-list"] button');
+    if (surface === 'page') await progressUi.view(surface, 'list');
     await wait(surface, `!!d.querySelector('[data-testid="item-main"]')`);
     await click(surface, open('main'));
     await wait(surface, `d.querySelector(${js(open('main'))})?.getAttribute('aria-expanded')==='false'`);

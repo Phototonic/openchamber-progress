@@ -8,6 +8,8 @@ export interface ProgressDriver {
 export const taskRow = (id: string) => `li[data-testid="item-${id}"]`;
 export const taskToggle = (id: string) => `details[data-testid="item-toggle-${id}"]`;
 export const actionItem = (id: string) => `[role="menuitem"][id$="-${id}"]`;
+type PlanView = 'map' | 'list' | 'document' | 'history';
+const viewButton = (mode: PlanView) => `[data-testid="plan-view-${mode}"] button`;
 
 export function progressInput(d: ProgressDriver) {
   const menu = async (surface: string, id: string, keyboard = false) => {
@@ -32,13 +34,19 @@ export function progressInput(d: ProgressDriver) {
     if (keyboard) await d.key!('Enter'); else await d.click(surface, actionItem(id));
     await d.wait(surface, `!d.querySelector('[role="menu"]')`, 'Plan actions dismissed');
   };
+  const view = async (surface: string, mode: PlanView) => {
+    const selector = viewButton(mode);
+    await d.wait(surface, `d.querySelector('${selector}')`, `${mode} view entry`);
+    await d.click(surface, selector);
+    await d.wait(surface, `d.querySelector('${selector}')?.getAttribute('aria-pressed')==='true'`, `${mode} view selected`);
+  };
   const list = async (surface: string, identity?: { id: string; source: string }) => {
     if (identity) {
       const { id, source } = identity;
       await d.wait(surface, `d.querySelector('article[data-testid="plan-${id}"][data-source="${source}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${source}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${id}')`, 'Selected reading before choosing List');
     }
-    await d.wait(surface, `d.querySelector('[data-testid="plan-view-list"] button')`, 'List entry');
-    await d.click(surface, '[data-testid="plan-view-list"] button');
+    await d.wait(surface, `d.querySelector('${viewButton('list')}')`, 'List entry');
+    await d.click(surface, viewButton('list'));
   };
   const controls = async (surface: string) => {
     if (!(await d.guest<boolean>(surface, `return !!d.querySelector('[data-testid="focus-controls"]')`))) await action(surface, 'task-view');
@@ -73,5 +81,5 @@ export function progressInput(d: ProgressDriver) {
     const hooks = await d.guest<string[]>(surface, `return [...d.querySelectorAll('[data-testid="subagent-activity"] details[data-testid]:not([open])')].map(n=>n.dataset.testid).filter(id=>id!=='observed-more')`);
     for (const hook of hooks) await d.click(surface, `[data-testid="${hook}"] > summary`);
   };
-  return { menu, action, list, controls, planOrder, expand, expandAll, records };
+  return { menu, action, view, list, controls, planOrder, expand, expandAll, records };
 }

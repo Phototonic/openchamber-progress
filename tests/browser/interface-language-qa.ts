@@ -1,6 +1,6 @@
 // Current built guests in a disposable SDK host and Chromium profile; no live profile or model.
 // Build first. Usage: interface-language-qa.ts --chromium <binary> --artifacts <directory>
-// The language control lives in More, not the retired footer. Default-state copy is checked
+// The language control lives in Settings. Default-state copy is checked
 // through rendered text AND Chromium's accessibility tree in all three languages.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -54,12 +54,12 @@ try {
     for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: codes[key], ...(type === 'keyDown' && key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
     await settle();
   };
-  const openMore = async (s: string) => {
+  const openSettings = async (s: string) => {
     await click(s, '[data-testid="settings-trigger"]');
     await wait(inFrame(s, `d.querySelector('[data-testid="settings-trigger"]')?.getAttribute('aria-expanded')==='true'`), `${s}:Settings opens`);
   };
   const select = async (s: string, language: string) => {
-    await show(s, 390); await openMore(s);
+    await show(s, 390); await openSettings(s);
     await click(s, '[data-testid="more-language"]');
     await wait(inFrame(s, `!!d.querySelector('[role="menuitemradio"]')`), 'language choices open');
     await guest(s, `d.querySelector('[role="menuitemradio"]').focus();`);
@@ -116,7 +116,7 @@ try {
         if (mode === 'plan' && s !== 'status') check(`${s}:${language}:agent title stays literal`, await guest(s, `return d.body.textContent.includes(${js(USER_TASK_TITLE)})&&!w.__qaInjected`));
         if (mode === 'plan') await shot(s, `${s}-${language}-${s === 'status' ? 280 : 390}`);
         if (mode === 'setup' && s !== 'status') {
-          await openMore(s); await click(s, '[data-testid="more-setup"]');
+          await openSettings(s); await click(s, '[data-testid="more-setup"]');
           await wait(inFrame(s, `!!d.querySelector('[data-testid="setup-storeRoot"] input')`), `${s}:fresh Setup form`);
           await scan(s, `${language}:fresh Setup form`);
           check(`${s}:${language}:Setup action precedes closed Details`, await guest(s, `const action=d.querySelector('[data-testid="setup-inspect"]'),details=d.querySelector('[data-testid="setup-details"]');return !!(action.compareDocumentPosition(details)&4)&&!details.open`));
@@ -139,9 +139,9 @@ try {
       await scan('status', `${language}:plan:${width}`);
     }
     for (const s of ['panel', 'page']) {
-      await show(s, 390); await openMore(s);
+      await show(s, 390); await openSettings(s);
       await click(s, '[data-testid="more-troubleshooting"]');
-      await wait(inFrame(s, `!!d.querySelector('[data-testid="advanced-details"]')`), 'Troubleshooting panel');
+      await wait(inFrame(s, `!!d.querySelector('[data-testid="reporting-health"][aria-busy="false"] [data-testid="advanced-details"]')`), 'Troubleshooting settled');
       await scan(s, `${language}:Troubleshooting collapsed`);
       await click(s, '[data-testid="advanced-details"] > summary');
       const fonts = await guest<string[]>(s, `return [...d.querySelectorAll('.ap-facts dd')].map(n=>w.getComputedStyle(n).fontFamily)`);
@@ -153,7 +153,7 @@ try {
     }
   }
   // Retain language-storage failure/race evidence from the former footer driver,
-  // now through the shipped More submenu. A pending save is never a false choice.
+  // now through the Settings submenu. A pending save is never a false choice.
   await choose('page', 'en');
   await show('panel', 390);
   await click('panel', '[data-testid="summary-open-progress"] button');
@@ -183,13 +183,13 @@ try {
   await select('page', 'en');
   await settle();
   check('failed write keeps confirmed language', await guest('page', `return d.documentElement.lang==='ru'`));
-  await openMore('page'); await click('page', '[data-testid="more-language"]');
-  await wait(inFrame('page', `!!d.querySelector('[data-testid="more-popup"] [role="status"]')?.textContent`), 'failed write has accessible feedback');
+  await openSettings('page'); await click('page', '[data-testid="more-language"]');
+  await wait(inFrame('page', `!!d.querySelector('[data-testid="settings-popup"]:not([hidden]) [role="status"]')?.textContent`), 'failed write has accessible feedback');
   await key('Escape'); await evaluate('qa.faults=[]');
   const storageCount = await evaluate<number>('qa.storageLog.length');
   await evaluate(`qa.ready(null,{features:{},locale:'zh-CN'})`);
   for (const s of ['panel', 'page']) {
-    await show(s, 390); await openMore(s); await click(s, '[data-testid="more-language"]');
+    await show(s, 390); await openSettings(s); await click(s, '[data-testid="more-language"]');
     check(`${s}:unsupported choices disabled`, await guest(s, `return [...d.querySelectorAll('[role="menuitemradio"]')].every(n=>n.disabled)`));
     await scan(s, 'unsupported language storage');
     await key('Escape');
