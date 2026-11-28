@@ -456,12 +456,30 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Host-linked work of the plan's main session: quiet outlined chips on the meta line. The kind
    cue is a muted glyph; long titles shorten visually and keep their full text in the name. */
 .ap-work-links{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;max-width:100%}
-.ap-work-link{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:min(30ch,100%);min-height:22px;padding:1px 8px 1px 5px;border:1px solid var(--oc-border);border-radius:9999px;background:transparent;color:var(--oc-fg);font-size:11.5px;line-height:1.3;cursor:pointer}
-.ap-work-link:hover{background:var(--oc-hover)}
-.ap-work-link:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
-.ap-work-link>.ap-icon{width:13px;height:13px;color:var(--oc-muted)}
+/* The button is the hit area (44 px tall on coarse pointers, phone-layout.ts); the visible chip is
+   its face, the same 22 px pill for every link and for the overflow control at every pointer. */
+.ap-work-link{display:inline-flex;align-items:center;min-width:0;max-width:min(30ch,100%);padding:0;border:0;border-radius:9999px;background:transparent;color:var(--oc-fg);font-size:11.5px;line-height:1.3;cursor:pointer}
+.ap-work-link-face{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;min-height:22px;padding:1px 8px 1px 5px;border:1px solid var(--oc-border);border-radius:9999px}
+.ap-work-link{-webkit-tap-highlight-color:transparent}
+.ap-work-link:is(:hover,:active)>.ap-work-link-face{background:var(--oc-hover)}
+.ap-work-link:focus-visible{outline:none}
+.ap-work-link:focus-visible>.ap-work-link-face{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-work-link-face>.ap-icon{width:13px;height:13px;color:var(--oc-muted)}
 .ap-work-link-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(forced-colors:active){.ap-work-link{border-color:ButtonText;color:ButtonText}.ap-work-link:focus-visible{outline-color:Highlight}}
+@media(forced-colors:active){.ap-work-link-face{border-color:ButtonText;color:ButtonText}.ap-work-link:focus-visible>.ap-work-link-face{outline-color:Highlight}}
+/* One row: the group takes the meta line's remaining room (or its own line) and never wraps;
+   chips that do not fit are hidden and listed in the single overflow menu. */
+.ap-work-links[data-fit]{display:flex;flex:1 1 min(18rem,100%);flex-wrap:nowrap}
+.ap-work-links[data-fit]>*,.ap-work-links-label{flex:none;white-space:nowrap}
+.ap-work-link[hidden],.ap-work-links-menu[hidden]{display:none}
+.ap-work-links-menu{position:relative;display:inline-flex}
+.ap-work-links-more{font-variant-numeric:tabular-nums}
+.ap-work-links-more>.ap-work-link-face{padding:1px 8px}
+.ap-work-links-more[aria-expanded="true"]>.ap-work-link-face{background:var(--oc-hover)}
+.ap-work-links-popup{left:0;right:auto;color:var(--oc-fg);font-size:13px;white-space:normal}
+.ap-work-links-row{display:flex;align-items:flex-start;gap:6px;color:var(--oc-fg)}
+.ap-work-links-row>.ap-icon{flex:none;width:13px;height:13px;margin-top:3px;color:var(--oc-muted)}
+.ap-work-links-row>.ap-work-link-title{white-space:normal;overflow-wrap:anywhere}
 /* Title-picker: the SDK select, drawn as a quiet "⌄ 1 of 3" beside the title (its name says which plan) */
 .ap-title-picker{display:inline-flex;min-width:0}
 .ap-title-picker .oc-sdk-select{display:inline-flex;width:auto}
