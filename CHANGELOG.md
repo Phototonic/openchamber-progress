@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-28
+
+The rail's copy actions take less space, linked work stays on one row, the Sub-agents line leads with current activity, and the board's Document view keeps the last plan rows reachable. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Changed
+
+- Refreshed ten README and guide illustrations for the current layout, corrected navigation text and removed 26 unused images (#227).
+- Updated the on-demand rendered QA drivers to use the current view switch and controls and wait for settled UI state. Updated the board's test-hook documentation; no runtime changes (#229).
+- The worker-crash resume test now prints the step, crash order, sequence and response body on refusal; the assertion and runtime are unchanged (#225).
+- Bumped the CodeQL `init` and `analyze` actions from 4.39.4 to 4.39.5 (#214).
+
+### Fixed
+
+- The rail's **Copy update** and **Handoff note** took two full-width rows under the plan title; they are now small buttons at the end of the **Hide quiet** row and wrap below the switch on a narrow rail. The board's copy actions are unchanged (#226).
+- On the wide board in Document view, the plan list and search results scroll within their column so **Counts may be incomplete.** stays below the list and its link stays reachable. Narrow Select mode and wide phone landscape use normal page scrolling instead of pinning the board to the frame height (#228).
+- The plan header's linked-work chips no longer wrap to a second row. Chips that fit stay; the rest move into a translated **N more** menu (or a single **N linked** control when none fit beside the label) with the More menu's keyboard model, opening each link through `host.openUrl`. Chips and the overflow control share one 22px pill with a 44px touch target; focus moves to a visible chip when the overflow control is removed, and Tab or Shift+Tab closes the menu (#232).
+- The Sub-agents line leads with waiting, running, failed and interrupted counts and moves finished and unknown under **Show more**, keeping "+" qualifiers and the incomplete-counts note. Idle-only sections show **Nothing running now** or **None seen running**, and the running count is never lower than the visible Running rows (#231).
+
 ## [1.7.0] - 2026-11-28
 
 The board and rail put plan actions and views in reach, and the selected plan can show its main session's linked pull requests and issues. Unfinished Setup can continue after a btrfs device number changes when the original disk and subvolume can be verified. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -424,7 +442,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/Phototonic/openchamber-progress/compare/v1.5.1...v1.5.2

@@ -94,6 +94,8 @@ html${SURFACES}{scroll-padding-bottom:calc(${SAFE_B} + ${KEYBOARD})}
 /* A phone in landscape keeps the single board column: no sticky side list in a short window */
 html[${H.formFactor}="phone"] .ap-board{grid-template-columns:minmax(0,1fr)}
 html[${H.formFactor}="phone"] .ap-plan-list{position:static;max-height:none;overflow:visible}
+/* That column shows every plan row above the document, so Document doesn't fill the frame there */
+@media(min-width:820px){html[${H.formFactor}="phone"] .ap[data-surface="page"]:has(.ap-document-view){min-block-size:0;block-size:auto}html[${H.formFactor}="phone"] .ap[data-surface="page"]:has(.ap-document-view)>.ap-board{flex:none;grid-template-rows:none}html[${H.formFactor}="phone"] .ap[data-surface="page"]:has(.ap-document-view)>.ap-board>.ap-plan-list{max-height:none}}
 @media(pointer:coarse){
 ${scoped(`html:not([${H.pointer}="fine"])${SURFACES}`)}
 }

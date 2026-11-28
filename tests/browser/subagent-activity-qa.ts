@@ -130,6 +130,8 @@ try {
   const row = (session: string) => `${sec} [data-session="${session}"]`;
   const fact = (session: string, f: string) => `${row(session)} [data-fact="${f}"]`;
   const has = (s: string, sel: string) => guest<boolean>(s, `return !!d.querySelector(${javascriptLiteral(sel)})`);
+  /** The lead count line and the counts inside Show more, part by part. */
+  const lineParts = (s: string, scope = '') => guest<{ lead: string[]; later: string[] }>(s, `const t=k=>[...d.querySelectorAll(${javascriptLiteral(scope)}+' [data-testid="'+k+'"] .ap-sub-part')].map(n=>n.textContent);return {lead:t('subagent-count'),later:t('subagent-count-more')}`);
   const sectionText = (s: string) => guest<string>(s, `return (d.querySelector('${sec}')?.textContent??'').replace(/\\s+/g,' ')`);
   const runRequests = (root: string) => evaluate<number>(`qa.requests.filter(q=>q.path.startsWith('/v1/subagent-runs')&&(q.query?.root===${javascriptLiteral(root)}||q.method==='POST')).length`);
   const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
@@ -137,6 +139,7 @@ try {
   /** One activation, then the selected reading's accepted complete detail. */
   const selectPlan = async (source: string, id = 'plan-alpha') => {
     await click('page', `[data-testid="plan-row-${id}"][data-source="${source}"]`);
+    await progressUi.list('page', { id, source });
     await wait('page', `d.querySelector('article[data-testid="plan-${id}"][data-source="${source}"] .ap-tasks[data-complete]')`, 'selected complete reading');
   };
   /** Clutter the owner reported must never come back. */
@@ -158,7 +161,8 @@ try {
   const featured = await guest<string[]>('panel', `return [...d.querySelectorAll('${sec} > .ap-obs-list > li')].map(n=>n.dataset.session+':'+n.dataset.ran)`);
   check('rail features only running children; waiting and task-linked records remain reachable', JSON.stringify(featured) === JSON.stringify(['C1:active']) && await guest('panel', `return !!d.querySelector('[data-testid="observed-more"] ${row('N1')},[data-testid="observed-more"] [data-session="N1"]')&&!!d.querySelector('[data-testid="observed-more"] [data-session="C2"]')`), featured);
   await progressUi.records('panel');
-  check('summary parts', JSON.stringify(await guest('panel', `return [...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.textContent)`)) === JSON.stringify(['1+ waiting for you', '1+ running', '4 finished', '1 failed', '1 interrupted', '1 unknown']));
+  // The line leads with what matters now; finished and unknown open Show more, with the same words and marks.
+  check('summary parts', JSON.stringify(await lineParts('panel')) === JSON.stringify({ lead: ['1+ waiting for you', '1+ running', '1 failed', '1 interrupted'], later: ['4 finished', '1 unknown'] }), await lineParts('panel'));
   const c1 = (await text('panel', fact('C1', 'ran')))!.replace(/\s+/g, ' ');
   check('C1 run: Running with its real host start, not a receipt', /^RunRunning · started 4 minutes ago$/.test(c1), c1);
   check('N1 Ran: waiting for an answer (host activity on an open run)', (await text('panel', fact('N1', 'ran')))!.includes('Waiting for an answer'));
@@ -200,6 +204,7 @@ try {
   await key('Enter');
   await wait('panel', `d.querySelector('[data-testid="observed-more"]').open && d.querySelector('[data-testid="observed-more"] [data-ran="failed"]')`, 'earlier list opened by keyboard');
   check('records summary counts all nonrunning records', (await text('panel', '[data-testid="observed-more"] > summary')) === 'Show more · 8');
+  check('opened Show more leads with the finished and unknown counts', await guest('panel', `const m=d.querySelector('[data-testid="observed-more"]'),c=m.querySelector(':scope > [data-testid="subagent-count-more"]');return !!c&&c.checkVisibility()&&c.previousElementSibling===m.querySelector('summary')&&c.textContent==='4 finished1 unknown'`));
   await progressUi.records('panel');
   const earlier = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="observed-more"] li')].map(n=>n.querySelector('[data-fact="ran"] .ap-obs-label').textContent)`);
   check('failed and interrupted stay distinct from finished', earlier.includes('Failed: SyntheticFailure') && earlier.includes('Interrupted: stopped by the user') && earlier.filter((x) => x === 'Finished').length === 3, earlier);
@@ -264,8 +269,9 @@ try {
   await shot('status', 'status-213');
   await show('panel', 390);
   await wait('panel', `d.querySelector('${row('M-live')}') && d.querySelector('[data-testid="subagent-count"]')`, 'rail 213');
-  const many = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.textContent)`);
-  check('213 children: compact truthful summary', JSON.stringify(many) === JSON.stringify(['1+ running', '205 finished', '4 failed', '2 interrupted', '1 unknown']), many);
+  const many = await lineParts('panel');
+  check('213 children: compact truthful summary, running and interrupted first', JSON.stringify(many) === JSON.stringify({ lead: ['1+ running', '4 failed', '2 interrupted'], later: ['205 finished', '1 unknown'] }), many);
+  check('213 children: finished and unknown wait behind the closed Show more', await guest('panel', `const m=d.querySelector('[data-testid="observed-more"]');return !m.open&&!m.querySelector('[data-testid="subagent-count-more"]').checkVisibility()`));
   check('213 children: one featured row, the rest folded', (await guest<number>('panel', `return d.querySelectorAll('${sec} > .ap-obs-list > li').length`)) === 1 && (await text('panel', '[data-testid="observed-more"] summary')) === 'Show more · 212');
   check('213 children: no repeated coverage line in the roster', !(await has('panel', '[data-testid="subagent-coverage"]')));
   await noClutter('panel', 'rail 213');
@@ -274,6 +280,44 @@ try {
   check('rail roster disclosure exposes real run facts', await has('panel', fact('M-live', 'ran')));
   await click('panel', `${row('M-live')} details > summary`);
   await wait('panel', `!d.querySelector('${row('M-live')} details')?.open`, 'rail roster disclosure closes');
+  // The lead line at 320 px: one short row of current counts, the rest one disclosure away.
+  await show('panel', 320);
+  await wait('panel', `d.querySelector('${row('M-live')}') && d.querySelector('[data-testid="subagent-count"]')`, 'rail 213 at 320');
+  check('213 children at 320 px: the lead fits one line', await guest('panel', `const p=[...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.getBoundingClientRect());return p.every(r=>Math.abs(r.top-p[0].top)<2)`));
+  await shot('panel', 'subagents-line-rail-320', 4000, true);
+  await click('panel', '[data-testid="observed-more"] > summary');
+  await wait('panel', `d.querySelector('[data-testid="observed-more"]').open && d.querySelector('[data-testid="subagent-count-more"]')?.checkVisibility()`, 'tucked counts shown');
+  check('213 children: opened Show more names 205 finished and 1 unknown', (await text('panel', '[data-testid="subagent-count-more"]')) === '205 finished1 unknown');
+  await shot('panel', 'subagents-line-rail-320-open', 4000, true);
+  await click('panel', '[data-testid="observed-more"] > summary');
+  await wait('panel', `!d.querySelector('[data-testid="observed-more"]').open`, 'Show more closed again');
+  // Nothing current: the lead says so in words (no "0+"), the history counts stay behind Show more.
+  await evaluate(`qa.set('M-live',{activity:'idle'});qa.runs.M.saved=qa.runs.M.useful;n=950;qa.runs.M.useful=Array.from({length:3},(_,i)=>run('M','F'+i,'succeeded',{ago:30+i,plan:'plan-many',description:'Finished batch '+i,agent:'migrator'}));qa.bump();qa.push('sessions');true`);
+  await wait('panel', `!d.querySelector('[data-testid="subagent-count"] [data-kind="running"]') && d.querySelector('[data-testid="subagent-count"] [data-kind="none"]')`, 'nothing running');
+  const idle = await lineParts('panel');
+  check('nothing running: the lead says so plainly; finished stay behind Show more', JSON.stringify(idle.later) === JSON.stringify(['3 finished']) && idle.lead.length === 1 && ['Nothing running now', 'None seen running'].includes(idle.lead[0]!) && !/0\+/.test(idle.lead[0]!), idle);
+  await shot('panel', 'subagents-line-nothing-running-320', 4000, true);
+  await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.bump();qa.push('sessions');true`);
+  await wait('panel', `d.querySelector('[data-testid="subagent-count"] [data-kind="running"]') && d.querySelector('${row('M-live')}')`, 'many children restored');
+  // 51 recorded children, all finished; the first page holds 50. The host lists the unloaded Q50 as
+  // running again: its Running row may be a recorded child, so it adds no count, yet the line must
+  // not say nothing is running above it (rail and board).
+  await evaluate(`qa.set('M-live',{activity:'idle'});qa.runs.M.saved=qa.runs.M.useful;n=1100;qa.runs.M.useful=Array.from({length:51},(_,i)=>run('M','Q'+i,'succeeded',{ago:30+i,took:2,plan:'plan-many',description:'Resumable batch '+i,agent:'migrator'}));qa.ws.sessions['proj-alpha'].push({id:'Q50',title:'Resumable batch 50',projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:400,updatedAt:0,archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]});qa.bump();qa.push('sessions');true`);
+  const resumedRow = `${sec} > .ap-obs-list > li[data-session="Q50"]:not([data-run])[data-ran="active"]`;
+  await wait('panel', `d.querySelector('${resumedRow}') && d.querySelector('[data-testid="subagent-count-more"]')?.textContent==='51 finished'`, 'rail resumed unloaded child');
+  const resumedRail = await lineParts('panel');
+  check('resumed child on an unloaded page (rail): the lead counts its Running row, qualified', JSON.stringify(resumedRail) === JSON.stringify({ lead: ['1+ running'], later: ['51 finished'] }), resumedRail);
+  await shot('panel', 'subagents-line-resumed-unloaded-rail', 4000, true);
+  await show('page', 1100);
+  await selectPlan('src-local', 'plan-many');
+  await wait('page', `d.querySelector('[data-testid="plan-detail"] ${resumedRow}') && d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-count-more"]')?.textContent==='51 finished'`, 'board resumed unloaded child');
+  const resumedBoard = await lineParts('page', '[data-testid="plan-detail"]');
+  check('resumed child on an unloaded page (board): the lead counts its Running row, qualified', JSON.stringify(resumedBoard) === JSON.stringify({ lead: ['1+ running'], later: ['51 finished'] }), resumedBoard);
+  await shot('page', 'subagents-line-resumed-unloaded-board', 4000, true);
+  await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>s.id!=='Q50');qa.bump();qa.push('sessions');true`);
+  await show('panel', 320);
+  // The restored run read, not just the host rows: the pager below must start from it.
+  await wait('panel', `d.querySelector('[data-testid="observed-more"] > summary')?.textContent==='Show more · 212' && d.querySelector('${row('M-live')}') && !d.querySelector('${row('Q50')}')`, 'many children restored after the resumed child');
   // Paging in the rail: keyboard, bounded steps, focus kept on the pager.
   await show('panel');
   await wait('panel', `d.querySelector('${row('M-live')}')`, 'rail 213');
@@ -303,6 +347,10 @@ try {
   await key('Enter');
   await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-session="OLD2"]')`, 'page history expanded');
   await noClutter('page', 'page');
+  const board = await lineParts('page', '[data-testid="plan-detail"]');
+  // The board's census of the coordinator is complete, so its current counts are exact.
+  check('board: leads with current counts; finished and unknown behind Show more', JSON.stringify(board) === JSON.stringify({ lead: ['1 waiting for you', '1 running', '1 failed', '1 interrupted'], later: ['4 finished', '1 unknown'] }), board);
+  await shot('page', 'subagents-line-board-1100', 4000, true);
   await shot('page', 'page-history-expanded');
   await evaluate(`qa.context(null);qa.context('A');qa.context('B');true`);
   await settle(600);
@@ -387,6 +435,33 @@ try {
   await wait('status', `d.querySelector('[data-testid="plan-plan-alpha"]')`, 'status back on A');
   await show('panel');
   await wait('panel', `d.querySelector('${row('C1')}')`, 'rail back on A');
+
+  // Idle task-linked children only and no recorded runs: the section has rows but no count part,
+  // and still leads with the nothing-running words on rail and board (qualified when coverage is not complete).
+  await evaluate(`qa.saved={runs:qa.runs.A,activity:qa.ws.sessions['proj-alpha'].map(s=>[s.id,s.activity,s.outcome])};qa.runs.A={useful:[],history:[],recovery:{state:'complete',reason:null,token:null},loss:false};for(const id of ['C1','N1','C2'])Object.assign(qa.ws.sessions['proj-alpha'].find(s=>s.id===id),{activity:'idle',outcome:null});qa.bump();qa.context('B');true`);
+  await wait('panel', `d.querySelector('[data-testid="empty-state"]')`, 'away before the idle-only roster');
+  await evaluate(`qa.context('A');true`);
+  const idleOnly = `const s=d.querySelector('${sec}');return !!s&&[...s.querySelectorAll('[data-session]')].map(n=>n.dataset.session+':'+n.dataset.ran).sort().join()`;
+  for (const [coverage, words, ran] of [['ready', 'Nothing running now', 'idle'], ['loading', 'None seen running', 'unknown']] as const) {
+    await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'${coverage}'}];qa.push('sessions');true`);
+    const rows = ['C1', 'C2', 'N1'].map((id) => `${id}:${ran}`).join();
+    await show('panel');
+    await wait('panel', `(()=>{${idleOnly}})()===${javascriptLiteral(rows)} && d.querySelector('[data-testid="subagent-count"]')?.textContent===${javascriptLiteral(words)}`, `rail idle-only roster, ${coverage} coverage`);
+    const rail = await lineParts('panel');
+    check(`idle-only roster, ${coverage} coverage (rail): the lead says "${words}"; no count, no running list`, JSON.stringify(rail) === JSON.stringify({ lead: [words], later: [] }) && await guest('panel', `return !d.querySelector('${sec} > .ap-obs-list')&&d.querySelector('${sec} [data-testid="subagent-count"] [data-kind="none"]')?.closest('.ap-census-head')!==null&&d.querySelector('[data-testid="observed-more"] > summary').textContent==='Sub-agents · 3'`), rail);
+    await shot('panel', `subagents-line-idle-only-${coverage}-rail`, 4000, true);
+    await show('page', 1100);
+    await selectPlan('src-local');
+    await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-count"]')?.textContent===${javascriptLiteral(words)}`, `board idle-only roster, ${coverage} coverage`);
+    const boardIdle = await lineParts('page', '[data-testid="plan-detail"]');
+    check(`idle-only roster, ${coverage} coverage (board): the lead says "${words}"`, JSON.stringify(boardIdle) === JSON.stringify({ lead: [words], later: [] }) && await guest('page', `const s=d.querySelector('[data-testid="plan-detail"] ${sec}');return !s.querySelector(':scope > .ap-obs-list')&&s.querySelectorAll('[data-testid="observed-more"] [data-session]').length===3`), boardIdle);
+    await shot('page', `subagents-line-idle-only-${coverage}-board`, 4000, true);
+  }
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'ready'}];qa.runs.A=qa.saved.runs;for(const [id,activity,outcome] of qa.saved.activity)Object.assign(qa.ws.sessions['proj-alpha'].find(s=>s.id===id),{activity,outcome});qa.bump();qa.push('sessions');qa.context('B');true`);
+  await show('panel');
+  await wait('panel', `d.querySelector('[data-testid="empty-state"]')`, 'away after the idle-only roster');
+  await evaluate(`qa.context('A');true`);
+  await wait('panel', `d.querySelector('${row('C1')}[data-run]')?.dataset.ran==='active'`, 'rail roster restored');
 
   }
   await evaluate(`qa.context('A');true`);

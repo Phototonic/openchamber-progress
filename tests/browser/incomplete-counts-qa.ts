@@ -83,7 +83,7 @@ export async function verifyIncompleteCounts(h: Harness) {
   check('failed read remains visible after indicator dismissal', await guest('panel', `return !!d.querySelector('[data-testid="incomplete-counts-retry"]')`));
   // Reload only the guest frame: the fixture's device store survives.
   await evaluate(`frame('panel').src='/ui/panel/index.html?reload='+Date.now();true`);
-  await wait('panel', `d.querySelector('[data-testid="subagent-count"]')?.textContent.includes('4+ finished')`);
+  await wait('panel', `d.querySelector('[data-testid="subagent-count-more"]')?.textContent.includes('4+ finished')`);
   check('dismissal survives a guest reload', await guest('panel', `return !d.querySelector('${note}')`));
   await changed(`qa.lose()`); await reasons('panel', 'recording-gap');
   check('new detection returns the indicator', true);

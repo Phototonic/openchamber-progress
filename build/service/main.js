@@ -6294,7 +6294,7 @@ function blockedTiming(store, detail, now = new Date, options = {}) {
 }
 
 // shared/release.ts
-var RELEASE = "1.7.0";
+var RELEASE = "1.7.1";
 
 // service/request-worker.ts
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";

@@ -127,6 +127,12 @@ test('header links come only from the verified main session, as literal localize
     assert.equal(buttons[0].textContent, `${kind}${metadata.links![0].title}`, `${locale}: spoken kind and literal full title`);
     assert.equal((buttons[0] as any).title, metadata.links![0].title, 'full title on hover');
     assert.equal(nodes.find(n => n.dataset.testid === 'linked-work-more')?.textContent, more, `${locale}: qualification, not a total`);
+    const menu = nodes.find(n => n.dataset.testid === 'linked-work-menu')!;
+    assert.equal(menu.getAttribute('role'), 'menu');
+    assert.equal(menu.getAttribute('aria-label'), label, `${locale}: the overflow menu carries the group's name`);
+    const rows = walk(menu).filter(n => n.dataset.testid === 'linked-work-menu-item');
+    assert.deepEqual(rows.map(r => r.textContent), buttons.map(b => b.textContent), `${locale}: the overflow menu lists every chip's link`);
+    assert.ok(walk(menu).some(n => n.className === 'ap-note' && n.textContent.length > 0), `${locale}: the host's "more links" note`);
     assert.ok(!nodes.some(n => ['img', 'script', 'a'].includes(n.tagName)), 'no markup, image or navigable anchor');
     assert.ok(!group.textContent.includes('https:'), 'addresses are not shown');
     assert.deepEqual(opened, []);

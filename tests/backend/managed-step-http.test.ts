@@ -1116,7 +1116,7 @@ for(const order of ['before','after'])test(`HTTP worker crash ${order} every eff
         assert.equal((await f.control('resume',p)).body.error!.code,'managed-step-unsettled');
         const review=await f.inspect();const resumed=await f.control('resume',p,{confirmed:true,expected:review.expected,step:p.step!.name as 'enable'|'disable'});
         assert.equal(resumed.status,200,JSON.stringify(resumed.body.error));p=resumed.body.progress!;
-      }else{const resumed=await f.control('resume',p);assert.equal(resumed.status,200);p=resumed.body.progress!;}
+      }else{const resumed=await f.control('resume',p);assert.equal(resumed.status,200,JSON.stringify({step:p.step,order,sequence:p.sequence,body:resumed.body}));p=resumed.body.progress!;}
       const recovered=await f.advance(p);assert.equal(recovered.status,200,JSON.stringify(recovered.body.error));p=recovered.body.progress!;
     }
     assert.equal(f.capture(),true);

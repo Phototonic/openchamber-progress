@@ -722,7 +722,9 @@ export class ProgressShell {
     return holder;
   }
   paint<U>(root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, options: {
-    board?: boolean; scope?: string; picker?: HTMLElement | null; railActions?: HTMLElement;
+    board?: boolean; scope?: string; picker?: HTMLElement | null;
+    /** Rail only: More goes into `railActions`; Copy update and Handoff note into `railSummaries` (the Hide quiet row). */
+    railActions?: HTMLElement; railSummaries?: HTMLElement;
     renderPanel: (kind: SurfacePanel) => HTMLElement;
     closePanel?: (kind: SurfacePanel) => void;
   }) {
@@ -783,7 +785,7 @@ export class ProgressShell {
       const linked = linkedWorkChips(plan, vc.env);
       if (linked) meta.append(linked);
       root.append(head);
-      if (summary && options.railActions) root.append(summaries);
+      if (summary && options.railActions) (options.railSummaries ?? root).append(summaries);
       const s = summarize(plan, ready);
       root.append(progressBlock(s, false, vc.env.locale));
       const legend = testid(el('p', 'ap-progress-legend'), 'progress-legend');
@@ -993,17 +995,106 @@ const HOST_LINK_LABELS: Record<InterfaceLanguage, { agent: string; issue: string
   'zh-CN': { agent: '宿主报告的智能体', issue: '宿主关联的问题', change: '宿主关联的变更', more: '宿主中还有更多关联。' },
 };
 
-const LINKED_WORK_COPY: Record<InterfaceLanguage, { label: string; more: string }> = {
-  en: { label: 'Linked in OpenChamber', more: 'and more' },
-  ru: { label: 'Связано в OpenChamber', more: 'и другие' },
-  'zh-CN': { label: 'OpenChamber 中的关联', more: '还有更多' },
+/** `hidden`: chips that did not fit the row; `all`: every link, when no chip fits beside the label. */
+const LINKED_WORK_COPY: Record<InterfaceLanguage, { label: string; more: string; hidden: (n: string) => string; all: (n: string) => string }> = {
+  en: { label: 'Linked in OpenChamber', more: 'and more', hidden: n => `${n} more`, all: n => `${n} linked` },
+  ru: { label: 'Связано в OpenChamber', more: 'и другие', hidden: n => `ещё ${n}`, all: n => `Связи: ${n}` },
+  'zh-CN': { label: 'OpenChamber 中的关联', more: '还有更多', hidden: n => `还有 ${n} 个`, all: n => `${n} 个关联` },
 };
 let linkedWorkIds = 0;
+
+type AddressedLink = { title: string; kind: 'issue' | 'change'; url: string };
+
+/** One link's visible content: muted kind glyph, the spoken kind and the literal full title. */
+const linkContent = (link: AddressedLink, kinds: (typeof HOST_LINK_LABELS)[InterfaceLanguage]) =>
+  [icon(link.kind), el('span', 'ap-sr', `${kinds[link.kind]}: `), el('span', 'ap-work-link-title', link.title)];
+
+/**
+ * The header's single overflow control: a menu button whose menu lists every link the header has,
+ * with the host's "more links" note when the host held more. Same keyboard model as the More menu:
+ * arrows, Home/End, Escape back to the trigger; Tab, focus leaving or an outside press closes it.
+ */
+function linkedWorkMenu(links: AddressedLink[], name: string, kinds: (typeof HOST_LINK_LABELS)[InterfaceLanguage], note: string | null, open: (url: string) => void, id: string) {
+  const root = el('span', 'ap-work-links-menu');
+  const trigger = testid(el('button', 'ap-work-link ap-work-links-more'), 'linked-work-more');
+  // The visible chip is the face; the button around it is the (larger, coarse-pointer) hit area.
+  const face = el('span', 'ap-work-link-face');
+  trigger.append(face);
+  trigger.type = 'button';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-controls', id);
+  const popup = testid(el('div', 'ap-more-popup ap-work-links-popup'), 'linked-work-menu');
+  popup.id = id;
+  popup.setAttribute('role', 'menu');
+  popup.setAttribute('aria-label', name);
+  popup.hidden = true;
+  const rows: HTMLButtonElement[] = [];
+  const close = (restore = false) => {
+    popup.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+    if (restore) trigger.focus({ preventScroll: true });
+  };
+  const outside = (e: Event) => { if (!(e.target instanceof Node) || !root.contains(e.target)) close(); };
+  const focus = (index: number) => {
+    const row = rows[(index + rows.length) % rows.length];
+    for (const r of rows) r.tabIndex = r === row ? 0 : -1;
+    row?.focus();
+  };
+  for (const link of links) {
+    const row = testid(el('button', 'ap-more-row ap-work-links-row'), 'linked-work-menu-item');
+    row.type = 'button';
+    row.setAttribute('role', 'menuitem');
+    row.tabIndex = -1;
+    row.dataset.kind = link.kind;
+    row.append(...linkContent(link, kinds));
+    const url = link.url;
+    row.addEventListener('click', () => { if (popup.hidden) return; close(true); open(url); });
+    rows.push(row);
+    popup.append(row);
+  }
+  if (note) popup.append(el('p', 'ap-note', note));
+  // Opens below the trigger, start-aligned, and shifts back inside a narrow frame.
+  const place = () => {
+    popup.style.removeProperty('translate');
+    const r = popup.getBoundingClientRect(), max = document.documentElement.clientWidth - 8;
+    const shift = r.right > max ? Math.max(8 - r.left, max - r.right) : r.left < 8 ? 8 - r.left : 0;
+    if (shift) popup.style.translate = `${Math.round(shift)}px 0`;
+  };
+  const show = (last = false) => {
+    popup.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+    place();
+    focus(last ? rows.length - 1 : 0);
+  };
+  trigger.addEventListener('click', () => popup.hidden ? show() : close());
+  trigger.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); show(e.key === 'ArrowUp'); } });
+  // Tab or Shift+Tab from a row closes the menu wherever focus lands, the trigger included; the
+  // key's own focus movement is left alone, so the menu closes on the focusout it causes.
+  let tabbing = false;
+  root.addEventListener('focusout', e => {
+    const leaving = !(e.relatedTarget instanceof Node && root.contains(e.relatedTarget));
+    if (!popup.hidden && (tabbing || leaving)) close();
+    tabbing = false;
+  });
+  popup.addEventListener('keydown', e => {
+    tabbing = e.key === 'Tab';
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) { e.preventDefault(); focus(e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : index + (e.key === 'ArrowDown' ? 1 : -1)); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+  });
+  root.append(trigger, popup);
+  return { root, trigger, face, close, place: () => { if (!popup.hidden) place(); } };
+}
 
 /**
  * Header chips for the selected plan's own main session: only its verified, unambiguous current
  * host session (never the visible chat or a participant), and only links with an admitted address.
  * Titles stay literal text; activation hands the address to the host opener, nothing else.
+ * The group keeps to one row: the chips that fit, then one menu button for the rest ("2 more"),
+ * or only that button ("5 linked") when no chip fits beside the label. Its menu lists every link.
  */
 export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
   const open = env.openLinkedWorkUrl;
@@ -1019,6 +1110,7 @@ export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
   group.setAttribute('role', 'group');
   group.setAttribute('aria-labelledby', label.id);
   group.append(label);
+  const chips: HTMLButtonElement[] = [];
   for (const link of links) {
     const b = testid(el('button', 'ap-work-link'), 'linked-work-link');
     b.type = 'button';
@@ -1028,12 +1120,59 @@ export function linkedWorkChips(plan: PlanView, env: Env): HTMLElement | null {
     b.dataset.focusKey = link.url;
     // The visible title is shortened only by CSS; the spoken name keeps the kind and full title.
     b.title = link.title;
-    b.append(icon(link.kind), el('span', 'ap-sr', `${kinds[link.kind]}: `), el('span', 'ap-work-link-title', link.title));
+    const face = el('span', 'ap-work-link-face');
+    face.append(...linkContent(link, kinds));
+    b.append(face);
     const url = link.url;
     b.addEventListener('click', () => open(url));
+    chips.push(b);
     group.append(b);
   }
-  if (cov.session.moreLinks) group.append(testid(el('span', 'ap-work-links-more', copy.more), 'linked-work-more'));
+  const moreInHost = cov.session.moreLinks === true;
+  const menu = linkedWorkMenu(links, copy.label, kinds, moreInHost ? kinds.more : null, open, `${label.id}-menu`);
+  group.append(menu.root);
+  // The host's "more links" stays a qualifier: "2+ more", never a claimed total.
+  const count = (n: number) => `${displayCount(n, env.locale)}${moreInHost ? '+' : ''}`;
+  const setControl = (hidden: number, compact: boolean) => {
+    menu.root.hidden = !compact && !hidden && !moreInHost;
+    const text = compact ? copy.all(count(chips.length)) : hidden ? copy.hidden(count(hidden)) : copy.more;
+    if (menu.face.textContent !== text) menu.face.textContent = text;
+  };
+  setControl(0, false);
+  if (typeof ResizeObserver !== 'function') return group;
+  // Fit to the room the meta line gives the group, after layout and before paint, so the
+  // header never shows a second row. Chips are hidden from the end; the menu still lists them.
+  group.dataset.fit = '';
+  const fit = () => {
+    const room = group.clientWidth;
+    if (!group.isConnected || !room) return;
+    const focused = document.activeElement;
+    label.classList.remove('ap-sr');
+    for (const chip of chips) chip.hidden = false;
+    let hidden = 0;
+    setControl(0, false);
+    while (group.scrollWidth > room + 1 && hidden < chips.length) { hidden++; chips[chips.length - hidden]!.hidden = true; setControl(hidden, false); }
+    // No chip fits beside the label: one control names the count; the label stays the group's name.
+    if (hidden === chips.length) { label.classList.add('ap-sr'); setControl(hidden, true); }
+    // A focused chip that no longer fits hands focus to the control that lists it, never to a sibling.
+    if (focused instanceof HTMLElement && focused.hidden && chips.includes(focused as HTMLButtonElement)) menu.trigger.focus({ preventScroll: true });
+    const inControl = focused instanceof HTMLElement && menu.root.contains(focused);
+    if (menu.root.hidden) {
+      // Every link fits again and the control goes: its menu closes, and keyboard focus on it (or
+      // in that menu) moves to the last chip, the one nearest where the control was.
+      menu.close();
+      if (inControl) chips.findLast(chip => !chip.hidden)?.focus({ preventScroll: true });
+    } else {
+      // Measuring hides the control for a moment; keep focus where it was and the menu in place.
+      if (inControl && document.activeElement !== focused) focused.focus({ preventScroll: true });
+      menu.place();
+    }
+  };
+  // A repaint replaces the header; the replaced group's observer stops once it has left the page.
+  let attached = false;
+  const observer = new ResizeObserver(() => { if (group.isConnected) { attached = true; fit(); } else if (attached) observer.disconnect(); });
+  observer.observe(group);
+  void document.fonts?.ready.then(() => { if (group.isConnected) fit(); });
   return group;
 }
 
