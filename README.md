@@ -36,7 +36,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th width="50%">Work Status</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan chooser with Settings and More, Hide quiet, the plan title with two linked work chips, Copy update and Handoff note, the progress bar, and the List view with Now, Blocked and Up next tasks" width="390"></td>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan chooser with Settings and More, Hide quiet beside small Copy update and Handoff note buttons, the plan title with two linked work chips, the progress bar, and the List view with Now, Blocked and Up next tasks" width="390"></td>
     <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: plan title with position picker, progress bar, running and Needs you counts, and Open progress" width="322"></td>
   </tr>
   <tr>

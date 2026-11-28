@@ -71,11 +71,14 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, 
     if (kind === 'setup') vc.requestSetup();
     if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); }
   }));
-  bar.append(chooser, quietCheck(vc));
+  // Hide quiet on the start side; the plan's Copy update and Handoff note join it at the end.
+  const tools = el('div', 'ap-rail-tools');
+  tools.append(quietCheck(vc));
+  bar.append(chooser, tools);
   root.prepend(bar);
   const notice = quietNotice(vc); if (notice) bar.after(notice);
   return shell.paint(root, vc, plan, {
-    railActions: chooser,
+    railActions: chooser, railSummaries: tools,
     closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
       if (kind === 'setup') return setupBlock(vc);

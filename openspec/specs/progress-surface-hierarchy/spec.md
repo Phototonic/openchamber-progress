@@ -29,7 +29,7 @@ With a selected plan, the board and rail SHALL show one plan header, progress wi
 
 #### Scenario: Plan actions on the rail
 - **WHEN** the rail shows a selectable plan with available summaries
-- **THEN** its plan switcher shares the first line with Settings and plan More; Copy update and Handoff note each occupy a full-width button and the four segments form one full-width group
+- **THEN** its plan switcher shares the first line with Settings and plan More; the next line starts with the quiet-plan switch and ends with Copy update and Handoff note as small buttons, which wrap below the switch when the rail is too narrow, and the four segments form one full-width group
 - **AND** the quiet-plan switch is accessible with plan choice, including with a single choice, without adding an entry to either menu
 
 #### Scenario: Explicit choice
