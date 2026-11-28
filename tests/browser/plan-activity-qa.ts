@@ -197,7 +197,7 @@ try {
       await evaluate(`qa.tick('page');true`);
       await wait(`qa.responses.filter(r=>r.path==='/v1/plans'&&r.surface==='page').length>${prior}`);
       assert.deepEqual(await activityRequests(), [263, 243, 263, 243, 263]);
-      await click(hook('more-trigger')); await click('[data-menu-id="history"]');
+      await click(`${hook('plan-view-history')} button`);
       const history = hook('revision-257');
       await exists(history);
       assert.match(await text(history), /Cancelled by user/);

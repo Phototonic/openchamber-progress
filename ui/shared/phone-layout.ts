@@ -64,7 +64,7 @@ const COARSE_RULES = `
 .oc-sdk-input:not(.ap-map *),textarea:not(.ap-map *),input:not([type="checkbox"]):not([type="radio"]):not(.ap-map *){font-size:max(16px,1em)}
 .ap-actions .oc-sdk-btn.ap-actions-btn{min-width:${T};height:${T}}
 .ap-title-picker .oc-sdk-trigger,.ap-focus-participant .oc-sdk-trigger{height:auto;min-height:${T};min-width:${T}}
-.ap-state-chip,.ap-chip-remove,.ap-rcopy-open,.ap-sub-cue,.ap-filters-trigger,.ap-fold-toggle,.ap-hit{min-height:${T}}
+.ap-state-chip,.ap-work-link,.ap-chip-remove,.ap-rcopy-open,.ap-sub-cue,.ap-filters-trigger,.ap-fold-toggle,.ap-hit{min-height:${T}}
 .ap-filters-trigger{height:auto}
 .ap-info-btn{width:${T};height:${T}}
 .ap-rfacts-term .ap-info-btn{width:${T};height:${T}}

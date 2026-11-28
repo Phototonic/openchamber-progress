@@ -106,42 +106,25 @@ A blocked task SHALL be a Needs you item only when the session that reported its
 - **WHEN** the host shows a sub-agent session waiting on a question or permission
 - **THEN** that session is counted only on the sub-agents line and adds nothing to the Needs you count
 
-### Requirement: Default scope is the current session or selected plan
-
-On the rail and Work Status the inbox SHALL default to the plans of the current session, including plans that session helps with. On the board it SHALL default to the selected plan. All plans SHALL be an explicit secondary scope. The list MUST NOT switch scope by itself.
-
-#### Scenario: This session has nothing but other plans do
-- **WHEN** the default scope has no Needs you item and other plans in the verified source do
-- **THEN** the surface shows nothing waiting in this scope and a quiet link naming how many items wait in other plans
-- **AND** the list changes to all plans only when the user chooses it
-
-#### Scenario: All plans
-- **WHEN** the user selects the all-plans scope
-- **THEN** every Needs you item of the verified source is listed with its plan name, with the same counts and plus-mark rules
-
-#### Scenario: Session plan list is incomplete
-- **WHEN** the session's own plan list was not fully loaded
-- **THEN** the session-scoped count carries a plus mark rather than reading as exact
-
 ### Requirement: Compact Needs you presentation
 
-The inbox SHALL be the same component on rail and board, placed below the map or list. Collapsed, it SHALL be one line with the count and the longest wait. Expanded, it SHALL show one line per item. Other blocked work SHALL appear only as a quiet count, never as a default list. The rail SHALL start collapsed and the board expanded unless a saved device state says otherwise.
+The board SHALL expose one inbox disclosure at its top-bar count; the rail SHALL retain its disclosure below Map/List. Both start collapsed without a saved choice, share the existing rows and actions, and show other blocked work only as a quiet count. The oldest known wait SHALL remain available inside the board list and on the rail count line. Positive incomplete counts carry a plus; unknown coverage MUST NOT become verified zero.
 
 #### Scenario: Collapsed line
-- **WHEN** two items in scope need the user and the longest has waited 17 hours
-- **THEN** one line states that two need the user and that the oldest has waited 17 hours, as a button exposing its expanded state
+- **WHEN** two items in scope need the reader and the oldest known wait is 17 hours
+- **THEN** the board trigger names Needs you and its global count; the rail line states its scoped count and oldest wait; each trigger exposes its expanded state
 
 #### Scenario: Nothing in scope on the rail
-- **WHEN** a complete read finds nothing needing the user in the rail's scope and no item in other plans
-- **THEN** the rail shows no Needs you line at all
+- **WHEN** a complete successful read finds nothing in the rail scope or other plans, with nothing hidden
+- **THEN** the rail displays no Needs you line
 
 #### Scenario: Other blocked work
-- **WHEN** four further tasks in scope are blocked without being Needs you items
-- **THEN** the expanded list shows one quiet count for them, and selecting it points to those tasks in the plan shown
+- **WHEN** four further tasks are blocked without qualifying for Needs you
+- **THEN** the expanded inbox shows their quiet count and retains its action pointing to those tasks on the plan shown
 
 #### Scenario: Read failed
-- **WHEN** the inbox cannot be read
-- **THEN** one plain line says it could not be checked and offers a retry, never an empty state
+- **WHEN** a read fails or has not found an item yet in an incomplete traversal
+- **THEN** the failure offers the existing recovery without a zero count; incomplete zero shows no number, plus badge or claim of no items
 
 ### Requirement: Open session and Copy reply never resolve an item
 
@@ -166,20 +149,19 @@ An opened item SHALL offer Open session, which asks the host to open the plan's 
 
 ### Requirement: Hide an item on this device until its reported state changes
 
-An opened item SHALL offer Hide where device storage is supported. A hidden item SHALL be excluded from the list and count on that device until its reported blocker details change, then return by itself. Hiding MUST NOT change any reported data or other devices. The number hidden SHALL stay visible with a way to show and unhide them.
+An opened item SHALL offer Hide where device storage is supported. Hidden items SHALL not count or appear in the ordinary list on that device until their reported blocker details change. The expanded inbox itself SHALL state how many are hidden and allow showing and unhiding them, without a More-menu entry. Hiding MUST NOT modify reports or other devices.
 
 #### Scenario: Hide and undo
-- **WHEN** the user hides an item
-- **THEN** the count drops at once, a line says it is hidden until the task changes and offers Undo, and the change is announced once
+- **WHEN** the reader hides an item
+- **THEN** it leaves its applicable counts, one announcement explains the device hide, and Undo remains available
 
 #### Scenario: Reported state changes
-- **WHEN** the main session reports new details for a hidden task
-- **THEN** the task is listed and counted again without user action
-- **AND** an unrelated report on the same plan does not unhide it
+- **WHEN** the main session reports new blocker details for a hidden task
+- **THEN** it returns automatically; an unrelated report does not unhide it
 
 #### Scenario: Hidden items stay reachable
-- **WHEN** one or more items are hidden
-- **THEN** the expanded list and the More menu state how many are hidden and let the user show and unhide them
+- **WHEN** only hidden items remain
+- **THEN** the inbox on the board or rail remains reachable and its expanded list can show and unhide them without visiting Settings or plan More
 
 #### Scenario: Device storage unsupported
 - **WHEN** the host does not advertise device storage
@@ -192,3 +174,20 @@ Continuation MAY run automatically within the existing per-window bounds, at mos
 #### Scenario: Refresh of an incomplete inbox
 - **WHEN** a refresh runs while the inbox is incomplete
 - **THEN** it starts no polling loop, per-task polling, notification or inference beyond the bounded continuation
+
+### Requirement: Board attention is global and rail attention is session-first
+
+The board top-bar count SHALL cover all eligible items in the verified source regardless of search, filters, archive mode or selection. Its list SHALL open on All plans and offer This plan when selected. The rail and Work Status SHALL retain current-session scope including contributed plans, with explicit widening on the rail. The list MUST NOT change the selected plan or session, or lose an explicit scope on repaint within the same reading.
+
+#### Scenario: Read across the board
+- **WHEN** two eligible visible items belong to different plans and only one of those plans is displayed
+- **THEN** the top count includes both; opening it shows the list on All plans with plan names
+- **AND** choosing This plan narrows the list, not the top count; there is no second inbox under the board plan
+
+#### Scenario: No selected plan
+- **WHEN** a board search or Archived view has no selected plan
+- **THEN** the same top entry still gives access to the source-wide inbox, without implying hidden or filtered-out rows are absent from the source
+
+#### Scenario: Session scope
+- **WHEN** the rail's session has no waiting item but other plans do
+- **THEN** its quiet link offers the other plans without widening automatically; a positive session count of uncertain coverage carries a plus

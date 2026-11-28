@@ -24,18 +24,20 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   const nodes: any[] = [];
   const shells: any[] = [], maps: any[] = [], lists: any[] = [];
   const frameWindow = { innerWidth: 390, addEventListener() {} };
-  const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, classList: { add() {} }, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, classList: { add() {} }, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, after(...children: any[]) { nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
   const components = { el, allDone: () => {}, ProgressShell: class {
       activePanel: string | null = null; selected: string | null = null;
       constructor() { shells.push(this); }
       reconcile(_vc: any, plan: any) { const selected = plan?.key ?? null; if (selected !== this.selected) { this.selected = selected; this.activePanel = null; } }
+      settingsButton() { return el('button'); }
+      switchView() { return el('div'); }
       paint(_root: any, vc: any, plan: any) { this.reconcile(vc, plan); return !!this.activePanel; }
       reset() { this.selected = null; this.activePanel = null; }
     },
     narrowSurface: () => frameWindow.innerWidth < 320,
     planPicker: (options: any) => { const node = el('div'); node.dataset.testid = 'plan-selector'; node.options = options; nodes.push(node); return node; },
     planDetail: (...args: any[]) => { lists.push(args); return el('article'); }, surfaceViewSwitch: () => el('div'),
-    quietAge: () => null,
+    quietAge: () => null, quietCheck: () => el('label'), quietNotice: () => null,
     testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
     emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
     button: (_p: any, id: string, text: string, click?: () => void) => nodes.push({ text, dataset: { testid: id }, click }), recoveredHeading: (root: any) => root.recovered ?? null, detailsBlock: () => ({ text: '' }), failureFacts: () => [],
@@ -63,6 +65,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/cleanup.ts')) return cleanup;
     if (path.endsWith('/refresh.ts')) return { RecentMemory: class {} };
     if (path.endsWith('/search.ts')) return { SearchController: noopController };
+    if (path.endsWith('/search-view.ts')) return { NO_DRAFT: {}, boardBar: () => el('div'), unavailableNote: () => el('div') };
     if (path.endsWith('/capture-comparison.ts')) return { CaptureController: noopController };
     if (path.endsWith('/reporting-health.ts')) return { ReportingHealth: noopController };
     if (path.endsWith('/reporting-health-view.ts')) return { reportingHealthBlock: () => ({ text: '' }) };
@@ -91,15 +94,15 @@ function shellContext() {
   return { vc, plan };
 }
 
-test('board without a selected plan keeps the held source-wide inbox reachable', () => {
+test('board bar without a selected plan keeps the held source-wide inbox reachable', () => {
   const h = surfaceHarness('page'), { vc } = shellContext();
   vc.read.plans = []; vc.ui.selected = null; vc.ui.archived = true;
   vc.inbox = { marker: 'source-wide' };
-  h.exports.footer({ append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc, null);
+  h.exports.boardTop(vc, null, {}, null, false);
   const inbox = h.nodes.find(n => n?.dataset?.testid === 'needs-you-inbox');
   assert.equal(inbox?.inbox, vc.inbox);
-  assert.equal(inbox?.options.keys.size, 0, 'no selected plan stays in an empty current scope; the component offers other plans explicitly');
-  assert.equal(inbox?.options.state.all, false);
+  assert.equal(inbox?.options.keys.size, 0, 'no This plan scope without a selection');
+  assert.ok(inbox?.options.triggerMount, 'the library bar owns the only opener');
 });
 
 for (const surface of ['panel', 'page']) test(`${surface}: a settled automatic Map survives resizing below 320px`, () => {
@@ -131,7 +134,7 @@ test('rail reconciles a previous plan panel before choosing the cached plan Map 
   h.shells[0].selected = `${plan.sourceId}/previous`;
   h.shells[0].activePanel = 'document';
   vc.ui.presentation = 'map';
-  h.spec.paint({ append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc);
+  h.spec.paint({ dataset: {}, prepend: (...nodes: any[]) => h.nodes.push(...nodes), append: (...nodes: any[]) => h.nodes.push(...nodes) }, vc);
   assert.equal(h.maps.at(-1)[3], true, 'selected Map is active for the new plan on its first paint');
   assert.equal(h.nodes.some(n => n?.dataset?.testid === 'painted-map'), true);
   assert.equal(h.lists.length, 0, 'must not render List under a pressed Map switch');
@@ -168,7 +171,7 @@ for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: curren
       failure: state === 'failed' ? { kind: 'unavailable' } : null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
     // A stale old availability cannot supply presentation authority to a new entry.
     Object.defineProperty(vc, 'officialMain', { get() { throw Error('Retired metadata consumed'); } });
-    h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, vc);
+    h.spec.paint({ prepend: (...children: any[]) => h.nodes.push(...children), append: (...children: any[]) => h.nodes.push(...children) }, vc);
     assert.ok(!h.nodes.some(n => /extension-update/.test(n?.dataset?.testid ?? '')));
     assert.doesNotMatch(h.rendered(), /Official main|официальной main/);
   }
@@ -179,11 +182,11 @@ for (const surface of ['panel', 'status', 'page']) test(`${surface}: actual empt
   const ui = { presentation: 'list', tab: 'progress', archived: false, filters: {}, search: null };
   const vc = { ui, env: { locale: 'ru' }, quiet: { hide: true }, language: {}, session: null, health: { ready: false }, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
   // Setup itself belongs to the shared setup renderer; this test covers entry-owned content.
-  spec.paint({ append: (...children: any[]) => nodes.push(...children) }, vc);
+  spec.paint({ prepend: (...children: any[]) => nodes.push(...children), append: (...children: any[]) => nodes.push(...children) }, vc);
   assert.match(rendered(), surface === 'page' ? /Текущие планы/ : /Сессия не выбрана/);
   nodes.length = 0;
   vc.env.locale = 'en';
-  spec.paint({ append: (...children: any[]) => nodes.push(...children) }, vc);
+  spec.paint({ prepend: (...children: any[]) => nodes.push(...children), append: (...children: any[]) => nodes.push(...children) }, vc);
   assert.match(rendered(), surface === 'page' ? /Current plans/ : /No session selected/);
   assert.doesNotMatch(rendered(), /Сессия не выбрана|Текущие планы/);
   assert.equal(vc.ui, ui);
@@ -198,7 +201,7 @@ test('panel: a pinned scope offers a localized Show current session that hands f
     const vc = { ui: { presentation: 'list', selected: null }, env: { locale }, language: {}, session: state === 'invalid' ? null : { id: 'A' }, live: live.EMPTY_LIVE,
       progressAction: true, progressContext: state, progressReset: () => calls.push('reset'), handoff: (value: any) => { calls.push('handoff'); handoff = value; },
       read: null, failure: null, health: null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
-    h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, vc);
+    h.spec.paint({ prepend: (...children: any[]) => h.nodes.push(...children), append: (...children: any[]) => h.nodes.push(...children) }, vc);
     const line = h.nodes.find(n => n?.dataset?.testid === 'session-action-scope');
     assert.ok(line, `${locale}/${state}: labelled pinned-scope line`);
     assert.equal(h.nodes.some(n => n?.text === copy[locale][0]), state !== 'invalid', `${locale}/${state}: honest scope label`);
@@ -212,7 +215,7 @@ test('panel: a pinned scope offers a localized Show current session that hands f
     assert.equal(handoff.heading({ querySelector: (s: string) => s === '[role="alert"] button' ? retry : null }), retry, 'a failed read lands on its Try again');
   }
   h.nodes.length = 0;
-  h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, { ui: { presentation: 'list', selected: null }, env: { locale: 'en' }, language: {}, session: { id: 'B' }, live: live.EMPTY_LIVE, progressAction: false, read: null, failure: null, health: null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 });
+  h.spec.paint({ prepend: (...children: any[]) => h.nodes.push(...children), append: (...children: any[]) => h.nodes.push(...children) }, { ui: { presentation: 'list', selected: null }, env: { locale: 'en' }, language: {}, session: { id: 'B' }, live: live.EMPTY_LIVE, progressAction: false, read: null, failure: null, health: null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 });
   assert.equal(h.nodes.some(n => /^session-action-/.test(n?.dataset?.testid ?? '')), false, 'ordinary opening has no pinned line or reset');
 });
 

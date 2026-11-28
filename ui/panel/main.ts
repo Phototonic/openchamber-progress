@@ -1,9 +1,9 @@
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { advancedDetails, button, documentBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, narrowSurface, peopleBlock, planDetail, planPicker, ProgressShell, recoveredHeading, retryRead, revealCurrentTask, staleBlock, surfaceViewSwitch, testid } from '../shared/components.ts';
+import { advancedDetails, button, documentBlock, documentView, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, narrowSurface, peopleBlock, planDetail, planPicker, ProgressShell, quietCheck, quietNotice, recoveredHeading, retryRead, staleBlock, testid } from '../shared/components.ts';
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
-import { CompactInbox, hiddenInboxAction, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
+import { CompactInbox, inboxSection, revealInboxTask } from '../shared/inbox-view.ts';
 import type { InboxRowView } from '../shared/model.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
@@ -13,9 +13,9 @@ import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { planProject, sessionLabel } from '../shared/live.ts';
-import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
+import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { warningLine } from '../shared/primitives.ts';
-import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { DefaultViewChoice, resolveDefaultView, viewReadingKey, type DetailView } from '../shared/default-view.ts';
 import { railPlanKey as storeKey } from '../shared/plan-selection.ts';
 import { admitsQuiet, quietDays, quietLabel } from '../shared/quiet-plans.ts';
 import { quietEmpty } from '../shared/components.ts';
@@ -44,9 +44,9 @@ const ACTION_CHOICE = {
 } satisfies Record<InterfaceLanguage, { chosen: string; automatic: string }>;
 
 /**
- * `presentation`: Plan view List (default) or Map, in this frame only; never stored.
+ * `presentation`: Plan view in this frame only; never stored.
  */
-type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
+type Ui = { selected: string | null; setup: SetupUi; presentation: DetailView };
 // Recent sessions' chosen plan, so a remembered session repaints with its own selection at once
 // (host storage stays the durable copy and is still read on every switch).
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
@@ -56,7 +56,7 @@ let contextAction = false;
 let selectionGeneration = 0;
 /** The rail hosts the full map itself (the host can't open the board from here). View as list stays in this frame. */
 const viewChoice = new DefaultViewChoice();
-const chooseView = (vc: ViewContext<Ui>, mode: 'list' | 'map') => { const plan = current(vc); if (plan && vc.session) viewChoice.choose(viewReadingKey(vc, `rail:${vc.session.id}`, plan), mode); vc.setUi({ presentation: mode }); };
+const chooseView = (vc: ViewContext<Ui>, mode: DetailView) => { const plan = current(vc); if (plan && vc.session) viewChoice.choose(viewReadingKey(vc, `rail:${vc.session.id}`, plan), mode); vc.setUi({ presentation: mode }); };
 const railMap = createMapFrame<Ui>('rail', (vc) => chooseView(vc, 'list'));
 const shell = new ProgressShell();
 const compactInbox = new CompactInbox();
@@ -64,10 +64,18 @@ let frame: ViewContext<Ui> | null = null;
 const reporting = new ReportingHealth({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.invalidate(), copy: async text => { await navigator.clipboard.writeText(text); } });
 function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, pick?: HTMLElement | null) {
   const claim = () => reporting.claim({ key: JSON.stringify([vc.identity, vc.session?.id, plan?.key, plan?.revision, vc.read?.captureEnabled, !!vc.failure]), read: vc.read, plan, stale: !!vc.failure, counts: vc.countFacts });
+  const bar = el('div', 'ap-rail-bar');
+  const chooser = el('div', 'ap-rail-chooser');
+  if (pick) chooser.append(pick);
+  chooser.append(shell.settingsButton(vc, kind => {
+    if (kind === 'setup') vc.requestSetup();
+    if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); }
+  }));
+  bar.append(chooser, quietCheck(vc));
+  root.prepend(bar);
+  const notice = quietNotice(vc); if (notice) bar.after(notice);
   return shell.paint(root, vc, plan, {
-    picker: pick,
-    menuActions: hiddenInboxAction(vc.inbox, compactInbox, vc.env.locale, () => shell.showView(vc), 'panel'),
-    openPanel: kind => { if (kind === 'setup') vc.requestSetup(); if (kind === 'troubleshooting') { const p = claim(); if (!p.open) p.toggle(); else p.refresh(); } },
+    railActions: chooser,
     closePanel: kind => { if (kind === 'setup') retireSetupSteps(); },
     renderPanel: kind => {
       if (kind === 'setup') return setupBlock(vc);
@@ -76,7 +84,6 @@ function surface(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null, 
         const content = advancedDetails(vc, plan, [[messages[resolveLanguage('auto', vc.env.locale)].watched, String(vc.sessionSubscriptions)], ...failureFacts(vc.failure, vc.env.locale)]);
         return reportingHealthBlock(p, vc.env.locale, content);
       }
-      if (plan && kind === 'document') return documentBlock(plan, vc.env, 'inline', { get: () => vc.document(plan), request: () => vc.requestDocument(plan) });
       const detail = plan ? vc.detail(plan) : null;
       return plan ? peopleBlock(plan, detail?.state === 'ready' ? detail.value : null, vc.env) : el('div');
     },
@@ -99,7 +106,7 @@ startView<Ui>({
     const settling = plan ? viewChoice.identify(viewReadingKey(vc, scope, plan)).pending : false;
     let decision = resolveDefaultView(viewChoice, vc, scope, plan);
     if (plan && settling && !decision.pending && !decision.explicit && decision.view === 'map' && narrowSurface()) decision = viewChoice.choose(viewReadingKey(vc, scope, plan), 'list');
-    const presentation = decision.view === 'map' ? 'map' : 'list';
+    const presentation = decision.view;
     return vc.ui.presentation === presentation ? null : { presentation };
   },
   actionPlan: current,
@@ -213,12 +220,14 @@ startView<Ui>({
       // Plan view: List / Map, first (also with one plan), like the board's tabs above its detail.
       // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
       // activation records the explicit choice (including re-pressing the provisional List).
-      if (surface(root, vc, plan, choose?.() ?? null)) { if (plan) root.append(cleanupBlock(vc, plan)); return; }
-      const viewSwitch = plan && session ? surfaceViewSwitch(vc.ui.presentation, (mode) => {
+      if (surface(root, vc, plan, choose?.(true) ?? null)) { if (plan) root.append(cleanupBlock(vc, plan)); return; }
+      if (plan) root.dataset.readingMode = vc.ui.presentation === 'list' ? 'progress' : vc.ui.presentation;
+      const change = (mode: DetailView) => {
         if (mode === 'list' && mapShown) { railMap.leave(true); return; }
         if (mode === 'map') railMap.enter(); else railMap.leave();
         chooseView(vc, mode);
-      }, language, () => shell.openDocument(vc)) : undefined;
+      };
+      const viewSwitch = plan && session ? shell.switchView(vc.ui.presentation, change, language) : undefined;
       if (viewSwitch && !mapShown) root.append(viewSwitch);
       if (plan && mapShown && session) {
         // The map keeps its own header and title; the compact picker stays above it.
@@ -226,6 +235,13 @@ startView<Ui>({
         root.append(host);
         railMap.paint(host, vc, { plan, viewSwitch, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
         root.append(cleanupBlock(vc, plan));
+      } else if (plan && vc.ui.presentation === 'document') {
+        const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
+        root.append(documentView(root, env.locale, shell.documentBack(change), documentBlock(plan, env, 'inline', docHooks)), cleanupBlock(vc, plan));
+        return;
+      } else if (plan && vc.ui.presentation === 'history') {
+        if (!vc.history(plan)) vc.requestHistory(plan);
+        root.append(historyBlock(plan, vc.history(plan), env, () => vc.requestHistory(plan)), cleanupBlock(vc, plan));
       } else if (plan) {
         // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
         // only the loading placeholder paints (no complete rows) until List or Map is settled.

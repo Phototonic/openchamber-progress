@@ -5,13 +5,14 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-export type Cdp = { send: (method: string, params?: object) => Promise<any>; close: () => void; errors: string[] };
+export type Cdp = { send: (method: string, params?: object) => Promise<any>; once: (method: string, timeoutMs?: number) => Promise<unknown>; close: () => void; errors: string[] };
 
 async function connect(url: string): Promise<Cdp> {
   const ws = new WebSocket(url);
   await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('CDP connect failed')); });
   let next = 1;
   const waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  const events = new Map<string, (value: unknown) => void>();
   const errors: string[] = [];
   ws.onmessage = (event) => {
     const m = JSON.parse(String(event.data));
@@ -19,8 +20,19 @@ async function connect(url: string): Promise<Cdp> {
     if (w) { waiting.delete(m.id); if (m.error) w.reject(new Error(m.error.message)); else w.resolve(m.result); }
     else if (m.method === 'Runtime.exceptionThrown') errors.push(String(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text).slice(0, 300));
     else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args.map((a: any) => a.value ?? a.description ?? '').join(' ').slice(0, 300));
+    const handler = typeof m.method === 'string' ? events.get(m.method) : undefined;
+    if (typeof handler === 'function') handler(m.params);
   };
-  return { errors, send: (method, params = {}) => new Promise((resolve, reject) => { const id = next++; waiting.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); }), close: () => ws.close() };
+  return {
+    errors,
+    send: (method, params = {}) => new Promise((resolve, reject) => { const id = next++; waiting.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); }),
+    once: (method, timeoutMs = 8000) => new Promise((resolve, reject) => {
+      if (events.has(method)) { reject(new Error(`Already waiting for ${method}`)); return; }
+      const timer = setTimeout(() => { events.delete(method); reject(new Error(`Timed out waiting for ${method}`)); }, timeoutMs);
+      events.set(method, value => { clearTimeout(timer); events.delete(method); resolve(value); });
+    }),
+    close: () => ws.close(),
+  };
 }
 
 export function chromiumPath(arg?: string) {

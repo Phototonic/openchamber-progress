@@ -10,14 +10,14 @@ const TIME = {
 
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3_600], ['minute', 60]];
 
-export function relativeAge(iso: string, now: number, locale: string): string {
+export function relativeAge(iso: string, now: number, locale: string, style: Intl.RelativeTimeFormatStyle = 'long'): string {
   const copy = TIME[resolveLanguage('auto', locale)];
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return copy.unknown;
   const seconds = Math.round((t - now) / 1000);
   if (Math.abs(seconds) < 45) return copy.recent;
   let rtf: Intl.RelativeTimeFormat;
-  try { rtf = new Intl.RelativeTimeFormat(locale || 'en', { numeric: 'auto' }); } catch { rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' }); }
+  try { rtf = new Intl.RelativeTimeFormat(locale || 'en', { numeric: 'auto', style }); } catch { rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style }); }
   for (const [unit, size] of UNITS) if (Math.abs(seconds) >= size) return rtf.format(Math.round(seconds / size), unit);
   return rtf.format(Math.round(seconds / 60), 'minute');
 }

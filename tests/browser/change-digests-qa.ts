@@ -50,42 +50,75 @@ function check(id: string, pass: boolean, facts?: string[], diagnostic?: unknown
 const race = (id: string, pass: boolean, facts?: string[], diagnostic?: unknown) => check(id, pass, facts, diagnostic, races);
 
 type Cdp = { send: (method: string, params?: object) => Promise<any>; close: () => void; events: { method: string; params: any }[] };
+async function bounded<T>(result: Promise<T>, label: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([result, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 async function connect(url: string): Promise<Cdp> {
   const ws = new WebSocket(url);
-  await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('CDP connect failed')); });
+  try {
+    await bounded(new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('CDP connect failed')); }), 'CDP connection', 5_000);
+  } catch (e) { ws.close(); throw e; }
   let next = 1;
   const waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   const events: Cdp['events'] = [];
+  ws.onclose = () => {
+    for (const w of waiting.values()) w.reject(new Error('CDP connection closed'));
+    waiting.clear();
+  };
   ws.onmessage = (event) => {
     const m = JSON.parse(String(event.data));
     const w = m.id && waiting.get(m.id);
     if (w) { waiting.delete(m.id); if (m.error) w.reject(new Error(m.error.message)); else w.resolve(m.result); }
     else if (m.method === 'Runtime.exceptionThrown' || (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error')) events.push({ method: m.method, params: m.params });
   };
-  return { events, send: (method, params = {}) => new Promise((resolve, reject) => { const id = next++; waiting.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); }), close: () => ws.close() };
+  return {
+    events,
+    async send(method, params = {}) {
+      if (ws.readyState !== WebSocket.OPEN) throw new Error('CDP connection closed');
+      const id = next++;
+      try {
+        return await bounded(new Promise((resolve, reject) => {
+          waiting.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
+        }), `CDP ${method}`, 30_000);
+      } finally { waiting.delete(id); }
+    },
+    close: () => ws.close(),
+  };
 }
 
+const chromium = findChromium();
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/change-digests-qa-');
 const fx = await startDigestShell(built);
 // The focused plan is seeded before the guests load, so its first list read already has it.
 const prereqStart = only === 'prerequisites' ? fx.prerequisites.start() : null;
 const origin = `http://127.0.0.1:${fx.port}`;
-const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
-let page: Cdp | null = null, browser: Cdp | null = null;
+const chrome = spawn(chromium, ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
+// Observe termination from launch, including signal exits and failed spawns.
+// Installing an exit listener in cleanup can miss an exit during startup.
+let stopped: string | undefined;
+const exited = new Promise<void>((resolve) => {
+  chrome.once('exit', (code, signal) => { stopped = `Chromium exited (${signal ?? code})`; resolve(); });
+  chrome.once('error', (error) => { stopped = `Chromium process error (${(error as NodeJS.ErrnoException).code ?? 'unknown'})`; resolve(); });
+});
+let page: Cdp | null = null;
 let failure: string | null = null;
 const facts: Record<string, unknown> = {};
 try {
   let devtools = '';
   for (const end = Date.now() + 15_000; Date.now() < end && !devtools;) {
+    if (stopped) throw new Error(stopped);
     const f = join(profile, 'DevToolsActivePort');
     if (existsSync(f)) devtools = readFileSync(f, 'utf8').split('\n')[0];
     else await new Promise((r) => setTimeout(r, 100));
   }
   if (!devtools) throw new Error('Chromium did not start its DevTools endpoint.');
-  const version = await (await fetch(`http://127.0.0.1:${devtools}/json/version`)).json() as { webSocketDebuggerUrl: string };
-  browser = await connect(version.webSocketDebuggerUrl);
-  const targets = await (await fetch(`http://127.0.0.1:${devtools}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+  const targets = await (await fetch(`http://127.0.0.1:${devtools}/json/list`, { signal: AbortSignal.timeout(5_000) })).json() as { type: string; webSocketDebuggerUrl: string }[];
   page = await connect(targets.find((t) => t.type === 'page')!.webSocketDebuggerUrl);
   const c = page;
   await c.send('Runtime.enable'); await c.send('Page.enable');
@@ -121,17 +154,12 @@ try {
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const history = '[data-testid="surface-panel-history"]';
+  const history = '[data-reading-mode="history"]';
   const D = (plan: string) => `.ap-board:has([data-testid="plan-row-${plan}"][aria-selected="true"]) ${history} [data-testid="change-digest"]`;
   const H = (plan: string, id: string) => `${D(plan)} [data-testid="${id}"]`;
   const row = (plan: string) => `[data-testid="plan-row-${plan}"][data-source="${SOURCE}"]`;
-  const historyHeading = `${history} [data-testid="surface-panel-heading"]`;
-  const more = async (f: string, action: string) => {
-    const item = `[role="menu"]:not([hidden]) [data-menu-id="${action}"]`;
-    await click(f, '[data-testid="more-trigger"]');
-    await wait(f, `d.querySelector('${item}')?.disabled===false`);
-    await click(f, item);
-  };
+  const historyHeading = `${history} [data-testid="plan-title"]`;
+  const cleanup = (f: string, action: string) => click(f, `[data-testid="${action}"] button`);
   const view = async (f: string, kind: 'history' | 'progress') => {
     const back = '[data-testid="surface-panel-back"] button';
     if (await guest(f, `return !!d.querySelector('${back}')`)) {
@@ -142,7 +170,7 @@ try {
     if (kind === 'progress') {
       await click(f, '[data-testid="plan-view-list"] button');
     } else {
-      await more(f, 'history');
+      await click(f, '[data-testid="plan-view-history"] button');
       await wait(f, `!!d.querySelector('${history}')`);
     }
   };
@@ -200,7 +228,8 @@ try {
   const unchanged = (a: unknown, b: unknown) => same(a, b);
   const progressUi = progressInput({ guest, wait, click, key });
 
-  await evaluate(`new Promise(r=>{const t=()=>window.qa&&frame('page').contentDocument?.querySelector('[data-testid="progress-root"]')&&frame('panel').contentDocument?.querySelector('[data-testid="progress-root"]')?r(true):setTimeout(t,50);t()})`);
+  await wait('page', `!!d.querySelector('[data-testid="progress-root"]')`, 'page guest mounted');
+  await wait('panel', `!!d.querySelector('[data-testid="progress-root"]')`, 'panel guest mounted');
   await theme('light');
 
   if (only === 'prerequisites') {
@@ -647,7 +676,7 @@ try {
     await click('page', H('P-release', 'digest-mark-reviewed'));
     await wait('page', `d.querySelector('${D('P-release')}')?.dataset.review==='saved'`);
     const releaseRev = String(fx.revision('P-release'));
-    await more('page', 'cleanup-archive');
+    await cleanup('page', 'cleanup-archive');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'archived');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-archived"] button');
@@ -655,7 +684,7 @@ try {
     const arch = await digestState('page', 'P-release');
     check('S6:archived-history-inspectable', arch?.state === 'comparison' && arch.after === releaseRev && (await text('page', H('P-release', 'digest-coverage'))).includes('No changes since your last review.'), ['Archived plan keeps its shared baseline; cleanup changed, progress did not'], arch);
     await shot('page', 'archived-history', '[data-testid="plan-detail"]');
-    await more('page', 'cleanup-restore');
+    await cleanup('page', 'cleanup-restore');
     await wait('page', `!d.querySelector('${row('P-release')}')`, 'restored');
     await boardInput({ guest, wait, click }).openFilters();
     await click('page', '[data-testid="cleanup-visible"] button');
@@ -665,7 +694,7 @@ try {
     await evaluate(`qa.holds.push({tag:'delete',frame:'page',path:'/v1/change-digest',plan:'P-release'});true`);
     await click('page', H('P-release', 'digest-refresh'));
     await wait('page', `qa.held.some(h=>h.tag==='delete')`);
-    await more('page', 'cleanup-delete');
+    await cleanup('page', 'cleanup-delete');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-confirm-delete"] button')`);
     await click('page', '[data-testid="cleanup-confirm-delete"] button');
     await wait('page', `!!d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-release')}')`, 'deleted', 15_000);
@@ -726,10 +755,18 @@ try {
 } catch (e) {
   failure = e instanceof Error ? e.message.split('\n')[0].slice(0, 600) : String(e);
 } finally {
-  page?.close(); browser?.close();
-  const exited = new Promise((r) => { if (chrome.exitCode !== null) r(null); else chrome.once('exit', r); });
-  try { process.kill(-chrome.pid!, 'SIGTERM'); } catch { chrome.kill('SIGTERM'); }
-  await exited;
+  page?.close();
+  const stop = (signal: NodeJS.Signals) => {
+    if (stopped || !chrome.pid) return;
+    try { process.kill(-chrome.pid, signal); } catch { chrome.kill(signal); }
+  };
+  stop('SIGTERM');
+  try { await bounded(exited, 'Chromium shutdown', 3_000); }
+  catch {
+    stop('SIGKILL');
+    try { await bounded(exited, 'Chromium forced shutdown', 3_000); }
+    catch { failure ??= 'Chromium did not stop'; chrome.unref(); }
+  }
   await fx.stop();
   const evidenceClass = `synthetic SDK shell, real disposable HTTP service over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated headless Linux Chromium, current guest bundles`;
   const mode = only ? { mode: `focused: ${only}`, selected: ['P:B1', 'P:B2', 'P:B3', 'P:B4', 'P:B5'], skipped: ['V6', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'] } : { mode: 'full', selected: ['V6', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'], skipped: ['P:B1–B5 (run with --only prerequisites)'] };

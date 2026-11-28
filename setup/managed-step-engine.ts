@@ -4,11 +4,14 @@ import {managedSourceRoots,createManagedBindingDirectory} from '../shared/manage
 import {windows,windowsPaths,STEP_HEADROOM_MS,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
 import {managedJournalProgress,managedFreshJournalProgress,managedRequestDigest,parseManagedStepJournal,parseManagedFreshStepJournal,sameManagedStep,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedCaptureRenewal,type ManagedFreshCaptureRenewal,type ManagedFreshStepIntent} from './managed-step-journal.ts';
 import {readManagedStepJournal,readManagedFreshStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths,observeInitialJournalSave,settleInitialJournalSave} from './managed-migration.ts';
-import {validateManagedInspectionReview,validateManagedFreshInspectionReview,type ManagedInspectionSession,type ManagedFreshInspectionSession} from './managed-inspection.ts';
+import {validateManagedInspectionReview,validateManagedFreshInspectionReview,validateManagedFailurePlacement,
+  type ManagedInspectionSession,type ManagedFreshInspectionSession} from './managed-inspection.ts';
 import {type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedCaptureObservation} from '../shared/managed-steps.ts';
 import {canonical} from '../shared/store.ts';
 import {validateManagedStepTarget,validateManagedStepTargetFacts,managedStepEffectClaims,managedStepEffectCommitted,applyManagedStepEffect} from './managed-step-effects.ts';
 import {managedDiagnostic,ManagedStepFailure} from './managed-diagnostic.ts';
+import {ManagedVolumePlacementError,type ManagedVolumeIdentityReader} from './managed-volume-identity.ts';
+import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
 /** Bounded observation only. It does not admit a Store, infer capture, scan
  * legacy payloads, repair metadata or resume an interrupted operation. */
@@ -33,8 +36,8 @@ export function managedSetupJournalProgress(journal:ManagedSetupStepJournal,capt
 function parseJournal(journal:ManagedSetupStepJournal,version:1|2) {
   return version===2?parseManagedFreshStepJournal(JSON.stringify(journal)):parseManagedStepJournal(JSON.stringify(journal));
 }
-function validateReview(env:NodeJS.ProcessEnv,payload:Payload,session:InspectionSession) {
-  return 'family' in session?validateManagedFreshInspectionReview(env,payload,session):validateManagedInspectionReview(env,payload,session);
+function validateReview(env:NodeJS.ProcessEnv,payload:Payload,session:InspectionSession,read:ManagedVolumeIdentityReader) {
+  return 'family' in session?validateManagedFreshInspectionReview(env,payload,session,read):validateManagedInspectionReview(env,payload,session,read);
 }
 export interface ManagedBeginResult { disposition:'applied'|'replayed'; progress:ManagedSetupStepProgress; journal:ManagedSetupStepJournal }
 function replayBegin(env:NodeJS.ProcessEnv,request:Extract<ManagedSetupStepRequest,{action:'begin'}>):ManagedBeginResult {
@@ -56,13 +59,13 @@ function validateBeginReplay(request:Extract<ManagedSetupStepRequest,{action:'be
  * A preview from inspection is not a journal until the begin identity, consent
  * and request receipt have been assigned and the strict parser accepts it. */
 export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'begin'}>,
-  budget:PlatformRequestBudget,session?:InspectionSession):ManagedBeginResult {
+  budget:PlatformRequestBudget,session?:InspectionSession,read=managedVolumeIdentityReader):ManagedBeginResult {
   requirePlatformWriteBoundary();
   const interrupted=observeInitialJournalSave(env,request.version);
   if(interrupted){
     const {journal}=interrupted;
     validateBeginReplay(request,journal);
-    try{recoverInitial(env,payload,budget,interrupted);}
+    try{recoverInitial(env,payload,budget,interrupted,read);}
     catch(error){throw new ManagedStepFailure(error,'prepare',journal);}
     return replayBegin(env,request);
   }
@@ -71,7 +74,7 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   if(session&&(request.version===2)!==('family' in session))return replayBegin(env,request);
   if(!session?.review||session.review.expected!==request.expected)return replayBegin(env,request);
   let reviewed:ReturnType<typeof validateReview>;
-  try{reviewed=validateReview(env,payload,session);}
+  try{reviewed=validateReview(env,payload,session,read);}
   catch(error){
     // A lost reply can leave the old in-memory review next to a new durable
     // receipt. Only that exact receipt can override the stale review refusal.
@@ -83,11 +86,11 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   m.operationId=request.operationId;m.consent.reviewDigest=request.expected;
   m.receipt={requestDigest:managedRequestDigest(request,next),expectedSequence:0,sequence:1,step:m.lastCompleted,outcome:'applied'} as typeof m.receipt;
   parseJournal(next,request.version);
-  const validate=()=>{validateReview(env,payload,session);};
+  const validate=()=>{validateReview(env,payload,session,read);};
   if('prior' in reviewed&&reviewed.prior){
     // No directory, capture or removal effect here; refuse near the deadline.
     budget.require(STEP_HEADROOM_MS);
-    upgradeManagedStepJournal(env,next as ManagedStepJournal,reviewed.prior,validate);
+    upgradeManagedStepJournal(env,next as ManagedStepJournal,reviewed.prior,validate,read);
   }else{
     budget.require(STEP_HEADROOM_MS);
     createManagedBindingDirectory(env);
@@ -124,14 +127,15 @@ function loadOperation(env:NodeJS.ProcessEnv,request:MutationRequest,hint?:Manag
   // authorize it from the hint. Target validation batches any newly read paths.
   return current;
 }
-function recoverInitial(env:NodeJS.ProcessEnv,payload:Payload,budget:PlatformRequestBudget,save:NonNullable<ReturnType<typeof observeInitialJournalSave>>) {
-  const {journal}=save;
-  requirePlatformStoreFence(journal.database,journal.source.dataRoot);
-  validateManagedStepTargetFacts(env,payload,journal);
-  budget.require(STEP_HEADROOM_MS);
-  settleInitialJournalSave(env,save);
+function recoverInitial(env:NodeJS.ProcessEnv,payload:Payload,budget:PlatformRequestBudget,save:NonNullable<ReturnType<typeof observeInitialJournalSave>>,
+  read:ManagedVolumeIdentityReader) {
+  settleInitialJournalSave(env,save,journal=>{
+    validateManagedStepTargetFacts(env,payload,journal,undefined,read,true);
+    budget.require(STEP_HEADROOM_MS);
+  });
 }
-function recoverInitialForMutation(env:NodeJS.ProcessEnv,payload:Payload,request:MutationRequest,budget:PlatformRequestBudget,remember:(journal:ManagedSetupStepJournal)=>void) {
+function recoverInitialForMutation(env:NodeJS.ProcessEnv,payload:Payload,request:MutationRequest,budget:PlatformRequestBudget,remember:(journal:ManagedSetupStepJournal)=>void,
+  read:ManagedVolumeIdentityReader) {
   const save=observeInitialJournalSave(env,request.version);if(!save)return;
   const m=save.journal.migration;
   need(m.operationId===request.operationId,'not-found');
@@ -141,7 +145,7 @@ function recoverInitialForMutation(env:NodeJS.ProcessEnv,payload:Payload,request
   // The checkpoint is pending without any intent; a capture review cannot
   // authorize a resume here. Other lifecycle controls allow pending.
   if(request.action==='resume'&&request.review)throw new SetupError('managed-review-stale');
-  recoverInitial(env,payload,budget,save);
+  recoverInitial(env,payload,budget,save,read);
 }
 function renewalFor(request:MutationRequest,journal:ManagedSetupStepJournal):ManagedCaptureRenewal|ManagedFreshCaptureRenewal|undefined {
   if(request.action!=='advance')return;
@@ -164,15 +168,15 @@ function diagnostic(error:unknown,journal:ManagedSetupStepJournal,uncertain=fals
 /** Caller holds the cross-process request fence. One advance, no looping into
  * the next step. Retry reconciles intent; capture ambiguity needs fresh review. */
 export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'advance'}>,
-  budget:PlatformRequestBudget,hint?:ManagedSetupStepJournal):ManagedMutationResult {
+  budget:PlatformRequestBudget,hint?:ManagedSetupStepJournal,read=managedVolumeIdentityReader):ManagedMutationResult {
   let current:ManagedSetupStepJournal|undefined;
-  try{return advance(env,payload,request,budget,hint,journal=>{current=journal;});}
+  try{return advance(env,payload,request,budget,hint,journal=>{current=journal;},read);}
   catch(error){throw new ManagedStepFailure(error,request.step.name,current);}
 }
 function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'advance'}>,
-  budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,remember:(journal:ManagedSetupStepJournal)=>void):ManagedMutationResult {
+  budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,remember:(journal:ManagedSetupStepJournal)=>void,read:ManagedVolumeIdentityReader):ManagedMutationResult {
   requirePlatformWriteBoundary();
-  recoverInitialForMutation(env,payload,request,budget,remember);
+  recoverInitialForMutation(env,payload,request,budget,remember,read);
   let capture:ManagedCaptureObservation=unknownCapture;
   let claims:ReturnType<typeof managedStepEffectClaims>|undefined,evidence:ReturnType<typeof managedStepEffectCommitted>|undefined;
   const prior=(()=>{
@@ -183,8 +187,8 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
     if(!replay(request,journal)){
       const m=journal.migration;
       need(request.expectedSequence===m.sequence&&sameManagedStep(request.step,m.step)&&['pending','running'].includes(m.state));
-      if(m.intent){evidence=managedStepEffectCommitted(env,payload,journal);capture=evidence.capture;}
-      else {claims=managedStepEffectClaims(env,payload,journal);capture=claims.captureBefore;}
+      if(m.intent){evidence=managedStepEffectCommitted(env,payload,journal,undefined,read);capture=evidence.capture;}
+      else {claims=managedStepEffectClaims(env,payload,journal,read);capture=claims.captureBefore;}
     }
     return journal;
   })();
@@ -211,7 +215,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
     running.migration.state='running';running.migration.diagnostic=null;running.migration.capture=capture;
     budget.require(STEP_HEADROOM_MS);
     if(canonical(running)!==canonical(prior)){
-      try{publishManagedStepIntent(env,running,prior,()=>{validateManagedStepTarget(env,payload,prior);});}
+      try{publishManagedStepIntent(env,running,prior,()=>{validateManagedStepTarget(env,payload,prior,undefined,read);});}
       catch(error){
         // Atomic rename can succeed before fsync/return fails. Do not report a
         // known pending/no-intent state when publication may already be durable.
@@ -226,7 +230,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
       }
     }
     published=true;
-    const created=applyManagedStepEffect(env,payload,running,freshCapture);
+    const created=applyManagedStepEffect(env,payload,running,freshCapture,read);
     const next=structuredClone(running),n=next.migration,index=n.plan.findIndex(s=>sameManagedStep(s,n.step));
     n.sequence++;n.lastCompleted=n.step;n.step=n.plan[index+1]??null;n.state=n.step?'pending':'complete';
     if(n.format===2&&n.lastCompleted!.name==='record-removal')n.phase='removed';
@@ -238,7 +242,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
     n.intent=null;n.diagnostic=null;n.capture=unknownCapture;
     n.receipt={requestDigest,expectedSequence:m.sequence,sequence:n.sequence,step:n.lastCompleted,outcome:'applied'} as typeof n.receipt;
     writeManagedStepJournal(env,next,running,()=>{
-      const evidence=managedStepEffectCommitted(env,payload,running,created);need(evidence.committed,'managed-step-unsettled');
+      const evidence=managedStepEffectCommitted(env,payload,running,created,read);need(evidence.committed,'managed-step-unsettled');
       // The public reply uses this fresh observation. Persisted capture remains
       // unknown rather than copying a pre-effect bit into a success checkpoint.
       capture=evidence.capture;
@@ -247,6 +251,9 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
   }catch(error){
     const failure=diagnostic(error,running,published);
     if(!published)return result(prior,'refused',unknownCapture,failure);
+    // Leave the durable intent for explicit recovery if the reviewed volume
+    // stopped verifying. No failure checkpoint on an unproved target.
+    if(error instanceof ManagedVolumePlacementError)return result(running,'refused',unknownCapture,failure);
     const failed=structuredClone(running),f=failed.migration;
     f.sequence++;f.state='failed';f.capture=unknownCapture;f.diagnostic=failure;
     f.receipt={requestDigest,expectedSequence:m.sequence,sequence:f.sequence,step:f.step,outcome:'failed'} as typeof f.receipt;
@@ -254,7 +261,7 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
       // Metadata-only failure settlement cannot assert the failed effect's
       // authority or roll it back. The journal owner still checks private paths,
       // exact current bytes and legal immutable-target evolution.
-      budget.require();writeManagedStepJournal(env,failed,running);
+      budget.require();writeManagedStepJournal(env,failed,running,()=>validateManagedFailurePlacement(running,read));
       return result(failed,'refused',unknownCapture,failure);
     }catch(settlement){return result(running,'refused',unknownCapture,diagnostic(settlement,running,true));}
   }
@@ -263,19 +270,20 @@ function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
 /** Controls retain every unresolved intent. Acquiring the request fence proves
  * no worker is still active; elapsed time alone never authorizes these writes. */
 export function controlManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'pause'|'abandon'|'resume'}>,
-  budget:PlatformRequestBudget,hint?:ManagedSetupStepJournal,session?:InspectionSession):ManagedMutationResult {
+  budget:PlatformRequestBudget,hint?:ManagedSetupStepJournal,session?:InspectionSession,read=managedVolumeIdentityReader):ManagedMutationResult {
   let current:ManagedSetupStepJournal|undefined;
-  try{return control(env,payload,request,budget,hint,session,journal=>{current=journal;});}
+  try{return control(env,payload,request,budget,hint,session,journal=>{current=journal;},read);}
   catch(error){throw new ManagedStepFailure(error,request.action==='resume'&&request.review?request.review.step:'lock',current);}
 }
 function control(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'pause'|'abandon'|'resume'}>,
-  budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,session:InspectionSession|undefined,remember:(journal:ManagedSetupStepJournal)=>void):ManagedMutationResult {
+  budget:PlatformRequestBudget,hint:ManagedSetupStepJournal|undefined,session:InspectionSession|undefined,remember:(journal:ManagedSetupStepJournal)=>void,
+  read:ManagedVolumeIdentityReader):ManagedMutationResult {
   requirePlatformWriteBoundary();
-  recoverInitialForMutation(env,payload,request,budget,remember);
+  recoverInitialForMutation(env,payload,request,budget,remember,read);
   const admitted=(()=>{
     const journal=loadOperation(env,request,hint);
     remember(journal);
-    return {journal,capture:replay(request,journal)?unknownCapture:validateManagedStepTarget(env,payload,journal)};
+    return {journal,capture:replay(request,journal)?unknownCapture:validateManagedStepTarget(env,payload,journal,undefined,read)};
   })();
   const prior=admitted.journal;let capture=admitted.capture;
   const repeated=replay(request,prior);if(repeated)return repeated;
@@ -289,7 +297,7 @@ function control(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
   const validateCaptureReview=()=>{
     need(review&&session&&captureIntent&&review.step===m.step?.name&&session.review?.expected===review.expected,'managed-review-stale');
     need((request.version===2)===('family' in session),'managed-review-stale');
-    const checked=validateReview(env,payload,session);
+    const checked=validateReview(env,payload,session,read);
     need(checked.operation&&canonical(checked.operation)===canonical(prior)&&checked.capture.state!=='unknown','managed-review-stale');
     return checked.capture;
   };
@@ -306,6 +314,6 @@ function control(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSe
   }
   n.receipt={requestDigest:managedRequestDigest(request,prior),expectedSequence:m.sequence,sequence:n.sequence,step:n.step,outcome:'applied'} as typeof n.receipt;
   budget.require();
-  writeManagedStepJournal(env,next,prior,()=>{validateManagedStepTarget(env,payload,prior);if(review)validateCaptureReview();});
+  writeManagedStepJournal(env,next,prior,()=>{validateManagedStepTarget(env,payload,prior,undefined,read);if(review)validateCaptureReview();});
   return result(next,'applied',capture);
 }

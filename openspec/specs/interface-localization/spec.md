@@ -29,23 +29,23 @@ The extension SHALL offer automatic, English, Russian and Simplified Chinese mod
 
 ### Requirement: Accessible switch outside plan content
 
-The side panel and full-screen page SHALL offer the language choice as a Language / "Язык" / "语言" entry of the More menu, opening a single-choice list of automatic, English, "Русский" and "简体中文". The entry SHALL remain available without a plan, before setup is complete and during loading errors. Work Status SHALL apply the shared choice without its own switch. Language names SHALL be displayed in their own languages, without flags.
+The rail and board SHALL offer the language choice in Settings, outside plan More, opening the existing single-choice list of automatic, English, Русский and 简体中文. Settings and its language entry SHALL remain available without a plan, before setup completes and during loading or failure. Work Status SHALL apply the shared choice without its own switch. Language names SHALL remain in their own languages, without flags.
 
 #### Scenario: Extension not yet set up
-- **WHEN** the user opens the side panel or page before setup is complete
-- **THEN** the More menu and its Language entry are present outside the setup form and do not require a successful progress read
+- **WHEN** the reader opens Settings before setup
+- **THEN** Language is accessible outside the setup form without requiring a successful progress read
 
 #### Scenario: Empty or unavailable content
-- **WHEN** no session is selected, no plans exist or reading progress has failed
-- **THEN** the Language entry remains in the panel's and page's More menu
+- **WHEN** no session is selected, no plans exist or the progress read failed
+- **THEN** Settings still offers Language on the panel and page
 
 #### Scenario: Compact view
 - **WHEN** Work Status is displayed
-- **THEN** its interface uses the shared selected language but contains no separate language switch
+- **THEN** it uses the shared interface language without a selector
 
 #### Scenario: Choosing in the menu
-- **WHEN** the user picks a language from the list with the keyboard
-- **THEN** the chosen entry shows as selected and keeps focus, and the list is not closed by an external language update
+- **WHEN** the reader chooses a language by keyboard
+- **THEN** the chosen entry shows as selected and keeps focus; an external language update does not dismiss the open list
 
 ### Requirement: Save the choice in the device profile
 
@@ -61,12 +61,11 @@ The extension SHALL save one shared language choice in device-scoped storage for
 
 ### Requirement: Behavior without device storage support
 
-If the host does not support device storage, the extension SHALL follow the OpenChamber language and explain that saving and manual selection are unavailable. The Language entry SHALL remain in the More menu with its choices disabled and one accessible line of explanation. The extension MUST NOT create a temporary manual choice for an individual view, send unsupported device storage requests or fall back to shared server storage.
+Without device storage the extension SHALL follow the host language. The Language entry SHALL remain in Settings with choices disabled and one accessible explanation. It MUST NOT create a temporary manual choice, make unsupported device requests or fall back to shared server storage.
 
 #### Scenario: Host does not advertise support
-- **WHEN** the host does not report device storage support
-- **THEN** all three views use automatic mode
-- **AND** the panel's and page's Language list shows its choices disabled with one line saying the interface follows the OpenChamber language, without making device storage requests or writing a server setting
+- **WHEN** the host lacks device storage
+- **THEN** all three surfaces use automatic mode, and both Settings menus explain the disabled choices without requesting or saving them
 
 ### Requirement: Save failures do not look like a successful choice
 

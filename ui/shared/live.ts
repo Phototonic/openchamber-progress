@@ -4,6 +4,7 @@ import type { HostClient } from '@openchamber/sdk';
 import { directoryWithin } from './model.ts';
 import { directoryKey } from './path.ts';
 import type { InterfaceLanguage } from './i18n.ts';
+import { webDocumentUrl } from './web-url.ts';
 
 // Mirrors of the SDK workspace types (not re-exported from the package entry).
 export type LoadState = 'loading' | 'ready' | 'error';
@@ -11,13 +12,21 @@ export type Activity = 'unknown' | 'idle' | 'running' | 'retrying' | 'waiting-pe
 export interface LiveProject { id: string; name: string; directory: string }
 export interface LiveWorktree { directory: string; name: string; branch: string }
 export interface KnownWorktree extends LiveWorktree { status: 'ready' | 'pending' | 'invalid' | 'missing' }
+/** Literal host metadata. A link without an admitted URL is text-only. */
+export interface LiveSessionLink {
+  title: string;
+  kind: 'issue' | 'change';
+  url?: string;
+  /** Host link time only, never progress or resource state. */
+  linkedAt?: number;
+}
 export interface LiveSession {
   id: string; title: string; projectId: string; directory: string; parentId: string | null;
   archivedAt: number | null; worktree: LiveWorktree | null; activity: Activity; outcome: 'completed' | 'failed' | null;
   /** Host creation time: display order only, never an activity time. */
   createdAt?: number;
   agent?: string;
-  links?: { title: string; kind: 'issue' | 'change' }[];
+  links?: LiveSessionLink[];
   moreLinks?: boolean;
   /**
    * Transition evidence, numbered by the workspace's monotonic sequence (`LiveSnapshot.seq`):
@@ -72,17 +81,20 @@ export function indexedLive(snap: LiveSnapshot): LiveSnapshot {
   return copy;
 }
 
-/** Optional host context, never task evidence. URLs are validated but not retained. */
+/** Optional host context, never task evidence. Addresses stay in the live guest reading. */
 export function hostWorkContext(value: { agent?: unknown; links?: unknown }): Pick<LiveSession, 'agent' | 'links' | 'moreLinks'> {
   const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && !/[\u0000-\u001f\u007f]/u.test(v);
   const agent = text(value.agent) ? value.agent.slice(0, 80) : undefined;
-  const links: NonNullable<LiveSession['links']> = [];
+  const links: LiveSessionLink[] = [];
   let moreLinks = false;
-  if (Array.isArray(value.links)) for (const link of value.links.slice(0, 100)) {
-    if (!link || typeof link !== 'object' || !text(link.title) || !text(link.url) || !['issue', 'change'].includes(link.kind) || !Number.isFinite(link.linkedAt) || link.linkedAt < 0) continue;
-    try { const url = new URL(link.url); if (!['https:', 'http:'].includes(url.protocol)) continue; } catch { continue; }
+  if (Array.isArray(value.links)) for (const link of value.links.slice(0, 100) as unknown[]) {
+    if (!link || typeof link !== 'object') continue;
+    const { title, kind, linkedAt, url: address } = link as Partial<Record<keyof LiveSessionLink, unknown>>;
+    if (!text(title) || (kind !== 'issue' && kind !== 'change') || typeof linkedAt !== 'number' || !Number.isFinite(linkedAt) || linkedAt < 0 || typeof address !== 'string') continue;
+    const url = webDocumentUrl(address);
+    if (!url) continue;
     if (links.length === 5) { moreLinks = true; break; }
-    links.push({ title: link.title.slice(0, 200), kind: link.kind });
+    links.push({ title: title.slice(0, 200), kind, url, linkedAt });
   }
   return { ...(agent ? { agent } : {}), ...(links.length ? { links } : {}), ...(moreLinks ? { moreLinks: true } : {}) };
 }

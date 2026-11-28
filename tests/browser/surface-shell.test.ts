@@ -55,7 +55,7 @@ function fixture(locale = 'en', saved: number | null = null) {
             mount(holder: Element) { holder.append(root); }, refresh() {}, dispose() { options.open = false; },
           };
         },
-        segmentedBar: () => new Element('div'), warningBadge: () => new Element('span'),
+        segmentedBar: () => new Element('div'), warningBadge: () => new Element('span'), icon: () => new Element('span'),
       },
       '@openchamber/sdk/ui': { mountButton(root: Element, o: any) { const b = new Element('button'); b.textContent = o.label; b.listeners.click = o.onClick; root.append(b); buttons.push(b); } },
     } as Record<string, unknown>)[path] ?? {},
@@ -72,23 +72,29 @@ function fixture(locale = 'en', saved: number | null = null) {
   const closed: string[] = [];
   const options = {
     board: true, renderPanel: () => panel, closePanel: (kind: string) => closed.push(kind),
-    menuActions: [] as { id: string; label: string; disabled: boolean; run(): void }[],
   };
-  const paint = (p: any = null) => { const root = new Element('div'); const opened = shell.paint(root, vc, p, options); return { root, opened }; };
+  const paint = (p: any = null) => {
+    const root = new Element('div');
+    shell.reconcile(vc, p, options);
+    root.append(shell.settingsButton(vc));
+    const opened = shell.paint(root, vc, p, options);
+    return { root, opened };
+  };
   return { shell, vc, plan, menus, buttons, paint, options, panel, closed, checkpointReads, exports, window };
 }
 for (const board of [false, true]) test(`${board ? 'board' : 'rail'} keeps More open through a shell repaint`, () => {
   const f = fixture();
   f.options.board = board;
-  f.options.menuActions = [{ id: 'extra', label: 'Extra', disabled: false, run() {} }];
+  let eligible = true;
+  f.vc.cancelPlan = () => ({ eligible, open() {} });
   f.paint(f.plan);
   const menu = f.menus.at(-1);
   menu.open = true;
-  f.options.menuActions[0].disabled = true;
+  eligible = false;
   f.paint(f.plan);
   assert.equal(f.menus.at(-1), menu);
   assert.equal(menu.open, true, 'the current menu was not dismissed');
-  assert.equal(menu.items.find((item: { id?: string }) => item.id === 'extra').disabled, true);
+  assert.equal(menu.items.some((item: { id?: string }) => item.id === 'finish-cancelled'), false);
   f.vc.identity = 'another-store';
   f.paint(f.plan);
   assert.equal(menu.open, false);
@@ -141,26 +147,57 @@ test('same-reading reset retires Setup presentation but keeps the panel, not oth
   f.shell.reset(true);
   assert.equal(f.paint().opened, false, 'other panels still close on data reset');
 });
-test('plan menu is shared with closed-plan cleanup and keeps destructive actions last', () => {
+const walk = (n: Element, out: Element[] = []): Element[] => { out.push(n); n.children.forEach(child => walk(child, out)); return out; };
+const linkedSnapshot = (ownerLinks: live.LiveSessionLink[]) => {
+  const session = (id: string, parentId: string | null, links: live.LiveSessionLink[]) => ({ id, title: id, projectId: 'alpha', directory: '/fixture/Alpha', parentId, archivedAt: null, worktree: null, activity: 'idle', outcome: null, ...(links.length ? { links } : {}) });
+  return { ...live.EMPTY_LIVE, projectsState: 'ready', projects: [{ id: 'alpha', name: 'Alpha', directory: '/fixture/Alpha' }],
+    sessions: new Map([['alpha', { state: 'ready', records: [session(P1.sessionId, null, ownerLinks), session('ses_fixture_child_C1', P1.sessionId, [{ title: 'Child-only change', kind: 'change', url: 'https://example.invalid/child' }])] }]]) };
+};
+for (const board of [false, true]) test(`${board ? 'board' : 'rail'} header shows only the main session's addressable links and drops them on a link-only update`, () => {
   const f = fixture();
-  f.paint(f.plan);
-  assert.equal(f.exports.offerPlanActions(f.vc.reading, f.plan, [
-    { id: 'archive', label: 'Archive', run() {} }, { id: 'delete', label: 'Delete', destructive: true, run() {} },
-  ]), true);
-  const ids = f.menus.at(-1).items.filter((i: any) => !i.separator).map((i: any) => i.id);
-  assert.deepEqual(Array.from(ids), ['history', 'sessions', 'archive', 'language', 'setup', 'troubleshooting', 'delete']);
+  f.options.board = board;
+  const opened: string[] = [];
+  f.vc.env.openLinkedWorkUrl = (url: string) => opened.push(url);
+  f.vc.env.live = linkedSnapshot([
+    { title: 'PR #95', kind: 'change', url: 'https://example.invalid/change/95' },
+    { title: 'Issue #12', kind: 'issue', url: 'https://example.invalid/issue/12' },
+    { title: 'Text-only issue', kind: 'issue' },
+  ]);
+  const header = () => walk(f.paint(f.plan).root).find(n => n.dataset.testid === 'surface-header')!;
+  const chips = (head: Element) => walk(head).filter(n => n.dataset.testid === 'linked-work-link');
+  const first = chips(header());
+  assert.deepEqual(first.map(b => walk(b).find(n => n.className === 'ap-work-link-title')?.textContent), ['PR #95', 'Issue #12']);
+  assert.deepEqual(first.map(b => b.dataset.kind), ['change', 'issue']);
+  assert.deepEqual(first.map(b => b.dataset.focusKey), ['https://example.invalid/change/95', 'https://example.invalid/issue/12'], 'each chip has its own focus identity');
+  assert.deepEqual(opened, [], 'rendering opens nothing');
+  first[1]!.listeners.click();
+  assert.deepEqual(opened, ['https://example.invalid/issue/12'], 'one activation, one open');
+  f.vc.env.live = linkedSnapshot([]);
+  const head = header();
+  assert.equal(chips(head).length, 0);
+  assert.equal(walk(head).some(n => n.dataset.testid === 'linked-work'), false, 'no empty group or placeholder');
+  assert.ok(walk(head).some(n => n.dataset.testid === 'plan-title'), 'the title remains');
 });
 
-test('rail More offers the checked quiet filter without a selected plan', () => {
+test('plan and settings menus do not duplicate the four views, summary or cleanup actions', () => {
+  const f = fixture();
+  f.paint(f.plan);
+  const [settings, more] = f.menus;
+  assert.deepEqual(Array.from(settings.items, (i: any) => i.id), ['language', 'setup', 'troubleshooting']);
+  assert.deepEqual(Array.from(more.items, (i: any) => i.id), ['sessions']);
+});
+
+test('rail can mount the checked quiet filter without a selected plan or a menu', () => {
   const f = fixture();
   f.options.board = false;
   let choice: boolean | null = null;
   f.vc.quiet.choose = (hide: boolean) => { choice = hide; };
   f.paint();
-  const menu = f.menus.at(-1);
-  const row = menu.items.find((item: { id?: string }) => item.id === 'quiet-plan-filter');
-  assert.equal(row.checked, true);
-  menu.onSelect(row.id);
+  const quiet = f.exports.quietCheck(f.vc);
+  const control = quiet.children[0];
+  assert.equal(control.checked, true);
+  control.checked = false;
+  control.listeners.change();
   assert.equal(choice, false);
 });
 
@@ -200,20 +237,21 @@ test('history dot uses only an existing older device review point, never a diges
     const f = fixture('en', saved);
     f.paint(f.plan); await Promise.resolve(); f.paint(f.plan);
     assert.equal(f.checkpointReads.length, 1);
-    assert.equal(f.menus.at(-1).label, saved === 1 ? 'More, new history' : 'More');
+    const historyName = () => f.shell.switchView('list', () => {}, 'en').children[3].querySelector('button').attributes['aria-label'];
+    assert.equal(historyName(), saved === 1 ? 'History, new revisions' : undefined);
     f.vc.ctx.features.deviceStorage = false; f.paint(f.plan);
-    assert.equal(f.menus.at(-1).label, 'More');
+    assert.equal(historyName(), undefined);
     assert.equal(f.checkpointReads.length, 1);
   }
 });
-test('View current task in the History panel schedules a paint and reveals only after current detail', () => {
-  const { shell, vc, plan, menus } = fixture();
+test('View current task in History schedules a paint and reveals only after current detail', () => {
+  const { shell, vc, plan } = fixture();
   let activate: ((item: string, title: string) => void) | undefined;
   let notice = '', needsPaint = false;
   const revealed: string[] = [];
   const task = P1_ITEMS.find(item => item.kind === 'task')!;
   vc.ctx.features.deviceStorage = false;
-  vc.ui = { tab: 'document' };
+  vc.ui = { tab: 'history' };
   vc.setUi = (patch: object) => { Object.assign(vc.ui, patch); needsPaint = true; };
   vc.retry = () => {}; // An unchanged service refresh doesn't invalidate the paint.
   vc.requestHistory = () => {};
@@ -223,30 +261,29 @@ test('View current task in the History panel schedules a paint and reveals only 
   const globals = {
     shell, pendingTask: null, shownDigest: null, copy: () => copy,
     messages: { en: copy, ru: copy, 'zh-CN': copy }, said: (en: string) => en,
-    el: (tag: string) => new Element(tag), reporting: {}, ownerOf: () => 'fixture',
+    el: (tag: string) => new Element(tag), testid: (n: Element, id: string) => { n.dataset.testid = id; return n; },
+    surface: () => false, trusted: () => false, cleanupBlock: () => new Element('div'),
     visiblePlans: () => [plan], readingScope: () => 'fixture', isSearching: () => false, selectedPlan: () => plan,
     compactInbox: null, hiddenInboxAction: () => [], historyBlock: () => new Element('div'),
     digestBlock: (_panel: unknown, _env: unknown, action: typeof activate) => { activate = action; return new Element('div'); },
     chooseTab: (_vc: unknown, tab: string) => vc.setUi({ tab }),
     revealCurrentTask: (_article: unknown, _plan: unknown, item: string) => revealed.push(item),
   };
-  pageFunction('surface', globals);
+  pageFunction('detailPane', globals);
   pageFunction('currentTask', globals);
-  const { surface, currentTask } = globals as typeof globals & {
-    surface: (root: Element, context: unknown, plan: unknown) => boolean;
+  const { detailPane, currentTask } = globals as typeof globals & {
+    detailPane: (root: Element, context: unknown, plan: unknown, session: null) => void;
     currentTask: (root: unknown, context: unknown) => void;
   };
   const wantDetails = pageHook('wantDetails', globals);
-  surface(new Element('div'), vc, plan);
-  menus.at(-1).onSelect('history');
-  surface(new Element('div'), vc, plan);
+  detailPane(new Element('div'), vc, plan, null);
   needsPaint = false;
   activate!(task.id, task.title);
   assert.ok(needsPaint, 'the action must not depend on a changed plan list to request current detail');
   assert.equal(notice, `Opening ${task.title}`);
   assert.equal(wantDetails(vc)[0], plan);
   currentTask(null, vc);
-  assert.equal(shell.activePanel, 'history', 'keep History open until detail is ready');
+  assert.equal(vc.ui.tab, 'history', 'keep History open until detail is ready');
   vc.detail = () => ({ state: 'ready', value: { revision: plan.revision, items: P1_ITEMS } });
   currentTask(null, vc);
   assert.equal(shell.activePanel, null);
@@ -263,11 +300,11 @@ test('panel state is frame-local and resets on plan or authority changes', () =>
 });
 test('shell reconciliation retires another plan panel before view visibility is computed', () => {
   const f = fixture('ru'); f.paint(f.plan);
-  const controls = f.exports.surfaceViewSwitch('list', () => {}, f.vc.env.locale, () => f.shell.openDocument(f.vc));
-  assert.deepEqual(Array.from(controls.children, (node: Element) => node.querySelector('button')?.textContent), ['Карта', 'Список', 'Документ плана']);
-  f.buttons.at(-1).listeners.click();
+  const controls = f.shell.switchView('list', () => {}, f.vc.env.locale);
+  assert.deepEqual(Array.from(controls.children, (node: Element) => node.querySelector('button')?.textContent), ['Карта', 'Список', 'Документ', 'История']);
+  f.menus.at(-1).onSelect('sessions');
   f.shell.reconcile(f.vc, f.plan, f.options);
-  assert.equal(f.shell.activePanel, 'document', 'a repaint of the same reading keeps its panel');
+  assert.equal(f.shell.activePanel, 'sessions', 'a repaint of the same reading keeps its panel');
   f.shell.reconcile(f.vc, { ...f.plan, key: 'source/another-plan' }, f.options);
   assert.equal(f.shell.activePanel, null, 'the new reading is usable before paint');
 });

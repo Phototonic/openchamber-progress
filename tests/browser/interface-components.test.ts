@@ -99,6 +99,52 @@ test('session details show bounded host context as literal localized text only f
   }
 });
 
+test('header links come only from the verified main session, as literal localized buttons that open on activation', () => {
+  const { components: c } = fixture();
+  const walk = (n: Element | string, out: Element[] = []): Element[] => { if (n instanceof Element) { out.push(n); n.children.forEach(child => walk(child, out)); } return out; };
+  const metadata = live.hostWorkContext({ links: [
+    { title: '<img src=x onerror=alert(1)>PR #95', kind: 'change', url: 'https://example.invalid/change/95', linkedAt: 1 },
+    { title: 'Issue #12', kind: 'issue', url: 'https://example.invalid/issue/12', linkedAt: 2 },
+    ...Array.from({ length: 5 }, (_, i) => ({ title: `Extra ${i}`, kind: 'issue', url: `https://example.invalid/extra/${i}`, linkedAt: 3 })),
+  ] });
+  assert.equal(metadata.moreLinks, true);
+  const record = (id: string, projectId: string, extra: object = {}) => ({ id, title: 'Host title', directory: '/fixture/Alpha', projectId, parentId: null, activity: 'idle', ...extra });
+  const snapshot = (records: Map<string, object[]>) => ({ ...live.EMPTY_LIVE, projectsState: 'ready', sessions: new Map([...records].map(([p, r]) => [p, { state: 'ready', records: r }])) });
+  const owned = snapshot(new Map([['project', [record('A', 'project', metadata), record('C', 'project', { links: [{ title: 'Child link', kind: 'issue', url: 'https://example.invalid/child' }] })]]]));
+  const plan = { sourceId: 'source', directory: '/fixture/Alpha', ownerSessionId: 'A' };
+  const expected = { en: ['Linked in OpenChamber', 'Host-linked change: ', 'and more'], ru: ['Связано в OpenChamber', 'Изменение, связанное в хосте: ', 'и другие'], 'zh-CN': ['OpenChamber 中的关联', '宿主关联的变更: ', '还有更多'] } as const;
+  for (const locale of ['en', 'ru', 'zh-CN'] as const) {
+    const opened: string[] = [];
+    const env = { locale, boundSource: 'source', unverifiedSources: new Set(), live: owned, openLinkedWorkUrl: (url: string) => opened.push(url) };
+    const group = c.linkedWorkChips(plan, env)!;
+    const nodes = walk(group);
+    const [label, kind, more] = expected[locale];
+    assert.equal(group.getAttribute('role'), 'group');
+    const named = nodes.find(n => (n as any).id === group.getAttribute('aria-labelledby'));
+    assert.equal(named?.textContent, label, `${locale}: visible host label names the group`);
+    const buttons = nodes.filter(n => n.dataset.testid === 'linked-work-link');
+    assert.equal(buttons.length, 5, `${locale}: the retained five, never the child's link`);
+    assert.equal(buttons[0].textContent, `${kind}${metadata.links![0].title}`, `${locale}: spoken kind and literal full title`);
+    assert.equal((buttons[0] as any).title, metadata.links![0].title, 'full title on hover');
+    assert.equal(nodes.find(n => n.dataset.testid === 'linked-work-more')?.textContent, more, `${locale}: qualification, not a total`);
+    assert.ok(!nodes.some(n => ['img', 'script', 'a'].includes(n.tagName)), 'no markup, image or navigable anchor');
+    assert.ok(!group.textContent.includes('https:'), 'addresses are not shown');
+    assert.deepEqual(opened, []);
+    buttons[1].listeners.click();
+    assert.deepEqual(opened, ['https://example.invalid/issue/12']);
+  }
+  const env = { locale: 'en', boundSource: 'source', unverifiedSources: new Set(), live: owned, openLinkedWorkUrl() {} };
+  assert.equal(c.linkedWorkChips({ ...plan, sourceId: 'foreign' }, env), null, 'same-ID foreign session');
+  assert.equal(c.linkedWorkChips(plan, { ...env, unverifiedSources: new Set(['source']) }), null, 'unverified source');
+  assert.equal(c.linkedWorkChips(plan, { ...env, boundSource: null }), null, 'no verified binding');
+  assert.equal(c.linkedWorkChips(plan, { ...env, openLinkedWorkUrl: undefined }), null, 'no host opener');
+  assert.equal(c.linkedWorkChips({ ...plan, ownerSessionId: 'C2' }, env), null, 'owner not listed');
+  const ambiguous = snapshot(new Map([['project', [record('A', 'project', metadata)]], ['other', [record('A', 'other', metadata)]]]));
+  assert.equal(c.linkedWorkChips(plan, { ...env, live: ambiguous }), null, 'ambiguous same-spelled session');
+  const textOnly = snapshot(new Map([['project', [record('A', 'project', { links: [{ title: 'Text only', kind: 'issue' }] })]]]));
+  assert.equal(c.linkedWorkChips(plan, { ...env, live: textOnly }), null, 'no addressable link, no group');
+});
+
 test('expanded Sessions panel has one localized heading and keeps every participant and host fact', () => {
   const { components: c } = fixture();
   const metadata = live.hostWorkContext({ agent: 'Host agent', links: [{ title: 'Linked issue', kind: 'issue', url: 'https://example.invalid/issue', linkedAt: 1 }] });
@@ -247,7 +293,7 @@ test('inline document repaint retains a read error without automatic retry, but 
   assert.equal(requests, 1, 'data and language repaints keep the cached failure');
   assert.match(english.textContent, /progress is busy/i);
   assert.match(russian.textContent, /Прогресс занят/);
-  russian.children[1].children[0].children[1].listeners.click();
+  russian.children[0].children[0].children[1].listeners.click();
   assert.equal(requests, 2, 'explicit Retry starts exactly one additional read');
 });
 

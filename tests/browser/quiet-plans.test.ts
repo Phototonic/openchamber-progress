@@ -8,6 +8,8 @@ import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, SRC, summary } from './fixtures.ts';
 import { pageFunction } from './page-hooks.ts';
+import { formatCount } from '../../ui/shared/format.ts';
+import { resolveLanguage } from '../../ui/shared/i18n.ts';
 
 test('the board list leaves a quiet-filter empty state to the detail pane', () => {
   const plans = parsePlansPage(JSON.stringify(plansPage([summary('sample', [])]))).data;
@@ -17,6 +19,7 @@ test('the board list leaves a quiet-filter empty state to the detail pane', () =
   const tags: string[] = [];
   const globals = {
     frame: {},
+    formatCount, resolveLanguage, selectionControl: () => null, tidyControl: () => null, cleanupNotice: () => null,
     derivedBoard: () => derive.get({ ...input, excluded: new Set([plans[0]!.key]) }),
     copy: () => ({ plans: 'Plans', listEmpty: 'No matching plans' }),
     el: () => ({ dataset: {}, setAttribute() {}, append() {} }),

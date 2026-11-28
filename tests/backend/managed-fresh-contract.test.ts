@@ -1,11 +1,18 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {managedFreshStepRequest,managedStepRequest,managedSetupStepRequest,managedFreshPlan} from '../../shared/managed-steps.ts';
-import {managedFreshStepFixtures,observedFreshClaim} from '../fixtures/managed-fresh-steps.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import {managedFreshStepRequest,managedStepRequest,managedSetupStepRequest,managedFreshPlan,MANAGED_STEP_LIMITS} from '../../shared/managed-steps.ts';
+import {absentFreshClaim,managedFreshStepFixtures,observedFreshClaim} from '../fixtures/managed-fresh-steps.ts';
 import {managedStepFixtures} from '../fixtures/managed-steps.ts';
+import {releasedManagedJournal} from '../fixtures/released-managed-journal.ts';
+import {createFixtureBinding} from '../fixtures/managed.ts';
 import {parseManagedFreshStepJournal,parseManagedStepJournal,managedTargetDigest,managedRequestDigest,
   validateManagedFreshCreationChange,type ManagedFreshStepJournal} from '../../setup/managed-step-journal.ts';
 import {canonical,digest} from '../../shared/store.ts';
+import {migrationFile,readManagedFreshStepJournal} from '../../setup/managed-migration.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,type ManagedVolumeIdentityEvidence,
+  type ManagedVolumeIdentityReader} from '../../setup/managed-volume-identity.ts';
 
 function parse(j:ManagedFreshStepJournal){return parseManagedFreshStepJournal(JSON.stringify(j));}
 function hash(j:ManagedFreshStepJournal){j.migration.consent.targetDigest=managedTargetDigest(j);j.migration.consent.planDigest=digest(canonical(j.migration.plan));}
@@ -58,6 +65,98 @@ test('fresh consent digests bind every creation choice and frozen identity but n
   const n=structuredClone(j);n.migration.created.directory=observedFreshClaim('/fixture/store','directory');assert.equal(managedTargetDigest(n),original);
   assert.notEqual(managedRequestDigest(request,j),managedRequestDigest({...request,version:1},j));
 });
+
+test('released and current fresh readers agree on old bytes; rollback refuses enriched state',async()=>{
+  const root=fs.mkdtempSync('/tmp/opencode/managed-fresh-contract-');
+  try{
+    const {env,binding}=createFixtureBinding(root),file=migrationFile(env),managed=path.dirname(file);
+    const j={...managedFreshStepFixtures('retain',false,'reuse').journal,...binding},m=j.migration,f=m.fresh;
+    f.directory=observedFreshClaim(path.dirname(binding.database),'directory');
+    f.database={...observedFreshClaim(binding.database,'file'),digest:null};
+    f.sidecars=['-journal','-wal','-shm'].map(s=>absentFreshClaim(binding.database+s));
+    f.source=binding.source;f.selection=absentFreshClaim(path.join(managed,'progress-binding.json'));
+    f.journal=absentFreshClaim(file);f.legacy=absentFreshClaim(path.join(binding.source.configRoot,'plugins','agent-progress'));
+    hash(j);
+    const old=await releasedManagedJournal(path.join(root,'release')),bytes=Buffer.from(JSON.stringify(j));
+    fs.writeFileSync(file,bytes,{mode:0o600});
+    assert.deepEqual(old.readManagedFreshStepJournal(env),j);
+    assert.deepEqual(readManagedFreshStepJournal(env),j);
+    assert.deepEqual(fs.readFileSync(file),bytes);
+    f.volumeIdentity={version:1,paths:[{path:j.database,fingerprint:'a'.repeat(64)}]};
+    hash(j);
+    const assertEnriched=()=>{
+      const enriched=Buffer.from(JSON.stringify(j));
+      fs.writeFileSync(file,enriched);
+      assert.deepEqual(readManagedFreshStepJournal(env),j);
+      assert.throws(()=>old.readManagedFreshStepJournal(env),{code:'managed-journal-unsupported'});
+      const {status}=old.observeManagedSetup(env);
+      assert.equal(status.configured,false);assert.equal(status.verified,false);
+      assert.equal(status.delivery?.migration,'unavailable');
+      assert.ok(status.diagnostics.includes('managed-journal-unsupported'));
+      assert.deepEqual(fs.readFileSync(file),enriched);
+    };
+    assertEnriched();
+    Object.assign(m,{phase:'complete',state:'complete',step:null,lastCompleted:m.plan.at(-1),sequence:m.plan.length});
+    m.receipt={requestDigest:'7'.repeat(64),expectedSequence:m.sequence-1,sequence:m.sequence,step:m.lastCompleted,outcome:'applied'};
+    assertEnriched();
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('fresh witnesses cannot be removed or changed and accept only bounded known fields and paths',()=>{
+  const j=managedFreshStepFixtures().journal,f=j.migration.fresh;
+  f.volumeIdentity={version:1,paths:[{path:f.directory.path,fingerprint:'a'.repeat(64)}]};
+  hash(j);parse(j);
+  for(const change of [
+    (n:ManagedFreshStepJournal)=>{delete n.migration.fresh.volumeIdentity;},
+    (n:ManagedFreshStepJournal)=>{n.migration.fresh.volumeIdentity!.paths[0]!.fingerprint='b'.repeat(64);},
+  ]){
+    const n=structuredClone(j);change(n);
+    assert.throws(()=>parse(n),{code:'managed-journal-unsupported'});
+    hash(n);parse(n);
+    assert.throws(()=>validateManagedFreshCreationChange(j,n),{code:'managed-step-conflict'});
+  }
+  for(const invalid of [null,{version:2,paths:f.volumeIdentity.paths},{version:1,paths:[]},
+    {...f.volumeIdentity,extra:true},{...f.volumeIdentity,paths:[...f.volumeIdentity.paths,...f.volumeIdentity.paths]},
+    {...f.volumeIdentity,paths:[{path:'/fixture/unreviewed',fingerprint:'a'.repeat(64)}]},
+    {...f.volumeIdentity,paths:[{path:f.directory.path,fingerprint:'A'.repeat(64)}]},
+    {...f.volumeIdentity,paths:[{path:f.directory.path,fingerprint:'a'.repeat(64),containingMount:'/fixture'}]}]){
+    const n=structuredClone(j);
+    n.migration.fresh.volumeIdentity=invalid as typeof f.volumeIdentity;
+    hash(n);assert.throws(()=>parse(n),{code:'managed-journal-unsupported'});
+  }
+  const n=structuredClone(j);n.migration.fresh.volumeIdentity!.paths=Array.from(
+    {length:MANAGED_STEP_LIMITS.claimPaths+1},()=>f.volumeIdentity!.paths[0]!);
+  hash(n);assert.throws(()=>parse(n),{code:'managed-step-limit'});
+});
+
+test('historical object comparison requires positive per-path proof even when the device is reused',()=>{
+  const saved=observedFreshClaim('/fixture/store','directory'),fingerprint='a'.repeat(64);
+  const evidence:ManagedVolumeIdentityEvidence={version:1,paths:[{path:saved.path,fingerprint}]};
+  const renumbered={...saved,object:{...saved.object!,device:'2'}};
+  const read:ManagedVolumeIdentityReader=target=>{
+    assert.ok(target===saved||target===renumbered);
+    return {kind:'verified',fingerprint};
+  };
+  const unavailable:ManagedVolumeIdentityReader=()=>({kind:'unavailable'});
+  const unexpected:ManagedVolumeIdentityReader=()=>{throw Error('unanchored or incompatible objects never read proof');};
+  assert.equal(compareManagedHistoricalObject(saved,renumbered,evidence,read),'same');
+  assert.equal(compareManagedHistoricalObject(saved,saved,evidence,()=>({kind:'verified',fingerprint:'b'.repeat(64)})),'different');
+  assert.equal(compareManagedHistoricalObject(saved,saved,evidence,unavailable),'unavailable');
+  assert.equal(compareManagedHistoricalObject(saved,renumbered,evidence,unavailable),'unavailable');
+  assert.equal(compareManagedHistoricalObject(saved,saved,undefined,unexpected),'same');
+  assert.equal(compareManagedHistoricalObject(saved,renumbered,undefined,unexpected),'different');
+  const other=observedFreshClaim('/fixture/other-store','directory');
+  assert.equal(compareManagedHistoricalObject(other,{...renumbered,path:other.path},evidence,unexpected),'different');
+  for(const live of [{...renumbered,path:other.path},{...renumbered,kind:'file' as const},{...renumbered,object:null},
+    {...renumbered,object:{...renumbered.object,inode:'0'}},{...renumbered,object:{...renumbered.object,birthNs:'0'}}]){
+    assert.equal(compareManagedHistoricalObject(saved,live,evidence,unexpected),'different');
+  }
+  const absent=absentFreshClaim(saved.path);
+  assert.equal(compareManagedHistoricalObject(absent,renumbered,evidence,unexpected),'different');
+  assert.equal(compareManagedHistoricalObject(absent,absent,evidence,unavailable),'unavailable');
+  assert.equal(compareManagedVolumePlacement(renumbered,evidence,read),'same');
+});
+
 test('only completion of its durable creation intent may fill a checkpoint; target facts never evolve',()=>{
   const prior=managedFreshStepFixtures().journal,m=prior.migration;m.state='running';
   m.intent={requestDigest:'7'.repeat(64),expectedSequence:1,step:m.step!,effect:'intent',before:[m.fresh.directory],

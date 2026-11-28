@@ -7,21 +7,23 @@ Remember a small, fixed set of view choices on the device, with honest failure w
 
 ### Requirement: Bounded view states include the quiet-plan filter
 
-The extension SHALL remember hidden Needs you items, rail/board Needs you expansion, incomplete-count dismissal and one shared rail/board quiet-plan filter on the device. Other disclosures, filters, map positions, selections and panels SHALL stay unstored apart from established language, History review points and per-session rail choice. The new preference SHALL preserve existing view-state records.
+The extension SHALL continue to remember hidden Needs you items, rail/board Needs you expansion, incomplete-count dismissal and one shared quiet-plan filter on the device. The board's saved expansion SHALL apply to its relocated inbox. Other disclosures, filters, map and reading positions, selections and panels SHALL remain unstored apart from established language, History review points and per-session rail choice. Existing records MUST NOT be rewritten merely because controls moved.
 
 #### Scenario: Reload
-- **WHEN** the user expands Needs you on the rail, hides one item and dismisses the indicator, then reloads
-- **THEN** Needs you is expanded, the item stays hidden and the indicator stays dismissed while its reasons are unchanged
-- **AND** a successfully saved quiet-plan filter is restored too
+- **WHEN** the person reloads after successfully saving inbox expansion, hiding an item, dismissing the indicator and choosing a quiet filter
+- **THEN** the saved states are respected in their existing scopes, including board expansion at its new location
 
 #### Scenario: Defaults
 - **WHEN** no state is saved
-- **THEN** Needs you is collapsed on the rail and expanded on the board, no Needs you items are hidden and the indicator is shown when needed
-- **AND** quiet plans are hidden on the rail and board until the person disables the filter
+- **THEN** Needs you starts collapsed on the rail and at the board's top-bar count, nothing is hidden, the indicator shows when needed and quiet plans are hidden until the reader changes the filter
 
 #### Scenario: Other reading state
-- **WHEN** the user changes a map filter, zoom, selection or an opened item and reloads
-- **THEN** none of those is restored
+- **WHEN** the reader changes a map filter or viewport, scrolls a list or document, or opens an item, then reloads
+- **THEN** none of those reading positions, filters or opened items is restored from storage
+
+#### Scenario: Quiet filter only lasts in this view
+- **WHEN** the host does not support device storage
+- **THEN** the quiet switch remains reversible in the current frame, and its tooltip and accessible description explain the choice is temporary without an extra line of copy
 
 ### Requirement: Device storage only, with honest failure
 

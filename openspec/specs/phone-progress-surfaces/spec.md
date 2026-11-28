@@ -48,25 +48,25 @@ Phone reads SHALL retain the existing source/account/runtime/session retirement 
 
 ### Requirement: Simple-by-default surfaces at phone width
 
-At about 390 CSS pixels with a coarse pointer, the rail and board SHALL keep the same order in one column: header, progress, Map or List, Needs you, the sub-agents line and the incomplete-count indicator. The Map | List switch and the map tools SHALL stay on one row. Every new control SHALL be at least 44 CSS pixels and usable without hover or long press.
+At about 390 CSS pixels, board and rail SHALL remain one column. Board controls reflow above its plan picker; the rail retains the switcher and session-scoped Needs you after Map/List. Both SHALL keep one four-view group, plan actions, sub-agents and incomplete-count indicator reachable. The view group and map tools MAY occupy separate rows. New coarse-pointer targets SHALL be at least 44 CSS pixels and require no hover or long press.
 
 #### Scenario: Map on a phone
 - **WHEN** a plan with prerequisites opens on a phone-width rail
-- **THEN** the map is the first content under the progress bar, in a frame no taller than 300 CSS pixels, with zoom, Fit and help-and-filters reachable by tap
-- **AND** the page scrolls normally from everything around the map
+- **THEN** Map is the first reading under the header, progress and view controls, with its frame no taller than 300 CSS pixels and zoom, Fit and help reachable by tap
+- **AND** the page scrolls normally outside the map
 
 #### Scenario: Needs you and its actions
-- **WHEN** the user expands Needs you and opens an item at phone width in English, Russian or Simplified Chinese
-- **THEN** the line, items, scope switch and Open session, Copy reply and Hide are operable by tap with visible focus and no horizontal overflow
+- **WHEN** the reader opens the board count or the rail disclosure in English, Russian or Simplified Chinese
+- **THEN** items, scope choice and applicable Open session, Copy reply and Hide actions are operable by tap and keyboard with visible focus and no whole-page horizontal overflow
 
 #### Scenario: More, Tidy and the indicator
-- **WHEN** the user opens More, confirms a bulk archive, uses Undo, or expands and dismisses the indicator at phone width
-- **THEN** every step is reachable by tap and keyboard, panels offer a visible Back, and essential actions stay above the keyboard and safe-area insets
+- **WHEN** the reader uses Settings, More, Tidy, Undo or the incomplete-count indicator
+- **THEN** essential controls remain reachable around the keyboard and insets; panels retain Back and appropriate focus return
 
 #### Scenario: Narrow board
-- **WHEN** the board is narrower than 820 CSS pixels
-- **THEN** the plan list becomes the header's plan picker and the rest follows the rail order
+- **WHEN** the board falls below the existing 820 CSS pixel browse breakpoint
+- **THEN** browse rows give way to the plan picker, while search, Hide quiet, Filters, count, Settings, Select and Tidy remain reachable when applicable
 
 #### Scenario: Emulation is not device acceptance
 - **WHEN** these layouts are verified in an emulated narrow touch browser
-- **THEN** the evidence is recorded as emulation, not physical-phone acceptance
+- **THEN** the evidence is recorded as emulation, not physical-device acceptance

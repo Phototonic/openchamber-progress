@@ -5,6 +5,7 @@ import path from 'node:path';
 import {syncBuiltinESMExports} from 'node:module';
 import {managedStepFixtures} from '../fixtures/managed-steps.ts';
 import {createFixtureBinding} from '../fixtures/managed.ts';
+import {releasedManagedJournal} from '../fixtures/released-managed-journal.ts';
 import {canonical,digest,Store} from '../../shared/store.ts';
 import {publishPrivateJson} from '../../shared/managed-binding.ts';
 import {parseManagedStepJournal,managedTargetDigest,managedRequestDigest,managedJournalProgress,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
@@ -50,6 +51,62 @@ function fixture() {
   journal.migration.receipt!.requestDigest=managedRequestDigest(managedStepFixtures().requests.begin,journal);
   return {root,env,binding,journal,file:migrationFile(env),cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
 }
+
+test('released and current migration readers agree on old bytes; only current admits enriched state',async()=>{
+  const f=fixture();try{
+    const old=await releasedManagedJournal(path.join(f.root,'release')),bytes=Buffer.from(JSON.stringify(f.journal));
+    fs.writeFileSync(f.file,bytes,{mode:0o600});
+    assert.deepEqual(old.readManagedStepJournal(f.env),f.journal);
+    assert.deepEqual(readManagedStepJournal(f.env),f.journal);
+    assert.deepEqual(fs.readFileSync(f.file),bytes);
+    const next=structuredClone(f.journal);
+    next.migration.legacy.volumeIdentity={version:1,paths:[{path:next.database,fingerprint:'a'.repeat(64)}]};
+    hashed(next);
+    next.migration.receipt!.requestDigest=managedRequestDigest(managedStepFixtures().requests.begin,next);
+    const enriched=Buffer.from(JSON.stringify(next));
+    fs.writeFileSync(f.file,enriched);
+    assert.deepEqual(readManagedStepJournal(f.env),next);
+    assert.throws(()=>old.readManagedStepJournal(f.env),{code:'managed-journal-unsupported'});
+    const {status}=old.observeManagedSetup(f.env);
+    assert.equal(status.configured,false);assert.equal(status.verified,false);
+    assert.equal(status.delivery?.migration,'unavailable');
+    assert.ok(status.diagnostics.includes('managed-journal-unsupported'));
+    assert.deepEqual(fs.readFileSync(f.file),enriched);
+
+    const stage=`${f.file}.stage-prepare-${digest(enriched)}`;
+    fs.linkSync(f.file,stage);
+    const save=observeInitialJournalSave(f.env,1)!;
+    assert.throws(()=>settleInitialJournalSave(f.env,save),{code:'managed-step-conflict'});
+    assert.throws(()=>settleInitialJournalSave(f.env,save,j=>{assert.deepEqual(j,next);throw Error('target not verified');}),
+      {message:'target not verified'});
+    assert.equal(fs.statSync(stage).nlink,2);
+    settleInitialJournalSave(f.env,save,j=>assert.deepEqual(j,next));
+    assert.equal(fs.existsSync(stage),false);
+    assert.deepEqual(fs.readFileSync(f.file),enriched);
+  }finally{f.cleanup();}
+});
+
+test('migration witnesses are bounded path-specific consent, including the receipt-only branch',()=>{
+  const j=prepared(),legacyRoot=path.join(j.source.configRoot,'plugins','agent-progress');
+  const history=path.join(path.dirname(j.database),'installation-history.jsonl');
+  const m=j.migration;
+  m.legacy={kind:'removal-receipt',ownership:null,ownershipDigest:null,claims:[{path:legacyRoot,kind:'absent',object:null,digest:null}],
+    receipt:{history:{path:history,kind:'file',object:{device:'1',inode:'2',birthNs:'3'},digest:'6'.repeat(64)},
+      entry:JSON.stringify({action:'remove-capture',installId:m.legacyInstallId})},
+    volumeIdentity:{version:1,paths:[{path:j.database,fingerprint:'a'.repeat(64)},{path:history,fingerprint:'b'.repeat(64)}]}};
+  m.phase='removed';m.plan=m.plan.filter(s=>['prepare','expectation','publish-binding','enable','reconcile'].includes(s.name));
+  hashed(j);
+  assert.deepEqual(parsed(j),j);
+  for(const change of [
+    (n:ManagedStepJournal)=>{delete n.migration.legacy.volumeIdentity;},
+    (n:ManagedStepJournal)=>{n.migration.legacy.volumeIdentity!.paths[0]!.fingerprint='c'.repeat(64);},
+  ]){
+    const n=structuredClone(j);change(n);
+    assert.throws(()=>parsed(n),{code:'managed-journal-unsupported'});
+    hashed(n);parsed(n);
+    assert.throws(()=>validateManagedJournalChange(j,n),{code:'managed-step-conflict'});
+  }
+});
 
 test('only an intact first journal pair can be observed and reduced to its original single-link file',()=>{
   const f=fixture();try{
