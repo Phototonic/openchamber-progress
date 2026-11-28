@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test, {type TestContext} from 'node:test';
-import {readLinuxManagedVolumeIdentity as read} from '../../setup/managed-volume-identity-linux.ts';
+import {describeLinuxManagedVolumeEligibility as describeEligibility,readLinuxManagedVolumeIdentity as read} from '../../setup/managed-volume-identity-linux.ts';
 import type {ManagedVolumeTarget} from '../../setup/managed-volume-identity.ts';
 
 const UUID='aabbccdd-1122-3344-5566-778899aabbcc';
@@ -125,19 +125,38 @@ function fixture(t:TestContext) {
       closeSync(){assert.ok(handles.delete(file),'closed unknown directory handle');}};
   })as typeof fs.opendirSync);
 
-  function observe(file=DB,kind:ManagedVolumeTarget['kind']='file') {
+  function target(file=DB,kind:ManagedVolumeTarget['kind']='file'):ManagedVolumeTarget {
     const s=stats.get(file);
-    const result=read({path:file,kind,object:s&&kind!=='absent'?
-      {device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)}:null});
+    return {path:file,kind,object:s&&kind!=='absent'?
+      {device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)}:null};
+  }
+  function observe(file=DB,kind:ManagedVolumeTarget['kind']='file') {
+    const result=read(target(file,kind));
     assert.equal(fds.size,0,'leaked file descriptor');
     assert.equal(handles.size,0,'leaked directory handle');
     assert.ok(!opened.includes(DB)&&!opened.some(name=>name.startsWith('/dev/')),'opened target file or raw device');
     if(result.kind==='verified')assert.match(result.fingerprint,/^[0-9a-f]{64}$/);
     return result;
   }
-  return {observe,mount,whole,partition,texts,stats,ids,dirs,links,paths,mountReads,opened,listingReads,
+  return {target,observe,mount,whole,partition,texts,stats,ids,dirs,links,paths,mountReads,opened,listingReads,
     nonBtrfs(){statfs=0xef53n;},expireOnOpen(){expireOnOpen=true;}};
 }
+
+test('native QA reports eligibility rules without paths, identifiers or fingerprints',t=>{
+  const f=fixture(t),target=f.target();
+  assert.deepEqual(describeEligibility(target),{kind:'verified',rule:'passed',disposition:'eligible',extent:'whole'});
+  f.partition();
+  assert.deepEqual(describeEligibility(target),{kind:'verified',rule:'passed',disposition:'eligible',extent:'partition'});
+  f.texts.delete(`${FS}/temp_fsid`);
+  assert.deepEqual(f.observe(),UNAVAILABLE);
+  assert.deepEqual(describeEligibility(target),{kind:'unavailable',rule:'btrfs-temp-fsid',disposition:'missing',extent:'partition'});
+  f.texts.set(`${FS}/temp_fsid`,'0\n');
+  f.dirs.set(BY_ID,[]);
+  assert.deepEqual(f.observe(),UNAVAILABLE);
+  assert.deepEqual(describeEligibility(target),{kind:'unavailable',rule:'wwn-link-lookup',disposition:'refused',extent:'partition'});
+  f.ids.set(STORE,'77');
+  assert.deepEqual(describeEligibility(target),{kind:'unavailable',rule:'mountinfo-mount-id',disposition:'refused',extent:'unknown'});
+});
 
 test('direct mount proves placement despite renumbering; snapshots and copied disks change identity',t=>{
   const f=fixture(t), first=f.observe();

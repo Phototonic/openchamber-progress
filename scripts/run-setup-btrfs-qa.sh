@@ -233,10 +233,10 @@ pass
 # AP_BTRFS_TOP is usable only when mounted (including the nested snapshot check).
 run_phase() {
   local phase=$1 profile="$root/profiles/$2" phase_store=$3 control=${4:-}
-  local tap="$root/phase.tap" counts tests ok skipped todo
+  local tap="$root/phase.tap" counts tests ok skipped todo status diagnostic
   [[ -f $driver ]]
   mkdir -p -- "$profile"/{home,config,data,state,cache,runtime,tmp}
-  if ! env -i PATH="$PATH" HOME="$profile/home" TMPDIR="$profile/tmp" \
+  if env -i PATH="$PATH" HOME="$profile/home" TMPDIR="$profile/tmp" \
     XDG_CONFIG_HOME="$profile/config" XDG_DATA_HOME="$profile/data" \
     XDG_STATE_HOME="$profile/state" XDG_CACHE_HOME="$profile/cache" \
     XDG_RUNTIME_DIR="$profile/runtime" AP_BTRFS_PHASE="$phase" \
@@ -244,7 +244,23 @@ run_phase() {
     AP_BTRFS_STORE="$phase_store" AP_BTRFS_TOP="$top" \
     timeout -k 5 90 node --experimental-strip-types --test --test-concurrency=1 \
       --test-reporter=tap "$driver" >"$tap" 2>&1; then
-    return 1
+    :
+  else
+    status=$?
+    # Never echo TAP, assertion values or error messages. This one tagged
+    # diagnostic is assembled by the driver solely from fixed labels.
+    diagnostic=$(LC_ALL=C awk '
+      $1=="#" && $2=="AP_STORAGE_FAILURE" && NF==10 &&
+      $3~/^[a-z0-9-]+$/ && length($3)<=64 &&
+      $4~/^(verified|unavailable|not-observed)$/ && $5~/^(verified|unavailable|not-observed)$/ &&
+      $6~/^[a-z0-9-]+$/ && length($6)<=64 &&
+      $7~/^(eligible|refused|missing|permission|io|deadline|not-observed)$/ &&
+      $8~/^(whole|partition|unknown)$/ && $9~/^(none|[1-5][0-9][0-9])$/ &&
+      $10~/^[a-zA-Z0-9-]+$/ && length($10)<=64 {
+        count++; line=sprintf("check=%s store_reader=%s probe=%s rule=%s disposition=%s extent=%s http_status=%s http_code=%s", $3,$4,$5,$6,$7,$8,$9,$10)
+      } END { if (count==1) print line; }' "$tap")
+    printf 'phase_driver_failure phase=%s exit=%d %s\n' "${control:-$phase}" "$status" "${diagnostic:-check=no-diagnostic}"
+    return "$status"
   fi
   counts=$(awk '$1=="#" && $2 ~ /^(tests|pass|skipped|todo)$/ && NF==3 && $3 ~ /^[0-9]+$/ { v[$2]=$3 }
     END { print v["tests"], v["pass"], v["skipped"], v["todo"] }' "$tap")
