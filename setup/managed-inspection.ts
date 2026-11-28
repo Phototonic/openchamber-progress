@@ -162,8 +162,9 @@ function validateCandidate(session:ManagedInspectionSession,payload:Payload,read
   const candidate=session.candidate!;
   need(canonical(candidate.migration.expectation)===canonical(expectation(candidate,payload)));
   validateManagedFixedPlacement(candidate,read);
-  if(candidate.migration.legacy.kind==='manifest')return validateMigrationRemoval(candidate).capture;
-  need(!!readRemovalReceipt({binding:managedJournalBinding(candidate),phase:'removed',legacyInstallId:candidate.migration.legacyInstallId},candidate.migration.legacy.receipt));
+  const {legacy,legacyInstallId}=candidate.migration;
+  if(legacy.kind==='manifest')return validateMigrationRemoval(candidate,read).capture;
+  need(!!readRemovalReceipt({binding:managedJournalBinding(candidate),phase:'removed',legacyInstallId},legacy.receipt,legacy.volumeIdentity,read));
   return capture(candidate);
 }
 function reviewFor(session:ManagedInspectionSession,observed:ManagedCaptureObservation):ManagedReview {

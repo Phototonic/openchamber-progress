@@ -101,10 +101,10 @@ export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Pay
   }else{
     validateManagedFixedPlacement(journal,read,initialPair);
     if(m.legacy.kind==='manifest'){
-      capture=validateMigrationRemoval(journal as ManagedStepJournal).capture;
-      if(completed(journal,'record-removal'))need(migrationRemovalComplete(journal as ManagedStepJournal),'managed-migration-conflict');
+      capture=validateMigrationRemoval(journal as ManagedStepJournal,read).capture;
+      if(completed(journal,'record-removal'))need(migrationRemovalComplete(journal as ManagedStepJournal,read),'managed-migration-conflict');
     }else{
-      need(readRemovalReceipt({binding,phase:'removed',legacyInstallId:m.legacyInstallId},m.legacy.receipt),'managed-migration-conflict');
+      need(readRemovalReceipt({binding,phase:'removed',legacyInstallId:m.legacyInstallId},m.legacy.receipt,m.legacy.volumeIdentity,read),'managed-migration-conflict');
       capture=observeCapture(journal as ManagedStepJournal);
     }
   }
@@ -121,10 +121,10 @@ export function managedStepEffectClaims(env:NodeJS.ProcessEnv,payload:Payload,jo
     return {before:[before],after:[{path:before.path,kind:directory?'directory':'file',object:null,digest:null}],captureBefore};
   }
   if(m.step.name==='record-removal'){
-    const claims=migrationRemovalRecordClaims(journal as ManagedStepJournal);return {before:claims.before,after:claims.after,captureBefore:claims.capture};
+    const claims=migrationRemovalRecordClaims(journal as ManagedStepJournal,read);return {before:claims.before,after:claims.after,captureBefore:claims.capture};
   }
   if(['remove-selector','remove-discovery'].includes(m.step.name)){
-    const layout=validateMigrationRemoval(journal as ManagedStepJournal),file=layout.file(m.step as ManagedStepRef);need(file&&captureBefore.state==='off');
+    const layout=validateMigrationRemoval(journal as ManagedStepJournal,read),file=layout.file(m.step as ManagedStepRef);need(file&&captureBefore.state==='off');
     return {before:[layout.claims.get(file)!],after:[{path:file,kind:'absent',object:null,digest:null}],captureBefore};
   }
   if(m.step.name==='expectation'||m.step.name==='publish-binding'){
@@ -186,9 +186,9 @@ export function managedStepEffectCommitted(env:NodeJS.ProcessEnv,payload:Payload
     need(m.intent.before.length===0&&m.intent.after.length===0);
     const store=new Store(journal.database,{readOnly:true});try{committed=store.list({limit:1}).sources.some(s=>canonical(s)===canonical(journal.source));}finally{store.close();}
   }
-  else if(m.step.name==='record-removal')committed=migrationRemovalRecorded(evidence as ManagedStepJournal);
+  else if(m.step.name==='record-removal')committed=migrationRemovalRecorded(evidence as ManagedStepJournal,read);
   else if(m.step.name==='remove-selector'||m.step.name==='remove-discovery'){
-    const layout=validateMigrationRemoval(journal as ManagedStepJournal),file=layout.file(m.step);need(file&&layout.intentFor(file));
+    const layout=validateMigrationRemoval(journal as ManagedStepJournal,read),file=layout.file(m.step);need(file&&layout.intentFor(file));
     committed=!lstatSync(file,{throwIfNoEntry:false});
   }else{
     need(m.intent.before.length===0&&m.intent.after.length===0);
@@ -205,10 +205,10 @@ export function applyManagedStepEffect(env:NodeJS.ProcessEnv,payload:Payload,jou
   const m=journal.migration;
   need(m.state==='running'&&m.intent&&m.step);
   if(m.step?.name==='record-removal'){
-    recordMigrationRemoval(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);});return;
+    recordMigrationRemoval(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);},read);return;
   }
   if(m.step?.name==='remove-selector'||m.step?.name==='remove-discovery'){
-    removeMigrationFile(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);});return;
+    removeMigrationFile(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);},read);return;
   }
   const validate=()=>{managedStepEffectCommitted(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);};
   if(m.format===3&&m.step.name==='store-directory'){

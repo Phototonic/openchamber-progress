@@ -90,7 +90,7 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   if('prior' in reviewed&&reviewed.prior){
     // No directory, capture or removal effect here; refuse near the deadline.
     budget.require(STEP_HEADROOM_MS);
-    upgradeManagedStepJournal(env,next as ManagedStepJournal,reviewed.prior,validate);
+    upgradeManagedStepJournal(env,next as ManagedStepJournal,reviewed.prior,validate,read);
   }else{
     budget.require(STEP_HEADROOM_MS);
     createManagedBindingDirectory(env);
