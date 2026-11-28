@@ -565,6 +565,10 @@ The board lists recorded plans and enriches them with host workspace snapshots;
 discovery is not guaranteed complete, and missing or partial live coverage is shown
 explicitly. Capture and service require the same host/account and shared local
 files; there is no cross-host transport.
+Host-linked issues and changes stay in the current guest reading, not in reports,
+storage or exports. They do not establish plan identity, assignment, progress or
+resource state. Only explicit activation of an admitted web address asks the
+host to open it; the guest does not look up or fetch linked resources.
 
 ## Reporting participation
 

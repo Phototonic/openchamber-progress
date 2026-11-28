@@ -453,6 +453,15 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-actions-hold{display:inline-flex}
 .ap-actions-hold:empty{display:none}
 .ap-meta>.ap-warn-badge::before{content:none}
+/* Host-linked work of the plan's main session: quiet outlined chips on the meta line. The kind
+   cue is a muted glyph; long titles shorten visually and keep their full text in the name. */
+.ap-work-links{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;max-width:100%}
+.ap-work-link{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:min(30ch,100%);min-height:22px;padding:1px 8px 1px 5px;border:1px solid var(--oc-border);border-radius:9999px;background:transparent;color:var(--oc-fg);font-size:11.5px;line-height:1.3;cursor:pointer}
+.ap-work-link:hover{background:var(--oc-hover)}
+.ap-work-link:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-work-link>.ap-icon{width:13px;height:13px;color:var(--oc-muted)}
+.ap-work-link-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(forced-colors:active){.ap-work-link{border-color:ButtonText;color:ButtonText}.ap-work-link:focus-visible{outline-color:Highlight}}
 /* Title-picker: the SDK select, drawn as a quiet "⌄ 1 of 3" beside the title (its name says which plan) */
 .ap-title-picker{display:inline-flex;min-width:0}
 .ap-title-picker .oc-sdk-select{display:inline-flex;width:auto}

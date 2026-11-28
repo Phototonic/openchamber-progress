@@ -22,7 +22,9 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  * qa.ready(surface?, patch?) updates locale/features/directory/account via a new ready snapshot.
  * qa.context(session|null), qa.namespace(name), qa.reload(surface), qa.tick(surface?), qa.focus(surface),
  * qa.visible(surface, boolean), qa.show(surface,width), qa.seed(value|undefined, namespace?).
- * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe.
+ * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe, or
+ * qa.pushWorkspace(surface?) to resend it to the live subscriptions (qa.subscriptions) without a reload.
+ * qa.opens records each host open-url request {surface,url}; qa.refuseOpens>0 refuses that many.
  * qa.mode = 'plan'|'empty'|'setup'|'failure'|'port-busy'|'setup-refused'; qa.holds/qa.faults accept
  * {tag?,kind:'storage'|'service',surface?,op?,key?,path?,code?,status?}.
  * Holds capture a read reply BEFORE release (stale-read races); writes commit ON release.
@@ -34,7 +36,7 @@ const surfaces=['panel','status','page'];
 const theme=${JSON.stringify(theme)};
 window.frame=s=>document.querySelector('iframe[data-surface="'+s+'"]');
 const send=(s,m)=>frame(s).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},location.origin);
-window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],toasts:[],
+window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],toasts:[],subscriptions:[],opens:[],refuseOpens:0,
  ctx:{locale:'en',features:{deviceStorage:true},directory:'/fixture/Alpha',session:null,connection:{connected:true,account:'fixture'}},
  ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme,...this.ctx,surface:n,settings:{},item:null}})},
  dark(){theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});this.ready()},
@@ -46,6 +48,7 @@ window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[
  focus(s){frame(s).contentWindow.dispatchEvent(new Event('focus'))},
  visible(s,on){const d=frame(s).contentDocument;Object.defineProperty(d,'visibilityState',{configurable:true,value:on?'visible':'hidden'});Object.defineProperty(d,'hidden',{configurable:true,value:!on});d.dispatchEvent(new Event('visibilitychange'))},
  show(s,width){for(const n of document.querySelectorAll('section'))n.style.display=n.dataset.surface===s?'block':'none';const section=document.querySelector('section[data-surface="'+s+'"]');section.style.width=width+'px';frame(s).style.height=(s==='status'?240:850)+'px'},
+ pushWorkspace(s){let n=0;for(const x of this.subscriptions)if((!s||x.surface===s)&&this.workspace){send(x.surface,{type:'workspace',payload:{subscriptionId:x.id,snapshot:this.workspace(x.query)}});n++}return n},
  release(tag){const out=this.held.filter(h=>h.tag===tag);this.held=this.held.filter(h=>h.tag!==tag);this.holds=this.holds.filter(h=>h.tag!==tag);out.forEach(h=>h.go());return out.length}
 };
 const matches=(h,kind,s,q)=>h.kind===kind&&(!h.surface||h.surface===s)&&(!h.op||h.op===q.op)&&(!h.key||h.key===q.key)&&(!h.path||h.path===q.path);
@@ -55,8 +58,9 @@ addEventListener('message',async e=>{
  const s=f.dataset.surface,q=m.payload||{};qa.messages.push({surface:s,type:m.type});
  const result=payload=>send(s,{type:'result',id:m.id,ok:true,payload});
  const reject=(code='HOST_REJECTED')=>send(s,{type:'result',id:m.id,ok:false,code,error:'synthetic-private-error-never-render'});
- if(m.type==='hello'){qa.ready(s);return}
- if(m.type==='workspace-subscribe'){result();send(s,{type:'workspace',payload:{subscriptionId:q.subscriptionId,snapshot:qa.workspace?qa.workspace(q.query):q.query.kind==='projects'?{kind:'projects',state:'ready',projects:[]}:{kind:q.query.kind,state:'ready',projectId:q.query.projectId,sessions:[],worktrees:[],coverage:[]}}});return}
+ if(m.type==='hello'){qa.subscriptions=qa.subscriptions.filter(x=>x.surface!==s);qa.ready(s);return}
+ if(m.type==='workspace-unsubscribe')qa.subscriptions=qa.subscriptions.filter(x=>x.surface!==s||x.id!==q.subscriptionId);
+ if(m.type==='workspace-subscribe'){qa.subscriptions=qa.subscriptions.filter(x=>x.surface!==s||x.id!==q.subscriptionId);qa.subscriptions.push({surface:s,id:q.subscriptionId,query:structuredClone(q.query)});result();send(s,{type:'workspace',payload:{subscriptionId:q.subscriptionId,snapshot:qa.workspace?qa.workspace(q.query):q.query.kind==='projects'?{kind:'projects',state:'ready',projects:[]}:{kind:q.query.kind,state:'ready',projectId:q.query.projectId,sessions:[],worktrees:[],coverage:[]}}});return}
  if(m.type==='storage'){
   const space=qa.space,device=q.scope==='device';
   const map=device?(qa.maps.get(space)||new Map()):qa.instance; if(device)qa.maps.set(space,map);
@@ -82,6 +86,7 @@ addEventListener('message',async e=>{
  }
  if(m.type==='resize'&&s==='status'&&q.height>0)f.style.height=q.height+'px';
  if(m.type==='toast')qa.toasts.push({surface:s,...q});
+ if(m.type==='open-url'){qa.opens.push({surface:s,url:q.url});if(qa.refuseOpens>0){qa.refuseOpens--;reject()}else result();return}
  if(m.id)result();
 });`;
 
