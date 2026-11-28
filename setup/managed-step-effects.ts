@@ -9,7 +9,9 @@ import {MANAGED_STEP_LIMITS,type ManagedCaptureObservation,type ManagedStepRef} 
 import {SetupError,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded,migrationRemovalComplete,type Payload} from './lifecycle.ts';
 import {managedJournalBinding,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal,type ManagedPathClaim,type ManagedStepIntent} from './managed-step-journal.ts';
 import {managedJournalPaths,readManagedStepJournal,readManagedFreshStepJournal,readRemovalReceipt,validatePublishedManagedIntent} from './managed-migration.ts';
-import {observeManagedFreshStore} from './managed-inspection.ts';
+import {observeManagedFreshStore,requireSameManagedVolume,validateManagedFixedPlacement} from './managed-inspection.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement} from './managed-volume-identity.ts';
+import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
 function need(value:unknown,code='managed-step-conflict'):asserts value {if(!value)throw new SetupError(code);}
 function snapshot(file:string) {
@@ -49,23 +51,24 @@ function createdObject(file:string,directory=false):ManagedPathClaim {
   need(!s.isSymbolicLink()&&(directory?s.isDirectory():s.isFile()&&s.nlink===1n),'managed-migration-conflict');
   return {path:file,kind:directory?'directory':'file',object:{device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)},digest:null};
 }
-function freshCapture(journal:ManagedFreshStepJournal,created?:ManagedCreationResult) {
+function freshCapture(journal:ManagedFreshStepJournal,created:ManagedCreationResult|undefined,read:typeof managedVolumeIdentityReader,initialPair:boolean) {
   const j=structuredClone(journal),m=j.migration;
   for(const [key,name] of [['directory','store-directory'],['database','create-store']] as const){
     if(!created?.[key])continue;
     need(m.state==='running'&&m.intent?.step.name===name&&m.step?.name===name&&m.created[key]===null);
     m.created[key]=created[key]!;
   }
-  return observeManagedFreshStore(j);
+  return observeManagedFreshStore(j,'strict',read,{createdNow:created,initialPair});
 }
-export function validateManagedStepTarget(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult) {
+export function validateManagedStepTarget(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult,read=managedVolumeIdentityReader) {
   if(windows)windowsPaths(managedJournalPaths(journal),true);
   const current=journal.migration.format===3?readManagedFreshStepJournal(env):readManagedStepJournal(env);need(current&&canonical(current)===canonical(journal));
-  return validateManagedStepTargetFacts(env,payload,journal,created);
+  return validateManagedStepTargetFacts(env,payload,journal,created,read);
 }
 /** Also used after Setup proves the retained initial pair. Does not admit a
  * journal or authorize effects by itself. */
-export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult) {
+export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult,
+  read=managedVolumeIdentityReader,initialPair=false) {
   const m=journal.migration,binding=managedJournalBinding(journal);
   need(payload.plugin&&payload.guidance&&payload.version===m.expectation.version&&
     activationFingerprint({...binding,version:payload.version},Buffer.from(payload.plugin),Buffer.from(payload.guidance))===m.expectation.fingerprint,'managed-review-stale');
@@ -81,7 +84,7 @@ export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Pay
   let capture:ManagedCaptureObservation;
   if(m.format===3){
     need(!lstatSync(m.fresh.legacy.path,{throwIfNoEntry:false}),'managed-migration-conflict');
-    capture=freshCapture(journal as ManagedFreshStepJournal,created);
+    capture=freshCapture(journal as ManagedFreshStepJournal,created,read,initialPair);
     if(m.fresh.storeMode==='create'&&lstatSync(path.dirname(journal.database),{throwIfNoEntry:false})){
       const allowed=new Set([path.basename(journal.database),...['-journal','-wal','-shm'].map(s=>path.basename(journal.database)+s),path.basename(expectedFile)]);
       need(readdirSync(path.dirname(journal.database)).every(n=>allowed.has(n)),'foreign-files');
@@ -95,19 +98,22 @@ export function validateManagedStepTargetFacts(env:NodeJS.ProcessEnv,payload:Pay
     const reconnect=m.fresh.storeMode==='retain'&&m.fresh.sourceMode==='reuse'&&!completed(journal,'expectation');
     if(expected&&!reconnect)need(canonical(expected)===canonical(expectation(journal)),'managed-review-stale');
     if(selected)need(completed(journal,'publish-binding')||m.intent?.step.name==='publish-binding','managed-selection-conflict');
-  }else if(m.legacy.kind==='manifest'){
-    capture=validateMigrationRemoval(journal as ManagedStepJournal).capture;
-    if(completed(journal,'record-removal'))need(migrationRemovalComplete(journal as ManagedStepJournal),'managed-migration-conflict');
   }else{
-    need(readRemovalReceipt({binding,phase:'removed',legacyInstallId:m.legacyInstallId},m.legacy.receipt),'managed-migration-conflict');
-    capture=observeCapture(journal as ManagedStepJournal);
+    validateManagedFixedPlacement(journal,read,initialPair);
+    if(m.legacy.kind==='manifest'){
+      capture=validateMigrationRemoval(journal as ManagedStepJournal).capture;
+      if(completed(journal,'record-removal'))need(migrationRemovalComplete(journal as ManagedStepJournal),'managed-migration-conflict');
+    }else{
+      need(readRemovalReceipt({binding,phase:'removed',legacyInstallId:m.legacyInstallId},m.legacy.receipt),'managed-migration-conflict');
+      capture=observeCapture(journal as ManagedStepJournal);
+    }
   }
   return capture;
 }
 
 /** Freeze one effect's before/after claims, while admission is still read-only. */
-export function managedStepEffectClaims(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal):Pick<ManagedStepIntent,'before'|'after'|'captureBefore'> {
-  const captureBefore=validateManagedStepTarget(env,payload,journal),m=journal.migration;
+export function managedStepEffectClaims(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,read=managedVolumeIdentityReader):Pick<ManagedStepIntent,'before'|'after'|'captureBefore'> {
+  const captureBefore=validateManagedStepTarget(env,payload,journal,undefined,read),m=journal.migration;
   need(m.step&&m.step.name!=='prepare'&&!m.intent);
   if(m.format===3&&(m.step.name==='store-directory'||m.step.name==='create-store')){
     const directory=m.step.name==='store-directory',before=directory?m.fresh.directory:m.fresh.database;
@@ -133,11 +139,7 @@ export function managedStepEffectClaims(env:NodeJS.ProcessEnv,payload:Payload,jo
   return {before:[],after:[],captureBefore};
 }
 
-function matchesAfter(actual:ManagedPathClaim,expected:ManagedPathClaim) {
-  return actual.path===expected.path&&actual.kind===expected.kind&&actual.digest===expected.digest&&
-    (expected.object===null&&expected.kind==='file'||canonical(actual.object)===canonical(expected.object));
-}
-function publication(journal:ManagedSetupStepJournal,env:NodeJS.ProcessEnv) {
+function publication(journal:ManagedSetupStepJournal,env:NodeJS.ProcessEnv,read:typeof managedVolumeIdentityReader) {
   const m=journal.migration,intent=m.intent!;need(m.step?.name==='expectation'||m.step?.name==='publish-binding');
   const isExpectation=m.step.name==='expectation',file=isExpectation?managedExpectationFile(journal):managedBindingFile(env);
   const value=isExpectation?expectation(journal):managedJournalBinding(journal),actual=fileClaim(file);
@@ -147,15 +149,23 @@ function publication(journal:ManagedSetupStepJournal,env:NodeJS.ProcessEnv) {
   // bytes may be canonically equivalent, but their exact before claim is kept.
   if(!isExpectation&&intent.before[0]!.kind==='file')need(canonical(after)===canonical(intent.before[0]));
   else need(after.kind==='file'&&after.object===null&&after.digest===digest(JSON.stringify(value)));
-  const committed=matchesAfter(actual,after);
-  if(!committed)need(canonical(actual)===canonical(intent.before[0]),'managed-migration-conflict');
+  const volume=m.format===3?m.fresh.volumeIdentity:m.legacy.volumeIdentity;
+  requireSameManagedVolume(compareManagedVolumePlacement(actual,volume,read));
+  const sameObject=(expected:ManagedPathClaim)=>{
+    if(actual.digest!==expected.digest)return false;
+    const comparison=compareManagedHistoricalObject(expected,actual,volume,read);
+    if(comparison==='unavailable')requireSameManagedVolume(comparison);
+    return comparison==='same';
+  };
+  const committed=after.object===null?actual.kind==='file'&&actual.digest===after.digest:sameObject(after);
+  if(!committed)need(sameObject(intent.before[0]!),'managed-migration-conflict');
   return {file,value,committed,replace:isExpectation&&actual.kind==='file'};
 }
 
 /** Read-only evidence for the CURRENT durable intent. Capture with an opposite
  * bit is ambiguous, not permission to repeat a disable/enable. */
-export function managedStepEffectCommitted(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult) {
-  const capture=validateManagedStepTarget(env,payload,journal,created),m=journal.migration;
+export function managedStepEffectCommitted(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,created?:ManagedCreationResult,read=managedVolumeIdentityReader) {
+  const capture=validateManagedStepTarget(env,payload,journal,created,read),m=journal.migration;
   need(m.intent&&m.step);
   // Resume retains the intent in pending state. Projection is read-only and
   // used only by lifecycle evidence checks which require a running intent;
@@ -163,7 +173,7 @@ export function managedStepEffectCommitted(env:NodeJS.ProcessEnv,payload:Payload
   const evidence=structuredClone(journal);evidence.migration.state='running';
   if(m.state==='running')validatePublishedManagedIntent(env,journal);
   let committed:boolean;
-  if(m.step.name==='expectation'||m.step.name==='publish-binding')committed=publication(journal,env).committed;
+  if(m.step.name==='expectation'||m.step.name==='publish-binding')committed=publication(journal,env,read).committed;
   else if(m.format===3&&['store-directory','create-store'].includes(m.step.name)){
     const directory=m.step.name==='store-directory',file=directory?path.dirname(journal.database):journal.database;
     need(canonical(m.intent.before)===canonical([{path:file,kind:'absent',object:null,digest:null}])&&
@@ -189,18 +199,18 @@ export function managedStepEffectCommitted(env:NodeJS.ProcessEnv,payload:Payload
 
 /** One effect only. The caller has published running+intent under its worker
  * fence. Capture may execute ONLY on a newly published intent, not a retry. */
-export function applyManagedStepEffect(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,freshCapture=false):ManagedCreationResult|undefined {
+export function applyManagedStepEffect(env:NodeJS.ProcessEnv,payload:Payload,journal:ManagedSetupStepJournal,freshCapture=false,read=managedVolumeIdentityReader):ManagedCreationResult|undefined {
   requirePlatformWriteBoundary();
   requirePlatformStoreFence(journal.database);
   const m=journal.migration;
   need(m.state==='running'&&m.intent&&m.step);
   if(m.step?.name==='record-removal'){
-    recordMigrationRemoval(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal);validatePublishedManagedIntent(env,journal);});return;
+    recordMigrationRemoval(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);});return;
   }
   if(m.step?.name==='remove-selector'||m.step?.name==='remove-discovery'){
-    removeMigrationFile(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal);validatePublishedManagedIntent(env,journal);});return;
+    removeMigrationFile(journal as ManagedStepJournal,()=>{validateManagedStepTarget(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);});return;
   }
-  const validate=()=>{managedStepEffectCommitted(env,payload,journal);validatePublishedManagedIntent(env,journal);};
+  const validate=()=>{managedStepEffectCommitted(env,payload,journal,undefined,read);validatePublishedManagedIntent(env,journal);};
   if(m.format===3&&m.step.name==='store-directory'){
     privateDirectory(path.dirname(journal.database),false,{exclusive:true,validate});
     return {directory:createdObject(path.dirname(journal.database),true)};
@@ -212,7 +222,7 @@ export function applyManagedStepEffect(env:NodeJS.ProcessEnv,payload:Payload,jou
     // The exact retained initialization may already be committed. Do not open
     // it writable as evidence or initialize an existing partial file.
     if(lstatSync(journal.database,{throwIfNoEntry:false})){
-      committed=managedStepEffectCommitted(env,payload,journal).committed;validatePublishedManagedIntent(env,journal);
+      committed=managedStepEffectCommitted(env,payload,journal,undefined,read).committed;validatePublishedManagedIntent(env,journal);
       need(committed,'managed-step-unsettled');
     }else {const initialized=Store.createFresh(journal.database,{storeId:journal.storeId,validate});initialized.close();}
     return {database:createdObject(journal.database)};
@@ -220,9 +230,9 @@ export function applyManagedStepEffect(env:NodeJS.ProcessEnv,payload:Payload,jou
   let store:Store|undefined;
   try{
     const prepared=(()=>{
-      const result=managedStepEffectCommitted(env,payload,journal);
+      const result=managedStepEffectCommitted(env,payload,journal,undefined,read);
       if(result.committed)return;
-      if(m.step?.name==='expectation'||m.step?.name==='publish-binding')return publication(journal,env);
+      if(m.step?.name==='expectation'||m.step?.name==='publish-binding')return publication(journal,env,read);
       if(m.format===3&&m.step?.name==='register-source'){
         store=new Store(journal.database);store.subagentRunStorage();need(store.list({limit:1}).storeId===journal.storeId,'managed-source-conflict');return;
       }
