@@ -11,6 +11,8 @@ import {managedJournalBinding,managedJournalProgress,managedFreshJournalProgress
 import {observeManagedFreshStore} from './managed-inspection.ts';
 import {SetupError} from './lifecycle.ts';
 import {managedDiagnostic} from './managed-diagnostic.ts';
+import type {ManagedVolumeIdentityReader} from './managed-volume-identity.ts';
+import {managedVolumeIdentityReader} from './managed-volume-reader.ts';
 
 /** Bounded discovery observation, not a legacy ownership review or admission.
  * Never creates an expectation, opens a writable Store, or scans releases. */
@@ -28,7 +30,7 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   // Copy only: legacy absence hints at fresh bootstrap only without a record.
   // Existing records decide their own family; unreadable formats have no hint.
   if(!stat)family?.(!legacy);
-  let journal:ManagedSetupStepJournal|undefined,prior:ReturnType<typeof readMigration>;
+  let journal:ManagedSetupStepJournal|undefined,prior:ReturnType<typeof readMigration>,initialPair=false;
   if(stat){
     migrationFile(env); // Validate the directory/marker before reading the record.
     if(!stat.isFile()||stat.isSymbolicLink())throw new SetupError('managed-binding-invalid');
@@ -37,6 +39,7 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
       // capture admission never gains this exception.
       journal=family?observeInitialJournalSave(env)?.journal:undefined;
       if(!journal)throw new SetupError('managed-binding-invalid');
+      initialPair=true;
       family?.(journal.migration.format===3);
     }else{
       if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
@@ -59,7 +62,7 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   const {binding,descriptor}=selected(env,expectedDescriptor);
   const retained=journal?managedJournalBinding(journal):prior?.binding;
   if(binding&&retained&&canonical(binding)!==canonical(retained))throw new SetupError('managed-selection-conflict');
-  return {binding,descriptor,journal,prior,legacy,roots};
+  return {binding,descriptor,journal,prior,legacy,roots,initialPair};
 }
 function storePaths(binding:Binding) {
   if(windows)windowsPaths([path.dirname(binding.database),binding.database,...['-journal','-wal','-shm'].map(s=>binding.database+s),managedExpectationFile(binding)],true);
@@ -72,9 +75,9 @@ function observationDiagnostic(error:unknown):string {
   if(!(error instanceof SetupError||error instanceof ManagedBindingError||error instanceof ProgressError||error instanceof PlatformError||error instanceof SyntaxError||filesystem))throw error;
   return managedDiagnostic(error);
 }
-export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null) {
+export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,read=managedVolumeIdentityReader) {
   let fresh=false;
-  try{return readSetup(env,expectedDescriptor,value=>{fresh=value;});}
+  try{return readSetup(env,expectedDescriptor,read,value=>{fresh=value;});}
   catch(error){
     // Setup must still describe an invalid/unavailable selection. This is not
     // admission, and carries no guessed progress/capture or private file data.
@@ -84,8 +87,8 @@ export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:st
     return {status,descriptor:undefined,journal:undefined,subagentRuns:false};
   }
 }
-function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?:(fresh:boolean)=>void) {
-  const {binding:b,descriptor,journal,prior,legacy,roots}=selection(env,expectedDescriptor,family);
+function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor:string|null|undefined,read:ManagedVolumeIdentityReader,family?:(fresh:boolean)=>void) {
+  const {binding:b,descriptor,journal,prior,legacy,roots,initialPair}=selection(env,expectedDescriptor,family);
   const retained=b??journal??prior?.binding;
   const base:SetupRead={configured:!!b,verified:false,installed:false,captureEnabled:null,targets:b?{configRoot:b.source.configRoot,dataRoot:b.source.dataRoot,storeRoot:path.dirname(b.database)}:null,
     version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[],
@@ -105,7 +108,7 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
     if(journal?.migration.format===3){
       if(windows)windowsPaths(managedJournalPaths(journal),true);
       // selection() already checked that a present binding matches this journal.
-      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal,b?'selected-status':'strict');
+      const observed=observeManagedFreshStore(journal as ManagedFreshStepJournal,b?'selected-status':'strict',read,{initialPair});
       base.delivery!.freshProgress=managedFreshJournalProgress(journal as ManagedFreshStepJournal,observed);
       base.captureEnabled=observed.state==='unknown'?null:observed.state==='on';
       // A proposed source/absent database is not ordinary Binding admission.

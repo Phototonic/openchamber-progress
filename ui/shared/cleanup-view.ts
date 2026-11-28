@@ -1,4 +1,4 @@
-import { button, el, offerPlanActions, testid } from './components.ts';
+import { button, el, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
 import type { PlanView } from './model.ts';
 import { cleanupClosed, cleanupFeedback, tidyCopy, selectionCopy, type PlanSelection, type TidyState } from './cleanup.ts';
@@ -52,7 +52,7 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
     confirm.append(actions);
     confirm.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !state.pending) { event.preventDefault(); vc.cancelCleanup(); } });
     box.append(confirm);
-    // The confirmation opens below the plan from ⋯ at its top; Cancel takes focus without
+    // Cancel takes focus without
     // scrolling, so bring the confirmation into view once per opened confirmation.
     if (!shown.has(state.target)) {
       shown.add(state.target);
@@ -61,22 +61,12 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
   } else {
     const archived = plan.cleanup?.state === 'archived';
     const run = () => vc.runCleanup(archived ? 'restore' : 'archive', plan);
-    // Secondary actions live in the plan's ⋯ (docs/ui.md Closed-plan cleanup). The ⋯ holder takes
-    // the `cleanup-delete` hook, so a cancelled confirmation returns focus to the surviving opener.
-    const inMenu = offerPlanActions(vc.reading, plan, [
-      { id: archived ? 'cleanup-restore' : 'cleanup-archive', label: archived ? text.restorePlan : text.archivePlan, run, disabled },
-      { id: 'cleanup-delete', label: text.deleteMenu, run: () => vc.requestDelete(plan), disabled: disabled || !cleanupClosed(plan) && vc.health.planCleanupActive !== 1, destructive: true },
-    ], 'cleanup-delete');
-    if (!inMenu) {
-      // A view without the plan's ⋯ (Map, Document, History) keeps the visible buttons.
-      const actions = el('div', 'ap-row ap-between');
-      button(actions, archived ? 'cleanup-restore' : 'cleanup-archive', archived ? text.restore : text.archive, run, 'outline', disabled);
-      button(actions, 'cleanup-delete', text.deleteMenu, () => vc.requestDelete(plan), 'ghost', disabled);
-      box.append(actions);
-    }
+    const actions = el('div', 'ap-row ap-between');
+    button(actions, archived ? 'cleanup-restore' : 'cleanup-archive', archived ? text.restore : text.archive, run, 'outline', disabled);
+    button(actions, 'cleanup-delete', text.deleteMenu, () => vc.requestDelete(plan), 'ghost', disabled || !cleanupClosed(plan) && vc.health.planCleanupActive !== 1);
+    box.append(actions);
     // State, not explanation: an archived plan says so. What Archive does is in its own result notice.
     if (archived) box.append(el('p', 'ap-note', text.archived));
-    else if (!inMenu) box.append(el('p', 'ap-note', text.help));
   }
   return box;
 }

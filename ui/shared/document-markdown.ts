@@ -1,5 +1,8 @@
 import MarkdownIt, { type Env, type StateBlock, type StateInline, type Token } from 'markdown-it';
 import type { InterfaceLanguage } from './i18n.ts';
+import { webDocumentUrl } from './web-url.ts';
+
+export { webDocumentUrl };
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 // Keep destinations as data until the DOM renderer decides whether to offer navigation.
@@ -46,16 +49,6 @@ export function parseDocumentMarkdown(text: string): Token[] | null {
   }
 }
 
-export function webDocumentUrl(destination: string): string | null {
-  if (destination.length > 2048 || !/^https?:\/\/[^/\\?#]/i.test(destination) || /[\s\\\u0000-\u001f\u007f]/u.test(destination)) return null;
-  try {
-    const url = new URL(destination);
-    return url.hostname && !url.username && !url.password ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-
 const tags = new Set([
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'ul', 'ol', 'li', 'em', 'strong', 's',
   'table', 'thead', 'tbody', 'tr', 'th', 'td',
@@ -99,7 +92,14 @@ function appendTokens(root: HTMLElement, tokens: Token[], locale: InterfaceLangu
           const start = String(token.attrGet('start') ?? '');
           if (/^\d{1,9}$/.test(start)) node.setAttribute('start', start);
         }
-        parent.append(node);
+        if (token.type === 'table_open') {
+          const scroll = document.createElement('div');
+          scroll.className = 'ap-doc-table';
+          scroll.tabIndex = 0;
+          scroll.setAttribute('role', 'group');
+          scroll.setAttribute('aria-label', { en: 'Scrollable table', ru: 'Прокручиваемая таблица', 'zh-CN': '可滚动表格' }[locale]);
+          scroll.append(node); parent.append(scroll);
+        } else parent.append(node);
       }
       stack.push(node ?? parent);
       continue;

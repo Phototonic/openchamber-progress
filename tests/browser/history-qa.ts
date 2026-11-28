@@ -52,7 +52,7 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
   };
   await c.send('Page.navigate', { url: `http://127.0.0.1:${fixture.port}/` });
-  await wait(`!!d.querySelector('[data-testid="more-trigger"]')`);
+  await wait(`!!d.querySelector('[data-testid="plan-view-history"] button')`);
   // The shared host shell has no viewport tag; keep phone screenshots at their
   // actual CSS width rather than Chromium's zoomed-out legacy mobile viewport.
   await evaluate(`const meta=document.createElement('meta');meta.name='viewport';meta.content='width=device-width, initial-scale=1';document.head.append(meta);true`);
@@ -60,10 +60,8 @@ try {
     count = revisions; offsets.length = 0;
     await c.send('Emulation.setDeviceMetricsOverride', { width: size, height: 900, deviceScaleFactor: 1, mobile: size === 390 });
     const url = await evaluate<string>(`qa.ctx.locale=${js(locale)};qa.show('page',${size});qa.reload('page');frame('page').src`);
-    await wait(`w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="more-trigger"]')`);
-    await click('[data-testid="more-trigger"]');
-    await wait(`!!d.querySelector('[data-testid="more-history"]')`);
-    await click('[data-testid="more-history"]');
+    await wait(`w.location.href===${js(url)} && d.documentElement.lang===${js(locale)} && !!d.querySelector('[data-testid="plan-view-history"] button')`);
+    await click('[data-testid="plan-view-history"] button');
     await wait(`d.querySelectorAll('.ap-history-row').length===${Math.min(revisions, 250)}`);
     const state = await guest(`const box=d.querySelector('[data-testid="history-P1"]');return {ids:[...box.querySelectorAll('.ap-history-row')].map(n=>n.dataset.testid),note:box.querySelector('.ap-note')?.textContent??null,text:box.textContent}`);
     assert.equal(state.ids[0], `revision-${revisions}`);

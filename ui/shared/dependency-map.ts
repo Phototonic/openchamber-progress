@@ -32,7 +32,10 @@ export interface MapSnapshot {
   readonly current: boolean;
 }
 const cleanup = (p: PlanView) => [p.cleanup?.state ?? 'visible', p.cleanup?.revision ?? 0];
-export const mapReadingKey = (c: MapClaim) => JSON.stringify([c.account, c.read.storeId, c.read.binding.sourceId, c.read.binding.verified, c.scope, c.plan.sourceId, c.plan.id, ...cleanup(c.plan)]);
+export const mapReadingKey = (c: MapClaim, includeCapture = false) => JSON.stringify([
+  c.account, c.read.storeId, c.read.binding.sourceId, c.read.binding.verified, c.scope, c.plan.sourceId, c.plan.id, ...cleanup(c.plan),
+  ...(includeCapture ? [c.plan.document.captureId ?? null] : []),
+]);
 const deps = (xs: readonly string[] | undefined) => [...new Set(xs ?? [])].sort();
 const fields = (items: CompleteDetailResult['detail']['items'] | PlanGraphRead['items']) => items.map(i => [i.id, i.kind, i.status, i.parentId ?? null, deps(i.dependencies)]);
 const invalid = (): ReadFailure => ({ kind: 'invalid', code: 'MAP_PAIR', message: 'Graph and complete detail do not describe the same reading.' });

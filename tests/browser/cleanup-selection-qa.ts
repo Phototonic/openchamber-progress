@@ -141,9 +141,7 @@ try {
   await c.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await evaluate(`qa.show('page',1280);true`); await reload();
-  await click('more-trigger');
-  check('visible-active-no-per-plan-cleanup', await guest(`return !d.querySelector('[role="menuitem"][data-menu-id="cleanup-archive"],[role="menuitem"][data-menu-id="cleanup-delete"]')`));
-  await key('Escape');
+  check('visible-active-no-per-plan-cleanup', await guest(`return !d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]')`));
   await click('selection-mode');
   await guest(`w.focus();d.querySelector('button[data-testid="plan-row-P-active"]').focus();w.__announcements=0;const n=d.querySelector('[data-testid="selection-count"]');new w.MutationObserver(()=>w.__announcements++).observe(n,{childList:true,subtree:true,characterData:true});return true`);
   await key(' ');
@@ -226,9 +224,7 @@ try {
   await changeView(true);
   await wait(`!!d.querySelector('[data-testid="selection-mode"] button')`);
   check('view-change-clears-selection', await guest(`return !d.querySelector('[data-testid="selection-count"]')`));
-  await click('more-trigger');
-  check('archived-active-per-plan-actions', await guest(`return !!d.querySelector('[role="menuitem"][data-menu-id="cleanup-restore"]') && !!d.querySelector('[role="menuitem"][data-menu-id="cleanup-delete"]')`));
-  await key('Escape');
+  check('archived-active-per-plan-actions', await guest(`return !!d.querySelector('[data-testid="cleanup-restore"] button:not(:disabled)') && !!d.querySelector('[data-testid="cleanup-delete"] button:not(:disabled)')`));
   await click('selection-mode'); await click('plan-row-P-active'); await click('selection-restore'); await click('tidy-confirm-archive');
   await wait(`d.querySelector('[data-testid="tidy-result"]')?.textContent.includes('restored')`);
   check('selection-restore-never-acknowledges', (await posts()).filter(q => q.path.endsWith('/restore')).every(q => !('active' in q.body)));

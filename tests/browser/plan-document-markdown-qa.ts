@@ -38,9 +38,11 @@ const largeReferenceUses = 10_000;
 const largeReferenceCapture = `[ref]: https://document.invalid/${'x'.repeat(195 * 1024)}\n\n${'[ref] '.repeat(largeReferenceUses)}\n`;
 const taskRow = '| Task | Area | Owner | Priority | Status | Result | Change | Review | Release | Notes |\n';
 const taskTable = taskRow + '| --- '.repeat(10) + '|\n' + taskRow.repeat(32);
+const wideTable = '\n| Intent | Location | Owner | Status | Review | Release | Final column |\n| --- | --- | --- | --- | --- | --- | --- |\n| Example | Workspace | Coordinator | Recorded | Pending | Demo | Last cell |\n';
 const denseCapture = '# Recorded tasks\n\n' + (taskTable + '\n').repeat(48);
 const guideCapture = new TextDecoder().decode(readFileSync(new URL('../../docs/ui.md', import.meta.url)).subarray(0, 256 * 1024), { stream: true });
 const output = process.argv[2];
+const comparisonBaseline = !!process.argv[3];
 if (!output) throw Error('Pass a disposable artifact directory.');
 const binary = chromiumPath();
 mkdirSync(output, { recursive: true });
@@ -65,7 +67,7 @@ try {
   }
   const seed = (id: string) => f.seedPlan(id, `Document fixture ${id}`, [{ id: 'T', title: 'Reported work is independent', kind: 'task', status: 'pending' }], { ...f.actor, sessionId: id });
   for (const id of ['markdown', 'literal-txt', 'literal-unknown', 'missing', 'denied', 'race-page', 'race-panel', 'comparison', 'large-reference', 'dense', 'guide']) seed(id);
-  await report('markdown', 'MD', sample + extra + longText);
+  await report('markdown', 'MD', sample + extra + wideTable + longText);
   writeFileSync(file('MD'), live);
   await report('literal-txt', 'txt', sample, { confirm: true });
   await report('literal-unknown', 'unknown', sample);
@@ -75,7 +77,7 @@ try {
   await report('large-reference', 'large-reference.md', largeReferenceCapture);
   await report('dense', 'dense.md', denseCapture);
   await report('guide', 'guide.md', guideCapture);
-  for (const s of ['page', 'panel']) await report(`race-${s}`, `${s}.md`, sample + longText);
+  for (const s of ['page', 'panel']) await report(`race-${s}`, `${s}.md`, sample + wideTable + longText);
   await report('comparison', 'before.md', sample);
   const compareBefore = f.store.get(fx.source, 'comparison')!.document.captureId;
   const newer = '# Later recorded heading\r\n\r\n**New Markdown line.**\r\n';
@@ -169,8 +171,8 @@ try {
       return y+b.y>=0&&y+b.y<innerHeight&&el.contains(d.elementFromPoint(x,y))?[x+b.x,y+b.y]:null;`), `${surface}: pointer target ${selector}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: xy[0], y: xy[1], button: 'left', clickCount: 1 });
   };
-  const key = async (k: 'Tab' | 'Enter' | 'PageDown' | 'Escape') => {
-    const codes = { Tab: 9, Enter: 13, PageDown: 34, Escape: 27 };
+  const key = async (k: 'Tab' | 'Enter' | 'End' | 'Escape' | 'ArrowRight') => {
+    const codes = { Tab: 9, Enter: 13, End: 35, Escape: 27, ArrowRight: 39 };
     for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: codes[k], ...(type === 'keyDown' && k === 'Enter' ? { text: '\r' } : {}) });
   };
   const focus = (selector: string) => guest(`const el=${has(selector)};el.focus();return el===d.activeElement`);
@@ -206,7 +208,7 @@ try {
     await wait(`!!${has(doc(id))}`, `${id} document opened`);
   }
   const leave = async () => {
-    assert(await focus('[data-testid="surface-panel-back"] button'));
+    assert(await focus(comparisonBaseline ? '[data-testid="surface-panel-back"] button' : '[data-testid="document-back"] button'));
     await key('Enter');
     await wait(`!!${has(documentButton)}`, 'Back returns to the plan view');
   };
@@ -231,7 +233,7 @@ try {
     await evaluate(`qa.holds.push({path:'/v1/document',frame:${js(s)},plan:'markdown',tag:'loading'})`);
     // Hold one real response to observe loading; the missing-body case below exercises retry.
     await open('markdown');
-    claim('activation focuses the document heading', await guest(`return d.activeElement===${has('[data-testid="surface-panel-heading"]')}`));
+    claim('activation focuses the document heading', await guest(`return d.activeElement===${has(comparisonBaseline ? '[data-testid="surface-panel-heading"]' : '[data-testid="document-heading"]')}`));
     await wait(`qa.held.some(x=>x.tag==='loading')`, 'held document request');
     claim('loading status, no body', await guest(`return !n&&${has('[data-testid="document-loading"][role="status"] [aria-label="Loading the document"]')}!==null`));
     await evaluate(`qa.release('loading')`);
@@ -240,7 +242,7 @@ try {
     signatures.push(headings);
     const formatted = JSON.stringify(headings) === JSON.stringify(['H1:Sample plan', 'H2:Next steps', 'STRONG:Note:']);
     claim('uppercase .MD has formatted headings and emphasis', formatted, headings);
-    claim('preview is recorded, not the edited bound file', await guest(`return n.textContent.includes('Review the sample only.')&&!n.textContent.includes(${js(live.trim())})&&${has(doc('markdown'))}.textContent.includes('The current file has not been rechecked since this capture.')`));
+    claim('preview is recorded, not the edited bound file', await guest(`return n.textContent.includes('Review the sample only.')&&!n.textContent.includes(${js(live.trim())})&&${has(doc('markdown'))}.textContent.includes(${js(comparisonBaseline ? 'The current file has not been rechecked since this capture.' : 'Current file not rechecked')})`));
     claim('body remains focusable and scroll-keyed', await guest(`return n.tabIndex===0&&n.dataset.scrollKey?.startsWith('doc-')`));
     if (formatted) {
       const states = await markState();
@@ -249,7 +251,7 @@ try {
       claim('no activation during render', (await opened()).length === opensBeforeRender && unexpectedRequests === 0 && navigations === initialNavigations);
       claim('benign HTML is inert; four images are alt text only', await guest(`return !n.querySelector('aside,#qa-raw-aside,img,svg,picture,[src],[srcset]')&&['Remote example','Relative example','Embedded example','Reference example'].every(t=>n.textContent.includes(t))`));
       const links = await guest<string[]>(`return [...n.querySelectorAll('a,[role="link"],button,[href]')].filter(el=>el.matches('a[role="link"][tabindex="0"]:not([href])')).map(el=>el.textContent)`);
-      claim('only the approved link labels are actionable', JSON.stringify(links) === '["Secure example","Plain example"]' && await guest(`return n.querySelectorAll('a,[role="link"],button,[href],[tabindex="0"]').length===2&&['Relative label','Protocol label','Fragment label','Mail label','Invalid label','Userinfo label'].every(t=>n.textContent.includes(t))`), links);
+      claim('only the approved link labels are actionable', JSON.stringify(links) === '["Secure example","Plain example"]' && await guest(`return n.querySelectorAll('a,[role="link"],button,[href],[tabindex="0"]:not(.ap-doc-table)').length===2&&['Relative label','Protocol label','Fragment label','Mail label','Invalid label','Userinfo label'].every(t=>n.textContent.includes(t))`), links);
       claim('link titles expose normalized destinations', JSON.stringify(await guest(`return [...n.querySelectorAll(${js(link)})].map(el=>el.title)`)) === JSON.stringify(url));
       if (markerOk) {
         for (let i = 0; i < 2; i++) await click(marks, i);
@@ -280,6 +282,18 @@ try {
           await shot(`${s}-${label}-${theme}`, doc('markdown'));
         }
       }
+      if (!comparisonBaseline) {
+        const table = `${body} .ap-doc-table`;
+        const beforeHeight = await guest<number>(`return n.clientHeight`);
+        await guest(`n.ownerDocument.defaultView.frameElement.style.height='770px';return true`);
+        await wait(`n.clientHeight<${beforeHeight}`, 'body decreases when the guest gets shorter');
+        await guest(`n.ownerDocument.defaultView.frameElement.style.height='970px';return true`);
+        await wait(`n.clientHeight>${Math.min(420, beforeHeight - 1)}`, 'body grows with the available viewport');
+        claim('tall reader grows past the old ceiling', await guest(`return n.clientHeight>420`), { beforeHeight });
+        assert(await focus(table)); await key('ArrowRight');
+        await wait(`${has(table)}.scrollLeft>0`, 'keyboard scrolls the table without scrolling the body sideways');
+        claim('wide table retains semantic headers and reaches the last column', await guest(`const table=${has(table)};table.scrollLeft=table.scrollWidth;const cell=table.querySelector('th:last-child');return cell.textContent==='Final column'&&cell.getBoundingClientRect().right<=table.getBoundingClientRect().right+1&&n.scrollWidth<=n.clientWidth+1`));
+      }
       if (s === 'page') {
         for (const width of [1180, 390]) {
           await send('Emulation.setDeviceMetricsOverride', { width, height: 1060, deviceScaleFactor: 1, mobile: false });
@@ -301,20 +315,28 @@ try {
     }
     assert(await focus(body));
     await guest(`n.scrollTop=0;return true`);
-    await key('PageDown');
-    await wait('n?.scrollTop>0', 'keyboard scroll moves document body');
+    await key('End');
+    await wait('n?.scrollTop>0&&n.scrollHeight-n.clientHeight-n.scrollTop<2', 'keyboard reaches the last recorded paragraph');
     claim('keyboard reads long body by scrolling its own region', await guest(`return d.activeElement===n&&n.scrollHeight>n.clientHeight`));
+    const offset = await guest<number>('return n.scrollTop');
     await leave();
     claim('Back restores focus to the document button', await guest(`return d.activeElement===${has(documentButton)}`));
+    if (!comparisonBaseline) {
+      assert(await focus(documentButton)); await key('Enter');
+      await wait('!!n', 'same capture restored on return');
+      const resumed = await guest<number>('return n.scrollTop');
+      claim('unchanged document resumes its scroll position after another view', Math.abs(resumed - offset) <= 2, { offset, resumed });
+      await leave();
+    }
     await evaluate(`qa.show([${js(s)}],280)`);
     await click('[data-testid="plan-view-map"] button');
     await wait(`${has('[data-testid="plan-view-map"] button')}?.getAttribute('aria-pressed')==='true'`, 'Map selected');
-    claim('Map, List and Document fit in one control group at 280px', await guest(`const group=${has('[data-testid="plan-view"]')};return [...group.children].map(x=>x.dataset.testid).join() === 'plan-view-map,plan-view-list,plan-view-document'&&group.scrollWidth<=group.clientWidth+1&&d.documentElement.scrollWidth<=w.innerWidth+1`));
+    claim('view controls fit in one group at 280px', await guest(`const group=${has('[data-testid="plan-view"]')};return [...group.children].map(x=>x.dataset.testid).join() === ${js('plan-view-map,plan-view-list,plan-view-document' + (comparisonBaseline ? '' : ',plan-view-history'))}&&group.scrollWidth<=group.clientWidth+1&&d.documentElement.scrollWidth<=w.innerWidth+1`));
     await click('[data-testid="more-trigger"]');
     claim('More no longer duplicates the document action', await guest(`return !!${has('[data-testid="more-popup"]')}&&!${has('[data-menu-id="document"]')}`));
     await key('Escape');
     assert(await focus(documentButton)); await key('Enter');
-    await wait(`d.activeElement===${has('[data-testid="surface-panel-heading"]')}`, 'keyboard opens the document');
+    await wait(`d.activeElement===${has(comparisonBaseline ? '[data-testid="surface-panel-heading"]' : '[data-testid="document-heading"]')}`, 'keyboard opens the document');
     await key('Escape');
     await wait(`${has('[data-testid="plan-view-map"] button')}?.getAttribute('aria-pressed')==='true'`, 'Escape restores Map');
     claim('Escape preserves Map and focuses the document button', await guest(`return d.activeElement===${has(documentButton)}`));
@@ -323,7 +345,7 @@ try {
     for (const id of ['literal-txt', 'literal-unknown']) {
       await open(id); await wait('!!n', `${id} literal body`);
       claim(`${id} retains byte-identical literal markup`, await guest(`return n.tagName==='PRE'&&n.textContent===${js(sample)}`));
-      if (id === 'literal-txt') claim('confirmed capture keeps checklist synchronization qualification', await guest(`return ${has(doc(id))}.textContent.includes('The task list was confirmed against this capture. The current file has not been rechecked since.')`));
+      if (id === 'literal-txt') claim('confirmed capture keeps checklist synchronization qualification', await guest(`return ${has(doc(id))}.textContent.includes(${js(comparisonBaseline ? 'The task list was confirmed against this capture.' : 'Task list confirmed')})`));
       await leave();
     }
     await evaluate(`qa.fail.push({frame:${js(s)},path:'/v1/document',once:true})`);
@@ -336,7 +358,7 @@ try {
     claim('retry re-reads; unavailable text has no preview', await reads('missing') === 2 && await guest('return !n'));
     await leave();
     await open('denied'); await wait('!!n', 'retained capture after denied file check');
-    claim('last-good capture kept with failed-check and source qualifications', await guest(`return n.textContent.includes('Review the sample only.')&&!n.textContent.includes(${js(live.trim())})&&${has('[data-testid="document-state"]')}?.textContent.includes('not allowed to read')&&${has(doc('denied'))}.textContent.includes('This is the last successful capture, not the current file.')`));
+    claim('last-good capture kept with failed-check and source qualifications', await guest(`return n.textContent.includes('Review the sample only.')&&!n.textContent.includes(${js(live.trim())})&&${has('[data-testid="document-state"]')}?.textContent.includes('not allowed to read')&&${has(doc('denied'))}.textContent.includes(${js(comparisonBaseline ? 'This is the last successful capture, not the current file.' : 'Not the current file')})`));
     await leave();
   }
   check('both surfaces render the same formatted semantics', signatures.length === 2 && signatures[0].length > 0 && JSON.stringify(signatures[0]) === JSON.stringify(signatures[1]));
@@ -400,6 +422,73 @@ try {
   await wait(`!!${has('[data-testid="capture-diff"]')}`, 'recorded capture comparison');
   check('comparison keeps literal Markdown and metadata', await guest(`const diff=${has('[data-testid="capture-diff"]')},meta=${has('[data-testid="capture-comparison"]')};return !diff.querySelector('h1,strong')&&diff.textContent.includes('# Later recorded heading')&&diff.textContent.includes('**New Markdown line.**')&&meta.textContent.includes('CRLF')&&meta.textContent.includes('sample-plan.after.md')&&meta.textContent.includes('#${compareBefore}')&&meta.textContent.includes('#${compareAfter}')&&meta.textContent.includes('Historical capture: checklist synchronization is unknown.')&&meta.textContent.includes('This comparison does not establish approval, completion, or the live file’s current contents.')`));
   check('no document-originated network requests or navigation', unexpectedRequests === 0 && navigations === initialNavigations, { unexpectedRequests, extraNavigations: navigations - initialNavigations });
+  if (!comparisonBaseline) {
+    // A separate fixture from the read-only snapshot assertions above. Its reports below
+    // come from the synthetic coordinator, never from a guest control.
+    for (const s of ['page', 'panel'] as const) {
+      surface = s;
+      const id = `position-${s}`;
+      const actor = { ...f.actor, sessionId: id };
+      f.seedPlan(id, `Document fixture ${id}`, Array.from({ length: 28 }, (_, i) => ({
+        id: `T${i}`, title: `Read sample section ${i + 1}`, kind: 'task', status: 'pending',
+        ...(i === 1 ? { dependencies: ['T0'] } : {}),
+      })), actor);
+      const captureName = `position-${s}.md`;
+      await report(id, captureName, sample + wideTable + longText);
+      await evaluate(`qa.show([${js(s)}],${s === 'page' ? 1000 : 440})`);
+      if (s === 'page') await wait(`!!${has(`[data-testid="plan-row-${id}"]`)}`, 'new reading fixture listed');
+      await open(id); await wait('!!n', 'reading fixture opened');
+      const view = (mode: string) => `[data-testid="plan-view-${mode}"] button`;
+      await click(view('map')); await wait(`!!${has('[data-testid="map-world"]')}&&${has('[data-testid="map-region"]')}?.dataset.state==='ready'`, 'Map reading ready');
+      const transform = () => guest<string>(`return ${has('[data-testid="map-world"]')}?.style.transform??''`);
+      const initial = await transform();
+      await click('[data-testid="map-zoom-in"]');
+      await wait(`${has('[data-testid="map-world"]')}.style.transform!==${js(initial)}`, 'zoom changes the map position');
+      const savedMap = await transform();
+      await click(view('list'));
+      await wait(`${has('.ap-tasks[data-complete]')}`, 'List reading ready');
+      await guest(`const b=${has(view('list'))};b.focus({preventScroll:true});return true`);
+      await key('End');
+      await wait(`w.scrollY>100&&d.documentElement.scrollHeight-w.innerHeight-w.scrollY<2`, 'read near the end of List');
+      const savedList = await guest<number>('return w.scrollY');
+      await guest(`const b=${has(documentButton)};b.focus({preventScroll:true});return true`);
+      await key('Enter'); await wait('!!n', 'Document opened from lower List position');
+      await click(view('map'));
+      await wait(`${has('[data-testid="map-world"]')}?.style.transform===${js(savedMap)}`, 'Map resumes its transform');
+      check(`${s}: Map restores zoom and viewport after List and Document`, true);
+      // The newer report shows the map's one-line Updating state above the toolbar; leave Map only
+      // after it settles, or the press lands where the view switch was before the line collapsed.
+      await wait(`${has('[data-testid="map-region"]')}?.dataset.state==='ready'`, 'Map settled before leaving it');
+      await click(view('list'));
+      await wait(`!!${has('.ap-tasks[data-complete]')}&&Math.abs(w.scrollY-${savedList})<=2`, 'List resumes the lower reading');
+      check(`${s}: List restores the same lower reading after visiting Map`, true, { savedList });
+      await click(documentButton); await wait('!!n', 'same capture opened again');
+      assert(await focus(body)); await key('End');
+      await wait('n?.scrollTop>0&&n.scrollHeight-n.clientHeight-n.scrollTop<2', 'end of the saved capture');
+      const savedDocument = await guest<number>('return n.scrollTop');
+      const old = f.store.get(fx.source, id)!;
+      const unchanged = await captureDocument(file(captureName), f.root, async () => {}, old.document);
+      f.store.apply({ op: 'change', plan: id, oid: oid(id), rev: old.revision, changes: [{ id: 'T0', status: 'working' }] }, actor, unchanged);
+      assert.equal(f.store.get(fx.source, id)!.document.captureId, old.document.captureId, 'fixture revision keeps the same capture');
+      await wait(`!!${has('[data-testid="progress-legend"]')}?.textContent.includes('1 in progress')&&n?.scrollTop>=${savedDocument - 2}`, 'unrelated revision with retained Document position');
+      check(`${s}: same capture retains offset on progress-only revision`, true, { savedDocument });
+      await report(id, captureName, '# Replacement capture\n\n' + longText);
+      await wait(`n?.textContent.startsWith('Replacement capture')&&n.scrollTop===0`, 'new capture resets position');
+      check(`${s}: new capture retires the old reading position`, true);
+      assert(await focus(body)); await key('End');
+      await wait('n?.scrollTop>0&&n.scrollHeight-n.clientHeight-n.scrollTop<2', 'replacement capture scrolled');
+      await leave(); await open('literal-txt'); await leave(); await open(id);
+      await wait(`n?.textContent.startsWith('Replacement capture')&&n.scrollTop===0`, 'A → B → A starts at capture top');
+      check(`${s}: plan round trip does not restore a previous reading`, true);
+      assert(await focus(body)); await key('End');
+      await wait('n?.scrollTop>0&&n.scrollHeight-n.clientHeight-n.scrollTop<2', 'capture scrolled before reload');
+      const load = await evaluate<number>(`qa.reload(${js(s)})`);
+      await wait(`qa.loaded[${js(s)}]===${load}&&!!${has(documentButton)}`, 'guest fixture reloaded');
+      await open(id);
+      await wait(`n?.textContent.startsWith('Replacement capture')&&n.scrollTop===0`, 'reload does not restore the reading');
+      check(`${s}: reload does not persist Document position`, true);
+    }
+  }
   check('no browser or fixture errors', runtimeErrors === 0 && await evaluate('qa.errors.length===0'), { runtimeErrors });
 } catch (error) {
   failure = error instanceof Error ? error.message : 'Unexpected fixture failure';

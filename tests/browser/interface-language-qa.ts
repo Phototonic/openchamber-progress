@@ -55,8 +55,8 @@ try {
     await settle();
   };
   const openMore = async (s: string) => {
-    await click(s, '[data-testid="more-trigger"]');
-    await wait(inFrame(s, `d.querySelector('[data-testid="more-trigger"]')?.getAttribute('aria-expanded')==='true'`), `${s}:More opens`);
+    await click(s, '[data-testid="settings-trigger"]');
+    await wait(inFrame(s, `d.querySelector('[data-testid="settings-trigger"]')?.getAttribute('aria-expanded')==='true'`), `${s}:Settings opens`);
   };
   const select = async (s: string, language: string) => {
     await show(s, 390); await openMore(s);
@@ -65,7 +65,7 @@ try {
     await guest(s, `d.querySelector('[role="menuitemradio"]').focus();`);
     await key('Home');
     for (let i = 0; i <= ['auto', 'en', 'ru', 'zh-CN'].indexOf(language); i++) await key('ArrowDown');
-    check(`${s}:keyboard focuses ${language}`, await guest(s, `return d.activeElement?.dataset.testid===${js('more-language-' + language)}`), await guest(s, `return {active:d.activeElement?.dataset.testid,expanded:d.querySelector('[data-testid="more-trigger"]')?.getAttribute('aria-expanded')}`));
+    check(`${s}:keyboard focuses ${language}`, await guest(s, `return d.activeElement?.dataset.testid===${js('more-language-' + language)}`), await guest(s, `return {active:d.activeElement?.dataset.testid,expanded:d.querySelector('[data-testid="settings-trigger"]')?.getAttribute('aria-expanded')}`));
     await key('Enter');
   };
   const choose = async (s: string, language: string) => {
@@ -149,15 +149,15 @@ try {
       check(`${s}:${language}:Advanced values use UI font at 390px`, fonts.length > 0 && fonts.every(font => font === bodyFont), { fonts, bodyFont });
       await shot(s, `${s}-advanced-${language}-390`);
       await click(s, '[data-testid="surface-panel-back"] button');
-      check(`${s}:Back returns focus to More`, await guest(s, `return d.activeElement===d.querySelector('[data-testid="more-trigger"]')`));
+      check(`${s}:Back returns focus to Settings`, await guest(s, `return d.activeElement===d.querySelector('[data-testid="settings-trigger"]')`));
     }
   }
   // Retain language-storage failure/race evidence from the former footer driver,
   // now through the shipped More submenu. A pending save is never a false choice.
   await choose('page', 'en');
-  await show('panel', 390); await openMore('panel');
-  await click('panel', '[data-testid="more-summary-progress"]');
-  await wait(inFrame('panel', `!!d.querySelector('[data-testid="summary-text"]')`), 'progress preview opened from More');
+  await show('panel', 390);
+  await click('panel', '[data-testid="summary-open-progress"] button');
+  await wait(inFrame('panel', `!!d.querySelector('[data-testid="summary-text"]')`), 'progress preview opened');
   const englishPreview = await guest<string>('panel', `return d.querySelector('[data-testid="summary-text"]').value`);
   await choose('page', 'ru');
   const russianPreview = await guest<string>('panel', `return d.querySelector('[data-testid="summary-text"]').value`);

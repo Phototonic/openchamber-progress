@@ -52,24 +52,25 @@ Once per reading, the map SHALL open on the whole plan when its fit-all scale is
 
 ### Requirement: One help-and-filters control
 
-The map bar SHALL hold the Map | List switch, zoom out, zoom in, Fit, Focus current work and one help-and-filters control. That control SHALL contain the map keys, what the arrows mean, Show all / Unfinished, the group filter and the shown-task count. Its help text SHALL be short: one line of keys, at most two lines on arrows, and one touch line on a coarse pointer. Help, filters and counts MUST NOT appear as separate default rows.
+In Map, zoom out/in, Fit, Focus current work and one help-and-filters control SHALL sit to the right of the shared view switch on the wide board. The tools MAY follow on a separate row at narrow widths. Help SHALL contain keys, arrow meanings, Show all / Unfinished, group filter and shown-task count. There SHALL be no duplicate switch or permanent help/count row.
 
 #### Scenario: Filter active
 - **WHEN** a task or group filter hides tasks
-- **THEN** the control shows a mark, and one line states how many of the plan's tasks are shown with a Clear action
+- **THEN** the control shows its active mark, and one line states how many tasks are shown with a Clear action
 
 #### Scenario: Help by keyboard
-- **WHEN** a keyboard user opens the control
-- **THEN** the keys, relationship meanings and filters are reachable in Tab order, and Escape closes it and returns focus to the control
+- **WHEN** the reader opens help with the keyboard
+- **THEN** keys, relationships and filters are reachable in Tab order, and Escape closes help and returns focus to its control
 
 #### Scenario: Help is scannable
-- **WHEN** the control is opened in a frame 390 CSS pixels wide in English, Russian or Simplified Chinese
-- **THEN** its whole content is visible without a scrollbar of its own
-- **AND** it still explains beads, bars, dashes and quiet arrows in words, including that moving beads mean work in progress as reported and not progress made
+- **WHEN** the map is shown at 390 CSS pixels in English, Russian or Simplified Chinese
+- **THEN** its tools remain usable together without squeezing the view labels, and opened help fits without an internal scrollbar
+- **AND** the explanation distinguishes reported work in progress from progress made, and explains beads, bars, dashes and quiet arrows
+- **AND** keys take one line, arrows at most two, and a coarse pointer gets one touch line
 
 #### Scenario: Zoom feedback
-- **WHEN** the user zooms
-- **THEN** the zoom percentage shows briefly and is announced once, without a permanent readout
+- **WHEN** the reader changes the map zoom
+- **THEN** its percentage appears briefly and is announced once, not as a permanent readout
 
 ### Requirement: Navigation is preserved
 

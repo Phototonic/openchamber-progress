@@ -123,7 +123,9 @@ export function finishInitialJournalPair(file:string,expected:NonNullable<Return
   unlinkSync(pair.stage);
   syncDirectory(path.dirname(file));
   const final=lstatSync(file,{bigint:true});
-  if(!sameFile(pair.stat,final)||final.nlink!==1n||final.size!==pair.stat.size||final.mtimeNs!==pair.stat.mtimeNs||
+  // The journal link remains, but our unlink changes ctime and can therefore
+  // change reported birthtime. Keep timestamp stability checks before unlink.
+  if(!sameInode(pair.stat,final)||final.nlink!==1n||final.size!==pair.stat.size||final.mtimeNs!==pair.stat.mtimeNs||
     lstatSync(pair.stage,{throwIfNoEntry:false}))throw new PlatformError('managed-step-unsettled');
 }
 /** Atomic publication; absent selectors use no-clobber publication, not replacement. */

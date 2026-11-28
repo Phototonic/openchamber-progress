@@ -5,6 +5,7 @@ import path from 'node:path';
 import {lifecycle} from '../../setup/lifecycle.ts';
 import {readBinding} from '../../shared/binding.ts';
 import {readRemovalReceipt,type MigrationRecord} from '../../setup/managed-migration.ts';
+import type {ManagedVolumeIdentityEvidence,ManagedVolumeIdentityReader} from '../../setup/managed-volume-identity.ts';
 import {managedStepFixtures} from '../fixtures/managed-steps.ts';
 
 function fixture(){
@@ -52,6 +53,39 @@ test('receipt revalidation permits later same-file appends but refuses a missing
     assert.notEqual(refreshed.history.digest,receipt.history.digest);
     fs.writeFileSync(f.history,JSON.stringify({...JSON.parse(receipt.entry),changed:true})+'\n');
     assert.throws(()=>readRemovalReceipt(f.record,receipt),/managed-migration-conflict/);
+  }finally{f.close();}
+});
+
+test('history receipt permits renumbering with its own proof and later appends; no fallback on lost or reused proof',()=>{
+  const f=fixture();
+  try{
+    lifecycle('remove-capture',f.targets);
+    const receipt=readRemovalReceipt(f.record)!;
+    const {database}=f.record.binding,paths=[{path:f.history,fingerprint:'a'.repeat(64)},{path:database,fingerprint:'b'.repeat(64)}];
+    const evidence:ManagedVolumeIdentityEvidence={version:1,paths};
+    const observed=new Map(paths.map(p=>[p.path,p.fingerprint]));
+    const read:ManagedVolumeIdentityReader=({path})=>{
+      const fingerprint=observed.get(path);
+      return fingerprint?{kind:'verified',fingerprint}:{kind:'unavailable'};
+    };
+    const renumbered=structuredClone(receipt);
+    renumbered.history.object!.device=String(BigInt(receipt.history.object!.device)+1n);
+    fs.appendFileSync(f.history,'{"action":"later"}\n');
+    const history=fs.readFileSync(f.history),db=fs.readFileSync(database);
+    assert.throws(()=>readRemovalReceipt(f.record,renumbered),{code:'managed-migration-conflict'});
+    const refreshed=readRemovalReceipt(f.record,renumbered,evidence,read)!;
+    assert.equal(refreshed.entry,receipt.entry);
+    assert.deepEqual(refreshed.history.object,receipt.history.object);
+    observed.set(f.history,'c'.repeat(64));
+    assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-migration-conflict'},'device/inode/birth and event still match');
+    observed.delete(f.history);
+    assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-path-unverified'});
+    observed.set(f.history,'a'.repeat(64));
+    observed.set(database,'a'.repeat(64));
+    assert.throws(()=>readRemovalReceipt(f.record,receipt,evidence,read),{code:'managed-migration-conflict'},'history proof cannot stand in for database placement');
+    assert.deepEqual(fs.readFileSync(f.history),history);
+    assert.deepEqual(fs.readFileSync(database),db);
+    assert.equal(fs.existsSync(f.legacyRoot),false);
   }finally{f.close();}
 });
 

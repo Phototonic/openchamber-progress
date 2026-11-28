@@ -90,9 +90,9 @@ access, delivery, lifecycle and managed coverage. A differing loaded version or
 fingerprint still gives a visible warning. Fresh review retains **What Setup
 changes on this computer** and its visible consent line, whether or not that
 disclosure was opened.
-**More → Setup** opens it without leaving the current session;
-**Back** returns to the plan and the More button. Language follows **More →
-Language**, including before setup is complete; changing it never confirms a
+The **Settings** gear opens **Setup** without leaving the current session,
+even when there is no readable plan. **Back** returns focus to the gear.
+Language follows **Settings → Language**, including before setup is complete; changing it never confirms a
 Setup action. Troubleshooting's Advanced details and copied support summary
 retain the diagnostic vocabulary needed for support.
 
@@ -319,9 +319,8 @@ a stage name, invalid bootstrap marker or presentation hint alone cannot claim a
 store folder exists. The ordinary Turn on capture action is not offered during
 unfinished fresh setup; continue or resume that operation instead. It remains
 available after verified completion with capture off.
-Rollback must retain format 3, stores, bindings, expectations and history. Older
-journal readers refuse format 3, including complete records; use a fresh-capable
-build for recovery, never down-convert or restore a global loader.
+Rollback must retain format 3, stores, bindings, expectations and history.
+Readers that predate format 3 refuse it, including complete records.
 Creation-only sole-source and initial capture-off checks apply while fresh work is
 unfinished, not after terminal completion. A completed store may serve other
 sources; Setup still verifies its selected source, logical Store ID, schema, private
@@ -331,9 +330,43 @@ the Store folder and database. This allows a device number to change after reboo
 without reconfiguring Setup. Paths, inode, recorded birth time and live safety
 checks still have to match. Verified means the same logical Store, not proof of
 the same physical volume or latest contents of a snapshot. Setup does not rewrite
-the journal or authorize a write. Unfinished work may still be refused after a
-reboot that renumbers a device; inspection, Resume, migration and removal retain
-their stricter identity checks.
+the journal or authorize a write. Unfinished work needs its own proof.
+
+#### Continuing unfinished Setup after a device number changes
+
+Newly recorded fresh setup, retained-store reconnection and migration (including
+interrupted removal and work based on a retained removal receipt) can continue if
+only the device number changed. For each affected location whose number changed,
+Setup must have recorded identity evidence at review on a directly mounted Linux
+btrfs subvolume backed by one identifiable local device. It must verify the
+original backing disk or partition and the exact subvolume again, along with the
+existing object and consent checks. Reopen **Setup** and choose **Continue** or
+**Resume** when offered. This continues the same operation without repeating
+completed steps; reconnection preserves capture. Review an uncertain capture
+change as usual.
+
+A snapshot or a block copy on another disk or partition is not the original,
+even at the same path with the same contents. Older journals without this evidence,
+other filesystems such as ext4, and layouts that could not be verified at review
+keep the strict device-number check. Windows and macOS are unchanged. If recorded
+proof is missing or no longer matches, Setup refuses even if the device number
+matches. Confirmation cannot override that refusal.
+
+If Setup refuses, stop and keep the journal, Store, binding, expectation,
+discovery files and history as they are. Check that the original disk or partition
+and subvolume are mounted at the reviewed locations and that the service can
+read the evidence again. Retry explicitly only after those conditions are
+restored. If the original still cannot be verified, or the journal never recorded
+the proof and the device number no longer matches, arrange separately authorized
+recovery. Share only the fixed diagnostic stage and code if available. Do not
+edit saved device numbers, clear locks, select the snapshot or reset capture.
+
+An older service that does not understand the added evidence refuses those
+journals, even completed ones. Keep all private state intact on a code rollback
+and roll forward to a compatible service; do not down-convert the journal or
+restore a global loader.
+
+#### Bootstrap refusal
 
 If bootstrap is refused, stop submitting setup actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no

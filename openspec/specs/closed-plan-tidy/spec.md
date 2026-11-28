@@ -79,27 +79,31 @@ A run SHALL show one progress line with how many of the total are done, and Stop
 
 ### Requirement: Tidy is always available on the full page
 
-The full page SHALL show one Tidy button beside search and Filters whenever it shows a plan library and the service supports cleanup. The button MUST NOT be hidden because a search or filter is set or because nothing is eligible. The rail and the More menu on either surface MUST NOT hold a bulk archive entry.
+The board SHALL offer one Tidy entry next to Finished, outside any project's fold or listbox, for the existing board-wide scope. Without visible Finished rows it SHALL remain at the list/results boundary, including on narrow screens. Search, filtering or no eligible plans MUST NOT hide it. Existing freshness, capability, confirmation and result rules SHALL remain unchanged; neither rail nor menus offer bulk cleanup.
+
+#### Scenario: Library with more than one project
+- **WHEN** several projects have finished rows and the reader opens Tidy
+- **THEN** one action identifies and counts eligible closed plans in the current board scope, not just those under the nearest Finished fold; opening or cancelling sends no mutation
 
 #### Scenario: While searching or filtering
-- **WHEN** a search is shown or a project, worktree or session filter is set
-- **THEN** the Tidy button is still shown and usable
+- **WHEN** eligible cleanup is available in a search, a filtered scope or Archived plans without a visible Finished fold
+- **THEN** Tidy remains reachable and keeps that scope; a retired search cannot authorize cleanup
 
 #### Scenario: Nothing to tidy
-- **WHEN** Tidy is opened and no closed plan is in scope
-- **THEN** one line says there are no closed plans here, no action is offered and nothing is sent
+- **WHEN** Tidy opens with no eligible plan
+- **THEN** one line states the existing qualified result, no cleanup action is offered and nothing is mutated
 
 #### Scenario: Service without cleanup
-- **WHEN** the service does not advertise the cleanup capability
-- **THEN** the Tidy button is absent, as the other cleanup actions are
+- **WHEN** the service does not advertise cleanup
+- **THEN** Tidy is absent
 
 #### Scenario: Rail and More
-- **WHEN** the rail or the More menu of the rail or board is opened
-- **THEN** neither offers a bulk archive entry, and per-plan Archive, Restore and Delete permanently remain for the plan shown
+- **WHEN** the rail or the menus on either surface are opened
+- **THEN** there is no bulk cleanup entry; eligible single-plan actions remain available on the plan itself
 
 #### Scenario: Phone width and keyboard
-- **WHEN** the full page is 390 CSS pixels wide, or operated by keyboard
-- **THEN** the Tidy button is reachable in the bar without horizontal overflow, has an accessible name and is at least 44 CSS pixels on a coarse pointer
+- **WHEN** the board is 390 CSS pixels wide or operated by keyboard
+- **THEN** Tidy is named, reachable outside collapsed rows and at least 44 CSS pixels on a coarse pointer, without horizontal overflow
 
 ### Requirement: Tidy covers every closed plan in the board's scope
 

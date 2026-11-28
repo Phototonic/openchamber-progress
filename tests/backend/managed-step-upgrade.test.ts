@@ -11,6 +11,7 @@ import {Store,canonical,digest} from '../../shared/store.ts';
 import {createManagedBindingDirectory,publishPrivateJson} from '../../shared/managed-binding.ts';
 import {migrationFile,readMigration,writeMigration,readRemovalReceipt,readManagedStepJournal,upgradeManagedStepJournal,type MigrationRecord} from '../../setup/managed-migration.ts';
 import {managedTargetDigest,managedRequestDigest,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
+import type {ManagedVolumeIdentityReader} from '../../setup/managed-volume-identity.ts';
 
 function fixture(removed:boolean,phase:MigrationRecord['phase']='pending'){
   const root=fs.mkdtempSync('/tmp/opencode/step-upgrade-'),env=isolatedEnvironment(root);
@@ -64,6 +65,50 @@ test('receipt upgrade preserves later manual capture and later same-file history
     const history=fs.readFileSync(f.history);upgradeManagedStepJournal(f.env,f.journal,f.record);
     const probe=new Store(f.record.binding.database,{readOnly:true});try{assert.equal(probe.list().captureEnabled,true);}finally{probe.close();}
     assert.deepEqual(fs.readFileSync(f.history),history);assert.equal(readManagedStepJournal(f.env)!.migration.capture.state,'unknown');
+  }finally{f.cleanup();}
+});
+
+for(const removed of [false,true])test(`format-1 upgrade rechecks ${removed?'retained history':'owned discovery'} proof before replacing the journal`,()=>{
+  const f=fixture(removed);
+  try{
+    const m=f.journal.migration,legacy=m.legacy;
+    const claim=legacy.kind==='removal-receipt'?legacy.receipt.history:legacy.claims.find(c=>c.path===path.join(f.legacyRoot,'index.js'))!;
+    const mount={path:claim.path,fingerprint:'a'.repeat(64)};
+    legacy.volumeIdentity={version:1,paths:[mount]};
+    const refreshConsent=()=>{
+      m.consent.targetDigest=managedTargetDigest(f.journal);
+      m.receipt!.requestDigest=managedRequestDigest({version:1,action:'begin',operationId:m.operationId,confirmed:true,expected:m.consent.reviewDigest},f.journal);
+    };
+    refreshConsent();
+    const file=fs.readFileSync(f.file),history=fs.readFileSync(f.history),db=fs.readFileSync(f.record.binding.database);
+    const selector=path.join(path.dirname(f.file),'progress-binding.json'),before=fs.readFileSync(claim.path);
+    let fingerprint:string|undefined='b'.repeat(64);
+    const read:ManagedVolumeIdentityReader=({path})=>{
+      assert.equal(path,mount.path);
+      return fingerprint?{kind:'verified',fingerprint}:{kind:'unavailable'};
+    };
+    const unchanged=()=>{
+      assert.deepEqual(fs.readFileSync(f.file),file);
+      assert.deepEqual(fs.readFileSync(f.history),history);
+      assert.deepEqual(fs.readFileSync(f.record.binding.database),db);
+      assert.deepEqual(fs.readFileSync(claim.path),before);
+      assert.equal(fs.existsSync(f.legacyRoot),!removed);
+      assert.equal(fs.existsSync(selector),false);
+    };
+    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code:'managed-migration-conflict'});
+    unchanged();
+    fingerprint=undefined;
+    assert.throws(()=>upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read),{code:'managed-path-unverified'});
+    unchanged();
+    claim.object!.device=String(BigInt(claim.object!.device)+1n);
+    refreshConsent();fingerprint=mount.fingerprint;
+    upgradeManagedStepJournal(f.env,f.journal,f.record,undefined,read);
+    assert.deepEqual(readManagedStepJournal(f.env),f.journal);
+    assert.deepEqual(fs.readFileSync(f.history),history);
+    assert.deepEqual(fs.readFileSync(f.record.binding.database),db);
+    assert.deepEqual(fs.readFileSync(claim.path),before);
+    assert.equal(fs.existsSync(f.legacyRoot),!removed);
+    assert.equal(fs.existsSync(selector),false);
   }finally{f.cleanup();}
 });
 

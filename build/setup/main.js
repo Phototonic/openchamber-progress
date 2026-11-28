@@ -4063,6 +4063,15 @@ function activationFingerprint(binding, plugin, guidance) {
   return digest(canonical({ binding, plugin: digest(plugin), guidance: digest(guidance) }));
 }
 
+// setup/setup-error.ts
+class SetupError extends Error {
+  code;
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+}
+
 // setup/lifecycle.ts
 function normalizeTargets(targets) {
   if (windows)
@@ -4079,13 +4088,6 @@ function normalizeTargets(targets) {
     return value;
   };
   return { ...targets, configRoot: trim(targets.configRoot), dataRoot: trim(targets.dataRoot), storeRoot: trim(targets.storeRoot) };
-}
-class SetupError extends Error {
-  code;
-  constructor(code) {
-    super(code);
-    this.code = code;
-  }
 }
 function need(v, code) {
   if (!v)
@@ -4431,7 +4433,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.6.0";
+var RELEASE = "1.7.0";
 
 // setup/cli.ts
 try {

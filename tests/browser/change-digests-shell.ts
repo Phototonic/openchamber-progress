@@ -22,7 +22,7 @@ const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',
 window.frame=frame;
 // devices: one Map per synthetic device namespace (browser profile + runtime + installation).
 window.qa={account:'account-example',session:'session-example',store:0,deviceStorage:true,ns:{page:'profile-1',page2:'profile-1',page3:'profile-2',panel:'profile-1',status:'profile-1'},devices:{},instance:new Map(),
- holds:[],held:[],requests:[],storageLog:[],storageFaults:[],errors:[],flight:0,stripDigests:false,locale:'en'};
+ holds:[],held:[],requests:[],storageLog:[],storageFaults:[],errors:[],flight:0,stripDigests:false,partialInbox:false,locale:'en'};
 const device=f=>qa.devices[qa.ns[f]]??=new Map();
 const ready=f=>send(f,{type:'ready',payload:{theme,locale:qa.locale,directory:'/fixture/Alpha',session:qa.session?{id:qa.session,title:'Example session',busy:false}:null,surface:surfaceOf(f),connection:{connected:true,account:qa.account},settings:{},item:null,...(qa.deviceStorage?{features:{deviceStorage:true}}:{})}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
@@ -51,7 +51,10 @@ addEventListener('message',async e=>{
  else if(m.type==='service-request'){
   const q=m.payload;qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null});
   const forward=async()=>{qa.flight++;try{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
-   if(q.path==='/health'&&qa.stripDigests){const b=JSON.parse(reply.body);delete b.planChangeDigests;reply.body=JSON.stringify(b)}return reply}finally{qa.flight--}};
+   if(q.path==='/health'&&qa.stripDigests){const b=JSON.parse(reply.body);delete b.planChangeDigests;reply.body=JSON.stringify(b)}
+   if(qa.partialInbox&&(q.path==='/v1/plans'||q.path==='/v1/needs-you')){const b=JSON.parse(reply.body),inbox=q.path==='/v1/plans'?b.needsYou:b;
+    if(inbox?.coverage){Object.assign(inbox.coverage,{complete:false,gapped:true,skippedRecords:1,reasons:['invalid-snapshot']});reply.body=JSON.stringify(b)}}
+   return reply}finally{qa.flight--}};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
   const hold=qa.holds.find(h=>matches(h,f,q));
   if(hold){qa.holds=qa.holds.filter(h=>h!==hold);if(hold.before)qa.held.push({tag:hold.tag,frame:f,path:q.path,go:()=>deliver(forward())});else{const reply=forward();qa.held.push({tag:hold.tag,frame:f,path:q.path,go:()=>deliver(reply)})}}
@@ -83,7 +86,7 @@ const prerequisiteItems: Item[] = [
 ];
 
 /** Synthetic, public-safe plans seeded through the ordinary store write path. */
-function seed(f: Fixture, second: boolean) {
+function seed(f: Fixture, second: boolean, layout: boolean) {
   let oid = 0;
   const actor = { ...f.actor, sessionId: 'session-example' };
   const rev = (plan: string) => f.store.get(SOURCE, plan)?.revision ?? 0;
@@ -96,6 +99,7 @@ function seed(f: Fixture, second: boolean) {
     { id: 'C', title: 'Optional translation pass', kind: 'task', status: 'skipped' },
   ];
   if (second) { start('P-digest', 'Second store example', [{ id: 'A', title: 'Unrelated task', kind: 'task', status: 'working' }]); return { apply, rev, releaseItems, actor }; }
+  if (layout) releaseItems.push({ id: 'E', title: 'Check the printed layout', kind: 'task', status: 'pending' });
   start('P-digest', 'Release digest example', releaseItems);
   start('P-removal', 'Mirror maintenance example', [
     { id: 'M', title: 'Maintenance', kind: 'group' },
@@ -106,12 +110,20 @@ function seed(f: Fixture, second: boolean) {
   start('P-gap', 'Gap history example', [{ id: 'T1', title: 'Collect metrics', kind: 'task', status: 'working' }, { id: 'T2', title: 'Summarize metrics', kind: 'task', status: 'pending' }]);
   start('P-release', 'Finished release example', [{ id: 'F1', title: 'Tag release', kind: 'task', status: 'done' }, { id: 'F2', title: 'Announce release', kind: 'task', status: 'done' }]);
   apply('P-release', { op: 'finish', outcome: 'finished' });
+  if (layout) {
+    const tasks = (title: string) => [{ id: 'choice', title, kind: 'task' as const, status: 'blocked', blocker: { category: 'decision', reason: 'Choose between two examples.' } }];
+    start('P-layout-home', 'Studio launch', tasks('Choose a launch date'));
+    const other = { ...actor, sessionId: 'session-away', directory: '/fixture/Beta', projectId: 'Beta' };
+    f.store.apply({ plan: 'P-layout-away', rev: 0, oid: 'qa-layout-away', op: 'start', title: 'Sample review', items: tasks('Choose a comparison') }, other);
+    f.store.apply({ plan: 'P-layout-closed', rev: 0, oid: 'qa-layout-closed', op: 'start', title: 'Sample dry run', items: [{ id: 'done', title: 'Dry run', kind: 'task', status: 'done' }] }, other);
+    f.store.apply({ plan: 'P-layout-closed', rev: 1, oid: 'qa-layout-finish', op: 'finish', outcome: 'finished' }, other);
+  }
   return { apply, rev, releaseItems, actor };
 }
 
-export async function startDigestShell(built = false) {
+export async function startDigestShell(built = false, layout = false) {
   const stores = [await launchCleanupService(built, false), await launchCleanupService(built, false)];
-  const seeded = [seed(stores[0], false), seed(stores[1], true)];
+  const seeded = [seed(stores[0], false, layout), seed(stores[1], true, false)];
   const s0 = stores[0], { apply, rev, releaseItems, actor } = seeded[0];
   /** The exact same-status report, kept so it can be replayed byte-for-byte (a receipt replay). */
   let repeat: Record<string, unknown> | null = null;
@@ -152,6 +164,7 @@ export async function startDigestShell(built = false) {
   };
   return {
     port, storeId: s0.body().storeId, revision: rev, state, cleanup,
+    layoutClosedCount: () => s0.store.list().data.filter(p => p.lifecycle !== 'active').length,
     exists: (plan: string) => !!s0.store.get(SOURCE, plan),
     fixtureWrites: () => fixtureWrites,
     /** V1 sequence on P-digest: blocked, same-status repeat (fresh oid), identical replay, working, done, add D. */
