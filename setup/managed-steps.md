@@ -138,6 +138,45 @@ legacy discovery and Store capture control. No progress schema or identity
 change is authorized. These declarations import no runtime into existing entries;
 generated runtime integration belongs with the engine/client deliverable.
 
+### Unfinished work on renumbered storage
+
+New format-2/3 reviews may freeze private, versioned evidence for derived
+targets on directly mounted, single-device Linux btrfs. It identifies the
+backing disk or partition, filesystem and exact subvolume, and is included in
+the immutable reviewed facts and target digest. Check membership for each
+target: a nested subvolume does not inherit proof from its parent mount, and
+another root does not inherit the Store's proof. For a planned absent object,
+its verified containing directory proves placement only.
+
+Use fresh matching proof to relax **only** the device number in a
+historical-to-live comparison. Preserve all remaining native-object and logical
+checks and keep live-to-live, saved-to-saved, digest, consent and intent
+comparisons exact. A writable snapshot or a block copy on another disk or
+partition refuses even with matching bytes and a reused device number. Missing,
+inconsistent or unsupported recorded evidence refuses; there is no strict-path
+fallback or confirmation override. Without recorded evidence (older journals,
+unprovable layouts at review, or other filesystems such as ext4), the historical
+device comparison stays strict. Do not add evidence to an existing operation
+on replay or resume. Windows and macOS comparisons do not change.
+
+Status never writes. Explicit Continue/Resume on the proved original uses the
+same operation, consent and next legal step. Revalidate at each existing effect
+boundary, including first-journal settlement, creation, publication, unlink and
+between rmdir and history append. Reconnection preserves capture; exact replay does
+not duplicate completed effects. A retained receipt still requires absent
+discovery and the exact event in the same owned history file, even after later
+valid appends. Format-1 upgrade still needs its own explicit review and intact
+manifest or exact receipt; it does not override an earlier mismatch. The
+completed format-3 status exception is separate and grants no write authority.
+
+If validation refuses before a write, keep the state unchanged; a refusal after an
+authorized effect is handled by the existing uncertain-intent rules, not by undo.
+Keep the journal and affected files and retry explicitly only after the original
+storage and proof are available at the reviewed paths. Older strict readers refuse
+an enriched journal even when complete. Roll forward to a compatible service with
+the original state intact; no down-conversion or global-loader restoration. See
+[Setup recovery](../docs/setup.md#continuing-unfinished-setup-after-a-device-number-changes).
+
 ## Negotiation and requests
 
 Advertise literal `managedMigrationSteps: 1` in authenticated health (including

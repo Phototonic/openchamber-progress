@@ -1770,7 +1770,7 @@ Exclusive creation initializes the frozen Store ID and capture off atomically.
 Expectation precedes source registration; retained data, IDs and capture survive
 unchanged. Ambiguous publication, partial databases, sidecars and uncheckpointed
 folders are retained/refused, never repaired/adopted. Rollback retains format 3;
-older readers refuse it, even complete records. Recover with a fresh-capable build.
+readers that predate format 3 refuse it, even complete records.
 
 Setup exposes only optional `freshProgress` for format 3 and `migrationProgress`
 for format 2, never translating families. Before a fresh journal exists,
@@ -1788,6 +1788,39 @@ health to ready without a plans read. This changes neither persisted evidence no
 write authority and cannot establish physical-volume continuity. Unfinished
 journals, missing or conflicting selections, inspection/review, Resume, format-2
 manifest claims and removal receipts do not get this exception.
+
+Unfinished work has a separate same-target rule. New format-2 migration and
+format-3 fresh operations can freeze versioned, private volume evidence in the
+immutable reviewed facts and target digest. Evidence is scoped to each already
+derived target on directly mounted, single-device Linux btrfs: it must identify
+both the backing disk or partition and the exact mounted subvolume. For absence,
+the verified containing directory establishes placement, not object identity or
+successful creation. Older records without evidence keep their original shape,
+digest and exact historical device checks; no retrofit on read, replay or resume.
+
+At an explicit Continue or Resume and every existing effect boundary, only
+historical-to-live comparison may accept a different device number. It requires
+a fresh match to the recorded proof and all other object, ownership, Store/source,
+consent, intent and fencing checks. An uncovered path stays strict, even if
+another path verifies. A different subvolume (including a snapshot), a copied
+filesystem on another disk or partition, or loss of recorded proof refuses even
+if the device number matches. No fallback to a parent mount, another target or
+user confirmation. Unprovable layouts at review and other Linux filesystems
+retain strict checks; Windows and macOS behavior is unchanged. Live-to-live and
+saved-to-saved comparisons remain exact.
+
+Status is read-only. Resume does not perform a Store or removal effect. Continued
+fresh work retains checkpoints and reconnection preserves capture. Manifest
+removal still verifies the remaining owned set and exact intent, including a check
+between directory removal and history append; retained-receipt work requires
+absent discovery and the exact event in the same owned history file. Refusal
+for missing or mismatched proof before a write leaves state unchanged; it does
+not undo an earlier effect.
+Wire shapes and public identifiers do not change. If proof cannot be reestablished,
+preserve the journal and files for separately authorized recovery. Older readers
+refuse enriched records even when complete. Retain all state on code rollback and
+roll forward to a compatible service, never down-convert.
+
 See [the detailed step contract](../setup/managed-steps.md) for digests, retries,
 budgets and recovery boundaries.
 
