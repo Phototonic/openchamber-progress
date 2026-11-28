@@ -11,11 +11,58 @@ if [[ $# != 1 || ( $1 != --ci && $1 != --local ) || $EUID == 0 ]]; then
 fi
 
 # System tools and test failures can print local paths and device identifiers.
-# The public trace contains only fixed case names, booleans and counts.
+# The public trace contains only fixed labels/dispositions, booleans and counts.
 exec 2>/dev/null
 case_name=prerequisites
 passed=0
-trap 'printf "%s=false\n" "$case_name"' ERR
+failure_check=
+report_failure() {
+  local status=$1 options owner stderr disposition
+  printf '%s=false\n' "$case_name"
+  if [[ $case_name != seed ]]; then return; fi
+  printf 'seed_failed_check=%s\nseed_exit_code=%d\n' "$failure_check" "$status"
+  # Probe only the private fixture mount. Do not publish raw findmnt output,
+  # identities, kernel logs, command stderr, or test TAP.
+  if mountpoint -q "$direct"; then
+    printf 'seed_mount_present=true\n'
+    if [[ $(findmnt -rn -M "$direct" -o FSROOT) == /original ]]; then
+      printf 'seed_mount_original=true\n'
+    else
+      printf 'seed_mount_original=false\n'
+    fi
+    options=$(findmnt -rn -M "$direct" -o OPTIONS) || options=
+    if [[ ,$options, == *,rw,* ]]; then
+      printf 'seed_mount_writable=true\n'
+    else
+      printf 'seed_mount_writable=false\n'
+    fi
+  else
+    printf 'seed_mount_present=false\n'
+  fi
+  if [[ -d $store ]]; then
+    printf 'seed_store_present=true\n'
+    owner=$(stat -c '%u' -- "$store") || owner=
+    if [[ $owner == "$EUID" ]]; then
+      printf 'seed_store_owned_by_runner=true\n'
+    else
+      printf 'seed_store_owned_by_runner=false\n'
+    fi
+  else
+    printf 'seed_store_present=false\n'
+  fi
+  stderr=$(head -c 4096 -- "$root/seed.stderr") || stderr=
+  case "$stderr" in
+    '') disposition=none ;;
+    *'No such file'*|*'does not exist'*) disposition=not_found ;;
+    *'Permission denied'*|*'Operation not permitted'*) disposition=permission_denied ;;
+    *'Input/output error'*) disposition=io_error ;;
+    *'wrong fs type'*|*'bad superblock'*) disposition=filesystem_or_mount_option_error ;;
+    *'Invalid argument'*) disposition=invalid_argument ;;
+    *) disposition=other ;;
+  esac
+  printf 'seed_stderr_disposition=%s\n' "$disposition"
+}
+trap 'report_failure "$?"' ERR
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -222,10 +269,13 @@ attach_loop() {
 
 mount_fixture() {
   local at=$1 fs=$2 source=$3 options=$4
+  failure_check=mount_path
   [[ -d $at && ! -L $at ]]
   if mountpoint -q "$at"; then return 1; fi
   register mount "$at"
+  failure_check=mount_command
   admin mount --internal-only -t "$fs" -o "nodev,nosuid,noexec,$options" -- "$source" "$at"
+  failure_check=mount_filesystem_type
   [[ $(findmnt -rn -M "$at" -o FSTYPE) == "$fs" ]]
 }
 
@@ -236,6 +286,7 @@ mount_btrfs() {
   else
     mount_fixture "$at" btrfs "$source" "subvol=$subvol"
   fi
+  failure_check=mount_subvolume
   [[ $(findmnt -rn -M "$at" -o FSROOT) == "$subvol" ]]
 }
 
@@ -338,12 +389,18 @@ seed_uuid=$(fs_uuid)
 pass
 
 case_name=seed
-mount_btrfs "$direct" "$lun_device" /original
-seed_dev=$(stat -c '%d' -- "$store")
-seed_object=$(store_object)
+LC_ALL=C mount_btrfs "$direct" "$lun_device" /original 2>"$root/seed.stderr"
+failure_check=store_device_stat
+seed_dev=$(LC_ALL=C stat -c '%d' -- "$store" 2>"$root/seed.stderr")
+failure_check=store_inode_birth_stat
+seed_object=$(LC_ALL=C store_object 2>"$root/seed.stderr")
+failure_check=store_birth_time_available
 [[ $seed_object != *' -' ]]
-seed_subvol=$(subvol_id)
+failure_check=read_subvolume_id
+seed_subvol=$(LC_ALL=C subvol_id 2>"$root/seed.stderr")
+failure_check=numeric_subvolume_id
 [[ $seed_subvol =~ ^[0-9]+$ ]]
+failure_check=seed_driver
 run_phase seed main "$store"
 pass
 
