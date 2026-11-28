@@ -151,11 +151,15 @@ async function seed(http:Http,root:string,trace:Trace) {
     assert.equal(status,200,JSON.stringify(body.error));assert.equal(body.error,null);
     assert.ok(body.inspection);
     if(body.inspection.state==='complete'){
-      trace.check='seed-review';
       const review=body.inspection.review;
+      trace.check='seed-review-target';
       assert.equal(review.targets.storeRoot,root);
+      trace.check='seed-review-capture-policy';
       assert.equal(review.capturePolicy,'enable-new');
+      trace.check='seed-review-capture-state';
       assert.equal(review.capture.state,'unknown');
+      trace.check='seed-review-token';
+      assert.ok(review.expected,'fresh review must supply a confirmation token');
       expected=review.expected;break;
     }
     cursor=body.inspection.cursor??undefined;

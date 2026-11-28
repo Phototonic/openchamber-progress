@@ -386,8 +386,11 @@ admin chown -- "$(id -u):$(id -g)" "$top/original"
 admin chmod 700 -- "$top/original"
 release mount "$top"
 mount_btrfs "$direct" "$loop_device" /original
-mkdir -m 700 -- "$store"
-run_phase bare-loop bare-loop "$store"
+# This control creates a real database; keep it out of the fresh Store that
+# the later WWN-backed mount will review on the very same filesystem image.
+bare_loop_store="$direct/bare-loop-store"
+mkdir -m 700 -- "$store" "$bare_loop_store"
+run_phase bare-loop bare-loop "$bare_loop_store"
 release mount "$direct"
 release loop "$image"
 pass
