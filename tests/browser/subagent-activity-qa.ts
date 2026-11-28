@@ -299,6 +299,25 @@ try {
   await shot('panel', 'subagents-line-nothing-running-320', 4000, true);
   await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.bump();qa.push('sessions');true`);
   await wait('panel', `d.querySelector('[data-testid="subagent-count"] [data-kind="running"]') && d.querySelector('${row('M-live')}')`, 'many children restored');
+  // 51 recorded children, all finished; the first page holds 50. The host lists the unloaded Q50 as
+  // running again: its Running row may be a recorded child, so it adds no count, yet the line must
+  // not say nothing is running above it (rail and board).
+  await evaluate(`qa.set('M-live',{activity:'idle'});qa.runs.M.saved=qa.runs.M.useful;n=1100;qa.runs.M.useful=Array.from({length:51},(_,i)=>run('M','Q'+i,'succeeded',{ago:30+i,took:2,plan:'plan-many',description:'Resumable batch '+i,agent:'migrator'}));qa.ws.sessions['proj-alpha'].push({id:'Q50',title:'Resumable batch 50',projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:400,updatedAt:0,archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]});qa.bump();qa.push('sessions');true`);
+  const resumedRow = `${sec} > .ap-obs-list > li[data-session="Q50"]:not([data-run])[data-ran="active"]`;
+  await wait('panel', `d.querySelector('${resumedRow}') && d.querySelector('[data-testid="subagent-count-more"]')?.textContent==='51 finished'`, 'rail resumed unloaded child');
+  const resumedRail = await lineParts('panel');
+  check('resumed child on an unloaded page (rail): the lead counts its Running row, qualified', JSON.stringify(resumedRail) === JSON.stringify({ lead: ['1+ running'], later: ['51 finished'] }), resumedRail);
+  await shot('panel', 'subagents-line-resumed-unloaded-rail', 4000, true);
+  await show('page', 1100);
+  await selectPlan('src-local', 'plan-many');
+  await wait('page', `d.querySelector('[data-testid="plan-detail"] ${resumedRow}') && d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-count-more"]')?.textContent==='51 finished'`, 'board resumed unloaded child');
+  const resumedBoard = await lineParts('page', '[data-testid="plan-detail"]');
+  check('resumed child on an unloaded page (board): the lead counts its Running row, qualified', JSON.stringify(resumedBoard) === JSON.stringify({ lead: ['1+ running'], later: ['51 finished'] }), resumedBoard);
+  await shot('page', 'subagents-line-resumed-unloaded-board', 4000, true);
+  await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>s.id!=='Q50');qa.bump();qa.push('sessions');true`);
+  await show('panel', 320);
+  // The restored run read, not just the host rows: the pager below must start from it.
+  await wait('panel', `d.querySelector('[data-testid="observed-more"] > summary')?.textContent==='Show more · 212' && d.querySelector('${row('M-live')}') && !d.querySelector('${row('Q50')}')`, 'many children restored after the resumed child');
   // Paging in the rail: keyboard, bounded steps, focus kept on the pager.
   await show('panel');
   await wait('panel', `d.querySelector('${row('M-live')}')`, 'rail 213');

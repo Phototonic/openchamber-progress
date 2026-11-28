@@ -1047,6 +1047,28 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting for you', '2 running']);
 });
 
+test('summary: a resumed child on an unloaded page shows as Running, so the running count never reads as nothing', () => {
+  // 51 recorded children, all finished (one also failed); the useful view loaded 50. The host lists
+  // the unloaded K50 as running now (it was resumed): a host-only Running row that may be recorded.
+  const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
+  for (const failed of [0, 1]) {
+    const rows = markLatest(kids.map((k, i) => run(i < failed ? 'failed' : 'succeeded', { childSessionId: k })));
+    const read = readOf(rows.slice(0, 50), { succeeded: 51 - failed, failed, runs: 51, children: 51 }, { nextCursor: 'next' });
+    const census = censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k, i) => rec(k, 'A', { activity: i === 50 ? 'running' : 'idle' }))]));
+    for (const surface of ['panel', 'page'] as const) {
+      const r = rosterFor(input({ surface, census, runs: panel(read, [], { hasMore: true }) }))!;
+      const label = `${surface}, ${failed} failed`;
+      assert.deepEqual(r.featured.filter((e) => e.ran.kind === 'active').map((e) => [e.sessionId, e.runId]), [['K50', null]], `${label}: the Running row is shown`);
+      // Raised to the Running rows shown, never added on top of them; possibly low, so qualified.
+      assert.deepEqual(r.summary.map((s) => s.text), ['1+ running', `${51 - failed} finished`, ...(failed ? ['1 failed'] : [])], label);
+    }
+    // Once every recorded child is loaded, the record speaks: its finished run, not the host's word.
+    const all = rosterFor(input({ census, runs: panel(read, [rows[50]]) }))!;
+    assert.deepEqual(all.summary.map((s) => s.text), [`${51 - failed} finished`, ...(failed ? ['1 failed'] : [])], `${failed} failed, all loaded`);
+    assert.ok(![...all.featured, ...all.earlier].some((e) => e.ran.kind === 'active' || e.now?.kind === 'active'), 'and no Running row is left to contradict');
+  }
+});
+
 test('host row limit: a truncated host census is disclosed and host-only counts are not presented as complete', () => {
   const kids = (n: number, last: LiveSession['activity']) => [rec('A', null), ...Array.from({ length: n }, (_, i) => rec(`H${i}`, 'A', { createdAt: i, activity: i === n - 1 ? last : 'running' }))];
   const empty = readOf([]);

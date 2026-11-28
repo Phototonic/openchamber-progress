@@ -347,8 +347,12 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
     if (count > 0) summary.push({ kind, count, partial, text: c.summary[kind](partial ? `${count}+` : count) });
   };
   add('waiting', waiting.length);
+  // Never fewer running than the Running rows shown. A host-listed child that may be an unpaged
+  // recorded child adds to no count, but if it shows as Running, the line must not say nothing is
+  // running above it. This is a floor, not an addition: never counted twice, always qualified then.
+  const runningShown = [...featured, ...earlier].filter((e) => liveKind(e) === 'active').length;
   if (read) {
-    const running = Math.max(0, read.counts.running + activeHost.length - waiting.length);
+    const running = Math.max(runningShown, read.counts.running + activeHost.length - waiting.length);
     add('running', running);
     add('finished', read.counts.succeeded);
     add('failed', read.counts.failed);
