@@ -269,6 +269,9 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-sub-part[data-kind="interrupted"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-warning)}
 .ap-sub-part[data-kind="unknown"] .ap-obs-mark{border-style:dashed}
 .ap-sub-part[data-kind="unknown"]{color:var(--oc-muted)}
+.ap-sub-part[data-kind="none"]{color:var(--oc-muted)}
+/* Finished and unknown counts open the Show more disclosure, above its rows. */
+.ap-obs-more>.ap-sub-later{margin:2px 0 6px}
 .ap-obs-list{display:flex;flex-direction:column;min-width:0}
 .ap-obs-row{position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;padding:7px 0 7px calc((var(--depth,1) - 1) * 14px)}
 .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}

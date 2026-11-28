@@ -7,7 +7,7 @@ import { age, el, info, testid, type Env } from './components.ts';
 import { icon, warningLine, type WarningTone } from './primitives.ts';
 import { absoluteTime, elapsedText, formatCount, plural } from './format.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
-import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
+import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry, type SummaryPart } from './subagents.ts';
 import type { RunsPanel } from './runs.ts';
 
 export interface SubagentsView extends RosterInput { env: Env }
@@ -44,6 +44,7 @@ const EN = {
   loading: 'Loading…', showMore: (n: number | null) => n === null ? 'Show more' : `Show ${n} more`,
   other: 'Show more', records: 'Sub-agents', otherLabel: 'Show more sub-agents', pageError: 'Couldn’t load more sub-agents; try again.',
   subagents: 'Sub-agents', aboutLabel: 'About sub-agent records', running: 'Running sub-agents',
+  none: 'Nothing running now', noneSeen: 'None seen running',
   partial: 'Partial', coverage: ' sub-agent coverage',
   lossText: {
     migrated: 'This happened before the update; the date is unknown.', legacy: 'Date unknown.',
@@ -77,6 +78,7 @@ const RU: typeof EN = {
   loading: 'Загрузка…', showMore: n => n === null ? 'Показать ещё' : `Показать ещё ${n}`,
   other: 'Показать ещё', records: 'Субагенты', otherLabel: 'Показать ещё субагентов', pageError: 'Не удалось загрузить ещё субагентов; попробуйте снова.',
   subagents: 'Субагенты', aboutLabel: 'О записях субагентов', running: 'Выполняющиеся субагенты',
+  none: 'Сейчас ничего не выполняется', noneSeen: 'Выполняющихся не видно',
   partial: 'Неполный', coverage: ' охват субагентов',
   lossText: {
     migrated: 'Это произошло до обновления; дата неизвестна.', legacy: 'Дата неизвестна.',
@@ -110,6 +112,7 @@ const ZH: typeof EN = {
   loading: '加载中…', showMore: n => n === null ? '显示更多' : `再显示 ${n} 条`,
   other: '显示更多', records: '子智能体', otherLabel: '显示更多子智能体', pageError: '无法加载更多子智能体，请重试。',
   subagents: '子智能体', aboutLabel: '关于子智能体记录', running: '运行中的子智能体',
+  none: '当前没有运行中的', noneSeen: '未见运行中的',
   partial: '覆盖不完整', coverage: '：子智能体覆盖',
   lossText: {
     migrated: '这发生在更新之前；日期未知。', legacy: '日期未知。',
@@ -295,19 +298,29 @@ const NOTE: Record<InterfaceLanguage, Record<RosterNote['kind'], string>> = { en
 /** Only action-changing states keep their own line; qualifications use the surface-wide note. */
 export const separateNote = (n: RosterNote) => n.kind === 'runs-error' || n.kind === 'capture-off';
 
-function summaryNode(r: Roster, compact: boolean, language: InterfaceLanguage) {
+/** Finished and unknown records are history, not what matters now: they sit behind Show more. */
+const LATER: ReadonlySet<SummaryPart['kind']> = new Set(['finished', 'unknown']);
+
+/**
+ * One count line. `subagent-count` leads the section with what matters now (waiting, running,
+ * failed, interrupted); `subagent-count-more` opens the Show more disclosure with the rest. With
+ * nothing current to lead with, the lead says so plainly, never "0+".
+ */
+function summaryNode(r: Roster, parts: SummaryPart[], language: InterfaceLanguage, later = false) {
   const c = COPY[language];
-  const p = testid(el('p', 'ap-sub-summary'), 'subagent-count');
+  const p = testid(el('p', later ? 'ap-sub-summary ap-sub-later' : 'ap-sub-summary'), later ? 'subagent-count-more' : 'subagent-count');
   p.title = r.recorded ? c.recordedTip : c.hostTip;
-  for (const s of r.summary) {
+  const add = (kind: string, text: string) => {
     const part = el('span', 'ap-sub-part');
-    part.dataset.kind = s.kind;
+    part.dataset.kind = kind;
     const mark = el('span', 'ap-obs-mark');
     mark.setAttribute('aria-hidden', 'true');
-    part.append(mark, s.text);
+    part.append(mark, text);
     p.append(part);
-  }
+  };
   // The model supplies whole translated count strings, including any lower-bound mark.
+  for (const s of parts) add(s.kind, s.text);
+  if (!parts.length) add('none', r.livePartial ? c.noneSeen : c.none);
   return p;
 }
 
@@ -328,7 +341,7 @@ export function earlierPager(r: Pick<Roster, 'earlier' | 'earlierTotal' | 'canPa
  * Rail and board: every record that is not running now, folded under one summary line. Waiting,
  * failed, interrupted, finished, idle and unknown keep their own words; the existing pager reads on.
  */
-function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent = true) {
+function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent = true, later: SummaryPart[] = []) {
   const language = resolveLanguage('auto', v.env.locale), c = COPY[language];
   const step = EARLIER_STEP[v.surface];
   const visible = Math.max(step, v.runs?.shown ?? 0);
@@ -339,6 +352,7 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   const more = testid(el('details', 'ap-obs-more'), 'observed-more');
   const partial = !r.recorded || r.notes.some(n => !['capture-off', 'host-truncated', 'host-gaps', 'host-activity-unavailable'].includes(n.kind));
   more.append(el('summary', '', `${r.featured.some(running) ? c.other : c.records}${total > 0 ? ` · ${total}${partial ? '+' : ''}` : ''}`));
+  if (later.length) more.append(summaryNode(r, later, language, true));
   const list = el('ul', 'ap-obs-list');
   list.setAttribute('aria-label', c.otherLabel);
   for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
@@ -405,8 +419,13 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
     title.append(info('subagent-records', c.aboutLabel, c.aboutLines));
   }
   head.append(title);
-  const counts = r.summary.length ? summaryNode(r, compact, language) : null;
-  if (counts) head.append(counts);
+  // Lead with what matters now; finished and unknown counts open Show more (kept in the lead only
+  // when there is no disclosure to hold them, so no count is ever dropped). The lead line is always
+  // there: with no current part, even with no count at all (idle task-linked rows only), it says so.
+  let lead = r.summary.filter((s) => !LATER.has(s.kind)), later = r.summary.filter((s) => LATER.has(s.kind));
+  const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact, later);
+  if (!records) { lead = r.summary; later = []; }
+  head.append(summaryNode(r, lead, language));
   section.append(head);
   const now = r.featured.filter(running);
   if (now.length) {
@@ -415,7 +434,6 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
     for (const e of now) list.append(expandRow(e, v.env, !compact));
     section.append(list);
   }
-  const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
   // The shell already shows recording-off once for the whole surface.
   const notes = coverageNode(r.notes.filter(n => separateNote(n) && n.kind !== 'capture-off'), v.runs, language);
