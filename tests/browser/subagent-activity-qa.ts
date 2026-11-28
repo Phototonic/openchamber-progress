@@ -137,6 +137,7 @@ try {
   /** One activation, then the selected reading's accepted complete detail. */
   const selectPlan = async (source: string, id = 'plan-alpha') => {
     await click('page', `[data-testid="plan-row-${id}"][data-source="${source}"]`);
+    await progressUi.list('page', { id, source });
     await wait('page', `d.querySelector('article[data-testid="plan-${id}"][data-source="${source}"] .ap-tasks[data-complete]')`, 'selected complete reading');
   };
   /** Clutter the owner reported must never come back. */

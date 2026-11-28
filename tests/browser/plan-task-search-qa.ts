@@ -208,7 +208,11 @@ try {
   /** One explicit action and the windows it issued (hard gate: at most ten). */
   const act = async (label: string, run: () => Promise<unknown>) => {
     const before = await count('/v1/search');
-    await run(); await idle();
+    await run();
+    // Pointer input can return before the paint swaps the old Continue button
+    // for a spinner. Observe this action's first request before testing idle.
+    await wait('page', `qa.requests.filter(r=>r.frame==='page'&&r.path==='/v1/search').length>${before}`, `${label}: first search request`);
+    await idle();
     const windows = (await count('/v1/search')) - before;
     actions.push({ action: label, windows });
     return windows;
@@ -2563,10 +2567,10 @@ try {
   }
 
   // ======================================================= 1. Keyboard entry, mixed hits, canonical reveal
-  const searchPlanAction = async (id: string) => {
-    await click('page', '[data-testid="more-trigger"]');
-    await wait('page', `d.querySelector('[data-testid="more-${id}"]')`, `More: ${id}`);
-    await click('page', `[data-testid="more-${id}"]`);
+  const searchPlanAction = async (id: 'cleanup-archive' | 'cleanup-restore') => {
+    const selector = `[data-testid="plan-detail"] [data-testid="${id}"] button`;
+    await wait('page', `d.querySelector('${selector}')?.disabled===false`, `${id} available`);
+    await click('page', selector);
   };
   const searchMode = async (mode: 'archived' | 'visible') => {
     await boardUi.openFilters();
@@ -2620,9 +2624,10 @@ try {
     check('A1:no-false-empty-while-unchecked', await guest<boolean>('page', `return !d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-none-yet"]')`));
     await more();
   }
-   await boardUi.openFilters();
-   check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
+  await boardUi.openFilters();
+  check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
   await shot('search-no-results');
+  await boardUi.closeFilters();
 
   // ======================================================= 3. Chips, Clear all, unavailable scope, failure
   await theme('light');
@@ -2757,9 +2762,8 @@ try {
     // R5: held window during a local Archive: the pre-action reply cannot restore the plan.
     await searchFor('ship export');
     await click('page', H('P-0005-ship'));
-    await wait('page', `d.querySelector('[data-testid="plan-view-list"] button')`, 'List entry');
-    await click('page', '[data-testid="plan-view-list"] button');
-    await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
+    await progressUi.list('page', { id: 'P-0005-ship', source: 'source-alpha' });
+    await wait('page', `d.querySelector('[data-testid="cleanup-archive"] button')?.disabled===false`, 'archive action available');
     await evaluate(`qa.holds.push({tag:'r5',path:'/v1/search'});true`);
     await click('page', '[data-testid="search-more"] button'); await sleep(150);
     await searchPlanAction('cleanup-archive');
@@ -2788,6 +2792,7 @@ try {
     await searchFor('Dense match');
     fx.insert('P-0000-late', 'Dense match late insert');
     await exhaust();
+    await wait('page', `d.querySelector('[data-testid="search-coverage"][data-state="exhausted"]') && !d.querySelector('[data-testid="search-coverage"]').textContent.includes('Checking whether these results')`, 'final search page freshness settled');
     race('F3:insert-behind-cursor-honest', await coverageText() === '' && !(await guest<boolean>('page', `return !!d.querySelector('${H('P-0000-late')}')`)), ['A plan inserted behind the cursor is not included in the found results'], undefined);
     // R9: host session A/B/null keeps the board search; zero new windows.
     await searchFor('export csv');
@@ -2826,9 +2831,11 @@ try {
   const shortcuts = await guest<boolean[]>('page', `return ['f','k'].flatMap(k=>[true,false].map(ctrl=>{const e=new KeyboardEvent('keydown',{key:k,ctrlKey:ctrl,metaKey:!ctrl,bubbles:true,cancelable:true});d.getElementById('ap-search-q').dispatchEvent(e);return e.defaultPrevented}))`);
   check('A11:host-shortcuts-not-intercepted', shortcuts.every((x) => !x), ['Ctrl/Cmd+F and Ctrl/Cmd+K are not prevented by the guest (synthetic events, labelled)'], shortcuts);
   await searchFor('café export', true);
-  // Modes now live inside Filters, after the field, rather than before it.
+  // Reach Hide quiet and Filters from the top-bar search field.
   // Reach them with native keys and verify reverse traversal within the pair.
   await guest('page', `d.getElementById('ap-search-q').focus();return true`);
+  for (let n = 0; n < 3 && !await guest<boolean>('page', `return d.activeElement?.dataset.testid==='quiet-plan-filter'`); n++) await key('Tab');
+  check('A11:field-tabs-to-hide-quiet', await guest<boolean>('page', `return d.activeElement?.dataset.testid==='quiet-plan-filter'`));
   await key('Tab');
   check('A11:field-tabs-to-filters', await guest<boolean>('page', `return d.activeElement?.dataset.testid==='board-filters-trigger'`));
   await key('Enter');
@@ -2933,7 +2940,7 @@ try {
 
   // ======================================================= 7. Saved views blocked: zero preference storage
   const storage = await evaluate<any[]>(`qa.storage.filter(s=>s.frame==='page'&&s.at>=${storageMark})`);
-  check('S1:blocked-zero-preference-storage', storage.every((s: any) => s.op === 'keys' || (s.op === 'get' && ['interface-language.v1', 'progress-view.v1'].includes(s.key))), ['Only the shell’s language and Needs you device-state reads are allowed; Search reads no saved-view preference and writes no storage'], storage);
+  check('S1:blocked-zero-preference-storage', storage.every((s: any) => s.op === 'keys' || (s.op === 'get' && ['interface-language.v1', 'progress-view.v1', 'quiet-plans.v1'].includes(s.key))), ['Only the shell’s language, Needs you and Hide quiet device-state reads are allowed; Search reads no saved-view preference and writes no storage'], storage);
   check('S1:no-saved-view-controls', !(await guest<boolean>('page', `return !!d.querySelector('[data-testid^="view-"],[data-testid="views-status"]')`)));
   facts.pageStorageOpsDuringRun = storage.map((s: any) => `${s.op}:${s.scope}`);
 
@@ -2971,7 +2978,7 @@ try {
 } catch (e) {
   if (!(e instanceof OnlyDone)) failure = e instanceof Error ? e.message.split('\n')[0].slice(0, 700) : String(e);
 } finally {
-  if (productionMap && page) {
+  if ((productionMap || onlySearch && failure) && page) {
     try {
       const r = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
       replies = r.result.value ?? [];
