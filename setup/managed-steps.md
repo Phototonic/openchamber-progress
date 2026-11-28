@@ -355,7 +355,10 @@ private native file in the marked directory, with a strictly validated initial
 checkpoint and applied begin receipt. Observation grants no Store admission;
 the worker rechecks the request, package, target, both writer slots and deadline
 before unlinking just the sibling. It then rereads the single-link journal
-through the normal owner before any next step. Settlement replaces no bytes and
+through the normal owner before any next step. The post-unlink check compares
+device and inode, link count, size and modification time; the unlink can change
+reported birth time when it follows change time. All read-only timestamp checks
+before unlink remain in force. Settlement replaces no bytes and
 adds no sequence or effect. A failed settlement of an exact begin retry still
 reports the proven checkpoint with the refusal (`cold begin unlink failure reports
 the retained checkpoint and allows an exact retry`). Older builds refuse a retained pair; roll back code
