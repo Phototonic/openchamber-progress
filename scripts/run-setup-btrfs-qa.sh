@@ -16,8 +16,19 @@ exec 2>/dev/null
 case_name=prerequisites
 passed=0
 failure_check=
+seed_path_facts() {
+  local label=$1 dir=$2 mode searchable=false runner_owned=false
+  if [[ -d $dir && -x $dir ]]; then searchable=true; fi
+  if [[ -O $dir ]]; then runner_owned=true; fi
+  printf 'seed_%s_searchable=%s\nseed_%s_owned_by_runner=%s\n' \
+    "$label" "$searchable" "$label" "$runner_owned"
+  if mode=$(stat -c '%a' -- "$dir") && [[ $mode =~ ^[0-7]{3,4}$ ]]; then
+    printf 'seed_%s_mode=%s\n' "$label" "$mode"
+  fi
+}
+
 report_failure() {
-  local status=$1 options owner stderr disposition
+  local status=$1 options stderr disposition
   printf '%s=false\n' "$case_name"
   if [[ $case_name != seed ]]; then return; fi
   printf 'seed_failed_check=%s\nseed_exit_code=%d\n' "$failure_check" "$status"
@@ -39,17 +50,14 @@ report_failure() {
   else
     printf 'seed_mount_present=false\n'
   fi
+  seed_path_facts fixture_root "$root"
+  seed_path_facts mount_root "$direct"
   if [[ -d $store ]]; then
     printf 'seed_store_present=true\n'
-    owner=$(stat -c '%u' -- "$store") || owner=
-    if [[ $owner == "$EUID" ]]; then
-      printf 'seed_store_owned_by_runner=true\n'
-    else
-      printf 'seed_store_owned_by_runner=false\n'
-    fi
   else
     printf 'seed_store_present=false\n'
   fi
+  seed_path_facts store "$store"
   stderr=$(head -c 4096 -- "$root/seed.stderr") || stderr=
   case "$stderr" in
     '') disposition=none ;;
@@ -365,9 +373,14 @@ admin mkfs.btrfs "$loop_device" >/dev/null
 mount_btrfs "$top" "$loop_device" /
 admin btrfs subvolume create "$top/original" >/dev/null
 admin btrfs subvolume create "$top/spacer" >/dev/null
+# Btrfs applies the creating process's umask to the subvolume root. Sudo
+# creation under our private umask can otherwise leave root:0700 on disk.
+# Set the owned subvolume's access once, before any driver or identity baseline.
+admin chown -- "$(id -u):$(id -g)" "$top/original"
+admin chmod 700 -- "$top/original"
 release mount "$top"
 mount_btrfs "$direct" "$loop_device" /original
-make_store "$store"
+mkdir -m 700 -- "$store"
 run_phase bare-loop bare-loop "$store"
 release mount "$direct"
 release loop "$image"
@@ -390,6 +403,8 @@ pass
 
 case_name=seed
 LC_ALL=C mount_btrfs "$direct" "$lun_device" /original 2>"$root/seed.stderr"
+failure_check=mount_root_access
+[[ -O $direct && -x $direct ]]
 failure_check=store_device_stat
 seed_dev=$(LC_ALL=C stat -c '%d' -- "$store" 2>"$root/seed.stderr")
 failure_check=store_inode_birth_stat
