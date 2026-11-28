@@ -1,14 +1,16 @@
 import { javascriptLiteral } from '../shared/javascript-literal.ts';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync, unlinkSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { Store, canonical, digest } from '../shared/store.ts';
 import { VERSION, type CompanionUpdateRead } from '../shared/progress.ts';
 import { type Binding, readBinding, verifyStore } from '../shared/binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
+import { managedPath } from '../shared/managed-binding.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, syncFile, syncDirectory, PlatformError, sameWindowsObject, sameWindowsDirectory, requirePlatformWriteBoundary } from '../shared/platform.ts';
 import { MANAGED_STEP_LIMITS, type ManagedCaptureObservation, type ManagedStepRef } from '../shared/managed-steps.ts';
 import type {ManagedLegacyEvidence,ManagedPathClaim,ManagedStepJournal} from './managed-step-journal.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,type ManagedVolumeIdentityReader} from './managed-volume-identity.ts';
 
 export interface Targets { configRoot: string; dataRoot: string; storeRoot: string; confirmed: boolean }
 /** Trim directory suffixes only; do not resolve traversal or conceal symlinks. */
@@ -143,20 +145,22 @@ export function migrationBinding(targets:Targets) {
     ownership:digest(readFileSync(path.join(o.root,'.ownership.json')))};
 }
 
-function migrationObject(file:string) {
-  const s=lstatSync(file,{bigint:true});
+function migrationObject(s:BigIntStats) {
   return {device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)};
 }
-function migrationSnapshot(file:string) {
-  const s=lstatSync(file,{bigint:true});
+function migrationStatKey(s:BigIntStats) {
   return [s.dev,s.ino,s.birthtimeNs,s.size,s.mtimeNs,s.ctimeNs,s.mode,s.nlink].join(':');
 }
+function migrationSnapshot(file:string) {
+  return migrationStatKey(lstatSync(file,{bigint:true}));
+}
+const unavailableVolume:ManagedVolumeIdentityReader=()=>({kind:'unavailable'});
 /** Fresh native claims, not reusable validation. Used only after owned() has
  * validated the original complete installation and its retained releases. */
 function migrationClaim(file:string):ManagedPathClaim {
-  const s=lstatSync(file),before=migrationSnapshot(file);
-  need(!s.isSymbolicLink()&&(s.isDirectory()||s.isFile()&&s.nlink===1),'ownership-invalid');
-  const claim:ManagedPathClaim={path:file,kind:s.isDirectory()?'directory':'file',object:migrationObject(file),digest:s.isFile()?digest(readFileSync(file)):null};
+  const s=lstatSync(file,{bigint:true}),before=migrationStatKey(s);
+  need(!s.isSymbolicLink()&&(s.isDirectory()||s.isFile()&&s.nlink===1n),'ownership-invalid');
+  const claim:ManagedPathClaim={path:file,kind:s.isDirectory()?'directory':'file',object:migrationObject(s),digest:s.isFile()?digest(readFileSync(file)):null};
   need(before===migrationSnapshot(file),'installation-changed');return claim;
 }
 function migrationOwnedPaths(targets:Targets,m:Manifest,selectors:string[]) {
@@ -230,10 +234,16 @@ function removalLayout(journal:ManagedStepJournal) {
 /** Full fresh remaining-set validation. Missing files are recognized only from
  * this operation's ordered completion or its exact before/after removal intent.
  * The journal itself grants no path/object/Store authority. */
-export function validateMigrationRemoval(journal:ManagedStepJournal) {
+export function validateMigrationRemoval(journal:ManagedStepJournal,read:ManagedVolumeIdentityReader=unavailableVolume) {
   const layout=removalLayout(journal),{targets,root,manifest,selectors,claims,removed,completed}=layout,m=journal.migration;
   const database=journal.database,historyFile=path.join(targets.storeRoot,'installation-history.jsonl');
   const extra=[database,...['-journal','-wal','-shm'].map(s=>database+s),historyFile];
+  const evidence=m.legacy.volumeIdentity;
+  const validateAbsentPlacement=(file:string)=>{
+    if(!evidence?.paths.some(p=>p.path===file))return;
+    managedPath(file,true);
+    need(compareManagedVolumePlacement({path:file,kind:'absent',object:null},evidence,read)==='same','installation-changed');
+  };
   // All paths come from the structurally checked frozen manifest/claims or
   // fixed Store names. Include ancestors in one new batch; no cached verdict
   // survives the caller's next mutation boundary.
@@ -241,16 +251,17 @@ export function validateMigrationRemoval(journal:ManagedStepJournal) {
   const rootRemoved=completed>=m.plan.findIndex(s=>s.name==='record-removal');
   const rootMayBeMissing=rootRemoved||m.step?.name==='record-removal'&&layout.intentFor(root);
   for(const claim of claims.values()){
-    const s=lstatSync(claim.path,{throwIfNoEntry:false});
+    const s=lstatSync(claim.path,{bigint:true,throwIfNoEntry:false});
     const missingAllowed=removed.has(claim.path)||claim.path===layout.file(m.step)&&layout.intentFor(claim.path)||claim.path===root&&rootMayBeMissing;
-    if(!s){need(missingAllowed,'modified-owned-files');continue;}
+    if(!s){need(missingAllowed,'modified-owned-files');validateAbsentPlacement(claim.path);continue;}
     need(!removed.has(claim.path)&&!(claim.path===root&&rootRemoved),'installation-changed');
-    safe(claim.path);need(canonical(migrationObject(claim.path))===canonical(claim.object),'installation-changed');
+    safe(claim.path);
     const publicRoot=claim.path===targets.configRoot||claim.path===targets.dataRoot;
-    need(!s.isSymbolicLink()&&(claim.kind==='directory'?s.isDirectory():claim.kind==='file'&&s.isFile()&&s.nlink===1)&&
+    need(!s.isSymbolicLink()&&(claim.kind==='directory'?s.isDirectory():claim.kind==='file'&&s.isFile()&&s.nlink===1n)&&
       (publicRoot?isOwned(claim.path):privatePaths([claim.path])),'ownership-invalid');
+    need(compareManagedHistoricalObject(claim,{path:claim.path,kind:claim.kind,object:migrationObject(s)},evidence,read)==='same','installation-changed');
     if(claim.kind==='file'){
-      const before=migrationSnapshot(claim.path);need(digest(readFileSync(claim.path))===claim.digest&&before===migrationSnapshot(claim.path),'modified-owned-files');
+      need(digest(readFileSync(claim.path))===claim.digest&&migrationStatKey(s)===migrationSnapshot(claim.path),'modified-owned-files');
     }
   }
   // Saved claims cannot substitute arbitrary hashes for the original owner
@@ -270,8 +281,9 @@ export function validateMigrationRemoval(journal:ManagedStepJournal) {
   need(binding.installId===m.legacyInstallId&&binding.database===database&&binding.storeId===journal.storeId&&canonical(binding.source)===canonical(journal.source),'ownership-invalid');
   removableSelectors({root,manifest,binding,staged:selectors.filter(p=>lstatSync(p,{throwIfNoEntry:false})).map(p=>path.basename(p))});
   for(const p of extra){
-    const s=lstatSync(p,{throwIfNoEntry:false});if(!s)continue;
-    safe(p);need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&privatePaths([p]),'store-permissions');
+    const s=lstatSync(p,{bigint:true,throwIfNoEntry:false});if(!s){validateAbsentPlacement(p);continue;}
+    safe(p);need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1n&&privatePaths([p]),'store-permissions');
+    need(compareManagedVolumePlacement({path:p,kind:'file',object:migrationObject(s)},evidence,read)==='same','installation-changed');
   }
   const store=new Store(database,{readOnly:true});let enabled:boolean;
   try{verifyStore(store,binding);store.subagentRunStorage();enabled=store.list({limit:1}).captureEnabled;}finally{store.close();}
@@ -281,10 +293,10 @@ export function validateMigrationRemoval(journal:ManagedStepJournal) {
 /** One lifecycle-owned file effect only. Callers persist its exact intent first
  * under the shared writer fence. Missing current files reconcile; they never
  * authorize deletion of a new object at that path. No Store flag is changed. */
-export function removeMigrationFile(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;capture:ManagedCaptureObservation} {
+export function removeMigrationFile(journal:ManagedStepJournal,validateJournal?:()=>void,read?:ManagedVolumeIdentityReader):{removed:boolean;capture:ManagedCaptureObservation} {
   requirePlatformWriteBoundary();
   const m=journal.migration;need(m.state==='running'&&m.intent!==null&&['remove-selector','remove-discovery'].includes(m.step?.name??''),'managed-step-conflict');
-  const before=(()=>{validateJournal?.();return validateMigrationRemoval(journal);})(),file=before.file(m.step);
+  const before=(()=>{validateJournal?.();return validateMigrationRemoval(journal,read);})(),file=before.file(m.step);
   need(file&&before.intentFor(file)&&before.completed>=2&&before.capture.state==='off','managed-step-conflict');
   if(!lstatSync(file,{throwIfNoEntry:false}))return {removed:false,capture:before.capture};
   requirePlatformWriteBoundary();unlinkSync(file);syncDirectory(path.dirname(file));
@@ -295,17 +307,20 @@ export function removeMigrationFile(journal:ManagedStepJournal,validateJournal?:
   return {removed:true,capture:{state:'unknown',observedAt:null}};
 }
 
-function removalHistory(journal:ManagedStepJournal) {
+function removalHistory(journal:ManagedStepJournal,read:ManagedVolumeIdentityReader=unavailableVolume,saved?:ManagedPathClaim) {
   const file=path.join(path.dirname(journal.database),'installation-history.jsonl');
-  safe(file);const stat=lstatSync(file);
-  need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&privatePaths([path.dirname(file),file]),'store-permissions');
-  if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
-  const before=migrationSnapshot(file),bytes=readFileSync(file);
-  need(before===migrationSnapshot(file),'installation-changed');
+  safe(file);const stat=lstatSync(file,{bigint:true});
+  need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1n&&privatePaths([path.dirname(file),file]),'store-permissions');
+  if(stat.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
+  const live={path:file,kind:'file' as const,object:migrationObject(stat)},evidence=journal.migration.legacy.volumeIdentity;
+  if(saved)need(compareManagedHistoricalObject(saved,live,evidence,read)==='same','managed-step-conflict');
+  else need(compareManagedVolumePlacement(live,evidence,read)==='same','installation-changed');
+  const bytes=readFileSync(file);
+  need(migrationStatKey(stat)===migrationSnapshot(file),'installation-changed');
   let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}
   // Never append onto an interrupted/ambiguous history line or repair it.
   need(text.length===0||text.endsWith('\n'),'managed-migration-conflict');
-  return {file,bytes,text,claim:{path:file,kind:'file' as const,object:migrationObject(file),digest:digest(bytes)}};
+  return {file,bytes,text,claim:{...live,digest:digest(bytes)}};
 }
 function removalEvent(journal:ManagedStepJournal,capture:ManagedCaptureObservation) {
   need(capture.state==='off','managed-step-conflict');
@@ -316,28 +331,29 @@ function removalEvent(journal:ManagedStepJournal,capture:ManagedCaptureObservati
 }
 /** Read-only construction of both subeffects' claims. The engine freezes these
  * in the durable intent before directory removal or history append. */
-export function migrationRemovalRecordClaims(journal:ManagedStepJournal) {
-  const layout=validateMigrationRemoval(journal),m=journal.migration;
+export function migrationRemovalRecordClaims(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader) {
+  const layout=validateMigrationRemoval(journal,read),m=journal.migration;
   need(m.step?.name==='record-removal'&&m.intent===null&&layout.capture.state==='off','managed-step-conflict');
   need(readdirSync(layout.root).length===0,'foreign-files');
-  const history=removalHistory(journal),event=removalEvent(journal,layout.capture);
+  const history=removalHistory(journal,read),event=removalEvent(journal,layout.capture);
   if(history.bytes.length+Buffer.byteLength(event)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
   return {before:[layout.claims.get(layout.root)!,history.claim],
     after:[{path:layout.root,kind:'absent' as const,object:null,digest:null},
       {...history.claim,digest:digest(Buffer.concat([history.bytes,Buffer.from(event)]))}],capture:layout.capture};
 }
-function validateRemovalRecord(journal:ManagedStepJournal) {
+function validateRemovalRecord(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader) {
   const m=journal.migration,intent=m.intent;
   need(m.state==='running'&&m.step?.name==='record-removal'&&intent&&canonical(intent.step)===canonical(m.step),'managed-step-conflict');
-  const layout=validateMigrationRemoval(journal);
+  const layout=validateMigrationRemoval(journal,read);
   need(layout.intentFor(layout.root)&&layout.capture.state==='off','managed-step-conflict');
   if(lstatSync(layout.root,{throwIfNoEntry:false}))need(readdirSync(layout.root).length===0,'foreign-files');
-  const history=removalHistory(journal),event=removalEvent(journal,intent.captureBefore);
   const before=intent.before[1],after=intent.after[1];
+  const file=path.join(path.dirname(journal.database),'installation-history.jsonl');
   need(intent.before.length===2&&intent.after.length===2&&canonical(intent.before[0])===canonical(layout.claims.get(layout.root))&&
     canonical(intent.after[0])===canonical({path:layout.root,kind:'absent',object:null,digest:null})&&
-    before?.path===history.file&&before.kind==='file'&&canonical(before.object)===canonical(history.claim.object)&&
-    after?.path===history.file&&after.kind==='file'&&canonical(after.object)===canonical(before.object),'managed-step-conflict');
+    before?.path===file&&before.kind==='file'&&after?.path===file&&after.kind==='file'&&
+    canonical(after.object)===canonical(before.object),'managed-step-conflict');
+  const history=removalHistory(journal,read,before),event=removalEvent(journal,intent.captureBefore);
   // Later appends are permitted only after the exact intent-proven prefix/event
   // in this same file. Neither absence nor a same-install historical event alone
   // is a completion receipt. Partial appends remain an explicit conflict.
@@ -359,15 +375,15 @@ function validateRemovalRecord(journal:ManagedStepJournal) {
  * event. A fresh scope validates each subeffect; no authority crosses rmdir.
  * validateJournal lets the engine combine durable-intent readback with the first
  * effect batch. It must be read-only and must prebatch any additional paths. */
-export function recordMigrationRemoval(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;recorded:boolean;capture:ManagedCaptureObservation} {
+export function recordMigrationRemoval(journal:ManagedStepJournal,validateJournal?:()=>void,read?:ManagedVolumeIdentityReader):{removed:boolean;recorded:boolean;capture:ManagedCaptureObservation} {
   requirePlatformWriteBoundary();
-  let current=(()=>{validateJournal?.();return validateRemovalRecord(journal);})();
+  let current=(()=>{validateJournal?.();return validateRemovalRecord(journal,read);})();
   let removed=false;
   if(lstatSync(current.layout.root,{throwIfNoEntry:false})){
     requirePlatformWriteBoundary();rmdirSync(current.layout.root);syncDirectory(path.dirname(current.layout.root));removed=true;
     // rmdir changes the filesystem. Recheck the retained payloads,
     // roots, Store, capture and history before admitting the second subeffect.
-    current=(()=>{validateJournal?.();return validateRemovalRecord(journal);})();
+    current=(()=>{validateJournal?.();return validateRemovalRecord(journal,read);})();
   }
   if(!current.recorded){
     requirePlatformWriteBoundary();
@@ -379,16 +395,16 @@ export function recordMigrationRemoval(journal:ManagedStepJournal,validateJourna
 }
 /** Read-only completion proof, also required inside the journal checkpoint's
  * fresh validation batch. A missing directory without the event is incomplete. */
-export function migrationRemovalRecorded(journal:ManagedStepJournal):boolean {
-  return validateRemovalRecord(journal).recorded;
+export function migrationRemovalRecorded(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader):boolean {
+  return validateRemovalRecord(journal,read).recorded;
 }
 /** After the record-removal checkpoint the unresolved intent is gone. Later
  * steps still require this operation's lifecycle event in freshly owned history,
  * in addition to the full remaining-set and absent-directory verification. */
-export function migrationRemovalComplete(journal:ManagedStepJournal):boolean {
-  const layout=validateMigrationRemoval(journal),m=journal.migration;
+export function migrationRemovalComplete(journal:ManagedStepJournal,read?:ManagedVolumeIdentityReader):boolean {
+  const layout=validateMigrationRemoval(journal,read),m=journal.migration;
   need(layout.completed>=m.plan.findIndex(s=>s.name==='record-removal'),'managed-step-conflict');
-  const events=removalHistory(journal).text.split('\n').flatMap(line=>{
+  const events=removalHistory(journal,read).text.split('\n').flatMap(line=>{
     try{const event=JSON.parse(line);return event?.action==='remove-capture'&&event.installId===m.legacyInstallId&&event.operationId===m.operationId?[event]:[];}
     catch{return [];}
   });

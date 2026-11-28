@@ -1,4 +1,4 @@
-import {lstatSync,opendirSync,readFileSync,readdirSync} from 'node:fs';
+import {lstatSync,opendirSync,readFileSync,readdirSync,type BigIntStats} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
 import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile,readManagedBinding,readInitialJournalPair,finishInitialJournalPair} from '../shared/managed-binding.ts';
@@ -9,6 +9,8 @@ import {SetupError,migrationBinding,validateMigrationRemoval,type Targets} from 
 import {parseManagedStepJournal,parseManagedFreshStepJournal,validateManagedFreshCreationChange,managedJournalBinding,managedRequestDigest,sameManagedStep,
   type ManagedPathClaim,type ManagedStepJournal,type ManagedFreshStepJournal,type ManagedSetupStepJournal} from './managed-step-journal.ts';
 import {MANAGED_STEP_LIMITS,MANAGED_OPERATION_TRANSITIONS} from '../shared/managed-steps.ts';
+import {compareManagedHistoricalObject,compareManagedVolumePlacement,type ManagedVolumeIdentityEvidence,type ManagedVolumeIdentityReader,
+  type ManagedVolumeTarget} from './managed-volume-identity.ts';
 
 export interface MigrationRecord {
   binding:Binding;
@@ -74,19 +76,32 @@ export interface ManagedRemovalReceipt { history:ManagedPathClaim; entry:string 
 /** Specific retained evidence for format-1 recovery. This read never disables,
  * removes, repairs or appends anything. An earlier true removalRecorded() result
  * is deliberately not accepted as authority, nor is a coarse removed phase. */
-export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemovalReceipt):ManagedRemovalReceipt|undefined {
+export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemovalReceipt,evidence?:ManagedVolumeIdentityEvidence,
+  read:ManagedVolumeIdentityReader=()=>({kind:'unavailable'})):ManagedRemovalReceipt|undefined {
   const b=record.binding;
   const conflict=()=>{throw new SetupError('managed-migration-conflict');};
+  const observation=(path:string,kind:'directory'|'file',s:BigIntStats)=>({path,kind,
+    object:{device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)}});
+  const placement=(live:ManagedVolumeTarget)=>{if(compareManagedVolumePlacement(live,evidence,read)!=='same')conflict();};
   if(!b.source.verified||!record.legacyInstallId||record.legacyInstallId===b.installId)conflict();
   for(const root of [b.source.configRoot,b.source.dataRoot,path.dirname(b.database)]){
-    managedPath(root);if(!lstatSync(root).isDirectory()||!isOwned(root))conflict();
+    managedPath(root);const s=lstatSync(root,{bigint:true});if(!s.isDirectory()||!isOwned(root))conflict();
+    placement(observation(root,'directory',s));
   }
   const legacy=managedPath(path.join(b.source.configRoot,'plugins/agent-progress'),true);
   // A receipt cannot authorize removing or overlooking remaining discovery.
   if(lstatSync(legacy,{throwIfNoEntry:false}))conflict();
+  placement({path:legacy,kind:'absent',object:null});
   for(const file of [b.database,...['-journal','-wal','-shm'].map(suffix=>b.database+suffix)]){
-    const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)continue;
-    managedPath(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([file]))conflict();
+    const stat=lstatSync(file,{bigint:true,throwIfNoEntry:false});
+    if(!stat){
+      if(evidence?.paths.some(p=>p.path===file)){
+        managedPath(file,true);placement({path:file,kind:'absent',object:null});
+      }
+      continue;
+    }
+    managedPath(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1n||!privatePaths([file]))conflict();
+    placement(observation(file,'file',stat));
   }
   const store=new Store(b.database,{readOnly:true});
   try{verifyStore(store,b);store.subagentRunStorage();}finally{store.close();}
@@ -94,9 +109,10 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
   const before=lstatSync(file,{bigint:true});
   if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||!privatePaths([path.dirname(file),file]))conflict();
   if(before.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
-  const object={device:String(before.dev),inode:String(before.ino),birthNs:String(before.birthtimeNs)};
-  if(retained&&(retained.history.path!==file||retained.history.kind!=='file'||
-    canonical(retained.history.object)!==canonical(object)))conflict();
+  const live=observation(file,'file',before);
+  if(retained){
+    if(compareManagedHistoricalObject(retained.history,live,evidence,read)!=='same')conflict();
+  }else placement(live);
   const bytes=readFileSync(file),after=lstatSync(file,{bigint:true});
   if([before.dev,before.ino,before.birthtimeNs,before.size,before.mtimeNs,before.ctimeNs,before.nlink].join(':')!==
     [after.dev,after.ino,after.birthtimeNs,after.size,after.mtimeNs,after.ctimeNs,after.nlink].join(':'))conflict();
@@ -111,7 +127,7 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
   // Later appends are allowed only in this same freshly validated owned file
   // with the exact retained event still present. The old hash is a claim, not
   // a permission verdict or a requirement that unrelated history stop growing.
-  return {history:{path:file,kind:'file',object,digest:digest(bytes)},entry};
+  return {history:{...live,digest:digest(bytes)},entry};
 }
 
 function journalSnapshot(file:string) {
@@ -349,7 +365,7 @@ export function settleInitialJournalSave(env:NodeJS.ProcessEnv,expected:NonNulla
  * complete same-target review and holds the shared writer fence. It preserves
  * the exact binding and legacy identity, and rechecks the owner evidence here.
  * The sole effect is atomic replacement with the initial format-2 checkpoint. */
-export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:MigrationRecord,validate?:()=>void):void {
+export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:MigrationRecord,validate?:()=>void,read?:ManagedVolumeIdentityReader):void {
   requirePlatformWriteBoundary();
   const checked=parseManagedStepJournal(JSON.stringify(next)),m=checked.migration;
   validateInitialManagedCheckpoint(checked);
@@ -371,11 +387,11 @@ export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStep
     if(m.legacy.kind==='manifest'){
       // A coarse removed phase with intact discovery is not deletion evidence.
       // Start the full plan; retain only what the owner can actually prove.
-      validateMigrationRemoval(checked);
+      validateMigrationRemoval(checked,read);
     }else{
       const legacy=path.join(checked.source.configRoot,'plugins','agent-progress');
       if(canonical(m.legacy.claims)!==canonical([{path:legacy,kind:'absent',object:null,digest:null}])||
-        !readRemovalReceipt(prior,m.legacy.receipt))throw new SetupError('managed-migration-conflict');
+        !readRemovalReceipt(prior,m.legacy.receipt,m.legacy.volumeIdentity,read))throw new SetupError('managed-migration-conflict');
     }
     validate?.();
     return file;
