@@ -850,6 +850,11 @@ ${PHONE_CSS}
 .ap-doc-table :is(th,td){min-width:min(8rem,50vw)}
 .ap:is([data-surface="panel"][data-reading-mode="document"],[data-surface="page"]:has(.ap-document-view)){min-block-size:100dvh;block-size:calc(100dvh - var(--ap-keyboard-height,0px))}
 .ap[data-surface="page"]:has(.ap-document-view)>.ap-board{flex:1 1 auto;min-height:0}
+/* That board may be shorter than the plan list, which must stay inside it so nothing after the
+   board (the incomplete-counts note) is drawn over the list: beside the document the list
+   scrolls within the row; narrow Select hides the document, so the page flows normally there */
+@media(min-width:820px){.ap[data-surface="page"]:has(.ap-document-view)>.ap-board{grid-template-rows:minmax(0,1fr)}.ap[data-surface="page"]:has(.ap-document-view)>.ap-board>.ap-plan-list{max-height:100%}}
+@media(max-width:819px){.ap[data-surface="page"]:has(>.ap-board.ap-selecting){min-block-size:0;block-size:auto}.ap[data-surface="page"]>.ap-board.ap-selecting{flex:none;grid-template-rows:none}}
 .ap-detail:has(.ap-document-view){display:flex;flex-direction:column;align-self:stretch;min-height:0;gap:6px}
 .ap-detail:has(.ap-document-view)>:not(.ap-document-view){flex-shrink:0}
 .ap:has(.ap-document-view)>:not(.ap-board,.ap-document-view){flex-shrink:0}
