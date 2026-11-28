@@ -21,7 +21,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 - **Know when it's your turn.** *Needs you* shows decisions and reviews the main session asks you to handle, with **Open session**, **Copy reply** and **Hide**.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
 - **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session. Choose **Show current session** to follow the visible chat again; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context).
-- **Read the saved plan.** Choose **Plan document** beside **Map** and **List**.
+- **Read the saved plan.** Choose **Document** beside **Map** and **List**.
 - **Plan views and actions.** Switch between Map, List, Document and History. **Copy update** and **Handoff note** open previews; use the **Settings** gear for language, Setup and Troubleshooting.
 - **Make room for current plans.** The rail and board hide active plans that haven’t reported in seven days by default. Use **Hide quiet** by the rail plan chooser or board Filters to change that. No reports does not mean the work has stopped or finished.
 - **Close a plan you no longer need.** Choose **More → Finish as cancelled** and confirm. History and unfinished tasks stay available; the action does not stop running agents.
@@ -36,7 +36,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th width="50%">Work Status</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: a plan's progress, dependency map and Needs you, with one More menu" width="390"></td>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan chooser with Settings and More, Hide quiet, the plan title with two linked work chips, Copy update and Handoff note, the progress bar, and the List view with Now, Blocked and Up next tasks" width="390"></td>
     <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: plan title with position picker, progress bar, running and Needs you counts, and Open progress" width="322"></td>
   </tr>
   <tr>
@@ -47,7 +47,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th colspan="2">Fullscreen board</th>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for pages, with a matching task opened beside its search result" width="820"></td>
+    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for pages in the top bar beside Hide quiet, Filters, Needs you and Settings; the matching task is highlighted in the plan's List, under a header with linked work chips, Copy update, Handoff note and More" width="820"></td>
   </tr>
   <tr>
     <td colspan="2">Every plan across projects, worktrees and sessions, with search, filters, history and the dependency map.</td>
