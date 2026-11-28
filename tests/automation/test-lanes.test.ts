@@ -50,36 +50,56 @@ async function until(condition: () => boolean, ms = 10_000) {
  * `ignore` ignores SIGTERM, `hang` runs for ever, `life=N` runs N ms, `code=N` exits with N,
  * `grandchild` starts a same-group child that ignores SIGTERM and hangs, `session=...` starts a
  * descendant in its own session (outside the step's group) that holds the step's pipes with the
- * given modes, `print` and `flood` write output. Each process records its pid under ROOT. */
+ * given modes, `wait=NAME` waits for the harness to release a gate, `print` and `flood` write output.
+ * Each process records its pid under ROOT. */
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'portable-lanes-'));
   writeFileSync(join(root, 'child.cjs'), `
 const fs = require('node:fs'), cp = require('node:child_process');
+const { once } = require('node:events'), { setTimeout: sleep } = require('node:timers/promises');
 const { ROOT, NAME, MODE = '' } = process.env;
 const modes = MODE.split(',');
 const value = key => (modes.find(m => m.startsWith(key + '=')) ?? '').split('=').slice(1).join('=') || undefined;
-if (modes.includes('ignore')) process.on('SIGTERM', () => {});
-fs.writeFileSync(ROOT + '/' + NAME + '.pid.tmp', String(process.pid));
-fs.renameSync(ROOT + '/' + NAME + '.pid.tmp', ROOT + '/' + NAME + '.pid');
-const again = (suffix, mode, options = {}) => cp.spawn(process.execPath, [__filename], { env: { ...process.env, NAME: NAME + '-' + suffix, MODE: mode }, stdio: ['ignore', 'inherit', 'inherit'], ...options });
-if (modes.includes('grandchild')) again('grandchild', 'ignore,hang');
-if (value('session')) again('session', value('session').replaceAll('+', ','), { detached: true });
-if (modes.includes('print')) console.log('PRINTED-BY-' + NAME);
-if (modes.includes('flood')) console.log('x'.repeat(5000) + 'END');
-if (modes.includes('hang')) setInterval(() => {}, 1000);
-if (value('life')) setTimeout(() => process.exit(Number(value('code') ?? 0)), Number(value('life')));
-else if (!modes.includes('hang')) process.exit(Number(value('code') ?? 0));
+const again = async (suffix, mode, options = {}) => {
+  const name = NAME + '-' + suffix;
+  const child = cp.spawn(process.execPath, [__filename], { env: { ...process.env, NAME: name, MODE: mode }, stdio: ['ignore', 'inherit', 'inherit'], ...options });
+  await once(child, 'spawn');
+  // Spawning the process does not mean Node has run the fixture. Wait until it publishes its PID
+  // (and has installed any SIGTERM handler) so the leader cannot exit and start cleanup first.
+  while (!fs.existsSync(ROOT + '/' + name + '.pid')) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(name + ' exited before publishing its PID');
+    await sleep(25);
+  }
+};
+async function main() {
+  if (modes.includes('ignore')) process.on('SIGTERM', () => {});
+  fs.writeFileSync(ROOT + '/' + NAME + '.pid.tmp', String(process.pid));
+  fs.renameSync(ROOT + '/' + NAME + '.pid.tmp', ROOT + '/' + NAME + '.pid');
+  const descendants = [];
+  if (modes.includes('grandchild')) descendants.push(again('grandchild', 'ignore,hang'));
+  if (value('session')) descendants.push(again('session', value('session').replaceAll('+', ','), { detached: true }));
+  await Promise.all(descendants);
+  if (modes.includes('print')) console.log('PRINTED-BY-' + NAME);
+  if (modes.includes('flood')) console.log('x'.repeat(5000) + 'END');
+  if (modes.includes('hang')) setInterval(() => {}, 1000);
+  const gate = value('wait');
+  while (gate && !fs.existsSync(ROOT + '/' + gate + '.gate')) await sleep(25);
+  if (value('life')) setTimeout(() => process.exit(Number(value('code') ?? 0)), Number(value('life')));
+  else if (!modes.includes('hang')) process.exit(Number(value('code') ?? 0));
+}
+main().catch(error => { console.error(error); process.exit(1); });
 `);
   const step = (label: string, mode: string) =>
     `{label:${JSON.stringify(label)},command:process.execPath,args:[${JSON.stringify(join(root, 'child.cjs'))}],env:{ROOT:${JSON.stringify(root)},NAME:${JSON.stringify(label)},MODE:${JSON.stringify(mode)}}}`;
   const pid = (name: string) => (existsSync(join(root, name + '.pid')) ? safePid(readFileSync(join(root, name + '.pid'), 'utf8')) : undefined);
+  const release = (name: string) => writeFileSync(join(root, name + '.gate'), '');
   // Every fixture process records its pid here: stop whatever a failed test left running, then delete the files.
   const dispose = () => {
     if (!existsSync(root)) return;
     for (const name of readdirSync(root)) if (name.endsWith('.pid')) killTree(safePid(readFileSync(join(root, name), 'utf8')));
     rmSync(root, { recursive: true, force: true });
   };
-  return { root, step, pid, dispose };
+  return { root, step, pid, release, dispose };
 }
 
 function launch(script: string, env: Record<string, string> = {}) {
@@ -140,10 +160,10 @@ test('a grandchild that ignores SIGTERM and a descendant that holds the pipes fr
 test('a leader that exits 0 leaving a same-group descendant on the pipes does not leave the descendant running when the runner returns', posixOnly, async () => {
   const f = fixture();
   try {
-    // The leader exits at once; its grandchild (same group, ignores SIGTERM) holds the pipes. The grace period
-    // abandons the pipes, and the step passes, but the group is still alive.
+    // The leader exits once its grandchild (same group, ignores SIGTERM) is ready and holding the pipes.
+    // The grace period abandons the pipes, and the step passes, but the group is still alive.
     const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'grandchild')}]}]`, '{graceMs:400,sweepMs:600}'));
-    assert.ok(await until(() => f.pid('one-grandchild') !== undefined));
+    assert.ok(await until(() => f.pid('one-grandchild') !== undefined), 'the grandchild is ready');
     const descendant = f.pid('one-grandchild')!;
     assert.equal(await bounded(run.exited, 15_000), 0, run.output());
     assert.match(run.output(), /^passed a: one/m);
@@ -155,9 +175,10 @@ test('an interrupt during the grace period, which ends before the kill timer, st
   const f = fixture();
   try {
     const run = launch(program(f, s => `[{name:'a',steps:[${s('one', 'grandchild')}]}]`, '{graceMs:1500,killAfterMs:30000,sweepMs:600}'));
-    assert.ok(await until(() => f.pid('one-grandchild') !== undefined));
+    assert.ok(await until(() => f.pid('one-grandchild') !== undefined), 'the grandchild is ready');
     const descendant = f.pid('one-grandchild')!;
-    await sleep(300);
+    const leader = f.pid('one')!;
+    assert.ok(await until(() => !alive(leader)), 'the leader exited');
     assert.ok(alive(descendant), 'the grace period is still running');
     run.child.kill('SIGTERM');
     assert.equal(await bounded(run.exited, 15_000), 143, run.output());
@@ -225,9 +246,13 @@ test('a step that cannot start is reported once', async () => {
 test('a step that fails on its own after the first failure is a failure with its output, not a stopped step', async () => {
   const f = fixture();
   try {
-    // "early" has exited with 4 but a descendant in another session holds its pipes for 1.5 s,
-    // so its close arrives after "first" has failed. The runner never signalled it.
-    const run = launch(program(f, s => `[{name:'a',steps:[${s('first', 'life=700,code=3')}]},{name:'b',steps:[${s('early', 'print,code=4,session=life=1500')}]}]`));
+    // "early" exits with 4 before "first", but its detached descendant holds its pipes
+    // until "first" fails. The runner never stopped the "early" leader.
+    const run = launch(program(f, s => `[{name:'a',steps:[${s('first', 'wait=first,code=3')}]},{name:'b',steps:[${s('early', 'print,code=4,session=wait=session')}]}]`));
+    assert.ok(await until(() => f.pid('early') !== undefined && !alive(f.pid('early')!)), 'early exited on its own');
+    f.release('first');
+    assert.ok(await until(() => /^failed a: first/m.test(run.output())), run.output());
+    f.release('session');
     assert.equal(await bounded(run.exited, 15_000), 1, run.output());
     assert.match(run.output(), /^failed a: first/m);
     assert.match(run.output(), /^failed b: early/m);
