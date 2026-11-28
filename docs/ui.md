@@ -549,6 +549,17 @@ Chips use host tokens only (border, hover and focus ring), wrap at narrow widths
 and 200%/400% zoom, keep 44 px targets on coarse pointers and use system colours in
 forced-colours mode. Work Status, list rows and the Sessions list get no chips.
 
+Verification: `tests/browser/session-context.test.ts` covers the bounded projection,
+`tests/browser/interface-components.test.ts` and `surface-shell.test.ts` cover owner-only
+chips, literal titles, localized names and link-only removal, and
+`tests/browser/surface-shell-qa.ts --linked-work-only --chromium <path> --artifacts <dir>`
+drives built guests over the synthetic host in isolated Chromium. That run pushes
+link-only session snapshots without reloading, records each `open-url` request,
+refuses one, and checks pointer, Enter and Space activation, focus, refusal toasts,
+removal, a 320 px rail with a long title, Russian/Chinese names and forced colours.
+It proves guest behaviour against a recording host, not native host routing or the
+destination page.
+
 There is no **Open Workflows** action: SDK 2.7.0 supplies no supported Workflows
 destination or availability contract. `openSurface(string)` does not establish
 one. A future verified public navigation API would require a separate change.
